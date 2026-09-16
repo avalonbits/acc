@@ -45,13 +45,14 @@ an existing checkout to skip that.
 | `CType.t` widened to 32 bits | done |
 | Objects agondev's binutils can link | done |
 | eZ80 backend: `int`, pointers, control flow, calls | done |
-| eZ80 backend: `char`, `short`, `long`, floats, `long long` | not started |
+| eZ80 backend: `char` and `short` | done |
+| eZ80 backend: `long`, floats, `long long` | not started |
 | acc's own linker and flat MOS output | not started |
 | Builds with agondev to run on the Agon | not started |
 
-acc compiles C to eZ80 machine code today, for the machine's own width --
-`int`, `unsigned` and pointers -- with the full range of operators, control
-flow, function calls and recursion. Anything wider refuses rather than
+acc compiles C to eZ80 machine code today for `char`, `short`, `int`,
+`unsigned` and pointers, with the full range of operators, control flow,
+function calls and recursion. Anything wider refuses rather than
 emitting something that would assemble and misbehave. Linking is agondev's
 `ld` against `libagon.a` for now, which is what gives compiled programs a C
 library; acc needs its own linker before it can run on the Agon itself.

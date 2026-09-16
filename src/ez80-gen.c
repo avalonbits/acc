@@ -367,6 +367,141 @@ static void unsupported(const char *what, int t)
               what, t & VT_BTYPE);
 }
 
+/* ------------------------------------------------------------------ */
+/* one- and two-byte access                                            */
+
+/* The 8-bit halves of each pair, in Z80's r8 numbering: B0 C1 D2 E3 H4 L5. */
+static const unsigned char lo8_of[NB_REGS] = { 5, 3, 1 };   /* L, E, C */
+static const unsigned char hi8_of[NB_REGS] = { 4, 2, 0 };   /* H, D, B */
+
+static void ld_r8_a(int r8)  { g(0x47 + r8 * 8); }          /* ld r8, a */
+static void ld_a_r8(int r8)  { g(0x78 + r8); }              /* ld a, r8 */
+
+static void ld_iy_imm(Sym *sym, int addend)                 /* ld iy, nn */
+{
+    o(0xfd);
+    g(0x21);
+    gen_addr24(sym, addend);
+}
+
+/* A narrow access needs a base it can reach a single byte through, which is
+ * an index register. Locals are already addressed off IX; everything else --
+ * a global, an address in a register, an address in a local slot -- goes into
+ * IY first. IY is the backend's, so nothing live is disturbed. */
+typedef struct {
+    int prefix;   /* 0xdd for ix, 0xfd for iy */
+    int d;
+} NAddr;
+
+static NAddr narrow_addr(SValue *sv)
+{
+    int fr = sv->r;
+    int v = fr & VT_VALMASK;
+    int fc = sv->c.i;
+    NAddr a;
+
+    if (v == VT_LOCAL) {
+        need_disp(fc);
+        need_disp(fc + 1);
+        a.prefix = 0xdd;
+        a.d = fc;
+
+        return a;
+    }
+
+    a.prefix = 0xfd;
+    a.d = 0;
+    if (v == VT_LLOCAL) {
+        need_disp(fc);
+        ld_iy_ix(fc);
+    } else if (v == VT_CONST) {
+        ld_iy_imm((fr & VT_SYM) ? sv->sym : NULL, fc);
+    } else if (v < NB_REGS) {
+        mov_iy_rr(v);
+    } else {
+        tcc_error("ez80: cannot address value location %d", v);
+    }
+
+    return a;
+}
+
+static void ld_a_at(NAddr a, int off)      /* ld a, (base + off) */
+{
+    o(a.prefix);
+    g(0x7e);
+    g(a.d + off);
+}
+
+static void ld_at_a(NAddr a, int off)      /* ld (base + off), a */
+{
+    o(a.prefix);
+    g(0x77);
+    g(a.d + off);
+}
+
+/* Sign-extends the byte in A across all 24 bits of HL.
+ *
+ * sbc hl,hl after the sign has been rotated into carry gives 0x000000 or
+ * 0xffffff -- the whole register, upper byte included, which is why this is
+ * done in HL and not built out of ld h,a. It is agondev's own idiom. */
+static void sext_a_to_hl(void)
+{
+    ld_r8_a(5);          /* ld l, a */
+    o(0x05cb);           /* rlc l   -- sign into carry */
+    o(0x62ed);           /* sbc hl, hl */
+    ld_r8_a(5);          /* ld l, a -- put the byte back */
+}
+
+static void load_narrow(int r, SValue *sv, int size, int is_unsigned)
+{
+    NAddr a = narrow_addr(sv);
+
+    if (is_unsigned) {
+        /* No scratch needed: zero the pair, then drop the bytes in. */
+        ld_rr_imm(r, 0);
+        if (size == 2) {
+            ld_a_at(a, 1);
+            ld_r8_a(hi8_of[r]);
+        }
+        ld_a_at(a, 0);
+        ld_r8_a(lo8_of[r]);
+
+        return;
+    }
+
+    /* Signed: the extension is built in HL, so HL is saved when it is not the
+     * destination. The two pushes and two pops pair up as save, result, take,
+     * restore. */
+    if (r != TREG_HL)
+        push_rr(TREG_HL);
+
+    ld_a_at(a, size - 1);          /* the byte that carries the sign */
+    sext_a_to_hl();
+    if (size == 2) {
+        ld_r8_a(4);                /* ld h, a -- the high byte back */
+        ld_a_at(a, 0);
+        ld_r8_a(5);                /* ld l, a */
+    }
+
+    if (r != TREG_HL) {
+        push_rr(TREG_HL);
+        pop_rr(r);
+        pop_rr(TREG_HL);
+    }
+}
+
+static void store_narrow(int r, SValue *v, int size)
+{
+    NAddr a = narrow_addr(v);
+
+    ld_a_r8(lo8_of[r]);
+    ld_at_a(a, 0);
+    if (size == 2) {
+        ld_a_r8(hi8_of[r]);
+        ld_at_a(a, 1);
+    }
+}
+
 ST_FUNC void load(int r, SValue *sv)
 {
     int fr = sv->r;
@@ -377,6 +512,11 @@ ST_FUNC void load(int r, SValue *sv)
 
     if (fr & VT_LVAL) {
         /* The value lives in memory; fr says where its address comes from. */
+        if (size == 1 || size == 2) {
+            load_narrow(r, sv, size, (ft & VT_UNSIGNED) || (ft & VT_BTYPE) == VT_BOOL);
+
+            return;
+        }
         if (size != PTR_SIZE)
             unsupported("load", ft);
 
@@ -460,6 +600,11 @@ ST_FUNC void store(int r, SValue *v)
     int vt = fr & VT_VALMASK;
     int size = type_bytes(ft);
 
+    if (size == 1 || size == 2) {
+        store_narrow(r, v, size);
+
+        return;
+    }
     if (size != PTR_SIZE)
         unsupported("store", ft);
 
@@ -544,21 +689,27 @@ static void gadd_sp(int n)
 ST_FUNC void gfunc_call(int nb_args)
 {
     int args_size = 0;
-    int i, r, size, align;
+    int i, r, size;
 
     save_regs(nb_args + 1);
 
     /* Pushed from vtop down, which puts the first argument at the lowest
      * address -- the layout agondev's own code produces. */
     for (i = 0; i < nb_args; i++) {
-        size = type_size(&vtop->type, &align);
         if ((vtop->type.t & VT_BTYPE) == VT_STRUCT)
             unsupported("passing a struct by value", vtop->type.t);
-        if (type_bytes(vtop->type.t) != PTR_SIZE)
+        /* type_bytes and not type_size: an array argument has decayed to a
+         * pointer by now and occupies one slot, but its type_size is still
+         * the size of the whole array. */
+        size = type_bytes(vtop->type.t);
+        if (size == 0 || size > PTR_SIZE)
             unsupported("argument", vtop->type.t);
+        /* A char or a short occupies a whole slot. gv has already widened it
+         * -- load extends on the way into a register -- so pushing the pair
+         * is the promotion. */
         r = gv(RC_INT);
         push_rr(r);
-        args_size += arg_slot(size);
+        args_size += PTR_SIZE;
         vtop--;
     }
 
