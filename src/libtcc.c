@@ -879,6 +879,12 @@ LIBTCCAPI TCCState *tcc_new(void)
 #if defined TCC_TARGET_MACHO /* || defined TCC_TARGET_PE */
     s->leading_underscore = 1;
 #endif
+#ifdef TCC_TARGET_EZ80
+    /* agondev names C symbols with a leading underscore -- _main, _printf,
+     * __start -- so acc has to as well or nothing resolves against
+     * libagon.a. */
+    s->leading_underscore = 1;
+#endif
 #ifdef TCC_ARM_HARDFLOAT
     s->float_abi = ARM_HARD_FLOAT;
 #endif

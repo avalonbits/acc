@@ -115,6 +115,45 @@ case "$out" in
 esac
 
 echo
+echo "object interop with agondev:"
+# acc's objects have to be readable by agondev's binutils: same ELF machine
+# flags, same symbol naming, same relocation format. Without that they cannot
+# be linked against libagon.a and a compiled program has no C library.
+AGONDEV=${AGONDEV:-$HOME/agondev}
+if [ -x "$AGONDEV/bin/ez80-none-elf-ld" ]; then
+    obj=$(mktemp -d)
+    # Data only -- there is no code generator yet. The pointer initialiser is
+    # there on purpose: it makes the unit carry a relocation, so the test
+    # covers the relocation format and not just the ELF header.
+    printf 'int counter = 0x123456;\nchar msg[] = "hi";\nchar *p = msg;\n' > "$obj/t.c"
+    if bin/acc -c "$obj/t.c" -o "$obj/t.o" 2>"$obj/err"; then
+        ok "acc compiles a data-only unit"
+    else
+        bad "acc compiles a data-only unit" "$(cat "$obj/err")"
+    fi
+    case "$("$AGONDEV/bin/ez80-none-elf-readelf" -h "$obj/t.o" 2>&1)" in
+      *EZ80*ADL*) ok "object reports EZ80/ADL machine flags" ;;
+      *) bad "object reports EZ80/ADL machine flags" "readelf saw no EZ80/ADL" ;;
+    esac
+    # agondev names C symbols with a leading underscore.
+    if "$AGONDEV/bin/ez80-none-elf-nm" "$obj/t.o" 2>/dev/null | grep -q ' _counter$'; then
+        ok "symbols carry agondev's leading underscore"
+    else
+        bad "symbols carry agondev's leading underscore" "$("$AGONDEV/bin/ez80-none-elf-nm" "$obj/t.o" 2>&1)"
+    fi
+    # No warnings either: a warning here means a section agondev cannot use.
+    ldout=$("$AGONDEV/bin/ez80-none-elf-ld" -r "$obj/t.o" -o "$obj/t2.o" 2>&1)
+    if [ -z "$ldout" ]; then
+        ok "agondev ld links it without complaint"
+    else
+        bad "agondev ld links it without complaint" "$ldout"
+    fi
+    rm -rf "$obj"
+else
+    printf '  skip no agondev toolchain (set AGONDEV)\n'
+fi
+
+echo
 echo "Agon emulator harness:"
 # Self-test: the two helper programs test/agon.sh builds are the whole
 # pipeline in miniature -- the MOS header, the sdcard, autoexec, and the exit

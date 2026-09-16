@@ -367,6 +367,18 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define ElfW_Rel ElfW(Rela)
 # define SHT_RELX SHT_RELA
 # define REL_SECTION_FMT ".rela%s"
+#elif defined TCC_TARGET_EZ80
+/* 32-bit ELF, but with addends. agondev's objects and libagon.a carry
+ * .rela sections, and an assembler that emits RELA is not readable by a
+ * linker built for REL -- the two spell a relocation differently. Being able
+ * to link libagon.a is what gives acc a C library at all, so the format
+ * follows agondev rather than tinycc's usual 32-bit choice. */
+# define ELFCLASSW ELFCLASS32
+# define ElfW(type) Elf##32##_##type
+# define ELFW(type) ELF##32##_##type
+# define ElfW_Rel ElfW(Rela)
+# define SHT_RELX SHT_RELA
+# define REL_SECTION_FMT ".rela%s"
 #else
 # define ELFCLASSW ELFCLASS32
 # define ElfW(type) Elf##32##_##type
@@ -1854,7 +1866,12 @@ ST_FUNC void tcc_debug_typedef(TCCState *s1, Sym *sym);
 ST_FUNC void tcc_debug_stabn(TCCState *s1, int type, int value);
 ST_FUNC void tcc_debug_fix_forw(TCCState *s1, CType *t);
 
-#if !(defined ELF_OBJ_ONLY || defined TCC_TARGET_ARM || defined TARGETOS_BSD)
+/* No .eh_frame on the eZ80. It is an unwind table for a C++ runtime and a
+ * host that has one, the emitted contents are x86-shaped besides, and
+ * agondev's ld warns on every object acc produces because of it. Nothing on
+ * the Agon reads it and the budget has no room for it. */
+#if !(defined ELF_OBJ_ONLY || defined TCC_TARGET_ARM || defined TARGETOS_BSD \
+      || defined TCC_TARGET_EZ80)
 ST_FUNC void tcc_eh_frame_start(TCCState *s1);
 ST_FUNC void tcc_eh_frame_end(TCCState *s1);
 ST_FUNC void tcc_eh_frame_hdr(TCCState *s1, int final);

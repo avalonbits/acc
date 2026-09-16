@@ -2714,6 +2714,11 @@ static int tcc_output_elf(TCCState *s1, FILE *f, int phnum, ElfW(Phdr) *phdr)
 #elif defined TCC_TARGET_RISCV64
     /* XXX should be configurable */
     ehdr.e_flags = EF_RISCV_FLOAT_ABI_DOUBLE;
+#elif defined TCC_TARGET_EZ80
+    /* Read off agondev's own objects. Its binutils rejects an object without
+     * it -- "unsupported mach 0" -- so this is what makes acc's output
+     * linkable by ez80-none-elf-ld. */
+    ehdr.e_flags = EF_Z80_MACH_EZ80_ADL;
 #endif
 
     if (file_type == TCC_OUTPUT_OBJ) {
