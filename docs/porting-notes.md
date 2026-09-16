@@ -178,3 +178,26 @@ for bitfields, enums, integer promotion and struct return.
 `test/equivalence.sh` caught it: five objects out of 135 differed from
 pristine tinycc's. Nothing else in the suite noticed. Any change to the shared
 core should be run against it.
+
+## Where the eZ80 build stands
+
+acc's tree compiles for the eZ80 with agondev today, with no errors, and
+`ctype_t` really is 32 bits there while `int` is 24 -- checked with a
+`_Static_assert` built by agondev's own compiler, including that the bitfield
+bits at 26-31 survive.
+
+    text 236,459   bss 62,793   total 299 KB of the 448 KB budget
+
+That is the whole compiler including debug info, ELF output and the run and
+tools paths, none of which the Agon can use. The trimming from here is
+subtraction rather than rewriting:
+
+| drop | saves |
+| --- | --- |
+| `tccdbg.c` (DWARF and stabs) | 33 KB text |
+| `TOK_HASH_SIZE` 16384 to 4096 | 38 KB bss |
+| ELF output, replaced by a flat MOS writer | most of 50 KB text |
+| `tccrun.c`, `tcctools.c` | 8 KB text |
+
+Which lands near 185 KB text and 25 KB bss, leaving about 230 KB for heap and
+stack -- the figure the budget section above assumes.
