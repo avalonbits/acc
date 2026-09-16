@@ -16,7 +16,14 @@
       check tccdefs_.h.
 */
 
-#if __SIZEOF_POINTER__ == 4
+#if __SIZEOF_POINTER__ == 3
+    /* eZ80 in ADL mode: a 3-byte pointer and int, and a 4-byte long. There is
+       no 24-bit branch upstream, and without one this falls through to the
+       64bit Windows case and makes size_t an unsigned long long. */
+    #define __SIZE_TYPE__ unsigned int
+    #define __PTRDIFF_TYPE__ int
+    #define __INT64_TYPE__ long long
+#elif __SIZEOF_POINTER__ == 4
     /* 32bit systems. */
 #if defined  __OpenBSD__
     #define __SIZE_TYPE__ unsigned long
@@ -44,8 +51,27 @@
     #define __INT64_TYPE__ long long
 # endif
 #endif
+#if __SIZEOF_INT__ == 3
+    #define __SIZEOF_INT__ 3
+    #define __INT_MAX__ 0x7fffff
+#else
     #define __SIZEOF_INT__ 4
     #define __INT_MAX__ 0x7fffffff
+#endif
+/* Upstream defines these only inside the per-OS sections below. A bare-metal
+   target matches none of them, so they are defined here from the pointer
+   width; the OS sections that repeat them agree, and an identical
+   redefinition is allowed. */
+#if __SIZEOF_POINTER__ == 8
+    #define __SIZEOF_SIZE_T__ 8
+    #define __SIZEOF_PTRDIFF_T__ 8
+#elif __SIZEOF_POINTER__ == 3
+    #define __SIZEOF_SIZE_T__ 3
+    #define __SIZEOF_PTRDIFF_T__ 3
+#else
+    #define __SIZEOF_SIZE_T__ 4
+    #define __SIZEOF_PTRDIFF_T__ 4
+#endif
 #if __SIZEOF_LONG__ == 4
     #define __LONG_MAX__ 0x7fffffffL
 #else
@@ -92,6 +118,9 @@
 # if __SIZEOF_POINTER__ == 8
     #define __SIZEOF_SIZE_T__ 8
     #define __SIZEOF_PTRDIFF_T__ 8
+#elif __SIZEOF_POINTER__ == 3
+    #define __SIZEOF_SIZE_T__ 3
+    #define __SIZEOF_PTRDIFF_T__ 3
 #else
     #define __SIZEOF_SIZE_T__ 4
     #define __SIZEOF_PTRDIFF_T__ 4

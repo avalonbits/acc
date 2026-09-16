@@ -47,6 +47,72 @@ echo "i386 (validation build):"
 model bin/acc-i386 "data model" 1 2 4 4 8 4 4 8 12
 compiles bin/acc-i386 "compiles a function" ok 'int f(int x){return x*2;}'
 compiles bin/acc-i386 "rejects bad syntax" err 'int f(int x){return x*;}'
+compiles bin/acc-i386 "struct alignment unchanged" ok '
+_Static_assert(sizeof(struct{char c; int i;}) == 8, "padded");
+_Static_assert(_Alignof(int) == 4, "align 4");
+'
+
+echo
+echo "eZ80 (Agon cross-compiler):"
+[ -x bin/acc ] || { echo "  bin/acc missing -- run make"; exit 2; }
+model bin/acc "data model" 1 2 3 4 8 3 4 4 8
+
+# Every type packs to alignment 1. Verified against agondev's own compiler,
+# down to `struct { char c; long long ll; }` being nine bytes -- matching it
+# is what lets a struct cross between acc's output and libagon.
+compiles bin/acc "everything packs to 1" ok '
+_Static_assert(sizeof(struct{char c; int i;})        == 4, "char+int");
+_Static_assert(sizeof(struct{char c; long l;})       == 5, "char+long");
+_Static_assert(sizeof(struct{char c; long long l;})  == 9, "char+long long");
+_Static_assert(sizeof(struct{char c; double d;})     == 5, "char+double");
+_Static_assert(sizeof(struct{char c; short s;})      == 3, "char+short");
+_Static_assert(sizeof(struct{char c; long double d;})== 9, "char+long double");
+_Static_assert(_Alignof(int) == 1, "align int");
+_Static_assert(_Alignof(long long) == 1, "align long long");
+'
+
+# int and long share a basic type and are told apart by VT_LONG. Getting that
+# wrong makes them the same width, which is the failure this guards.
+compiles bin/acc "int and long are different widths" ok '
+_Static_assert(sizeof(int) != sizeof(long), "int vs long");
+_Static_assert(sizeof(int[10]) == 30, "array of int");
+_Static_assert(sizeof(int *) == 3, "pointer to int");
+'
+
+# A 3-byte pointer means a 3-byte size_t and ptrdiff_t. tinycc picks those
+# from PTR_SIZE and only knew about 4 and 8.
+compiles bin/acc "size_t and ptrdiff_t follow the pointer" ok '
+typedef __SIZE_TYPE__ st; typedef __PTRDIFF_TYPE__ pt;
+_Static_assert(sizeof(st) == 3, "size_t");
+_Static_assert(sizeof(pt) == 3, "ptrdiff_t");
+'
+
+# agondev's own headers branch on these, so acc has to report what agondev
+# reports or <stdint.h> picks the wrong types. The values on the right are
+# what ez80-none-elf-clang prints for the same macros.
+compiles bin/acc "predefined widths match agondev" ok '
+_Static_assert(__SIZEOF_POINTER__   == 3, "pointer");
+_Static_assert(__SIZEOF_INT__       == 3, "int");
+_Static_assert(__SIZEOF_LONG__      == 4, "long");
+_Static_assert(__SIZEOF_SIZE_T__    == 3, "size_t");
+_Static_assert(__SIZEOF_PTRDIFF_T__ == 3, "ptrdiff_t");
+_Static_assert(__INT_MAX__     == 8388607, "INT_MAX");
+_Static_assert(__CHAR_BIT__         == 8, "CHAR_BIT");
+'
+
+compiles bin/acc "defines __ez80__ and __AGON__" ok '
+#if !defined(__ez80__) || !defined(__AGON__)
+#error missing target define
+#endif
+'
+
+# The backend emits nothing yet. What matters until it does is that reaching
+# it says so rather than producing a binary that is quietly wrong.
+out=$(printf 'int f(int x){return x*2;}\n' | bin/acc -c -xc - -o /dev/null 2>&1)
+case "$out" in
+  *"not implemented"*) ok "codegen refuses rather than emitting wrong code" ;;
+  *) bad "codegen refuses rather than emitting wrong code" "$out" ;;
+esac
 
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"

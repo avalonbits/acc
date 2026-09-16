@@ -169,42 +169,15 @@ static const char help2[] =
     ;
 
 static const char version[] =
-    "tcc version "TCC_VERSION
+    "acc version "ACC_VERSION" (tcc "TCC_VERSION")"
 #ifdef TCC_GITHASH
     " "TCC_GITHASH
 #endif
     " ("
 #ifdef TCC_TARGET_I386
         "i386"
-#elif defined TCC_TARGET_X86_64
-        "x86_64"
-#elif defined TCC_TARGET_C67
-        "C67"
-#elif defined TCC_TARGET_ARM
-        "ARM"
-# ifdef TCC_ARM_EABI
-        " eabi"
-#  ifdef TCC_ARM_HARDFLOAT
-        "hf"
-#  endif
-# endif
-#elif defined TCC_TARGET_ARM64
-        "AArch64"
-#elif defined TCC_TARGET_RISCV64
-        "riscv64"
-#endif
-#ifdef TCC_TARGET_PE
-        " Windows"
-#elif defined(TCC_TARGET_MACHO)
-        " Darwin"
-#elif TARGETOS_FreeBSD || TARGETOS_FreeBSD_kernel
-        " FreeBSD"
-#elif TARGETOS_OpenBSD
-        " OpenBSD"
-#elif TARGETOS_NetBSD
-        " NetBSD"
-#else
-        " Linux"
+#elif defined TCC_TARGET_EZ80
+        "eZ80 Agon"
 #endif
     ")\n"
     ;

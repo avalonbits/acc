@@ -77,7 +77,7 @@ ST_DATA const char *funcname;
 ST_DATA CType int_type, func_old_type, char_type, char_pointer_type;
 static CString initstr;
 
-#if PTR_SIZE == 4
+#if PTR_SIZE == 4 || PTR_SIZE == 3
 #define VT_SIZE_T (VT_INT | VT_UNSIGNED)
 #define VT_PTRDIFF_T VT_INT
 #elif LONG_SIZE == 4
@@ -614,7 +614,7 @@ ST_FUNC void greloca(Section *s, Sym *sym, unsigned long offset, int type,
     put_elf_reloca(symtab_section, s, offset, type, c, addend);
 }
 
-#if PTR_SIZE == 4
+#if PTR_SIZE != 8
 ST_FUNC void greloc(Section *s, Sym *sym, unsigned long offset, int type)
 {
     greloca(s, sym, offset, type, 0);
@@ -2023,7 +2023,7 @@ ST_FUNC void gv2(int rc1, int rc2)
     }
 }
 
-#if PTR_SIZE == 4
+#if PTR_SIZE != 8
 /* expand 64bit on stack in two ints */
 ST_FUNC void lexpand(void)
 {
@@ -2046,7 +2046,7 @@ ST_FUNC void lexpand(void)
 }
 #endif
 
-#if PTR_SIZE == 4
+#if PTR_SIZE != 8
 /* build a long long from two ints */
 static void lbuild(int t)
 {
@@ -2095,7 +2095,7 @@ static void gv_dup(void)
     vtop->r = r;
 }
 
-#if PTR_SIZE == 4
+#if PTR_SIZE != 8
 /* generate CPU independent (unsigned) long long operations */
 static void gen_opl(int op)
 {
@@ -3511,31 +3511,46 @@ ST_FUNC int type_size(CType *type, int *a)
                 return s->c;
             return ts * s->c;
         } else {
-            *a = PTR_SIZE;
+            *a = TYPE_ALIGN(PTR_SIZE);
             return PTR_SIZE;
         }
     } else if (IS_ENUM(type->t) && type->ref->c < 0) {
         *a = 0;
         return -1; /* incomplete enum */
     } else if (bt == VT_LDOUBLE) {
-        *a = LDOUBLE_ALIGN;
+        *a = TYPE_ALIGN(LDOUBLE_ALIGN);
         return LDOUBLE_SIZE;
-    } else if (bt == VT_DOUBLE || bt == VT_LLONG) {
+    } else if (bt == VT_DOUBLE) {
 #if (defined TCC_TARGET_I386 && !defined TCC_TARGET_PE) \
  || (defined TCC_TARGET_ARM && !defined TCC_ARM_EABI)
-        *a = 4;
+        *a = TYPE_ALIGN(4);
 #else
-        *a = 8;
+        *a = TYPE_ALIGN(DOUBLE_SIZE);
+#endif
+        return DOUBLE_SIZE;
+    } else if (bt == VT_LLONG) {
+#if (defined TCC_TARGET_I386 && !defined TCC_TARGET_PE) \
+ || (defined TCC_TARGET_ARM && !defined TCC_ARM_EABI)
+        *a = TYPE_ALIGN(4);
+#else
+        *a = TYPE_ALIGN(8);
 #endif
         return 8;
-    } else if (bt == VT_INT || bt == VT_FLOAT) {
-        *a = 4;
+    } else if (bt == VT_INT) {
+        /* `int` and `long` share a basic type and are told apart by VT_LONG.
+         * They are the same width everywhere except the eZ80, where int is
+         * three bytes and long is four. */
+        int size = (type->t & VT_LONG) ? LONG_SIZE : INT_SIZE;
+        *a = TYPE_ALIGN(size);
+        return size;
+    } else if (bt == VT_FLOAT) {
+        *a = TYPE_ALIGN(4);
         return 4;
     } else if (bt == VT_SHORT) {
-        *a = 2;
+        *a = TYPE_ALIGN(2);
         return 2;
     } else if (bt == VT_QLONG || bt == VT_QFLOAT) {
-        *a = 8;
+        *a = TYPE_ALIGN(8);
         return 16;
     } else {
         /* char, void, function, _Bool */
@@ -7966,7 +7981,20 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
                 write32le(ptr, val);
 		break;
 	    case VT_DOUBLE:
+#if DOUBLE_SIZE == 4
+                /* `double` is the same four bytes as `float` on this target.
+                 * vtop->c.d holds a binary64, so this is a conversion and not
+                 * a truncation of the bit pattern -- taking the low 32 bits
+                 * of a binary64 yields mantissa bits, not a float. */
+                {
+                    float f = (float) vtop->c.d;
+                    uint32_t bits;
+                    memcpy(&bits, &f, 4);
+                    write32le(ptr, bits);
+                }
+#else
                 write64le(ptr, val);
+#endif
 		break;
 	    case VT_LDOUBLE:
                 write_ldouble(ptr, &vtop->c.ld);
@@ -7992,7 +8020,15 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
             case VT_INT:
 	        if (vtop->r & VT_SYM)
 	          greloc(sec, vtop->sym, c, R_DATA_PTR);
-	        write32le(ptr, val);
+                /* Not every target that gets here stores these in four bytes.
+                 * The eZ80 has a three-byte pointer and int and a four-byte
+                 * long, and the switch is on the basic type, which has
+                 * already dropped VT_LONG. size came from type_size() and
+                 * knows the difference. */
+                if (size == 3)
+                    write24le(ptr, val);
+                else
+	            write32le(ptr, val);
 	        break;
 #endif
 	    default:

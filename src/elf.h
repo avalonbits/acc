@@ -267,6 +267,7 @@ typedef struct
 #define EM_AARCH64	183		/* ARM AARCH64 */
 #define EM_TILEPRO	188		/* Tilera TILEPro */
 #define EM_TILEGX	191		/* Tilera TILE-Gx */
+#define EM_Z80		220		/* Zilog Z80 / eZ80 */
 #define EM_RISCV	243	        /* RISC-V */
 #define EM_NUM		253
 

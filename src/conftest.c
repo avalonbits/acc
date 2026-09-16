@@ -25,6 +25,7 @@ const char *platform_macros[] = {
 
     "__SIZEOF_POINTER__",   "PTR_SIZE",
     "__SIZEOF_LONG__",      "LONG_SIZE",
+    "__SIZEOF_INT__",       "INT_SIZE",
     0
 };
 

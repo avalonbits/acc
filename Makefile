@@ -20,14 +20,21 @@ CPPFLAGS  = -Isrc -DONE_SOURCE=1
 BIN = bin
 GEN = src/tccdefs_.h
 
+# Every source and header, because ONE_SOURCE means a build is a single
+# translation unit and there is no finer dependency to express. Leaving this
+# out does not produce a stale binary, it produces a binary that was not
+# rebuilt at all -- a change to tcc.h would rebuild nothing, and the compiler
+# would go on reporting the data model it was built with three edits ago.
+DEPS = $(wildcard src/*.c src/*.h) include/tccdefs.h
+
 .PHONY: all clean test
-all: $(BIN)/acc-i386
+all: $(BIN)/acc $(BIN)/acc-i386
 
-$(BIN)/acc: src/tcc.c $(GEN) | $(BIN)
-	$(CC) $(CFLAGS) $(WARN) $(CPPFLAGS) -DTCC_TARGET_EZ80 -o $@ $<
+$(BIN)/acc: $(DEPS) $(GEN) | $(BIN)
+	$(CC) $(CFLAGS) $(WARN) $(CPPFLAGS) -DTCC_TARGET_EZ80 -o $@ src/tcc.c
 
-$(BIN)/acc-i386: src/tcc.c $(GEN) | $(BIN)
-	$(CC) $(CFLAGS) $(WARN) $(CPPFLAGS) -DTCC_TARGET_I386 -o $@ $<
+$(BIN)/acc-i386: $(DEPS) $(GEN) | $(BIN)
+	$(CC) $(CFLAGS) $(WARN) $(CPPFLAGS) -DTCC_TARGET_I386 -o $@ src/tcc.c
 
 # tccdefs_.h is the built-in macro set, baked into the binary as a string so
 # the compiler does not read it off the SD card at startup. c2str is tinycc's

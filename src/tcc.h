@@ -152,37 +152,20 @@ extern long double strtold (const char *__nptr, char **__endptr);
 /* #define ASM_DEBUG */
 
 /* target selection */
-/* #define TCC_TARGET_I386   *//* i386 code generator */
-/* #define TCC_TARGET_X86_64 *//* x86-64 code generator */
-/* #define TCC_TARGET_ARM    *//* ARMv4 code generator */
-/* #define TCC_TARGET_ARM64  *//* ARMv8 code generator */
-/* #define TCC_TARGET_C67    *//* TMS320C67xx code generator */
-/* #define TCC_TARGET_RISCV64 *//* risc-v code generator */
+/* #define TCC_TARGET_I386 *//* i386 code generator, the validation build */
+/* #define TCC_TARGET_EZ80 *//* eZ80 code generator, the Agon */
 
-/* default target is I386 */
-#if !defined(TCC_TARGET_I386) && !defined(TCC_TARGET_ARM) && \
-    !defined(TCC_TARGET_ARM64) && !defined(TCC_TARGET_C67) && \
-    !defined(TCC_TARGET_X86_64) && !defined(TCC_TARGET_RISCV64)
-# if defined __x86_64__
-#  define TCC_TARGET_X86_64
-# elif defined __arm__
-#  define TCC_TARGET_ARM
-#  define TCC_ARM_EABI
-#  define TCC_ARM_VFP
-#  define TCC_ARM_HARDFLOAT
-# elif defined __aarch64__
-#  define TCC_TARGET_ARM64
-# elif defined __riscv
-#  define TCC_TARGET_RISCV64
-# else
-#  define TCC_TARGET_I386
-# endif
-# ifdef _WIN32
-#  define TCC_TARGET_PE 1
-# endif
-# ifdef __APPLE__
-#  define TCC_TARGET_MACHO 1
-# endif
+/* Upstream guesses a target from the host when none is given. acc does not:
+ * both of its builds are cross builds, neither target is ever the host, and a
+ * guess here defines a second target on top of the one asked for. That is not
+ * hypothetical -- it is what an x86_64 host did to the eZ80 build, and the
+ * failure surfaced as a missing x86_64-asm.h rather than as anything to do
+ * with targets. Ask for one explicitly. */
+#if !defined(TCC_TARGET_I386) && !defined(TCC_TARGET_EZ80)
+# error no target selected: build with -DTCC_TARGET_EZ80 or -DTCC_TARGET_I386
+#endif
+#if defined(TCC_TARGET_I386) && defined(TCC_TARGET_EZ80)
+# error more than one target selected
 #endif
 
 /* only native compiler supports -run */
@@ -367,26 +350,9 @@ extern long double strtold (const char *__nptr, char **__endptr);
 #ifdef TCC_TARGET_I386
 # include "i386-gen.c"
 # include "i386-link.c"
-#elif defined TCC_TARGET_X86_64
-# include "x86_64-gen.c"
-# include "x86_64-link.c"
-#elif defined TCC_TARGET_ARM
-# include "arm-gen.c"
-# include "arm-link.c"
-# include "arm-asm.c"
-#elif defined TCC_TARGET_ARM64
-# include "arm64-gen.c"
-# include "arm64-link.c"
-# include "arm64-asm.c"
-#elif defined TCC_TARGET_C67
-# define TCC_TARGET_COFF
-# include "coff.h"
-# include "c67-gen.c"
-# include "c67-link.c"
-#elif defined(TCC_TARGET_RISCV64)
-# include "riscv64-gen.c"
-# include "riscv64-link.c"
-# include "riscv64-asm.c"
+#elif defined TCC_TARGET_EZ80
+# include "ez80-gen.c"
+# include "ez80-link.c"
 #else
 #error unknown target
 #endif
@@ -417,6 +383,31 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define LONG_SIZE 8
 #else
 # define LONG_SIZE 4
+#endif
+
+/* Every target but the eZ80 has an 8-byte double; that one has a 4-byte
+ * double that is the same thing as its float. A backend says so by defining
+ * DOUBLE_SIZE in its TARGET_DEFS_ONLY block. */
+#ifndef DOUBLE_SIZE
+# define DOUBLE_SIZE 8
+#endif
+
+/* Likewise int, which is three bytes on the eZ80 and four everywhere else.
+ * LONG_SIZE above is already separate, so `long` keeps its own width and the
+ * VT_LONG flag is what tells the two apart at the same basic type. */
+#ifndef INT_SIZE
+# define INT_SIZE 4
+#endif
+
+/* The eZ80 places no alignment requirement on any load or store, and agondev
+ * packs every type to 1 -- verified against its own compiler, down to
+ * `struct { char c; long long ll; }` being nine bytes. Matching that is not
+ * optional: it is what lets a struct cross between acc's output and libagon.
+ * A backend asks for it by defining TARGET_ALIGN_1. */
+#ifdef TARGET_ALIGN_1
+# define TYPE_ALIGN(n) 1
+#else
+# define TYPE_ALIGN(n) (n)
 #endif
 
 /* -------------------------------------------- */
@@ -1460,7 +1451,7 @@ ST_FUNC ElfSym *elfsym(Sym *);
 ST_FUNC void update_storage(Sym *sym);
 ST_FUNC void put_extern_sym2(Sym *sym, int sh_num, addr_t value, unsigned long size, int can_add_underscore);
 ST_FUNC void put_extern_sym(Sym *sym, Section *section, addr_t value, unsigned long size);
-#if PTR_SIZE == 4
+#if PTR_SIZE != 8
 ST_FUNC void greloc(Section *s, Sym *sym, unsigned long offset, int type);
 #endif
 ST_FUNC void greloca(Section *s, Sym *sym, unsigned long offset, int type, addr_t addend);
@@ -1490,7 +1481,7 @@ ST_FUNC void vrott(int n);
 ST_FUNC void vrotb(int n);
 ST_FUNC void vrev(int n);
 ST_FUNC void vpop(void);
-#if PTR_SIZE == 4
+#if PTR_SIZE != 8
 ST_FUNC void lexpand(void);
 #endif
 #ifdef TCC_TARGET_ARM
@@ -1655,6 +1646,15 @@ static inline uint16_t read16le(unsigned char *p) {
 }
 static inline void write16le(unsigned char *p, uint16_t x) {
     p[0] = x & 255;  p[1] = x >> 8 & 255;
+}
+/* The eZ80's native width in ADL mode: a pointer, an int and an address are
+ * all three bytes. There is no alignment to respect on that target, so this
+ * is a plain byte-at-a-time move. */
+static inline uint32_t read24le(unsigned char *p) {
+  return read16le(p) | (uint32_t)p[2] << 16;
+}
+static inline void write24le(unsigned char *p, uint32_t x) {
+    write16le(p, x);  p[2] = x >> 16 & 255;
 }
 static inline uint32_t read32le(unsigned char *p) {
   return read16le(p) | (uint32_t)read16le(p + 2) << 16;
