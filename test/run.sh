@@ -115,5 +115,28 @@ case "$out" in
 esac
 
 echo
+echo "Agon emulator harness:"
+# Self-test: the two helper programs test/agon.sh builds are the whole
+# pipeline in miniature -- the MOS header, the sdcard, autoexec, and the exit
+# status carried back out through IO port 0. If these do not run, nothing that
+# depends on running generated code can be believed.
+helpers=$(mktemp -d)
+python3 test/moshdr.py ok.bin   "$helpers/ok.bin"   06 03 21 00 00 00 2b 7c b5 20 fb 10 f5 af d3 00 c9
+python3 test/moshdr.py bad.bin  "$helpers/bad.bin"  06 03 21 00 00 00 2b 7c b5 20 fb 10 f5 3e 01 d3 00 c9
+test/agon.sh "$helpers/ok.bin" >/dev/null 2>&1
+case $? in
+  0)  ok "a program that succeeds reports success" ;;
+  77) printf '  skip no emulator (set ACC_EMU)\n' ;;
+  *)  bad "a program that succeeds reports success" "got status $?" ;;
+esac
+test/agon.sh "$helpers/bad.bin" >/dev/null 2>&1
+case $? in
+  1)  ok "a program that fails reports failure" ;;
+  77) printf '  skip no emulator (set ACC_EMU)\n' ;;
+  *)  bad "a program that fails reports failure" "expected status 1" ;;
+esac
+rm -rf "$helpers"
+
+echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
