@@ -5692,9 +5692,9 @@ ST_FUNC void unary(void)
         goto case_TOK_STR;
     case TOK_LSTR:
 #ifdef TCC_TARGET_PE
-        t = VT_SHORT | VT_UNSIGNED;
+        ct = VT_SHORT | VT_UNSIGNED;
 #else
-        t = VT_INT;
+        ct = VT_INT;
 #endif
         goto str_init;
     case TOK_STR:

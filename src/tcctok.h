@@ -293,6 +293,40 @@
      DEF(TOK__remu, "_remu")
 #endif
 
+#if defined TCC_TARGET_EZ80
+/* agondev's soft-arithmetic runtime, in libagon.a. The eZ80 has an 8-bit ALU,
+   no barrel shifter and no divider, so most of C's operators on a 24-bit int
+   are a call rather than an instruction. These are named with one underscore
+   here and gain a second from leading_underscore, which is how they appear in
+   the library: _imulu becomes __imulu.
+
+   The convention, read off agondev's own output: the left operand arrives in
+   HL, the right in BC, and the result comes back in HL. */
+     DEF(TOK__imulu, "_imulu")
+     DEF(TOK__imuls, "_imuls")
+     DEF(TOK__idivs, "_idivs")
+     DEF(TOK__idivu, "_idivu")
+     DEF(TOK__irems, "_irems")
+     DEF(TOK__iremu, "_iremu")
+     DEF(TOK__iand,  "_iand")
+     DEF(TOK__ior,   "_ior")
+     DEF(TOK__ixor,  "_ixor")
+     DEF(TOK__ishl,  "_ishl")
+     DEF(TOK__ishrs, "_ishrs")
+     DEF(TOK__ishru, "_ishru")
+     DEF(TOK__ineg,  "_ineg")
+     DEF(TOK__inot,  "_inot")
+/* Repairs the sign flag after sbc hl,de overflows, so a signed compare can be
+   read off S. Called conditionally, on PE. */
+     DEF(TOK__setflag, "_setflag")
+/* The frame prologue: __frameset takes a negative frame size in HL,
+   __frameset0 takes none. Both leave ix pointing at the saved ix. */
+     DEF(TOK__frameset,  "_frameset")
+     DEF(TOK__frameset0, "_frameset0")
+/* An indirect call: the eZ80 has no call (hl), so it is a helper. */
+     DEF(TOK__indcallhl, "_indcallhl")
+#endif
+
 #if defined TCC_TARGET_I386
      DEF(TOK___fixsfdi, "__fixsfdi")
      DEF(TOK___fixdfdi, "__fixdfdi")

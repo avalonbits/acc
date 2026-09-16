@@ -49,6 +49,9 @@ $(BIN):
 test: all
 	@test/run.sh
 	@echo
+	@echo "generated code, run on the Agon:"
+	@test/exec.sh
+	@echo
 	@echo "equivalence against pristine tinycc:"
 	@test/equivalence.sh
 

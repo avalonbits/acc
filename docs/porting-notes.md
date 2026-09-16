@@ -201,3 +201,75 @@ subtraction rather than rewriting:
 
 Which lands near 185 KB text and 25 KB bss, leaving about 230 KB for heap and
 stack -- the figure the budget section above assumes.
+
+## The eZ80 backend
+
+### What the chip's own runtime settles
+
+agondev ships a soft-arithmetic library and the backend calls it rather than
+inlining anything. The convention, read off agondev's own output rather than
+documentation, is uniform and makes the backend small: **the left operand
+arrives in HL, the right in BC, and the result comes back in HL.**
+
+| | |
+| --- | --- |
+| `__imulu` `__imuls` `__idivs` `__idivu` `__irems` `__iremu` | HL op BC -> HL |
+| `__iand` `__ior` `__ixor` `__ishl` `__ishrs` `__ishru` | HL op BC -> HL |
+| `__ineg` `__inot` | HL -> HL |
+| `+` `-` | `add hl,de` / `or a,a; sbc hl,de`, no call |
+
+`__frameset` takes a negative frame size in HL and leaves IX pointing at the
+saved IX, so arguments start at `ix+6` and locals are negative. The epilogue is
+`ld sp,ix; pop ix; ret`. Arguments are pushed right to left in 3-byte slots and
+the caller cleans up.
+
+### IY is the indirection register
+
+Only HL can be the base of `ld rr,(hl)`, so dereferencing an address held in DE
+or BC appears to need a move to HL -- and HL is very often holding something
+the register allocator still wants. `*a = *b` is the case that shows it: the
+destination address is in HL, evaluating `*b` moves `b` on top of it, and the
+store lands in the wrong object.
+
+The backend reserves IY and uses `ld rr,(iy+0)` instead. Nothing tcc tracks
+ever lives there, so it costs a prefix byte and no spills. That is also why
+`NB_REGS` is 3 and not 4: the optimization guide's measurement is that one
+index register is the budget inside a loop, and IX is already the frame
+pointer.
+
+### A compare must not destroy its left operand
+
+x86 compares with an instruction that does not write back. The eZ80 subtracts,
+and tcc counts on the left operand surviving: a `switch` loads the value once
+and compares it against every case in turn. A destructive compare tests `x`,
+then `x-1`, then `x-1-2`, and `switch(2)` falls to `default`.
+
+`push hl` before and `pop hl` after costs two bytes and fixes it. Neither
+touches the flags, and `__setflag` -- called on PE to repair the sign flag
+after an overflowing subtract, which is what makes a signed compare readable
+off S -- only uses BC and AF.
+
+### Three bugs worth remembering
+
+All three produced code that assembled, linked and disassembled plausibly.
+None would have been found by reading it.
+
+* **A displacement added twice.** When an address is already in a register,
+  `c.i` is not a displacement -- it still holds whatever the value had before
+  `gv()` put it there. Adding it read six bytes past every parameter.
+* **`mov_rr` used `ex de,hl`.** A byte shorter than push/pop, but it *swaps*,
+  and the allocator is entitled to believe the source still holds its value.
+* **VT_CMP set by hand.** `jtrue` and `jfalse` share storage with `c.i`, so
+  assigning only `r` and `cmp_op` leaves the last constant looking like a
+  pending jump chain. `n > 1` left a 1 there and tcc patched a jump at offset
+  1, in the middle of the prologue. `vset_VT_CMP` exists for this.
+
+### Relocations and nocode_wanted
+
+`jp` is absolute, so every forward jump inside a function needs a relocation
+against the text section symbol. `greloca` drops a relocation while
+`nocode_wanted` is set -- and a forward jump is very often patched in exactly
+that state, because the code after an unconditional jump is unreachable and
+`gsym` only clears the flag after patching. The jump was emitted while the
+code was live, so its relocation is real; `put_elf_reloca` records it without
+the check.

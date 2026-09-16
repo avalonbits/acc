@@ -41,14 +41,30 @@ python3 test/moshdr.py exit_fail.bin "$sd/bin/exit_fail.bin" $DELAY 3e 01 d3 00 
 # CRLF: MOS reads autoexec.txt as DOS text.
 printf '%s\r\nexit_ok\r\n' "$prog" > "$sd/autoexec.txt"
 
-out=$(cd "$EMU" && timeout "$TIMEOUT" "$BIN" --sdcard "$sd" -z -u 2>&1)
+# stdout only. The program's output and MOS's chatter are both on stdout; the
+# emulator's own diagnostics go to stderr, including the panic its shutdown
+# raises when it races the VDP thread. That panic is harmless -- the delay in
+# exit_ok is what keeps output from being lost -- but it is written from
+# another thread, so a line-based filter catches it only sometimes: about one
+# run in five leaked a torn "thread '" into the comparison.
+out=$(cd "$EMU" && timeout "$TIMEOUT" "$BIN" --sdcard "$sd" -z -u 2>/dev/null)
 status=$?
 [ $status -eq 124 ] && { echo "TIMEOUT after ${TIMEOUT}s" >&2; exit 124; }
 
 # Strip the emulator's and MOS's own chatter, leaving the program's output.
+#
+# The panic is the emulator's shutdown racing its VDP thread. It is harmless
+# and says nothing about the program -- the delay in exit_ok is what keeps the
+# output itself from being lost -- but it arrives on the same stream, so it
+# has to come out here or every comparison against expected output fails.
+#
+# tr drops control bytes as well: MOS emits a stray 0x80 during boot, which is
+# not whitespace and so survives a blank-line filter and shows up as a
+# mismatched first line.
 printf '%s\n' "$out" \
   | sed -e '/Tom.s Fake VDP/d' -e '/unknown packet VDU/d' \
         -e '/Agon Console8 MOS Version/d' -e '/Emulator shutdown triggered/d' \
+  | tr -cd '\11\12\15\40-\176' \
   | sed -e '/^[[:space:]]*$/d'
 
 exit $status

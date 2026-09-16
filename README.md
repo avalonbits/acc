@@ -27,8 +27,10 @@ are not alternatives to the third; they are how it is debugged.
     make          # acc-i386 and acc
     make test     # the suite, and the equivalence check below
 
-`make test` asserts each target's data model, and then compares acc-i386's
-output against pristine tinycc's byte for byte over tinycc's own corpus. The
+`make test` asserts each target's data model, runs every program in
+`test/exec` on an emulated Agon and checks what it printed, and compares
+acc-i386's output against pristine tinycc's byte for byte over tinycc's own
+corpus. The
 i386 target is unchanged tinycc semantics, so any change meant to be a port
 and not a behaviour change has to leave every generated object identical. The
 reference tree is cloned into `test/ref` on first run; point `ACC_REF_TCC` at
@@ -41,9 +43,26 @@ an existing checkout to skip that.
 | Vendored tinycc, host build, test harness | done |
 | eZ80 data model (24-bit `int`, 32-bit `long`) | done |
 | `CType.t` widened to 32 bits | done |
-| eZ80 backend (`ez80-gen.c`) | not started |
-| Flat MOS binary output | not started |
-| Builds with agondev | not started |
+| Objects agondev's binutils can link | done |
+| eZ80 backend: `int`, pointers, control flow, calls | done |
+| eZ80 backend: `char`, `short`, `long`, floats, `long long` | not started |
+| acc's own linker and flat MOS output | not started |
+| Builds with agondev to run on the Agon | not started |
+
+acc compiles C to eZ80 machine code today, for the machine's own width --
+`int`, `unsigned` and pointers -- with the full range of operators, control
+flow, function calls and recursion. Anything wider refuses rather than
+emitting something that would assemble and misbehave. Linking is agondev's
+`ld` against `libagon.a` for now, which is what gives compiled programs a C
+library; acc needs its own linker before it can run on the Agon itself.
+
+    $ cat hello.c
+    int printf(const char *, ...);
+    int fact(int n) { int r = 1; while (n > 1) { r = r * n; n = n - 1; } return r; }
+    int main(void) { printf("8! = %d\r\n", fact(8)); return 0; }
+
+    $ test/accld.sh hello.c hello.bin && test/agon.sh hello.bin
+    8! = 40320
 
 ## The constraints that shape it
 

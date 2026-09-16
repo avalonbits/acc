@@ -106,13 +106,21 @@ compiles bin/acc "defines __ez80__ and __AGON__" ok '
 #endif
 '
 
-# The backend emits nothing yet. What matters until it does is that reaching
-# it says so rather than producing a binary that is quietly wrong.
-out=$(printf 'int f(int x){return x*2;}\n' | bin/acc -c -xc - -o /dev/null 2>&1)
-case "$out" in
-  *"not implemented"*) ok "codegen refuses rather than emitting wrong code" ;;
-  *) bad "codegen refuses rather than emitting wrong code" "$out" ;;
-esac
+compiles bin/acc "generates code for int arithmetic" ok 'int f(int x){return x*2+1;}'
+
+# The backend handles the eZ80's own width -- int, unsigned and pointers --
+# and nothing wider yet. What matters for the rest is that it says so instead
+# of emitting something that assembles and misbehaves.
+for t in "float f(float x){return x+x;}" \
+         "double f(double x){return x+x;}" \
+         "long long f(long long x){return x+x;}" \
+         "long f(long x){return x+x;}"; do
+    out=$(printf '%s\n' "$t" | bin/acc -c -xc - -o /dev/null 2>&1)
+    case "$out" in
+      *"not implemented"*) ok "refuses ${t%% f(*}, rather than emitting wrong code" ;;
+      *) bad "refuses ${t%% f(*}, rather than emitting wrong code" "${out:-it was accepted}" ;;
+    esac
+done
 
 echo
 echo "object interop with agondev:"
