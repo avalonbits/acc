@@ -3508,14 +3508,20 @@ ST_FUNC int tcc_load_object_file(TCCState *s1,
     Section *s;
 
     lseek(fd, file_offset, SEEK_SET);
+    /* Reported in detail rather than as "invalid object file". The three ways
+     * this fails -- not an ELF at all, the wrong endianness, the wrong
+     * machine -- want different things looked at, and on a target where the
+     * host's own integer widths are in question the values themselves are the
+     * evidence. */
     if (tcc_object_type(fd, &ehdr) != AFF_BINTYPE_REL)
-        goto invalid;
-    /* test CPU specific stuff */
-    if (ehdr.e_ident[5] != ELFDATA2LSB ||
-        ehdr.e_machine != EM_TCC_TARGET) {
-invalid:
-        return tcc_error_noabort("invalid object file");
-    }
+        return tcc_error_noabort(
+            "not a relocatable object: magic %02x %02x %02x %02x, e_type %d",
+            ehdr.e_ident[0], ehdr.e_ident[1], ehdr.e_ident[2], ehdr.e_ident[3],
+            (int) ehdr.e_type);
+    if (ehdr.e_ident[5] != ELFDATA2LSB || ehdr.e_machine != EM_TCC_TARGET)
+        return tcc_error_noabort(
+            "object file for the wrong machine: data %d, e_machine %d, want %d",
+            (int) ehdr.e_ident[5], (int) ehdr.e_machine, (int) EM_TCC_TARGET);
     /* read sections */
     shdr = load_data(fd, file_offset + ehdr.e_shoff,
                      sizeof(ElfW(Shdr)) * ehdr.e_shnum);

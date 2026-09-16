@@ -426,12 +426,25 @@ extern long double strtold (const char *__nptr, char **__endptr);
 
 #define INCLUDE_STACK_SIZE  32
 #define IFDEF_STACK_SIZE    64
-#define VSTACK_SIZE         512
+/* The value stack, an SValue each. 512 is 11 KB of bss here; expressions deep
+   enough to need that do not occur in code this machine can compile. */
+#ifdef TCC_TARGET_EZ80
+# define VSTACK_SIZE        192
+#else
+# define VSTACK_SIZE        512
+#endif
 #define STRING_MAX_SIZE     1024
 #define TOKSTR_MAX_SIZE     256
 #define PACK_STACK_SIZE     8
 
-#define TOK_HASH_SIZE       16384 /* must be a power of two */
+/* The identifier hash. 16384 pointers is 49 KB of bss on this target, against
+   a 448 KB budget, for a table that a translation unit of the size the Agon
+   can compile will never fill. */
+#ifdef TCC_TARGET_EZ80
+# define TOK_HASH_SIZE      4096  /* must be a power of two */
+#else
+# define TOK_HASH_SIZE      16384 /* must be a power of two */
+#endif
 #define TOK_ALLOC_INCR      512  /* must be a power of two */
 #define TOK_MAX_SIZE        4 /* token max size in int unit when stored in string */
 
@@ -483,12 +496,51 @@ typedef struct CType {
     struct Sym *ref;
 } CType;
 
+/* The widest float the *host* can compute in.
+ *
+ * Everywhere else this is `long double`. On the Agon it is `double`, which is
+ * four bytes there, because agondev has no 64-bit float arithmetic at all --
+ * not even its own compiler can link `long double a * b`; __dmul and __dadd
+ * simply do not exist in libagon.a. Folding a floating constant on the
+ * machine therefore happens in the widest float the machine can actually
+ * compute with, and LD_C drops the L suffix that would pull the missing
+ * helpers back in.
+ *
+ * The target's own long double is still 8 bytes -- see LDOUBLE_SIZE -- so
+ * this changes what acc can fold, not what it can describe. */
+#ifdef TCC_TARGET_EZ80
+typedef double ldouble_t;
+# define LD_C(x) x
+# define tcc_strtold(a, b) ((ldouble_t) strtod((a), (b)))
+# define tcc_ldexpl(a, b)  ((ldouble_t) ldexp((a), (b)))
+#else
+typedef long double ldouble_t;
+# define LD_C(x) x##L
+# define tcc_strtold(a, b) strtold((a), (b))
+# define tcc_ldexpl(a, b)  ldexpl((a), (b))
+#endif
+
+/* A 64-bit integer to the host's widest float.
+ *
+ * agondev has __ultof for 32 bits and nothing at all for 64, so on the Agon
+ * the conversion goes through two halves. Everywhere else it is the plain
+ * cast the compiler would have emitted. */
+#ifdef TCC_TARGET_EZ80
+static inline ldouble_t tcc_u64_to_ld(unsigned long long v)
+{
+    return (ldouble_t)(unsigned int)(v >> 32) * 4294967296.0
+         + (ldouble_t)(unsigned int) v;
+}
+#else
+# define tcc_u64_to_ld(v) ((ldouble_t)(v))
+#endif
+
 /* long double words on host(!) platform */
 #define LDOUBLE_WORDS ((sizeof(long double)+3)/4)
 
 /* constant value */
 typedef union CValue {
-    long double ld;
+    ldouble_t ld;
     double d;
     float f;
     uint64_t i;
@@ -614,9 +666,33 @@ typedef struct DLLReference {
 
 /* -------------------------------------------------- */
 
+/* A token value is an identifier number with three namespace flags above it.
+ * At their usual positions -- bits 28, 29 and 30 -- the flags do not exist at
+ * all on a machine whose int is 24 bits, and losing them is not a subtle
+ * failure:
+ *
+ *   TOK_PPJOIN is TOK_TWOSHARPS|SYM_FIELD, so `##` inside a macro became
+ *   indistinguishable from a literal `##` and the preprocessor stopped
+ *   pasting halfway through acc's own predefined macros;
+ *
+ *   a struct tag and an ordinary identifier of the same name became the same
+ *   symbol, so `struct __uint128__` was already defined by the time it was
+ *   declared.
+ *
+ * Repacked to the top of a signed 24-bit int: SYM_STRUCT|SYM_FIELD together
+ * with the largest anonymous number is 0x7fffff exactly. The ceiling that
+ * buys is a million identifiers and a million anonymous symbols in one
+ * translation unit, which this machine will not reach -- and tok_alloc_new
+ * says so rather than wrapping if it ever does. */
+#ifdef TCC_TARGET_EZ80
+#define SYM_STRUCT     0x00400000 /* struct/union/enum symbol space */
+#define SYM_FIELD      0x00200000 /* struct/union field symbol space */
+#define SYM_FIRST_ANOM 0x00100000 /* first anonymous sym */
+#else
 #define SYM_STRUCT     0x40000000 /* struct/union/enum symbol space */
 #define SYM_FIELD      0x20000000 /* struct/union field symbol space */
 #define SYM_FIRST_ANOM 0x10000000 /* first anonymous sym */
+#endif
 
 /* stored in 'Sym->f.func_type' field */
 #define FUNC_NEW       1 /* ansi function prototype */

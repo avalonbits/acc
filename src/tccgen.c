@@ -318,9 +318,21 @@ static int RC2_TYPE(int t, int rc)
 /* XXX: endianness dependent */
 ST_FUNC int ieee_finite(double d)
 {
+#if DOUBLE_SIZE == 4
+    /* Four bytes here, so a binary32: finite means the exponent is not all
+       ones. The version below reads p[1] as the high word of a binary64 and
+       shifts an unsigned right by 31, neither of which means anything on a
+       target with a 4-byte double and a 3-byte int. */
+    uint32_t b;
+
+    memcpy(&b, &d, 4);
+
+    return ((b >> 23) & 0xff) != 0xff;
+#else
     int p[4];
     memcpy(p, &d, sizeof(double));
     return ((unsigned)((p[1] | 0x800fffff) + 1)) >> 31;
+#endif
 }
 
 ST_FUNC void test_lvalue(void)
@@ -2557,7 +2569,7 @@ static void gen_opif(int op)
     /* avoid bad optimization with f1 -= f2 for f1:-0.0, f2:0.0 */
     volatile
 #endif
-    long double f1, f2;
+    ldouble_t f1, f2;
 
     v1 = vtop - 1;
     v2 = vtop;
@@ -3308,14 +3320,14 @@ error:
             if (df) {
                 if (sbt_bt == VT_LLONG) {
                     if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 63))
-                        vtop->c.ld = vtop->c.i;
+                        vtop->c.ld = tcc_u64_to_ld(vtop->c.i);
                     else
-                        vtop->c.ld = -(long double)-vtop->c.i;
+                        vtop->c.ld = -tcc_u64_to_ld(-vtop->c.i);
                 } else if(!sf) {
                     if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 31))
                         vtop->c.ld = (uint32_t)vtop->c.i;
                     else
-                        vtop->c.ld = -(long double)-(uint32_t)vtop->c.i;
+                        vtop->c.ld = -(ldouble_t)-(uint32_t)vtop->c.i;
                 }
 
                 if (dbt == VT_FLOAT)
@@ -7856,7 +7868,40 @@ static void write_ldouble(unsigned char *d, void *s)
     #endif
         ;
     } else {
-    #if LDOUBLE_SIZE == 8
+    #if defined TCC_TARGET_EZ80
+        /* float -> double, in integer arithmetic.
+         *
+         * The target's long double is a binary64, but ldouble_t on this host
+         * is four bytes -- agondev has no 64-bit float arithmetic, so that is
+         * the widest acc can fold in. Widening the bits rather than casting
+         * keeps this exact and, more to the point, does not call __dtof,
+         * which does not exist. */
+        uint32_t f32;
+        uint64_t sign, man, out;
+        int exp;
+
+        memcpy(&f32, s, 4);
+        sign = (uint64_t)(f32 >> 31) << 63;
+        exp = (f32 >> 23) & 0xff;
+        man = f32 & 0x7fffff;
+        if (exp == 0xff) {                  /* inf or nan */
+            out = sign | (0x7ffULL << 52) | (man << 29);
+        } else if (exp == 0) {
+            if (man == 0) {
+                out = sign;                 /* zero */
+            } else {                        /* subnormal float, normal double */
+                int sh = 0;
+
+                while (!(man & 0x800000))
+                    man <<= 1, sh++;
+                man &= 0x7fffff;
+                out = sign | ((uint64_t)(1023 - 127 - sh) << 52) | (man << 29);
+            }
+        } else {
+            out = sign | ((uint64_t)(exp - 127 + 1023) << 52) | (man << 29);
+        }
+        write64le(d, out);
+    #elif LDOUBLE_SIZE == 8
         /* long double -> double */
         double b = *(long double*)s;
         memcpy(d, &b, 8);

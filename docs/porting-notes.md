@@ -312,3 +312,66 @@ Two layout details matter for byte-identity, and neither is in the script:
 * Nothing is aligned. The eZ80 has no alignment requirement and the script
   aligns nothing, so honouring `sh_addralign` inserted padding the reference
   does not.
+
+## Running on the Agon
+
+acc builds with agondev and runs on the machine. The build is
+`make -f Makefile.agon`, and what comes out is 251 KB of image against the
+448 KB the Agon gives a program, leaving about 207 KB for heap and stack.
+
+Linking does not need the library in memory. libagon.a is 1.3 MB and would not
+fit, but an archive is read member by member: the only thing held whole is the
+21.7 KB symbol index. Measured with massif, a complete compile-and-link of a
+small program peaks at 110 KB of heap on a 64-bit host, and the largest single
+allocation in it is that index.
+
+### The shims
+
+MOS has no file descriptors, so `agon/src/agon.c` implements `open`, `read`,
+`write`, `lseek` and `close` over stdio. The rest of that file is stubs for
+things the Agon has no equivalent of -- an environment, symbolic links, a
+working directory that can be asked for -- and acc's paths through those are
+the ones that do nothing.
+
+agondev has no 64-bit floating point at all: `__dadd` and `__dmul` are not in
+libagon.a, and its own compiler cannot link `long double a * b` either. So
+`ldouble_t`, the widest float acc *folds* in, is `double` on this target --
+four bytes, since that is what a double is here. The target's `long double` is
+still eight, so this changes what acc can fold, not what it can describe, and
+widening a folded constant into a binary64 initialiser is done in integer
+arithmetic rather than by a cast that would call the missing helper.
+
+### Two bugs that only a 24-bit int produces
+
+Both compiled without a warning, ran correctly in the host cross-compiler, and
+broke acc on the machine. Both are the same lesson as `CType.t`: a value that
+needs more than 24 bits.
+
+**The token hash.** `TOK_HASH_FUNC` is `(h) + ((h) << 5) + ((h) >> 27) + (c)`
+with `h` an `unsigned int`. Shifting a 24-bit value right by 27 is undefined,
+and the compiler is entitled to do anything with it -- what it did was make
+`struct` unrecognisable, so acc could not parse its own predefined macros. `h`
+is now a `uint32_t`.
+
+**The namespace flags.** A token value is an identifier number with three
+flags above it: `SYM_STRUCT` at bit 30, `SYM_FIELD` at 29, `SYM_FIRST_ANOM` at
+28. None of them exists in a 24-bit int. The symptoms were a long way from the
+cause:
+
+* `TOK_PPJOIN` is `TOK_TWOSHARPS|SYM_FIELD`, so with the flag gone a `##`
+  inside a macro was indistinguishable from a literal one, and the
+  preprocessor stopped pasting partway through the predefined macros --
+  `__builtin_##strcat` came out with the `##` still in it.
+* A struct tag and an ordinary identifier of the same name became the same
+  symbol, so `struct __uint128__` was already defined by the time it was
+  declared.
+
+They are flags, never absolute values, so on this target they are repacked to
+the top of a signed 24-bit int: `SYM_STRUCT|SYM_FIELD` with the largest
+anonymous number is 0x7fffff exactly. That caps a translation unit at a
+million identifiers, which this machine will not reach, and `tok_alloc_new`
+now says so rather than wrapping if it ever does.
+
+`ieee_finite` went the same way: it read `p[1]` as the high word of a binary64
+and shifted an unsigned right by 31, neither of which means anything where a
+double is four bytes and an int is three.

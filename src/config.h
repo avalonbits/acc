@@ -21,3 +21,10 @@
 #define CONFIG_TCC_BACKTRACE 0
 #define CONFIG_TCC_BCHECK 0
 #define CONFIG_TCC_SEMLOCK 0
+
+#ifdef TCC_TARGET_EZ80
+/* No dynamic linking on the Agon: no dlopen, no shared objects, no ld.so.
+ * This is what keeps <dlfcn.h> out of tcc.h and the -run machinery out of the
+ * binary. */
+#define CONFIG_TCC_STATIC 1
+#endif

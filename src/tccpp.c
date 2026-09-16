@@ -135,8 +135,19 @@ ST_FUNC void expect(const char *msg)
 #define TAL_DEBUG_PARAMS , const char *sfile, int sline
 #endif
 
-#define TOKSYM_TAL_SIZE (16 * 1024) /* allocator for TokenSym in table_ident */
-#define TOKSTR_TAL_SIZE (16 * 1024) /* allocator for TokenString instances */
+/* Arena chunk sizes. Upstream asks for 256 KB of each up front, which is
+   512 KB before a line has been read -- more than the whole of the Agon's
+   user RAM. Both are append-only arenas that grow by chunking, so a smaller
+   chunk costs nothing but a few more allocations. Measured with massif, the
+   two at 16 KB took the baseline heap for an empty translation unit from
+   576,859 bytes to 183,787. */
+#ifdef TCC_TARGET_EZ80
+# define TOKSYM_TAL_SIZE (8 * 1024)  /* allocator for TokenSym in table_ident */
+# define TOKSTR_TAL_SIZE (8 * 1024)  /* allocator for TokenString instances */
+#else
+# define TOKSYM_TAL_SIZE (8 * 1024)
+# define TOKSTR_TAL_SIZE (8 * 1024)
+#endif
 
 typedef struct TinyAlloc {
     uint8_t *p;
@@ -477,6 +488,8 @@ static TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len)
 
     ts = tal_realloc(&toksym_alloc, 0, sizeof(TokenSym) + len);
     table_ident[i] = ts;
+    if (tok_ident >= SYM_FIRST_ANOM)
+        tcc_error("too many identifiers in one translation unit");
     ts->tok = tok_ident++;
     ts->sym_define = NULL;
     ts->sym_label = NULL;
@@ -491,6 +504,12 @@ static TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len)
 }
 
 #define TOK_HASH_INIT 1
+/* uint32_t, not unsigned int: `h >> 27` is undefined when int is 24 bits
+   wide, which it is on the eZ80. It does not merely hash badly there -- the
+   shift is undefined behaviour and the compiler is free to do anything with
+   it, and what it did was make `struct` unrecognisable, so acc could not
+   parse its own predefined macros. */
+typedef uint32_t tok_hash_t;
 #define TOK_HASH_FUNC(h, c) ((h) + ((h) << 5) + ((h) >> 27) + (c))
 
 
@@ -499,7 +518,7 @@ ST_FUNC TokenSym *tok_alloc(const char *str, int len)
 {
     TokenSym *ts, **pts;
     int i;
-    unsigned int h;
+    tok_hash_t h;
     
     h = TOK_HASH_INIT;
     for(i=0;i<len;i++)
@@ -1605,7 +1624,7 @@ bad_twosharp:
 static CachedInclude *search_cached_include(TCCState *s1, const char *filename, int add)
 {
     const char *s, *basename;
-    unsigned int h;
+    tok_hash_t h;
     CachedInclude *e;
     int c, i, len;
 
@@ -2245,7 +2264,7 @@ static void parse_number(const char *p)
     int b, t, shift, frac_bits, s, exp_val, ch;
     char *q;
     unsigned int bn[BN_SIZE];
-    long double d;
+    ldouble_t d;
 
     /* number */
     q = token_buf;
@@ -2360,11 +2379,11 @@ static void parse_number(const char *p)
 
             /* now we can generate the number */
             /* XXX: should patch directly float number */
-            d = (long double)bn[3] * 79228162514264337593543950336.0L +
-	        (long double)bn[2] * 18446744073709551616.0L +
-	        (long double)bn[1] * 4294967296.0L +
-	        (long double)bn[0];
-            d = ldexpl(d, exp_val - frac_bits);
+            d = (ldouble_t)bn[3] * LD_C(79228162514264337593543950336.0) +
+	        (ldouble_t)bn[2] * LD_C(18446744073709551616.0) +
+	        (ldouble_t)bn[1] * LD_C(4294967296.0) +
+	        (ldouble_t)bn[0];
+            d = tcc_ldexpl(d, exp_val - frac_bits);
             t = toup(ch);
             if (t == 'F') {
                 ch = *p++;
@@ -2424,7 +2443,7 @@ static void parse_number(const char *p)
             } else if (t == 'L') {
                 ch = *p++;
                 tok = TOK_CLDOUBLE;
-                tokc.ld = strtold(token_buf, NULL);
+                tokc.ld = tcc_strtold(token_buf, NULL);
             } else {
                 tok = TOK_CDOUBLE;
                 tokc.d = strtod(token_buf, NULL);
@@ -2544,7 +2563,7 @@ static void next_nomacro(void)
     int t, c, is_long, len;
     TokenSym *ts;
     uint8_t *p, *p1;
-    unsigned int h;
+    tok_hash_t h;
 
     p = file->buf_ptr;
  redo_no_start:

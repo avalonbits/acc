@@ -1,0 +1,70 @@
+# Builds acc to run on the Agon itself, with agondev.
+#
+#   make -f Makefile.agon          # bin/acc.bin
+#
+# Not folded into the main Makefile because this is a different compiler
+# producing a different kind of output, and because it needs agondev on the
+# path while the host builds do not.
+
+AGONDEV ?= $(HOME)/agondev
+TOOLS    = $(AGONDEV)/bin
+CC       = $(TOOLS)/ez80-none-elf-clang
+LD       = $(TOOLS)/ez80-none-elf-ld
+
+BIN = bin
+OBJ = obj/agon
+
+# -Oz because the budget is space: the Agon gives a program 448 KB for code,
+# data, heap and stack together, and acc needs as much of it as possible left
+# over for the symbol table of whatever it is compiling.
+CFLAGS = -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
+         -nostdinc -Iagon/include -Isrc -Iinclude \
+         -isystem $(AGONDEV)/include \
+         -target ez80-none-elf -DAGONDEV -DTCC_TARGET_EZ80 -DONE_SOURCE=1 \
+         -Oz -Wa,-march=ez80+full -fno-threadsafe-statics
+
+# LDHAS_ARG_PROCESSING: acc is a command-line program and needs its arguments
+# split, which is the -defsym that pulls agondev's argument-processing code in
+# place of crt0's stub.
+LDFLAGS = -defsym=RAM_START=0x40000 -defsym=RAM_SIZE=0x70000 \
+          -defsym=_has_exit_handler=0 \
+          -defsym=_parse_option=___arg_processing \
+          -defsym=_putchar=_putchar_arg_processing \
+          -defsym=_getchar=_getchar_arg_processing \
+          -T $(AGONDEV)/config/linker.conf --oformat binary
+
+OBJS = $(OBJ)/tcc.o $(OBJ)/agon.o
+DEPS = $(wildcard src/*.c src/*.h agon/include/*.h agon/include/sys/*.h) \
+       src/tccdefs_.h
+
+.PHONY: all clean size
+all: $(BIN)/acc.bin
+
+$(BIN)/acc.bin: $(OBJS) | $(BIN)
+	@echo [linking $@]
+	$(LD) $(LDFLAGS) -Map=$(BIN)/acc.map -o $@ $(OBJS) -L$(AGONDEV)/lib -lagon
+	$(TOOLS)/agondev-setname $@ >/dev/null
+	@$(MAKE) -s -f Makefile.agon size
+
+$(OBJ)/tcc.o: src/tcc.c $(DEPS) | $(OBJ)
+	@echo [compiling acc]
+	$(CC) $(CFLAGS) -c src/tcc.c -o $@
+
+$(OBJ)/agon.o: agon/src/agon.c $(DEPS) | $(OBJ)
+	@echo [compiling the Agon shims]
+	$(CC) $(CFLAGS) -c agon/src/agon.c -o $@
+
+# tccdefs_.h is built by the host Makefile; it is target-independent.
+src/tccdefs_.h:
+	$(MAKE) $@
+
+size: $(BIN)/acc.bin
+	@echo "[$$(stat -c%s $(BIN)/acc.bin) bytes of image, of 458752 available]"
+	@$(TOOLS)/ez80-none-elf-size $(OBJS) | tail -n +2 \
+	  | awk '{t+=$$1; d+=$$2; b+=$$3} END {printf "[text %d  data %d  bss %d  = %d, leaving %d for heap and stack]\n", t, d, b, t+d+b, 458752-(t+d+b)}'
+
+$(BIN) $(OBJ):
+	@mkdir -p $@
+
+clean:
+	$(RM) -r $(OBJ) $(BIN)/acc.bin $(BIN)/acc.map
