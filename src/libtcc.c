@@ -884,6 +884,11 @@ LIBTCCAPI TCCState *tcc_new(void)
      * __start -- so acc has to as well or nothing resolves against
      * libagon.a. */
     s->leading_underscore = 1;
+    /* The Agon has no dynamic linking, and the entry point is crt0's __start
+     * rather than _start. Naming it here is also what pulls crt0 out of
+     * libagon.a, since nothing in a program references its own entry. */
+    s->static_link = 1;
+    tcc_set_str(&s->elf_entryname, "__start");
 #endif
 #ifdef TCC_ARM_HARDFLOAT
     s->float_abi = ARM_HARD_FLOAT;

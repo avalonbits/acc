@@ -52,6 +52,9 @@ test: all
 	@echo "generated code, run on the Agon:"
 	@test/exec.sh
 	@echo
+	@echo "acc's linker against agondev's ld:"
+	@test/linkcmp.sh
+	@echo
 	@echo "equivalence against pristine tinycc:"
 	@test/equivalence.sh
 

@@ -104,9 +104,12 @@ ST_FUNC void tccelf_new(TCCState *s)
     }
 #endif
 
-#ifdef TCC_TARGET_PE
+#if defined TCC_TARGET_PE || defined TCC_TARGET_EZ80
     /* to make sure that -ltcc1 -Wl,-e,_start will grab the startup code
-       from libtcc1.a (unless _start defined) */
+       from libtcc1.a (unless _start defined)
+       On the eZ80 the same applies to __start in libagon.a: an archive member
+       is only pulled in to resolve something undefined, and nothing in a
+       program references its own entry point. */
     if (s->elf_entryname)
         set_global_sym(s, s->elf_entryname, NULL, 0); /* SHN_UNDEF */
 #endif
@@ -1081,11 +1084,43 @@ static void update_gnu_hash(TCCState *s1, Section *gnu_hash)
 
 /* relocate symbol table, resolve undefined symbols if do_resolve is
    true and output error if undefined symbol. */
+/* Marks every symbol index that some relocation names.
+ *
+ * An undefined symbol that nothing references is not an error. ld reports
+ * undefined *references*, not undefined symbols, and real libraries depend on
+ * the difference: several objects in agondev's libagon.a carry an undefined
+ * marker symbol -- __ixor.hijack_lxor and a dozen like it -- that no
+ * relocation mentions. Pulling one of those objects in for the function it
+ * does define used to fail the link. */
+static unsigned char *referenced_syms(TCCState *s1, Section *symtab)
+{
+    int nb_syms = symtab->data_offset / sizeof(ElfW(Sym));
+    unsigned char *used = tcc_mallocz(nb_syms);
+    int i;
+
+    for (i = 1; i < s1->nb_sections; i++) {
+        Section *sr = s1->sections[i];
+        ElfW_Rel *rel;
+
+        if (sr->sh_type != SHT_RELX || sr->link != symtab)
+            continue;
+        for_each_elem(sr, 0, rel, ElfW_Rel) {
+            int n = ELFW(R_SYM)(rel->r_info);
+
+            if (n < nb_syms)
+                used[n] = 1;
+        }
+    }
+
+    return used;
+}
+
 ST_FUNC void relocate_syms(TCCState *s1, Section *symtab, int do_resolve)
 {
     ElfW(Sym) *sym;
     int sym_bind, sh_num;
     const char *name;
+    unsigned char *used = referenced_syms(s1, symtab);
 
     for_each_elem(symtab, 1, sym, ElfW(Sym)) {
         sh_num = sym->st_shndx;
@@ -1127,6 +1162,8 @@ ST_FUNC void relocate_syms(TCCState *s1, Section *symtab, int do_resolve)
             sym_bind = ELFW(ST_BIND)(sym->st_info);
             if (sym_bind == STB_WEAK)
                 sym->st_value = 0;
+            else if (!used[sym - (ElfW(Sym) *)symtab->data])
+                sym->st_value = 0;   /* declared, but nothing references it */
             else
                 tcc_error_noabort("unresolved reference to '%s'", name);
 
@@ -1136,6 +1173,7 @@ ST_FUNC void relocate_syms(TCCState *s1, Section *symtab, int do_resolve)
         }
     found: ;
     }
+    tcc_free(used);
 }
 
 /* relocate a given section (CPU dependent) by applying the relocations
@@ -1928,6 +1966,11 @@ static void tcc_add_linker_symbols(TCCState *s1)
     set_linker_sym(s1, "_etext", text_section, 0);
     set_linker_sym(s1, "_edata", data_section, 0);
     set_linker_sym(s1, "_end", bss_section, 0);
+#ifdef TCC_TARGET_EZ80
+    /* What agondev's linker script would have provided. crt0.o in libagon.a
+       references it and no object defines it. */
+    ez80_add_linker_symbols(s1);
+#endif
 #if TARGETOS_OpenBSD
     set_global_sym(s1, "__executable_start", NULL, ELF_START_ADDR);
 #endif
@@ -2816,6 +2859,158 @@ static int tcc_output_binary(TCCState *s1, FILE *f)
     return 0;
 }
 
+#ifdef TCC_TARGET_EZ80
+/* ------------------------------------------------------------------ */
+/* flat MOS image output                                               */
+
+/* MOS loads a program at 0x040000 and jumps to 0x040045, past a 64-byte
+ * header. There is no loader beyond that: no program headers, no sections, no
+ * relocation at load time. The layout here is the whole of it -- addresses
+ * are assigned once, relocations are resolved against them, and the bytes go
+ * out in the order they were placed.
+ *
+ * The header is not written here. It is the first 0x45 bytes of crt0.o's
+ * .init section, which is why that section is 64-byte aligned and why it has
+ * to be placed first: its `jp` is what MOS enters through, and the 60 bytes
+ * after it are the name field. All this code does is fill the name in, which
+ * is what agondev's separate setname step does.
+ *
+ * The rest of the order follows agondev's linker.conf, because crt0 and the
+ * library were built expecting it.
+ */
+/* agondev's linker.conf, section for section. The first output section is
+   `.init : { *(.init .init.args .init.bss .fini) }` -- four input sections
+   merged and placed before .text, which is why they are listed adjacently
+   here. .init.args and .init.bss are not SHF_ALLOC, but relocations in crt0
+   reference them, so they are placed by name rather than by flag.
+
+   The order here is .init .fini .init.bss .init.args, which is not the order
+   the script lists. Within one wildcard GNU ld places input sections in the
+   order they occur in the object, not the order the patterns are written, and
+   that is crt0.o's own section order. Matching it byte for byte is what makes
+   an acc-linked image comparable with an agondev-linked one. */
+static const char * const mos_section_order[] = {
+    ".init", ".fini", ".init.bss", ".init.args",
+    ".text",
+    ".init_array", ".ctors", ".dtors", ".fini_array",
+    ".rodata", ".data.ro", ".data",
+};
+
+/* Sections in placement order: the named ones first, in that order, then any
+ * other allocated section. bss is placed after them all but never written. */
+static int mos_collect(TCCState *s1, Section **out)
+{
+    int n = 0, i;
+    unsigned k;
+
+    for (k = 0; k < sizeof mos_section_order / sizeof *mos_section_order; k++) {
+        for (i = 1; i < s1->nb_sections; i++) {
+            Section *s = s1->sections[i];
+
+            /* By name, without checking SHF_ALLOC: .init.args and .init.bss
+               do not carry it and are still part of the image. */
+            if (s->sh_type != SHT_NOBITS && !strcmp(s->name, mos_section_order[k]))
+                out[n++] = s;
+        }
+    }
+    for (i = 1; i < s1->nb_sections; i++) {
+        Section *s = s1->sections[i];
+        int seen = 0, j;
+
+        if (!(s->sh_flags & SHF_ALLOC) || s->sh_type == SHT_NOBITS)
+            continue;
+        for (j = 0; j < n; j++)
+            if (out[j] == s)
+                seen = 1;
+        if (!seen)
+            out[n++] = s;
+    }
+
+    return n;
+}
+
+static int ez80_output_mos(TCCState *s1, const char *filename)
+{
+    Section **secs = tcc_mallocz(s1->nb_sections * sizeof *secs);
+    int n = mos_collect(s1, secs);
+    addr_t addr = ELF_START_ADDR;
+    FILE *f;
+    int i, ret = 0;
+
+    /* Packed, with no alignment between sections. The eZ80 places no
+     * alignment requirement on any load or store, and agondev's linker script
+     * aligns nothing either, so honouring sh_addralign would only insert
+     * padding the reference toolchain does not -- and the images stop being
+     * comparable. The one section that asks for alignment is .init, at 64,
+     * and it is first at ELF_START_ADDR, which is 64-aligned. */
+    for (i = 0; i < n; i++) {
+        secs[i]->sh_addr = addr;
+        secs[i]->sh_offset = addr - ELF_START_ADDR;
+        addr += secs[i]->data_offset;
+    }
+    bss_section->sh_addr = addr;
+    bss_section->sh_offset = addr - ELF_START_ADDR;
+
+    if (addr + bss_section->data_offset > ELF_START_ADDR + EZ80_RAM_SIZE)
+        tcc_warning("program does not fit in the Agon's %d KB of user RAM",
+                    EZ80_RAM_SIZE / 1024);
+
+    /* The linker-script symbols are relative to bss, whose address is only
+     * known now. */
+    ez80_add_linker_symbols(s1);
+
+    relocate_syms(s1, s1->symtab, 0);
+    if (s1->nb_errors)
+        goto done;
+    relocate_sections(s1);
+    if (s1->nb_errors)
+        goto done;
+
+    /* The name MOS shows, written into the header crt0 supplied. Checked
+     * rather than assumed: if the first section is not a MOS header, writing
+     * 60 bytes at offset 4 would land in the middle of something. */
+    if (n && secs[0]->data_offset >= 0x45) {
+        unsigned char *h = secs[0]->data;
+
+        if (h[0x40] == 'M' && h[0x41] == 'O' && h[0x42] == 'S') {
+            const char *base = tcc_basename(filename);
+            size_t len = strlen(base);
+
+            if (len > 0x40 - 4 - 1)
+                len = 0x40 - 4 - 1;
+            memset(h + 4, 0, 0x40 - 4);
+            memcpy(h + 4, base, len);
+        } else {
+            tcc_warning("no MOS header at the start of the image; "
+                        "is crt0 being linked in?");
+        }
+    }
+
+    f = fopen(filename, "wb");
+    if (!f) {
+        ret = tcc_error_noabort("could not write '%s'", filename);
+        goto done;
+    }
+    for (i = 0; i < n; i++)
+        fwrite(secs[i]->data, 1, secs[i]->data_offset, f);
+    if (s1->verbose == 2)
+        for (i = 0; i < n; i++)
+            printf("   %-14s addr=%06x size=%06x align=%d\n", secs[i]->name,
+                   (unsigned) secs[i]->sh_addr, (unsigned) secs[i]->data_offset,
+                   (int) secs[i]->sh_addralign);
+    if (s1->verbose)
+        printf("<- %s (%u bytes of image, %u of bss)\n", filename,
+               (unsigned)(addr - ELF_START_ADDR),
+               (unsigned) bss_section->data_offset);
+    fclose(f);
+
+done:
+    tcc_free(secs);
+
+    return ret;
+}
+#endif /* TCC_TARGET_EZ80 */
+
 /* Write an elf, coff or "binary" file */
 static int tcc_write_elf_file(TCCState *s1, const char *filename, int phnum,
                               ElfW(Phdr) *phdr)
@@ -3046,6 +3241,13 @@ static int elf_output_file(TCCState *s1, const char *filename)
         /* if linking, also link in runtime libraries (libc, libgcc, etc.) */
         tcc_add_runtime(s1);
 	resolve_common_syms(s1);
+
+#ifdef TCC_TARGET_EZ80
+        /* A MOS binary is a flat image at a fixed address with no loader, so
+           none of the ELF layout below applies to it. */
+        ret = ez80_output_mos(s1, filename);
+        goto the_end;
+#endif
 
         if (!s1->static_link) {
             if (file_type & TCC_OUTPUT_EXE) {

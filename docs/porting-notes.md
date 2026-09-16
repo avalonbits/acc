@@ -273,3 +273,42 @@ that state, because the code after an unconditional jump is unreachable and
 `gsym` only clears the flag after patching. The jump was emitted while the
 code was live, so its relocation is real; `put_elf_reloca` records it without
 the check.
+
+## Linking, and the flat MOS image
+
+acc lays out and writes the image itself rather than calling a linker. It has
+to: there is no `ld` on the Agon and no linker script. What it produces is
+byte-identical to agondev's `ld` on every program in the suite, which is the
+test worth having -- a program that merely runs proves much less, since most
+of an image is never reached.
+
+Getting there needed five things, all of them discovered by the link failing:
+
+* **RELA, e_flags 0x84, leading underscores, no .eh_frame** -- see above.
+* **An undefined symbol that nothing references is not an error.** ld reports
+  undefined *references*, not undefined symbols. Several objects in libagon.a
+  carry a marker symbol like `__ixor.hijack_lxor` that no relocation mentions,
+  and pulling one in for the function it does define used to fail the link.
+* **The entry symbol has to be declared undefined before the library is
+  scanned**, or crt0.o is never pulled out of the archive -- nothing in a
+  program references its own entry point. tinycc already does this for PE;
+  the eZ80 needs it for the same reason.
+* **The linker script's symbols have to come from somewhere.** crt0.o
+  references eighteen that no object defines: `__stack`, `___low_bss`,
+  `___len_bss`, `___run_clearbss`, `___heapbot`, `___heaptop`, and the init
+  and fini counts and array ends. acc defines them from the same expressions
+  agondev's `linker.conf` uses.
+* **The header is crt0's, not acc's.** The first 0x45 bytes of crt0.o's
+  `.init` section *are* the MOS header -- which is why that section is
+  64-byte aligned and has to be placed first. acc emitting its own produced
+  two headers, and the entry jumped into the second one's name field. All acc
+  does is fill in the name, which is what agondev's separate setname step does.
+
+Two layout details matter for byte-identity, and neither is in the script:
+
+* The order inside `.init` is `.init .fini .init.bss .init.args`, not the
+  order `*(.init .init.args .init.bss .fini)` lists. Within one wildcard GNU
+  ld places input sections in the order they occur in the object.
+* Nothing is aligned. The eZ80 has no alignment requirement and the script
+  aligns nothing, so honouring `sh_addralign` inserted padding the reference
+  does not.

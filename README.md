@@ -47,23 +47,30 @@ an existing checkout to skip that.
 | eZ80 backend: `int`, pointers, control flow, calls | done |
 | eZ80 backend: `char` and `short` | done |
 | eZ80 backend: `long`, floats, `long long` | not started |
-| acc's own linker and flat MOS output | not started |
-| Builds with agondev to run on the Agon | not started |
+| acc's own linker and flat MOS output | done |
+| Builds with agondev to run on the Agon | compiles; not yet run on hardware |
 
 acc compiles C to eZ80 machine code today for `char`, `short`, `int`,
 `unsigned` and pointers, with the full range of operators, control flow,
 function calls and recursion. Anything wider refuses rather than
-emitting something that would assemble and misbehave. Linking is agondev's
-`ld` against `libagon.a` for now, which is what gives compiled programs a C
-library; acc needs its own linker before it can run on the Agon itself.
+emitting something that would assemble and misbehave.
+
+acc links too. It reads `libagon.a`, lays the image out itself and writes the
+flat MOS binary, with no linker script and no `ld` -- which it has to, because
+neither exists on the Agon. The images come out byte-identical to agondev's
+`ld` on every program in the test suite.
 
     $ cat hello.c
     int printf(const char *, ...);
     int fact(int n) { int r = 1; while (n > 1) { r = r * n; n = n - 1; } return r; }
     int main(void) { printf("8! = %d\r\n", fact(8)); return 0; }
 
-    $ test/accld.sh hello.c hello.bin && test/agon.sh hello.bin
+    $ bin/acc -nostdlib -o hello.bin hello.c -L ~/agondev/lib -lagon
+    $ test/agon.sh hello.bin
     8! = 40320
+
+agondev is still needed for `libagon.a` itself -- acc has no C library of its
+own -- but for nothing else in the build.
 
 ## The constraints that shape it
 
