@@ -1,0 +1,5 @@
+bin/
+obj/
+*.o
+src/tccdefs_.h
+src/c2str
