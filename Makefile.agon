@@ -37,7 +37,7 @@ OBJS = $(OBJ)/tcc.o $(OBJ)/agon.o
 DEPS = $(wildcard src/*.c src/*.h agon/include/*.h agon/include/sys/*.h) \
        src/tccdefs_.h
 
-.PHONY: all clean size
+.PHONY: all clean size warnings
 all: $(BIN)/acc.bin
 
 $(BIN)/acc.bin: $(OBJS) | $(BIN)
@@ -65,6 +65,26 @@ size: $(BIN)/acc.bin
 
 $(BIN) $(OBJ):
 	@mkdir -p $@
+
+# Every place the compiler can see that a 32-bit value will not fit in this
+# target's 24-bit int.
+#
+# This is the most useful check in the tree. The bugs it finds are invisible on
+# a 32-bit host -- the code compiles, runs and passes every test there -- and
+# they do not fail gently on the Agon: a truncated SYM_FIELD made the
+# preprocessor stop pasting tokens, a truncated SHF_PRIVATE made the symbol
+# table come out wrong. Each one wants reading rather than silencing; the fix
+# is almost always to give the variable the width the value needs.
+#
+# The unused/sign-compare noise is filtered out, so what is left is the real
+# list. It is not zero yet.
+warnings:
+	@$(RM) -f $(OBJ)/tcc.o
+	@$(MAKE) -s -f Makefile.agon $(OBJ)/tcc.o 2>&1 \
+	  | grep -E '^src/.*warning:' \
+	  | grep -viE 'unused|sign-compare|string-plus-int|unknown-attribute' \
+	  | sed 's/ \[-W.*//' | sort -u; \
+	  true
 
 clean:
 	$(RM) -r $(OBJ) $(BIN)/acc.bin $(BIN)/acc.map

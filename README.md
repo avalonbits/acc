@@ -48,7 +48,8 @@ an existing checkout to skip that.
 | eZ80 backend: `char` and `short` | done |
 | eZ80 backend: `long`, floats, `long long` | not started |
 | acc's own linker and flat MOS output | done |
-| Builds with agondev to run on the Agon | compiles; not yet run on hardware |
+| Builds with agondev, runs on the Agon | done |
+| Compiling and linking **on** the Agon | done |
 
 acc compiles C to eZ80 machine code today for `char`, `short`, `int`,
 `unsigned` and pointers, with the full range of operators, control flow,
@@ -71,6 +72,25 @@ neither exists on the Agon. The images come out byte-identical to agondev's
 
 agondev is still needed for `libagon.a` itself -- acc has no C library of its
 own -- but for nothing else in the build.
+
+    make -f Makefile.agon     # bin/acc.bin, to run on the machine
+
+builds acc for the Agon: 252 KB of image against the 448 KB a program gets,
+leaving about 207 KB for heap and stack. Linking does not need the library
+resident -- libagon.a is 1.3 MB and would not fit, but an archive is read
+member by member and only its 21.7 KB symbol index is held whole.
+
+On the machine, with acc.bin and libagon.a on the sdcard:
+
+    *acc -nostdlib -o t.bin t.c -L/lib -lagon
+    *t
+    1! = 1
+    2! = 2
+    ...
+    8! = 40320
+
+`test/onagon.sh` is that, as a test: it builds an sdcard, boots the emulator,
+compiles and links on the Agon and runs what came out.
 
 ## The constraints that shape it
 

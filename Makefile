@@ -55,6 +55,9 @@ test: all
 	@echo "acc's linker against agondev's ld:"
 	@test/linkcmp.sh
 	@echo
+	@echo "acc running on the Agon:"
+	@test/onagon.sh
+	@echo
 	@echo "equivalence against pristine tinycc:"
 	@test/equivalence.sh
 

@@ -1644,13 +1644,13 @@ ST_FUNC void tccelf_new(TCCState *s);
 ST_FUNC void tccelf_delete(TCCState *s);
 ST_FUNC void tccelf_begin_file(TCCState *s1);
 ST_FUNC void tccelf_end_file(TCCState *s1);
-ST_FUNC Section *new_section(TCCState *s1, const char *name, int sh_type, int sh_flags);
+ST_FUNC Section *new_section(TCCState *s1, const char *name, ElfW(Word) sh_type, ElfW(Word) sh_flags);
 ST_FUNC void section_realloc(Section *sec, unsigned long new_size);
 ST_FUNC size_t section_add(Section *sec, addr_t size, int align);
 ST_FUNC void *section_ptr_add(Section *sec, addr_t size);
 ST_FUNC Section *find_section(TCCState *s1, const char *name);
 ST_FUNC void free_section(Section *s);
-ST_FUNC Section *new_symtab(TCCState *s1, const char *symtab_name, int sh_type, int sh_flags, const char *strtab_name, const char *hash_name, int hash_sh_flags);
+ST_FUNC Section *new_symtab(TCCState *s1, const char *symtab_name, ElfW(Word) sh_type, ElfW(Word) sh_flags, const char *strtab_name, const char *hash_name, ElfW(Word) hash_sh_flags);
 ST_FUNC void init_symtab(Section *s);
 
 ST_FUNC int put_elf_str(Section *s, const char *sym);

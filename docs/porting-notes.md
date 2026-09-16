@@ -375,3 +375,60 @@ now says so rather than wrapping if it ever does.
 `ieee_finite` went the same way: it read `p[1]` as the high word of a binary64
 and shifted an unsigned right by 31, neither of which means anything where a
 double is four bytes and an int is three.
+
+## Compiling on the Agon
+
+It works. `test/onagon.sh` puts acc.bin and libagon.a on an sdcard, boots the
+emulator, compiles and links a source file on the machine, and runs the binary
+that came out. A small program takes under a second of emulated time.
+
+Getting there needed one more bug, and it was not tinycc's.
+
+### agondev miscompiles get_be
+
+    static unsigned long long get_be(const uint8_t *b, int n)
+    {
+        unsigned long long ret = 0;
+        while (n)
+            ret = (ret << 8) | *b++, --n;
+        return ret;
+    }
+
+At `-Oz`, on a four-byte big-endian field holding 0x487, this returns 0x48700
+-- one shift too many, as though the loop ran an extra time. In isolation, with
+a literal count and a `static const` array, it is correct; the fault only
+appears when it is a real runtime call. The comma operator, the
+post-increment and the 64-bit accumulator in one expression are between them
+what trips it.
+
+The archive symbol index is read through this function, so libagon.a's 1159
+symbols appeared to be 296704 of them. Every name lookup then ran off the end
+of the index buffer, nothing matched an undefined symbol, no member was ever
+pulled in, and `tcc_load_alacarte` returned success having loaded nothing. acc
+exited 0 with no output and no error.
+
+Written out -- the comma separated into statements, the byte widened
+explicitly rather than promoted through a 24-bit int -- it is correct.
+
+Two things made this findable. The first is that a diagnostic can lie on a
+target like this, so the run that settled it printed the read position, the
+raw bytes, the entry size, an explicit hand-rolled 32-bit read and get_be's
+answer side by side: the data was right and only get_be disagreed. The second
+is that a silent success is worse than a crash. `tcc_load_archive` returning 0
+having done nothing, and the file-type switch falling through for an
+unrecognised file, both hid this for far longer than they should have.
+
+### The compiler will tell you where the rest are
+
+`make -f Makefile.agon warnings` lists every place agondev can see that a
+32-bit value will not fit in this target's int. It is the most useful check in
+the tree: these bugs compile, run and pass every test on a 32-bit host, and on
+the Agon they do not fail gently.
+
+It found `new_section` and `new_symtab` taking ELF section types and flags as
+`int`, so `SHF_PRIVATE` (0x80000000) and the `SHT_GNU_*` constants truncated to
+nothing and the symbol table came out wrong. Roughly a dozen remain -- bitfield
+masks shifted past 24 bits in `tccgen.c`, NaN and infinity patterns truncated
+in the float paths, a range check that is always true. Each wants reading
+rather than silencing, and the fix is almost always to give the variable the
+width the value needs.

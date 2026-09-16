@@ -229,7 +229,7 @@ ST_FUNC void tccelf_end_file(TCCState *s1)
     }
 }
 
-ST_FUNC Section *new_section(TCCState *s1, const char *name, int sh_type, int sh_flags)
+ST_FUNC Section *new_section(TCCState *s1, const char *name, ElfW(Word) sh_type, ElfW(Word) sh_flags)
 {
     Section *sec;
 
@@ -283,9 +283,9 @@ ST_FUNC void init_symtab(Section *s)
 }
 
 ST_FUNC Section *new_symtab(TCCState *s1,
-                           const char *symtab_name, int sh_type, int sh_flags,
+                           const char *symtab_name, ElfW(Word) sh_type, ElfW(Word) sh_flags,
                            const char *strtab_name,
-                           const char *hash_name, int hash_sh_flags)
+                           const char *hash_name, ElfW(Word) hash_sh_flags)
 {
     Section *symtab, *strtab, *hash;
     symtab = new_section(s1, symtab_name, sh_type, sh_flags);
@@ -3817,11 +3817,29 @@ typedef struct ArchiveHeader {
 
 #define ARFMAG "`\n"
 
+/* Written out rather than as `ret = (ret << 8) | *b++, --n;`.
+ *
+ * agondev miscompiles that form at -Oz: on a four-byte big-endian field
+ * holding 0x487 it returns 0x48700, one shift too many, as though the loop ran
+ * an extra time. The archive symbol index is read through here, so an
+ * assembler with 1159 symbols appeared to have 296704 of them, every name
+ * lookup ran off the end of the buffer, no member ever matched an undefined
+ * symbol, and the link silently produced nothing at all.
+ *
+ * The comma operator, the post-increment and the 64-bit accumulator in one
+ * expression are between them what trips it. Separated, and with the byte
+ * widened explicitly rather than promoted through a 24-bit int, it is
+ * correct. */
 static unsigned long long get_be(const uint8_t *b, int n)
 {
     unsigned long long ret = 0;
-    while (n)
-        ret = (ret << 8) | *b++, --n;
+
+    while (n > 0) {
+        ret = (ret << 8) | (unsigned long long) *b;
+        b++;
+        n--;
+    }
+
     return ret;
 }
 
