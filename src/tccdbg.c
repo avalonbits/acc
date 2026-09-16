@@ -1785,7 +1785,7 @@ static int stabs_struct_find(TCCState *s1, Sym *t, int *p_id)
     return 1;
 }
 
-static int remove_type_info(int type)
+static ctype_t remove_type_info(ctype_t type)
 {
         type &= ~(VT_STORAGE | VT_CONSTANT | VT_VOLATILE | VT_VLA);
         if ((type & VT_BTYPE) != VT_BYTE)
@@ -1797,7 +1797,7 @@ static int remove_type_info(int type)
 
 static void tcc_get_debug_info(TCCState *s1, Sym *s, CString *result)
 {
-    int type;
+    ctype_t type;
     int n = 0;
     int debug_type = -1;
     Sym *t = s;
@@ -1911,7 +1911,11 @@ static void stabs_struct_complete(TCCState *s1, CType *t)
 
 static int tcc_get_dwarf_info(TCCState *s1, Sym *s)
 {
-    int type;
+    ctype_t type;
+    /* The same name held both a type word and a DWARF section offset. They
+     * are different widths once a type word is wider than an int, so the
+     * offset gets its own name. */
+    int pos;
     int debug_type = -1;
     Sym *e, *t = s;
     int i;
@@ -1995,10 +1999,10 @@ static int tcc_get_dwarf_info(TCCState *s1, Sym *s)
 		e = e->next;
 		if (STRUCT_NODEBUG(e))
 		    continue;
-		type = tcc_get_dwarf_info(s1, e);
+		pos = tcc_get_dwarf_info(s1, e);
 		tcc_debug_check_forw(s1, e, pos_type[i]);
 		write32le(dwarf_info_section->data + pos_type[i++],
-			  type - dwarf_info.start);
+			  pos - dwarf_info.start);
 	    }
 	    tcc_free(pos_type);
         }
@@ -2168,10 +2172,10 @@ static int tcc_get_dwarf_info(TCCState *s1, Sym *s)
 	    i = 0;
 	    while (f->next) {
 		f = f->next;
-		type = tcc_get_dwarf_info(s1, f);
+		pos = tcc_get_dwarf_info(s1, f);
 		tcc_debug_check_forw(s1, f, pos_type[i]);
 	        write32le(dwarf_info_section->data + pos_type[i++],
-                          type - dwarf_info.start);
+                          pos - dwarf_info.start);
 	    }
 	    tcc_free(pos_type);
         }

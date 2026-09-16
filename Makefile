@@ -48,6 +48,9 @@ $(BIN):
 
 test: all
 	@test/run.sh
+	@echo
+	@echo "equivalence against pristine tinycc:"
+	@test/equivalence.sh
 
 clean:
 	$(RM) -r $(BIN) $(GEN)

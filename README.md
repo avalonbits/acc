@@ -24,16 +24,23 @@ are not alternatives to the third; they are how it is debugged.
 | `acc` | host | eZ80 | The cross-compiler. eZ80 type sizes and ABI, running where there is memory and a debugger. |
 | `acc.bin` | Agon | eZ80 | The point of the exercise. Built with [agondev](https://github.com/AgonPlatform/agondev). |
 
-    make          # acc-i386
-    make test     # the suite
+    make          # acc-i386 and acc
+    make test     # the suite, and the equivalence check below
+
+`make test` asserts each target's data model, and then compares acc-i386's
+output against pristine tinycc's byte for byte over tinycc's own corpus. The
+i386 target is unchanged tinycc semantics, so any change meant to be a port
+and not a behaviour change has to leave every generated object identical. The
+reference tree is cloned into `test/ref` on first run; point `ACC_REF_TCC` at
+an existing checkout to skip that.
 
 ## Status
 
 | | |
 | --- | --- |
 | Vendored tinycc, host build, test harness | done |
-| eZ80 data model (24-bit `int`, 32-bit `long`) | in progress |
-| `CType.t` widened to 32 bits | not started |
+| eZ80 data model (24-bit `int`, 32-bit `long`) | done |
+| `CType.t` widened to 32 bits | done |
 | eZ80 backend (`ez80-gen.c`) | not started |
 | Flat MOS binary output | not started |
 | Builds with agondev | not started |

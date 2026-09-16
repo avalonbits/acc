@@ -134,7 +134,7 @@ static void block(int flags);
 #define STMT_COMPOUND 2
 
 static void gen_cast(CType *type);
-static void gen_cast_s(int t);
+static void gen_cast_s(ctype_t t);
 static inline CType *pointed_type(CType *type);
 static int is_compatible_types(CType *type1, CType *type2);
 static int parse_btype(CType *type, AttributeDef *ad, int ignore_label);
@@ -202,7 +202,7 @@ static int gjmp_acs(int t)
 #define gjmp gjmp_acs
 /* ------------------------------------------------------------------------- */
 
-ST_INLN int is_float(int t)
+ST_INLN int is_float(ctype_t t)
 {
     int bt = t & VT_BTYPE;
     return bt == VT_LDOUBLE
@@ -230,7 +230,7 @@ static int btype_size(int bt)
 }
 
 /* returns function return register from type */
-static int R_RET(int t)
+static int R_RET(ctype_t t)
 {
     if (!is_float(t))
         return REG_IRET;
@@ -245,7 +245,7 @@ static int R_RET(int t)
 }
 
 /* returns 2nd function return register, if any */
-static int R2_RET(int t)
+static int R2_RET(ctype_t t)
 {
     t &= VT_BTYPE;
 #if PTR_SIZE == 4
@@ -267,19 +267,19 @@ static int R2_RET(int t)
 #define USING_TWO_WORDS(t) (R2_RET(t) != VT_CONST)
 
 /* put function return registers to stack value */
-static void PUT_R_RET(SValue *sv, int t)
+static void PUT_R_RET(SValue *sv, ctype_t t)
 {
     sv->r = R_RET(t), sv->r2 = R2_RET(t);
 }
 
 /* returns function return register class for type t */
-static int RC_RET(int t)
+static int RC_RET(ctype_t t)
 {
     return reg_classes[R_RET(t)] & ~(RC_FLOAT | RC_INT);
 }
 
 /* returns generic register class for type t */
-static int RC_TYPE(int t)
+static int RC_TYPE(ctype_t t)
 {
     if (!is_float(t))
         return RC_INT;
@@ -512,7 +512,8 @@ ST_FUNC void put_extern_sym2(Sym *sym, int sh_num,
                             addr_t value, unsigned long size,
                             int can_add_underscore)
 {
-    int sym_type, sym_bind, info, other, t;
+    int sym_type, sym_bind, info, other;
+    ctype_t t;
     ElfSym *esym;
     const char *name;
     char buf1[256];
@@ -668,7 +669,7 @@ ST_INLN void sym_free(Sym *sym)
 }
 
 /* push, without hashing */
-ST_FUNC Sym *sym_push2(Sym **ps, int v, int t, int c)
+ST_FUNC Sym *sym_push2(Sym **ps, int v, ctype_t t, int c)
 {
     Sym *s;
 
@@ -760,7 +761,7 @@ ST_FUNC Sym *sym_push(int v, CType *type, int r, int c)
 }
 
 /* push a global identifier */
-ST_FUNC Sym *global_identifier_push(int v, int t, int c)
+ST_FUNC Sym *global_identifier_push(int v, ctype_t t, int c)
 {
     Sym *s, **ps;
     s = sym_push2(&global_stack, v, t, c);
@@ -1039,7 +1040,7 @@ static void vset_VT_JMP(void)
     int op = vtop->cmp_op;
 
     if (vtop->jtrue || vtop->jfalse) {
-        int origt = vtop->type.t;
+        ctype_t origt = vtop->type.t;
         /* we need to jump to 'mov $0,%R' or 'mov $1,%R' */
         int inv = op & (op < 2); /* small optimization */
         vseti(VT_JMP+inv, gvtst(inv, 0));
@@ -1567,7 +1568,7 @@ ret_tmp:
 
 /* move register 's' (of type 't') to 'r', and flush previous value of r to memory
    if needed */
-static void move_reg(int r, int s, int t)
+static void move_reg(int r, int s, ctype_t t)
 {
     SValue sv;
 
@@ -1742,7 +1743,7 @@ static void tcc_debug_end_scope(Sym *b, int bounds)
 /* increment an lvalue pointer */
 static void incr_offset(int offset)
 {
-    int t = vtop->type.t;
+    ctype_t t = vtop->type.t;
     gaddrof(); /* remove VT_LVAL */
     vtop->type.t = VT_PTRDIFF_T; /* set scalar type */
     vpushs(offset);
@@ -1825,9 +1826,9 @@ static void store_packed_bf(int bit_pos, int bit_size)
     vpop(), vpop();
 }
 
-static int adjust_bf(SValue *sv, int bit_pos, int bit_size)
+static ctype_t adjust_bf(SValue *sv, int bit_pos, int bit_size)
 {
-    int t;
+    ctype_t t;
     if (0 == sv->type.ref)
         return 0;
     t = sv->type.ref->auxtype;
@@ -1843,6 +1844,7 @@ static int adjust_bf(SValue *sv, int bit_pos, int bit_size)
    register value (such as structures). */
 ST_FUNC int gv(int rc)
 {
+    ctype_t bf_type;
     int r, r2, r_ok, r2_ok, rc2, bt;
     int bit_pos, bit_size, size, align;
 
@@ -1860,14 +1862,14 @@ ST_FUNC int gv(int rc)
         if ((vtop->type.t & VT_BTYPE) == VT_BOOL)
             type.t |= VT_UNSIGNED;
 
-        r = adjust_bf(vtop, bit_pos, bit_size);
+        bf_type = adjust_bf(vtop, bit_pos, bit_size);
 
         if ((vtop->type.t & VT_BTYPE) == VT_LLONG)
             type.t |= VT_LLONG;
         else
             type.t |= VT_INT;
 
-        if (r == VT_STRUCT) {
+        if (bf_type == VT_STRUCT) {
             load_packed_bf(&type, bit_pos, bit_size);
         } else {
             int bits = (type.t & VT_BTYPE) == VT_LLONG ? 64 : 32;
@@ -1936,7 +1938,7 @@ ST_FUNC int gv(int rc)
 
             if (rc2) {
                 int load_type = (bt == VT_QFLOAT) ? VT_DOUBLE : VT_PTRDIFF_T;
-                int original_type = vtop->type.t;
+                ctype_t original_type = vtop->type.t;
 
                 /* two register type load :
                    expand to two words temporarily */
@@ -2048,7 +2050,7 @@ ST_FUNC void lexpand(void)
 
 #if PTR_SIZE != 8
 /* build a long long from two ints */
-static void lbuild(int t)
+static void lbuild(ctype_t t)
 {
     gv2(RC_INT, RC_INT);
     vtop[-1].r2 = vtop[0].r;
@@ -2061,7 +2063,8 @@ static void lbuild(int t)
    register */
 static void gv_dup(void)
 {
-    int t, rc, r;
+    int rc, r;
+    ctype_t t;
 
     t = vtop->type.t;
 #if PTR_SIZE == 4
@@ -2099,7 +2102,8 @@ static void gv_dup(void)
 /* generate CPU independent (unsigned) long long operations */
 static void gen_opl(int op)
 {
-    int t, a, b, op1, c, i;
+    int a, b, op1, c, i;
+    ctype_t t;
     int func;
     unsigned short reg_iret = REG_IRET;
     unsigned short reg_lret = REG_IRE2;
@@ -2333,7 +2337,7 @@ static void gen_opl(int op)
 #endif
 
 /* normalize values */
-static uint64_t value64(uint64_t l1, int t)
+static uint64_t value64(uint64_t l1, ctype_t t)
 {
     if ((t & VT_BTYPE) == VT_LLONG
         || (PTR_SIZE == 8 && (t & VT_BTYPE) == VT_PTR))
@@ -2657,7 +2661,8 @@ static void gen_opif(int op)
 static void type_to_str(char *buf, int buf_size,
                  CType *type, const char *varstr)
 {
-    int bt, v, t;
+    int bt, v;
+    ctype_t t;
     Sym *s, *sa;
     char buf1[256];
     const char *tstr;
@@ -2911,7 +2916,8 @@ static int compare_types(CType *type1, CType *type2, int unqualified)
 static int combine_types(CType *dest, SValue *op1, SValue *op2, int op)
 {
     CType *type1, *type2, type;
-    int t1, t2, bt1, bt2;
+    int bt1, bt2;
+    ctype_t t1, t2;
     int ret = 1;
 
     /* for shifts, 'combine' only left operand */
@@ -3041,7 +3047,8 @@ static int combine_types(CType *dest, SValue *op1, SValue *op2, int op)
 /* generic gen_op: handles types problems */
 ST_FUNC void gen_op(int op)
 {
-    int t1, t2, bt1, bt2, t;
+    int bt1, bt2;
+    ctype_t t1, t2, t;
     CType type1, combtype;
     int op_class = op;
 
@@ -3236,14 +3243,14 @@ static void gen_cvt_ftoi1(int t)
 static void force_charshort_cast(void)
 {
     int sbt = BFGET(vtop->r, VT_MUSTCAST) == 2 ? VT_LLONG : VT_INT;
-    int dbt = vtop->type.t;
+    ctype_t dbt = vtop->type.t;
     vtop->r &= ~VT_MUSTCAST;
     vtop->type.t = sbt;
     gen_cast_s(dbt == VT_BOOL ? VT_BYTE|VT_UNSIGNED : dbt);
     vtop->type.t = dbt;
 }
 
-static void gen_cast_s(int t)
+static void gen_cast_s(ctype_t t)
 {
     CType type;
     type.t = t;
@@ -3704,7 +3711,9 @@ static void gen_assign_cast(CType *dt)
 /* store vtop in lvalue pushed on stack */
 ST_FUNC void vstore(void)
 {
-    int sbt, dbt, ft, r, size, align, bit_size, bit_pos, delayed_cast;
+    ctype_t bf_type;
+    int sbt, dbt, r, size, align, bit_size, bit_pos, delayed_cast;
+    ctype_t ft;
 
     ft = vtop[-1].type.t;
     sbt = vtop->type.t & VT_BTYPE;
@@ -3772,12 +3781,12 @@ ST_FUNC void vstore(void)
             gen_cast(&vtop[-1].type);
             vtop[-1].type.t = (vtop[-1].type.t & ~VT_BTYPE) | (VT_BYTE | VT_UNSIGNED);
         }
-        r = adjust_bf(vtop - 1, bit_pos, bit_size);
+        bf_type = adjust_bf(vtop - 1, bit_pos, bit_size);
         if (dbt != VT_BOOL) {
             gen_cast(&vtop[-1].type);
             dbt = vtop[-1].type.t & VT_BTYPE;
         }
-        if (r == VT_STRUCT) {
+        if (bf_type == VT_STRUCT) {
             store_packed_bf(bit_pos, bit_size);
         } else {
             unsigned long long mask = (1ULL << bit_size) - 1;
@@ -4452,7 +4461,7 @@ static void struct_layout(CType *type, AttributeDef *ad)
 }
 
 /* Does 'n' fit into integer type 't' ? */
-static int in_range(long long n, int t)
+static int in_range(long long n, ctype_t t)
 {
     unsigned long long m = (1ULL << (btype_size(t & VT_BTYPE) * 8 - 1)) - 1;
     if (t & VT_UNSIGNED)
@@ -4723,7 +4732,7 @@ static void sym_to_attr(AttributeDef *ad, Sym *s)
 
 /* Add type qualifiers to a type. If the type is an array then the qualifiers
    are added to the element type, copied because it could be a typedef. */
-static void parse_btype_qualify(CType *type, int qualifiers)
+static void parse_btype_qualify(CType *type, ctype_t qualifiers)
 {
     while (type->t & VT_ARRAY) {
         type->ref = sym_push(SYM_FIELD, &type->ref->type, 0, type->ref->c);
@@ -4737,7 +4746,8 @@ static void parse_btype_qualify(CType *type, int qualifiers)
  */
 static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
 {
-    int t, u, bt, st, type_found, typespec_found, g, n;
+    int type_found, typespec_found, g, n;
+    ctype_t t, u, bt, st;
     Sym *s;
     CType type1;
 
@@ -5610,6 +5620,7 @@ static void parse_atomic(int atok)
 ST_FUNC void unary(void)
 {
     int n, t, align, size, r;
+    ctype_t ct;
     CType type;
     Sym *s;
     AttributeDef ad;
@@ -5689,11 +5700,11 @@ ST_FUNC void unary(void)
     case TOK_STR:
     case_TOK_STR:
         /* string parsing */
-        t = char_type.t;
+        ct = char_type.t;
     str_init:
         if (tcc_state->warn_write_strings & WARN_ON)
-            t |= VT_CONSTANT;
-        type.t = t;
+            ct |= VT_CONSTANT;
+        type.t = ct;
         mk_pointer(&type);
         type.t |= VT_ARRAY;
         memset(&ad, 0, sizeof(AttributeDef));
@@ -7192,6 +7203,7 @@ static void gexpr_decl(void)
 static void block(int flags)
 {
     int a, b, c, d, e, t;
+    ctype_t ct;
     struct scope o;
     Sym *s;
 
@@ -7415,11 +7427,11 @@ again:
             expect("switch");
         cr = tcc_malloc(sizeof(struct case_t));
         dynarray_add(&cur_switch->p, &cur_switch->n, cr);
-        t = cur_switch->sv.type.t;
-        cr->v1 = cr->v2 = value64(expr_const64(), t);
+        ct = cur_switch->sv.type.t;
+        cr->v1 = cr->v2 = value64(expr_const64(), ct);
         if (tok == TOK_DOTS && gnu_ext) {
             next();
-            cr->v2 = value64(expr_const64(), t);
+            cr->v2 = value64(expr_const64(), ct);
             if (case_cmp(cr->v2, cr->v1) < 0)
                 tcc_warning("empty case range");
         }

@@ -3,3 +3,5 @@ obj/
 *.o
 src/tccdefs_.h
 src/c2str
+# reference tinycc checkout, cloned on demand by test/equivalence.sh
+test/ref/

@@ -141,3 +141,40 @@ tinycc's core compiles for the eZ80 today. The complete list of blockers:
 MOS binaries start with a 64-byte header: `jp $040045` (`c3 45 00 04`), a
 60-byte name field at offset 4, then `MOS` and a version byte at 0x40. Origin
 is `0x40000`. `agondev-setname` writes the name field.
+
+## Finding tinycc's 32-bit assumptions
+
+`CType.t` has to be widened on a machine whose `int` is 24 bits, and the
+problem with that change is that it is invisible: on a 32-bit host the widened
+type and `int` are the same thing, so every place that should have been
+widened and was not still compiles and still works. The compiler cannot help.
+
+What makes it visible is building the type *wider than the host's int*:
+
+    typedef int64_t ctype_t;     /* -DACC_FIND_NARROWING */
+
+Every place that holds a type word in an `int` then becomes a
+`-Wshorten-64-to-32` warning. Subtracting the warnings the tree already had
+leaves the ones the change is responsible for -- 51 of them, in 3 files -- and
+the count is driven to zero. It is not a supported build, only an instrument.
+
+Two things that turned up which a narrower search would have missed:
+
+* `block()`, `unary()` and `tcc_get_dwarf_info()` each reuse one variable for
+  both a type word and something narrower (a token, a DWARF offset). Widening
+  the variable would have worked and hidden the reuse; each got a second name
+  instead.
+* `parse_btype`'s `bt` and `st`, and `adjust_bf`'s return value, are type
+  words held in `int`.
+
+## Why the equivalence test exists
+
+The widening above was semantics-preserving *except* for one site, where the
+replacement of a use was applied by line number after an insertion had already
+moved it. The result read an uninitialised variable in `gv()`. It compiled
+without a warning, passed every data-model assertion, and produced wrong code
+for bitfields, enums, integer promotion and struct return.
+
+`test/equivalence.sh` caught it: five objects out of 135 differed from
+pristine tinycc's. Nothing else in the suite noticed. Any change to the shared
+core should be run against it.

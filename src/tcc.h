@@ -448,8 +448,26 @@ typedef struct CString {
 } CString;
 
 /* type definition */
+/* The word of type flags in a CType.
+ *
+ * It needs 29 bits: 0-16 are flags, and 20-31 are a bitfield's position and
+ * size (VT_STRUCT_SHIFT). It cannot be repacked into 24 -- dropping TLS, VLAs
+ * and long long bitfields still leaves 25 -- so on the eZ80, whose int is
+ * three bytes, it has to be wider than an int. It is spelled out here rather
+ * than left as `int` so that the places which carry a type word in a local or
+ * a parameter can be spelled the same way and found.
+ *
+ * ACC_FIND_NARROWING builds it as a 64-bit type, which makes every implicit
+ * narrowing to an int a -Wconversion warning on an ordinary host compiler.
+ * That is how the places below were found; it is not a supported build. */
+#ifdef ACC_FIND_NARROWING
+typedef int64_t ctype_t;
+#else
+typedef int32_t ctype_t;
+#endif
+
 typedef struct CType {
-    int t;
+    ctype_t t;
     struct Sym *ref;
 } CType;
 
@@ -527,7 +545,7 @@ typedef struct Sym {
                 int jnext; /* next jump label */
                 int jind; /* label position */
                 struct FuncAttr f; /* function attributes */
-                int auxtype; /* bitfield access type */
+                ctype_t auxtype; /* bitfield access type */
             };
         };
         long long enum_val; /* enum constant if IS_ENUM_VAL */
@@ -1442,7 +1460,7 @@ ST_FUNC int tccgen_compile(TCCState *s1);
 ST_FUNC void tccgen_finish(TCCState *s1);
 ST_FUNC void check_vstack(void);
 
-ST_INLN int is_float(int t);
+ST_INLN int is_float(ctype_t t);
 ST_FUNC int ieee_finite(double d);
 ST_FUNC int exact_log2p1(int i);
 ST_FUNC void test_lvalue(void);
@@ -1459,7 +1477,7 @@ ST_FUNC void greloca(Section *s, Sym *sym, unsigned long offset, int type, addr_
 ST_INLN void sym_free(Sym *sym);
 ST_FUNC Sym *sym_push(int v, CType *type, int r, int c);
 ST_FUNC void sym_pop(Sym **ptop, Sym *b, int keep);
-ST_FUNC Sym *sym_push2(Sym **ps, int v, int t, int c);
+ST_FUNC Sym *sym_push2(Sym **ps, int v, ctype_t t, int c);
 ST_FUNC Sym *sym_find2(Sym *s, int v);
 ST_INLN Sym *sym_find(int v);
 ST_FUNC Sym *label_find(int v);
@@ -1467,7 +1485,7 @@ ST_FUNC Sym *label_push(Sym **ptop, int v, int flags);
 ST_FUNC void label_pop(Sym **ptop, Sym *slast, int keep);
 ST_INLN Sym *struct_find(int v);
 
-ST_FUNC Sym *global_identifier_push(int v, int t, int c);
+ST_FUNC Sym *global_identifier_push(int v, ctype_t t, int c);
 ST_FUNC Sym *external_global_sym(int v, CType *type);
 ST_FUNC Sym *external_helper_sym(int v);
 ST_FUNC void vpush_helper_func(int v);
