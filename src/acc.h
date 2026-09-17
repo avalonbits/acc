@@ -68,7 +68,9 @@ enum {
     TK_SEMI, TK_COMMA, TK_ASSIGN,
     TK_PLUS, TK_MINUS, TK_STAR, TK_SLASH, TK_PERCENT,
     TK_AMP, TK_PIPE, TK_CARET, TK_TILDE,
-    TK_SHL, TK_SHR
+    TK_SHL, TK_SHR,
+    TK_LT, TK_GT, TK_LE, TK_GE, TK_EQ, TK_NE,
+    TK_NOT
 };
 
 extern int      tok;        /* the current token */
@@ -155,6 +157,7 @@ void vpush_local(int offset);
 void vpush_reg(int reg);
 void vstore_local(int offset);        /* pop the top into a local */
 void vbinop(int t);                   /* combine the top two with token t */
+void vcmp(int op);                    /* compare the top two; leaves 0 or 1 */
 void vneg(void);
 void vnot(void);
 int  vpop_reg(void);                  /* force the top into a register */

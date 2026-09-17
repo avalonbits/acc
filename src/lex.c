@@ -390,7 +390,14 @@ void next(void)
     case '}': tok = TK_RBRACE;  return;
     case ';': tok = TK_SEMI;    return;
     case ',': tok = TK_COMMA;   return;
-    case '=': tok = TK_ASSIGN;  return;
+    case '=':
+        if (*p == '=') { p++; tok = TK_EQ; return; }
+        tok = TK_ASSIGN;
+        return;
+    case '!':
+        if (*p == '=') { p++; tok = TK_NE; return; }
+        tok = TK_NOT;
+        return;
     case '+': tok = TK_PLUS;    return;
     case '-': tok = TK_MINUS;   return;
     case '*': tok = TK_STAR;    return;
@@ -402,10 +409,14 @@ void next(void)
     case '~': tok = TK_TILDE;   return;
     case '<':
         if (*p == '<') { p++; tok = TK_SHL; return; }
-        break;
+        if (*p == '=') { p++; tok = TK_LE;  return; }
+        tok = TK_LT;
+        return;
     case '>':
         if (*p == '>') { p++; tok = TK_SHR; return; }
-        break;
+        if (*p == '=') { p++; tok = TK_GE;  return; }
+        tok = TK_GT;
+        return;
     }
 
     acc_error_at(line, "stray '%c' in the source", c);
@@ -441,6 +452,13 @@ const char *tok_spelling(int t)
     case TK_TILDE:     return "'~'";
     case TK_SHL:       return "'<<'";
     case TK_SHR:       return "'>>'";
+    case TK_LT:        return "'<'";
+    case TK_GT:        return "'>'";
+    case TK_LE:        return "'<='";
+    case TK_GE:        return "'>='";
+    case TK_EQ:        return "'=='";
+    case TK_NE:        return "'!='";
+    case TK_NOT:       return "'!'";
     }
 
     return "that";
@@ -455,6 +473,7 @@ int tok_is_unimplemented_op(int t)
     case TK_STAR: case TK_SLASH: case TK_PERCENT:
     case TK_AMP:  case TK_PIPE:  case TK_CARET:
     case TK_SHL:  case TK_SHR:
+    case TK_NOT:
         return 1;
     }
 

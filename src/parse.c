@@ -133,18 +133,88 @@ static void primary(void)
         return;
     }
 
+    /* An operator acc has not got to yet, where an expression was meant to
+     * start -- a leading `!` or `*`. Name the operator, as expect() does when
+     * one turns up where a statement was meant to end; "expected an
+     * expression" is true and sends the reader looking for the wrong thing. */
+    if (tok_is_unimplemented_op(tok))
+        acc_error_at(tok_line, "%s is not supported yet", tok_spelling(tok));
+
     acc_error_at(tok_line, "expected an expression, found %s", tok_spelling(tok));
 }
 
-static void additive(void)
+/* Precedence, lowest binding last. Each level is split in two: the whole
+ * thing, and the part after its first operand. expr has to read an identifier
+ * before it can tell an assignment from a value, and when it turns out to be
+ * a value the operand is already on the stack -- so it resumes at the `_rest`
+ * of every level rather than starting over. */
+static void additive_rest(void)
 {
-    primary();
     while (tok == TK_PLUS || tok == TK_MINUS) {
         int op = tok;
 
         next();
         primary();
         vbinop(op);
+    }
+}
+
+static void additive(void)
+{
+    primary();
+    additive_rest();
+}
+
+static int is_relational(int t)
+{
+    return t == TK_LT || t == TK_GT || t == TK_LE || t == TK_GE;
+}
+
+static void relational_rest(void)
+{
+    additive_rest();
+    while (is_relational(tok)) {
+        int op = tok;
+
+        next();
+        additive();
+        vcmp(op);
+    }
+}
+
+static void relational(void)
+{
+    additive();
+    while (is_relational(tok)) {
+        int op = tok;
+
+        next();
+        additive();
+        vcmp(op);
+    }
+}
+
+static void equality_rest(void)
+{
+    relational_rest();
+    while (tok == TK_EQ || tok == TK_NE) {
+        int op = tok;
+
+        next();
+        relational();
+        vcmp(op);
+    }
+}
+
+static void equality(void)
+{
+    relational();
+    while (tok == TK_EQ || tok == TK_NE) {
+        int op = tok;
+
+        next();
+        relational();
+        vcmp(op);
     }
 }
 
@@ -200,18 +270,12 @@ static void expr(void)
             vpush_local(sym_at(s)->val);
         }
 
-        while (tok == TK_PLUS || tok == TK_MINUS) {
-            int op = tok;
-
-            next();
-            primary();
-            vbinop(op);
-        }
+        equality_rest();
 
         return;
     }
 
-    additive();
+    equality();
 }
 
 /* ------------------------------------------------------------------ */

@@ -70,10 +70,35 @@ rm -f "$sd/stop.c"
 # not see them, and the feature measured as free on a program that never used
 # it. A keyword the benchmark never compiles is a keyword whose code is not
 # being measured.
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
 missing=
 for kw in $(sed -n 's/.*keyword("\([a-z]*\)".*/\1/p' src/lex.c); do
     grep -qE "(^|[^A-Za-z_])$kw([^A-Za-z_0-9]|\$)" $SRCS || missing="$missing $kw"
 done
+
+# And the operators. Keywords alone missed the comparisons, which are not
+# keywords. Whether an operator counts is decided by compiling one -- an
+# operator acc rejects has no code to measure -- rather than by reading the
+# source, which cannot tell an operator the lexer knows from one the code
+# generator implements.
+#
+# Globbing off while this runs, or `*` matches the working directory and the
+# note lists the contents of the repo.
+set -f
+check_op() {
+    printf '%s\n' "$2" > "$tmp/op.c"
+    bin/acc "$tmp/op.c" -o "$tmp/op.bin" -x >/dev/null 2>&1 || return 0
+    grep -qF -- "$1" $SRCS || missing="$missing $1"
+}
+for op in + - '*' / % '&' '|' '^' '<<' '>>' '<' '>' '<=' '>=' '==' '!='; do
+    check_op "$op" "int main(void) { int a = 1; int b = 2; return a $op b; }"
+done
+for op in - '~' '!'; do
+    check_op "$op" "int main(void) { int a = 1; return $op a; }"
+done
+set +f
+
 [ -z "$missing" ] || echo "note: no benchmark input uses:$missing" >&2
 
 status=0

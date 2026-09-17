@@ -337,6 +337,12 @@ static int const_fold(int t, int a, int b, int *out)
     switch (t) {
     case TK_PLUS:  *out = trunc_int(a + b); return 1;
     case TK_MINUS: *out = trunc_int(a - b); return 1;
+    case TK_LT:    *out = a <  b; return 1;
+    case TK_GT:    *out = a >  b; return 1;
+    case TK_LE:    *out = a <= b; return 1;
+    case TK_GE:    *out = a >= b; return 1;
+    case TK_EQ:    *out = a == b; return 1;
+    case TK_NE:    *out = a != b; return 1;
     }
 
     return 0;
@@ -472,6 +478,128 @@ static void fixup_add(int fn, int at)
 }
 
 /* ------------------------------------------------------------------ */
+/* comparisons                                                         */
+
+/* `sbc hl, rr` leaves the flags a comparison needs, but not in a form the
+ * chip can branch on directly for a signed one.
+ *
+ * Z answers == and != on its own. Signed ordering does not: after a - b the
+ * sign flag is the answer only when the subtraction did not overflow, and
+ * when it did the answer is the opposite. That is the condition S xor V, and
+ * there is no flag holding it and no instruction producing it, so the two
+ * cases are branched apart. agondev's compiler calls a helper, __setflag, to
+ * repair the flags; this does it in line because there is nothing to link
+ * against.
+ *
+ * Only two shapes are emitted. `a > b` is `b < a` and `a <= b` is `b >= a`,
+ * both got by swapping the operands before the registers are chosen, which
+ * costs nothing: at that point the two are still descriptions on a stack. */
+
+/* jp cc, nn -- the condition codes this file uses. */
+#define JP_ANY  0xc3
+#define JP_Z    0xca
+#define JP_NZ   0xc2
+#define JP_PE   0xea            /* overflow */
+#define JP_P    0xf2            /* sign clear */
+#define JP_M    0xfa            /* sign set */
+
+static int jump_op(int op);
+static void patch_to_here(int hole);
+
+/* The equality half: Z is the whole answer. `when_equal` is what to leave
+ * when the two were equal, which is 1 for `==` and 0 for `!=`. */
+static void cmp_equal(int when_equal)
+{
+    int to_done;
+
+    ld_rr_imm(R_HL, when_equal);
+    to_done = jump_op(JP_Z);
+    ld_rr_imm(R_HL, 1 - when_equal);
+    patch_to_here(to_done);
+}
+
+/* The ordering half. `when_negative` is what a truly negative difference
+ * means: 1 for `<` and 0 for `>=`.
+ *
+ *      ld hl, when_negative
+ *      jp pe, overflowed     ; the sign flag is not to be believed
+ *      jp m,  done           ; it is, and the difference is negative
+ *      jp     otherwise
+ *  overflowed:
+ *      jp p,  done           ; sign clear after an overflow means negative
+ *  otherwise:
+ *      ld hl, 1 - when_negative
+ *  done:
+ */
+static void cmp_signed(int when_negative)
+{
+    int to_overflowed, to_done, to_otherwise, to_done_from_overflow;
+
+    ld_rr_imm(R_HL, when_negative);
+    to_overflowed = jump_op(JP_PE);
+    to_done       = jump_op(JP_M);
+    to_otherwise  = jump_op(JP_ANY);
+
+    patch_to_here(to_overflowed);
+    to_done_from_overflow = jump_op(JP_P);
+
+    patch_to_here(to_otherwise);
+    ld_rr_imm(R_HL, 1 - when_negative);
+
+    patch_to_here(to_done);
+    patch_to_here(to_done_from_overflow);
+}
+
+void vcmp(int op)
+{
+    Value *lhs = vsp - 2;
+    Value *rhs = vsp - 1;
+    int folded, right;
+
+    if (vtop < 2)
+        acc_error("internal: a comparison with nothing to compare");
+
+    if (lhs->kind == VAL_CONST && rhs->kind == VAL_CONST
+        && const_fold(op, lhs->v, rhs->v, &folded)) {
+        vdrop();
+        vdrop();
+        vpush_const(folded);
+
+        return;
+    }
+
+    /* `a > b` is `b < a`, and `a <= b` is `b >= a`. Swapping costs nothing
+     * here: both sides are still descriptions on a stack, not registers. */
+    if (op == TK_GT || op == TK_LE) {
+        Value swapped = *lhs;
+
+        *lhs = *rhs;
+        *rhs = swapped;
+        op = (op == TK_GT) ? TK_LT : TK_GE;
+    }
+
+    force_into(1, R_HL);
+    right = force_reg_at(0);
+
+    or_a_a();                   /* sbc reads the carry, so clear it */
+    sbc_hl_rr(right);
+
+    vdrop();
+    vdrop();
+
+    switch (op) {
+    case TK_EQ: cmp_equal(1); break;
+    case TK_NE: cmp_equal(0); break;
+    case TK_LT: cmp_signed(1); break;
+    case TK_GE: cmp_signed(0); break;
+    default:
+        acc_error("internal: %s is not a comparison", tok_spelling(op));
+    }
+
+    vpush_reg(R_HL);
+}
+
+/* ------------------------------------------------------------------ */
 /* branches                                                            */
 
 /* Every jump here is a three-byte absolute `jp` and never a two-byte `jr`.
@@ -503,14 +631,19 @@ static int jump_op(int op)
     return hole;
 }
 
+static void patch_to_here(int hole)
+{
+    out_patch24(hole, out_here());
+}
+
 int gen_jump(void)
 {
-    return jump_op(0xc3);                        /* jp nn */
+    return jump_op(JP_ANY);
 }
 
 void gen_jump_to(int target)
 {
-    out_byte(0xc3);                              /* jp nn */
+    out_byte(JP_ANY);
     out_word24(target);
 }
 
@@ -534,12 +667,12 @@ int gen_jump_if_false(void)
     or_a_a();
     sbc_hl_rr(R_BC);
 
-    return jump_op(0xca);                        /* jp z, nn */
+    return jump_op(JP_Z);
 }
 
 void gen_label(int hole)
 {
-    out_patch24(hole, out_here());
+    patch_to_here(hole);
 }
 
 void gen_finish(void)
