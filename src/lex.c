@@ -143,6 +143,7 @@ int      tok;
 int      tok_val;
 NameRef  tok_name;
 int      tok_line;
+int      tok_prev_line;
 
 void lex_open(const char *path)
 {
@@ -228,6 +229,7 @@ void next(void)
     int c;
 
     skip_space();
+    tok_prev_line = tok_line;
     tok_line = line;
     c = (unsigned char) *p;
 
@@ -325,11 +327,36 @@ const char *tok_spelling(int t)
     case TK_SEMI:      return "';'";
     case TK_COMMA:     return "','";
     case TK_ASSIGN:    return "'='";
+    case TK_PLUS:      return "'+'";
+    case TK_MINUS:     return "'-'";
+    case TK_STAR:      return "'*'";
+    case TK_SLASH:     return "'/'";
+    case TK_PERCENT:   return "'%'";
+    case TK_AMP:       return "'&'";
+    case TK_PIPE:      return "'|'";
+    case TK_CARET:     return "'^'";
+    case TK_TILDE:     return "'~'";
+    case TK_SHL:       return "'<<'";
+    case TK_SHR:       return "'>>'";
     }
 
     return "that";
 }
 
+/* The operators the lexer knows and the code generator does not, so that the
+ * parser can name the missing feature rather than complain about a ';'. The
+ * eZ80 has no instruction for any of them; they are the next milestone. */
+int tok_is_unimplemented_op(int t)
+{
+    switch (t) {
+    case TK_STAR: case TK_SLASH: case TK_PERCENT:
+    case TK_AMP:  case TK_PIPE:  case TK_CARET:
+    case TK_SHL:  case TK_SHR:
+        return 1;
+    }
+
+    return 0;
+}
 
 int accept(int t)
 {
@@ -342,8 +369,18 @@ int accept(int t)
 
 void expect(int t, const char *what)
 {
-    if (tok != t)
-        acc_error_at(tok_line, "expected %s, found %s", what, tok_spelling(tok));
+    if (tok != t) {
+        /* An operator acc has not got to yet turns up where a statement was
+         * meant to end. Say which operator rather than ask for the ';'. */
+        if (tok_is_unimplemented_op(tok))
+            acc_error_at(tok_line, "%s is not supported yet", tok_spelling(tok));
+
+        /* Otherwise point at where the missing token should have gone, which
+         * is the end of the token before it, not the start of whatever
+         * turned up instead: a ';' left off the end of line 4 is a mistake
+         * on line 4, even though the '}' that reveals it is on line 5. */
+        acc_error_at(tok_prev_line, "expected %s, found %s", what, tok_spelling(tok));
+    }
     next();
 }
 

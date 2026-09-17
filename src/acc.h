@@ -72,6 +72,7 @@ extern int      tok;        /* the current token */
 extern int      tok_val;    /* its value, when TK_INT */
 extern NameRef  tok_name;   /* its name, when TK_IDENT */
 extern int      tok_line;   /* the line it started on */
+extern int      tok_prev_line; /* where the token before it ended */
 
 void lex_init(void);
 void lex_open(const char *path);
@@ -80,6 +81,7 @@ void next(void);                 /* advance to the following token */
 int  accept(int t);              /* consume t if present; say whether it was */
 void expect(int t, const char *what);
 const char *tok_spelling(int t);
+int         tok_is_unimplemented_op(int t); /* for diagnostics */
 
 /* ------------------------------------------------------------------ */
 /* symbols                                                             */
