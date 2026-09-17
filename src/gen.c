@@ -471,6 +471,77 @@ static void fixup_add(int fn, int at)
     nfixups++;
 }
 
+/* ------------------------------------------------------------------ */
+/* branches                                                            */
+
+/* Every jump here is a three-byte absolute `jp` and never a two-byte `jr`.
+ * A relative jump would be smaller, but its offset is a signed byte, so
+ * emitting one means knowing the distance to a target that has not been
+ * reached yet -- which in a one-pass compiler means either guessing and
+ * fixing up, or a second pass over the code. Neither is worth two bytes a
+ * branch yet, and the shape here leaves room to do it later: every jump
+ * already goes through one place.
+ *
+ * Nothing is live across a branch. The value stack is empty at every
+ * statement boundary, which is where all of these are emitted, so no register
+ * has to survive one and there is no state to reconcile where two paths
+ * meet. */
+
+int gen_here(void)
+{
+    return out_here();
+}
+
+static int jump_op(int op)
+{
+    int hole;
+
+    out_byte(op);
+    hole = out_here();
+    out_word24(0);
+
+    return hole;
+}
+
+int gen_jump(void)
+{
+    return jump_op(0xc3);                        /* jp nn */
+}
+
+void gen_jump_to(int target)
+{
+    out_byte(0xc3);                              /* jp nn */
+    out_word24(target);
+}
+
+int gen_jump_if_false(void)
+{
+    int r = vpop_reg();
+
+    if (r != R_HL)
+        mov_rr(R_HL, r);
+
+    /* There is no "is this register zero" instruction for a 24-bit value.
+     * The upper byte of HL is not addressable, so the 16-bit idiom -- `ld a,l`
+     * then `or a,h` -- would test two thirds of the value and call 0x010000
+     * false. Subtracting zero tests all of it.
+     *
+     * This clobbers BC, which is free because the stack is empty here: the
+     * condition was the only thing on it and it has just been popped. */
+    if (vtop != 0)
+        acc_error("internal: %d values still live at a branch", vtop);
+    ld_rr_imm(R_BC, 0);
+    or_a_a();
+    sbc_hl_rr(R_BC);
+
+    return jump_op(0xca);                        /* jp z, nn */
+}
+
+void gen_label(int hole)
+{
+    out_patch24(hole, out_here());
+}
+
 void gen_finish(void)
 {
     int i;

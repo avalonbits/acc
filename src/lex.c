@@ -285,13 +285,46 @@ static void skip_space(void)
 /* The keywords, checked against an interned name rather than by strcmp on
  * every identifier. Interning gives each spelling one offset, so recognising
  * a keyword is three integer compares. */
-static NameRef kw_int, kw_void, kw_return;
+/* Keywords are recognised by where they are, not by comparing against each
+ * of them in turn.
+ *
+ * They are interned before anything else, so they occupy the first bytes of
+ * the arena and every other name has a larger offset. That makes one compare
+ * and one indexed load enough: a chain of `tok_name == kw_...` tests costs a
+ * comparison per keyword on every identifier in the program, which is what
+ * the compiler does most, and adding a keyword made it slower for everyone.
+ * Adding one here costs nothing.
+ *
+ * The table has an entry per byte of arena the keywords occupy, of which only
+ * the ones a name actually starts at are ever read. The rest say TK_IDENT so
+ * that a bug reads as "not a keyword" rather than as whatever was there. */
+static NameRef kw_limit;
+static unsigned char kw_tok[64];
+
+static void keyword(const char *s, int len, int t)
+{
+    NameRef r = name_intern(s, len);
+
+    if (r >= (NameRef) sizeof kw_tok)
+        acc_error("internal: the keyword table is too small");
+    kw_tok[r] = (unsigned char) t;
+    if (r + 1 > kw_limit)
+        kw_limit = r + 1;
+}
 
 static void keywords_init(void)
 {
-    kw_int    = name_intern("int", 3);
-    kw_void   = name_intern("void", 4);
-    kw_return = name_intern("return", 6);
+    unsigned i;
+
+    for (i = 0; i < sizeof kw_tok; i++)
+        kw_tok[i] = TK_IDENT;
+
+    keyword("int", 3, TK_KW_INT);
+    keyword("void", 4, TK_KW_VOID);
+    keyword("return", 6, TK_KW_RETURN);
+    keyword("if", 2, TK_KW_IF);
+    keyword("else", 4, TK_KW_ELSE);
+    keyword("while", 5, TK_KW_WHILE);
 }
 
 void next(void)
@@ -345,10 +378,7 @@ void next(void)
         while (is_alnum((unsigned char) *p))
             p++;
         tok_name = name_intern(s, (int) (p - s));
-        if (tok_name == kw_int)         tok = TK_KW_INT;
-        else if (tok_name == kw_void)   tok = TK_KW_VOID;
-        else if (tok_name == kw_return) tok = TK_KW_RETURN;
-        else                            tok = TK_IDENT;
+        tok = (tok_name < kw_limit) ? kw_tok[tok_name] : TK_IDENT;
         return;
     }
 
@@ -390,6 +420,9 @@ const char *tok_spelling(int t)
     case TK_KW_INT:    return "'int'";
     case TK_KW_VOID:   return "'void'";
     case TK_KW_RETURN: return "'return'";
+    case TK_KW_IF:     return "'if'";
+    case TK_KW_ELSE:   return "'else'";
+    case TK_KW_WHILE:  return "'while'";
     case TK_LPAREN:    return "'('";
     case TK_RPAREN:    return "')'";
     case TK_LBRACE:    return "'{'";

@@ -59,6 +59,9 @@ enum {
     TK_KW_INT,
     TK_KW_VOID,
     TK_KW_RETURN,
+    TK_KW_IF,
+    TK_KW_ELSE,
+    TK_KW_WHILE,
 
     /* punctuation, one per spelling so the parser never re-reads text */
     TK_LPAREN, TK_RPAREN, TK_LBRACE, TK_RBRACE,
@@ -158,6 +161,15 @@ int  vpop_reg(void);                  /* force the top into a register */
 void vdrop(void);
 
 void gen_call(int fn, int nargs);
+
+/* Branches. A jump whose target is not known yet is emitted with a hole and
+ * filled in by gen_label once the target is reached; one going backwards is
+ * emitted with the address it already has. */
+int  gen_here(void);                  /* the address a backward jump aims at */
+int  gen_jump(void);                  /* jp nn, to be patched; returns the hole */
+void gen_jump_to(int target);         /* jp nn, backwards */
+int  gen_jump_if_false(void);         /* pop the top, jump when it is zero */
+void gen_label(int hole);             /* fill a hole in with here */
 void gen_return(void);
 void gen_finish(void);          /* resolve calls to functions defined later */
 void gen_startup(int report_by_exit);  /* the entry stub MOS lands on */

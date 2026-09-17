@@ -244,23 +244,107 @@ static void declaration(void)
     expect(TK_SEMI, "';'");
 }
 
+static void statement(void);
+
+/* `{ ... }` where a statement is expected. Declarations are not allowed in
+ * one: sym_drop_locals drops every local a function has, so there is nothing
+ * yet that could give an inner block a scope of its own, and a name declared
+ * in one would outlive it. Saying so is better than letting it through and
+ * being wrong about where the name ends. */
+static void block(void)
+{
+    while (tok != TK_RBRACE && tok != TK_EOF) {
+        if (tok == TK_KW_INT)
+            acc_error_at(tok_line,
+                         "a declaration has to be at the start of the function");
+        statement();
+    }
+    expect(TK_RBRACE, "'}'");
+}
+
+static void condition(void)
+{
+    expect(TK_LPAREN, "'('");
+    expr();
+    expect(TK_RPAREN, "')'");
+}
+
+/* Dispatched on the token rather than tested against one keyword at a time.
+ * Every statement in the program walks this, and a chain grows a comparison
+ * for each form the language gains. */
 static void statement(void)
 {
-    if (accept(TK_KW_RETURN)) {
+    switch (tok) {
+    case TK_KW_IF: {
+        int to_else;
+
+        next();
+        condition();
+        to_else = gen_jump_if_false();
+        statement();
+
+        /* `else if` needs nothing of its own: the else branch is a statement,
+         * and an if is a statement. A dangling else binds to the nearest if
+         * for the same reason -- the inner if consumes it first. */
+        if (accept(TK_KW_ELSE)) {
+            int to_end = gen_jump();
+
+            gen_label(to_else);
+            statement();
+            gen_label(to_end);
+        } else {
+            gen_label(to_else);
+        }
+
+        return;
+    }
+
+    case TK_KW_WHILE: {
+        int top, to_end;
+
+        next();
+        top = gen_here();
+        condition();
+        to_end = gen_jump_if_false();
+        statement();
+        gen_jump_to(top);
+        gen_label(to_end);
+
+        return;
+    }
+
+    case TK_LBRACE:
+        next();
+        block();
+
+        return;
+
+    case TK_KW_RETURN:
+        next();
         if (tok != TK_SEMI)
             expr();
         expect(TK_SEMI, "';'");
         gen_return();
 
         return;
-    }
 
-    if (accept(TK_SEMI))
+    case TK_SEMI:
+        next();
+
         return;
 
-    expr();
-    vdrop();                    /* the value of a statement is discarded */
-    expect(TK_SEMI, "';'");
+    case TK_KW_ELSE:
+        acc_error_at(tok_line, "'else' without an 'if'");
+
+        return;
+
+    default:
+        expr();
+        vdrop();                /* the value of a statement is discarded */
+        expect(TK_SEMI, "';'");
+
+        return;
+    }
 }
 
 static void function(void)
@@ -306,9 +390,7 @@ static void function(void)
     gen_func_begin(fn, nparams);
     while (tok == TK_KW_INT)
         declaration();
-    while (tok != TK_RBRACE && tok != TK_EOF)
-        statement();
-    expect(TK_RBRACE, "'}'");
+    block();
     gen_func_end();
 
     sym_drop_locals();
