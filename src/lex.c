@@ -421,7 +421,10 @@ static void lex_number(int line)
      * compiles, not about the machine acc is running on. */
     uint32_t value = 0;
     int is_hex = 0;
+    int suffix_u = 0, suffix_l = 0;
     char *start = cursor;
+
+    tok_type = TY_VOID;         /* no type chosen yet; the ladder picks one */
 
     if (*cursor == '0' && (cursor[1] == 'x' || cursor[1] == 'X')) {
         is_hex = 1;
@@ -467,22 +470,68 @@ static void lex_number(int line)
         return;
     }
 
-    if (value <= 0x7fffffUL) {
+    /* The suffix, which narrows the list before the value is measured
+     * against it: u takes the signed types out, l takes int out. Either
+     * order and either case, and at most one u and two l -- and `lL` is not
+     * a suffix at all, because the two letters of a long long one have to
+     * match. */
+    while (*cursor == 'u' || *cursor == 'U'
+           || *cursor == 'l' || *cursor == 'L') {
+        if (*cursor == 'u' || *cursor == 'U') {
+            if (suffix_u)
+                acc_error_at(line, "the constant has more than one 'u' suffix");
+            suffix_u = 1;
+            cursor++;
+
+            continue;
+        }
+
+        if (suffix_l)
+            acc_error_at(line, "the constant has more than one 'l' suffix");
+        if (cursor[1] == *cursor) {
+            acc_error_at(line, "'long long' is not supported yet");
+        }
+        suffix_l = 1;
+        cursor++;
+    }
+    if (is_alnum((unsigned char) *cursor))
+        acc_error_at(line, "'%c' is not a suffix a constant can have", *cursor);
+
+    /* C99 types a constant by the first type in that list that can hold it.
+     * The unsigned types are in it when the suffix says u, and also when a
+     * hex or octal constant has no suffix at all -- which is the only place
+     * the decimal and hex forms differ. acc has no long long, so past the end
+     * of long it refuses. */
+    if (suffix_u) {
+        if (!suffix_l && value <= 0xffffffUL)
+            tok_type = TY_UINT;
+        else if (value <= 0xffffffffUL)
+            tok_type = TY_ULONG;
+    } else if (suffix_l) {
+        if (value <= 0x7fffffffUL)
+            tok_type = TY_LONG;
+        else if (is_hex)
+            tok_type = TY_ULONG;
+    } else if (value <= 0x7fffffUL) {
         tok_type = TY_INT;
     } else if (is_hex && value <= 0xffffffUL) {
         tok_type = TY_UINT;
-        /* Normalised to the signed pattern of the same 24 bits, so that
-         * acc folds it identically whether it is itself running on a
-         * 24-bit int or a 32-bit one. */
-        value -= 0x1000000UL;
     } else if (value <= 0x7fffffffUL) {
         tok_type = TY_LONG;
     } else if (is_hex) {
         tok_type = TY_ULONG;
-    } else {
+    }
+
+    if (tok_type == TY_VOID)
         acc_error_at(line, "the constant is too large for a long, and "
                            "long long is not supported yet");
-    }
+
+    /* An unsigned int is normalised to the signed pattern of the same 24
+     * bits, so that acc folds it identically whether it is itself running on
+     * a 24-bit int or a 32-bit one. */
+    if (tok_type == TY_UINT && value > 0x7fffffUL)
+        value -= 0x1000000UL;
+
     tok = TK_INT;
     tok_val = (long) value;
 }
