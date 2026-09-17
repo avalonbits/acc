@@ -271,6 +271,7 @@ static void tal_free_impl(TinyAlloc **pal, void *p TAL_DEBUG_PARAMS)
 
 static void *tal_realloc_impl(TinyAlloc **pal, void *p, unsigned size TAL_DEBUG_PARAMS)
 {
+    ZSITE("token arenas");
     tal_header_t *header;
     void *ret;
     unsigned adj_size = TAL_ALIGN(size) + sizeof(tal_header_t);
@@ -483,6 +484,7 @@ static TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len)
     /* expand token table if needed */
     i = tok_ident - TOK_IDENT;
     if ((i % TOK_ALLOC_INCR) == 0) {
+        ZSITE("table_ident");
         ptable = tcc_realloc(table_ident, (i + TOK_ALLOC_INCR) * sizeof(TokenSym *));
         table_ident = ptable;
     }
@@ -3727,6 +3729,7 @@ ST_FUNC void tccpp_new(TCCState *s)
         set_idnum(i, IS_ID);
 
     /* init allocators */
+    ZSITE("token arenas");
     tal_new(&toksym_alloc, TOKSYM_TAL_SIZE);
     tal_new(&tokstr_alloc, TOKSTR_TAL_SIZE);
 

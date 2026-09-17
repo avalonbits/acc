@@ -658,6 +658,7 @@ ST_FUNC void greloc(Section *s, Sym *sym, unsigned long offset, int type)
 /* symbol allocator */
 static Sym *__sym_malloc(void)
 {
+    ZSITE("Sym pool");
     Sym *sym_pool, *sym, *last_sym;
     int i;
 

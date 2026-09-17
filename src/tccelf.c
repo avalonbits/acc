@@ -311,6 +311,7 @@ ST_FUNC void section_realloc(Section *sec, unsigned long new_size)
         size = 1;
     while (size < new_size)
         size = size * 2;
+    ZSITE(sec->name[0] ? sec->name : "section");
     data = tcc_realloc(sec->data, size);
     memset(data + sec->data_allocated, 0, size - sec->data_allocated);
     sec->data = data;
@@ -3875,6 +3876,7 @@ static int tcc_load_alacarte(TCCState *s1, int fd, int size, int entrysize)
     ElfW(Sym) *sym;
     ArchiveHeader hdr;
 
+    ZSITE("archive symbol index");
     data = tcc_malloc(size);
     if (full_read(fd, data, size) != size)
         goto invalid;

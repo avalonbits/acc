@@ -64,6 +64,7 @@
 #define EZ80_RAM_SIZE   0x070000
 #define EZ80_RAM_END    (EZ80_RAM_START + EZ80_RAM_SIZE)
 
+
 #define ELF_START_ADDR EZ80_RAM_START
 #define ELF_PAGE_SIZE  0x1
 
@@ -207,6 +208,16 @@ ST_FUNC void ez80_add_linker_symbols(TCCState *s1)
      * quoting and redirection. */
     abs_sym(s1, "_has_exit_handler", 0);
 
+    /* Both at the top of RAM, which is what agondev's linker script does: the
+     * heap grows up from the end of bss and the stack grows down from here,
+     * out of one region with nothing between them.
+     *
+     * That means sbrk only refuses once the heap reaches where the stack
+     * *starts*, by which point the heap has been overwriting the stack for a
+     * long time -- running out of memory shows up as the program going
+     * haywire rather than as an error. Fencing the heap below the stack would
+     * turn it into a clean "memory full", at the cost of no longer producing
+     * the same image as agondev's ld. See docs/porting-notes.md. */
     abs_sym(s1, "__stack", EZ80_RAM_END);
     abs_sym(s1, "___heaptop", EZ80_RAM_END);
 

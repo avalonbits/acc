@@ -219,21 +219,37 @@ static void tcc_concat_str(char **pp, const char *str, int sep)
 }
 
 /********************************************************/
+#ifdef ZMALLOC
+#include "zmalloc.h"
+#endif
+
 /* memory management */
 
 /* we'll need the actual versions for a minute */
 #undef free
 #undef realloc
 
+/* Everything tcc allocates comes through here, which is why the measuring
+ * shim hooks this rather than renaming malloc on the compile line: tcc
+ * poisons the libc names on purpose and un-poisons them just above, which
+ * would undo the renames too. */
+#ifdef ZMALLOC
+# define REAL_REALLOC z_realloc
+# define REAL_FREE    z_free
+#else
+# define REAL_REALLOC realloc
+# define REAL_FREE    free
+#endif
+
 static void *default_reallocator(void *ptr, unsigned long size)
 {
     void *ptr1;
     if (size == 0) {
-        free(ptr);
+        REAL_FREE(ptr);
         ptr1 = NULL;
     }
     else {
-        ptr1 = realloc(ptr, size);
+        ptr1 = REAL_REALLOC(ptr, size);
         if (!ptr1) {
             fprintf(stderr, "tcc: memory full\n");
             exit (1);

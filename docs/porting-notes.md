@@ -481,3 +481,71 @@ both are verified by running them on the machine. Writing BIT_SIZE through a
 happened to compute it in a wider register, so no test shows the old code
 failing. They are fixed because they are wrong, not because something caught
 them.
+
+## Measuring memory, and the 403-line cliff
+
+A source of 203 lines compiles and links on the Agon in about 8 seconds. One of
+403 lines, of exactly the same shape, does not finish at all -- it has been let
+run for eleven minutes without either producing a binary or reporting anything.
+
+### What is established
+
+`make bin/acc-mem` builds acc with an allocation shim (zap's, unchanged) that
+reports the peak and what was live when the peak was reached. It hooks
+`default_reallocator` rather than renaming malloc on the compile line, because
+tcc poisons the libc allocator names on purpose and un-poisons them around
+that one function -- which would undo the renames as well. Everything tcc
+allocates goes through it.
+
+Peak for the compile-and-link, on a 64-bit host:
+
+| source | peak |
+| --- | --- |
+| 203 lines | 174,378 B |
+| 403 lines | **234,796 B** |
+| 803 lines | 355,692 B |
+| 1,603 lines | 603,692 B |
+
+The Agon has **206,578 bytes** for heap and stack together. The 403-line peak
+is above that before the stack is counted at all, and the two figures bracket
+the observed cliff.
+
+Where it goes, for the 403-line case:
+
+    token arenas   75,088      .hashtab        9,884
+    Sym pool       57,296      table_ident     8,192
+    .text          32,914      .symtab         4,096
+
+The first two are 56% of the peak and are pointer-heavy, so they shrink with
+3-byte pointers. `.text` does not shrink -- it is eZ80 code either way.
+
+### What is not established
+
+Everything about the *host* run is linear: time (3-5 ms at every size), peak,
+and allocation count (692, 944, 1458, 2474). So the cliff is not algorithmic.
+
+But it is also not simply exhaustion. Fencing the heap 16 KB below the stack,
+so that sbrk refuses before the heap can reach it, did not make the 403-line
+case fail quickly and cleanly -- it still ran for eleven minutes. Something
+else is slow, and the obvious candidates have been ruled out:
+
+* it is not the section growth, which doubles rather than stepping;
+* it is not allocator traffic, which is linear and never more than ~70 live
+  blocks;
+* it is not SD I/O, which the emulator does not charge for.
+
+### The hazard that is real either way
+
+`___heaptop` and `__stack` are the same address, which is what agondev's
+linker script does. The heap grows up and the stack grows down out of one
+region with nothing between them, and `sbrk` only refuses when the heap
+reaches where the stack *starts*. By then the heap has been overwriting the
+stack for a long time, so running out of memory on this machine shows up as
+the program going haywire rather than as an error.
+
+Fencing the heap below the stack turns that into tcc's own "memory full".
+It is not done, because acc's images would then stop being byte-identical to
+agondev's ld -- `test/linkcmp.sh` fails on exactly the bytes that hold
+`___heaptop` -- and that comparison has caught more than this would. It is the
+right change to make once there is something better to compare against, or
+behind a flag.

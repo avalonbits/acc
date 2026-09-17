@@ -1333,6 +1333,15 @@ PUB_FUNC char *tcc_basename(const char *name);
 PUB_FUNC char *tcc_fileextension (const char *name);
 
 /* all allocations - even MEM_DEBUG - use these */
+/* Names the next allocation for the measuring shim; nothing when it is not
+   compiled in. See test/zmalloc.h. */
+#ifdef ZMALLOC
+extern const char *z_site;
+# define ZSITE(s) (z_site = (s))
+#else
+# define ZSITE(s) ((void)0)
+#endif
+
 PUB_FUNC void tcc_free(void *ptr);
 PUB_FUNC void *tcc_malloc(unsigned long size);
 PUB_FUNC void *tcc_mallocz(unsigned long size);

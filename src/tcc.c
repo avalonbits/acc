@@ -22,6 +22,10 @@
 # define ONE_SOURCE 1
 #endif
 
+#ifdef ZMALLOC
+# include "zmalloc.h"
+#endif
+
 #include "tcc.h"
 #if ONE_SOURCE
 # include "libtcc.c"
@@ -401,5 +405,12 @@ redo:
         goto redo;
     if (ppfp)
         tcc_fclose(ppfp);
+#ifdef ZMALLOC
+    /* Called here rather than through atexit: the Agon build links with
+     * _has_exit_handler=0, so registered handlers never run. What a run costs
+     * in memory decides whether it fits on that machine at all, so the figure
+     * has to come from the machine and not from a host with wider pointers. */
+    z_report();
+#endif
     return ret;
 }

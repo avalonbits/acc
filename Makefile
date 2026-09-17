@@ -43,6 +43,19 @@ $(GEN): include/tccdefs.h src/conftest.c | $(BIN)
 	$(CC) -DC2STR src/conftest.c -o $(BIN)/c2str
 	$(BIN)/c2str $< $@
 
+# acc with an allocation shim that reports the peak at exit. A separate binary
+# so the ordinary build carries none of it.
+#
+#   make bin/acc-mem && bin/acc-mem -nostdlib -o /dev/null x.c -L... -lagon
+#
+# It hooks default_reallocator rather than renaming malloc on the compile
+# line, which is what zap does: tcc poisons the libc allocator names on
+# purpose, and un-poisons them around that one function, which would undo the
+# renames as well. Everything tcc allocates goes through it.
+$(BIN)/acc-mem: $(DEPS) test/zmalloc.c test/zmalloc.h $(GEN) | $(BIN)
+	$(CC) $(CFLAGS) $(WARN) $(CPPFLAGS) -Itest -DTCC_TARGET_EZ80 \
+	  -DZMALLOC -o $@ src/tcc.c test/zmalloc.c
+
 $(BIN):
 	@mkdir -p $(BIN)
 
