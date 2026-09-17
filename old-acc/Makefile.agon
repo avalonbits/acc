@@ -40,6 +40,24 @@ DEPS = $(wildcard src/*.c src/*.h agon/include/*.h agon/include/sys/*.h) \
 .PHONY: all clean size warnings
 all: $(BIN)/acc.bin
 
+$(BIN)/acc.bin: $(OBJS) | $(BIN)
+	@echo [linking $@]
+	$(LD) $(LDFLAGS) -Map=$(BIN)/acc.map -o $@ $(OBJS) -L$(AGONDEV)/lib -lagon
+	$(TOOLS)/agondev-setname $@ >/dev/null
+	@$(MAKE) -s -f Makefile.agon size
+
+$(OBJ)/tcc.o: src/tcc.c $(DEPS) | $(OBJ)
+	@echo [compiling acc]
+	$(CC) $(CFLAGS) -c src/tcc.c -o $@
+
+$(OBJ)/agon.o: agon/src/agon.c $(DEPS) | $(OBJ)
+	@echo [compiling the Agon shims]
+	$(CC) $(CFLAGS) -c agon/src/agon.c -o $@
+
+# tccdefs_.h is built by the host Makefile; it is target-independent.
+src/tccdefs_.h:
+	$(MAKE) $@
+
 size: $(BIN)/acc.bin
 	@echo "[$$(stat -c%s $(BIN)/acc.bin) bytes of image, of 458752 available]"
 	@$(TOOLS)/ez80-none-elf-size $(OBJS) | tail -n +2 \
