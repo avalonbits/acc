@@ -345,6 +345,24 @@ static void keywords_init(void)
     keyword("unsigned", 8, TK_KW_UNSIGNED);
 }
 
+/* Punctuation, by the character that begins it. TK_EOF means the character
+ * is not punctuation at all, which is what makes zero the right default.
+ *
+ * A switch over these compiled to twenty-three comparisons in a row -- the
+ * backend builds no jump table -- so a `;` cost a few and anything late in
+ * the list cost twenty, once per punctuation token in the program. */
+static const unsigned char punct[256] = {
+    ['('] = TK_LPAREN, [')'] = TK_RPAREN,
+    ['{'] = TK_LBRACE, ['}'] = TK_RBRACE,
+    [';'] = TK_SEMI,   [','] = TK_COMMA,
+    ['='] = TK_ASSIGN, ['!'] = TK_NOT,
+    ['+'] = TK_PLUS,   ['-'] = TK_MINUS,
+    ['*'] = TK_STAR,   ['/'] = TK_SLASH,  ['%'] = TK_PERCENT,
+    ['&'] = TK_AMP,    ['|'] = TK_PIPE,   ['^'] = TK_CARET,
+    ['~'] = TK_TILDE,
+    ['<'] = TK_LT,     ['>'] = TK_GT
+};
+
 void next(void)
 {
     int c;
@@ -428,43 +446,32 @@ void next(void)
     }
 
     cursor++;
-    switch (c) {
-    case '(': tok = TK_LPAREN;  return;
-    case ')': tok = TK_RPAREN;  return;
-    case '{': tok = TK_LBRACE;  return;
-    case '}': tok = TK_RBRACE;  return;
-    case ';': tok = TK_SEMI;    return;
-    case ',': tok = TK_COMMA;   return;
-    case '=':
-        if (*cursor == '=') { cursor++; tok = TK_EQ; return; }
-        tok = TK_ASSIGN;
-        return;
-    case '!':
-        if (*cursor == '=') { cursor++; tok = TK_NE; return; }
-        tok = TK_NOT;
-        return;
-    case '+': tok = TK_PLUS;    return;
-    case '-': tok = TK_MINUS;   return;
-    case '*': tok = TK_STAR;    return;
-    case '/': tok = TK_SLASH;   return;
-    case '%': tok = TK_PERCENT; return;
-    case '&': tok = TK_AMP;     return;
-    case '|': tok = TK_PIPE;    return;
-    case '^': tok = TK_CARET;   return;
-    case '~': tok = TK_TILDE;   return;
-    case '<':
-        if (*cursor == '<') { cursor++; tok = TK_SHL; return; }
-        if (*cursor == '=') { cursor++; tok = TK_LE;  return; }
-        tok = TK_LT;
-        return;
-    case '>':
-        if (*cursor == '>') { cursor++; tok = TK_SHR; return; }
-        if (*cursor == '=') { cursor++; tok = TK_GE;  return; }
-        tok = TK_GT;
-        return;
-    }
+    tok = punct[(unsigned char) c];
+    if (tok == TK_EOF)
+        acc_error_at(line, "stray '%c' in the source", c);
 
-    acc_error_at(line, "stray '%c' in the source", c);
+    /* Four characters can begin a two-character operator: `<` and `>` can be
+     * doubled or followed by `=`, and `=` and `!` can be followed by `=`.
+     * Everything else is one character, so the common case is two compares
+     * that both fail rather than a walk through the pairs. */
+    if (*cursor == '=' || *cursor == c) {
+        switch (c) {
+        case '<':
+            if (*cursor == '<') { cursor++; tok = TK_SHL; }
+            else                { cursor++; tok = TK_LE; }
+            break;
+        case '>':
+            if (*cursor == '>') { cursor++; tok = TK_SHR; }
+            else                { cursor++; tok = TK_GE; }
+            break;
+        case '=':
+            if (*cursor == '=') { cursor++; tok = TK_EQ; }
+            break;
+        case '!':
+            if (*cursor == '=') { cursor++; tok = TK_NE; }
+            break;
+        }
+    }
 }
 
 const char *tok_spelling(int token)
