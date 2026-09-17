@@ -25,6 +25,11 @@ set -u
 cd "$(dirname "$0")/.."
 . test/emu.sh
 
+# The eZ80 in an Agon Light runs at 18.432 MHz. Speed is reported as cycles
+# per byte of source as well as seconds, because that is the figure that can
+# be compared against zap's and against a reading taken on a different input.
+CLOCK=18432000
+
 ACC=${ACC_BIN:-bin/acc.bin}
 RUNS=${1:-10}
 shift 2>/dev/null
@@ -110,6 +115,7 @@ set +f
 
 status=0
 total_all=0
+bytes_all=0
 
 for SRC in $SRCS; do
     [ -f "$SRC" ] || { echo "no such input: $SRC" >&2; status=1; continue; }
@@ -149,13 +155,23 @@ for SRC in $SRCS; do
 
     total=$(printf '%s\n' "$times" | head -n "$RUNS" | awk '{t+=$1} END {print t}')
     total_all=$((total_all + total))
-    printf '%-16s %-14s %2d runs  %d.%02d s  %d.%03d s each\n' \
+    bytes=$(stat -c%s "$SRC")
+    bytes_all=$((bytes_all + bytes))
+
+    # Cycles per byte of source, which is the figure to compare against zap's.
+    # The readings are hundredths of a second for RUNS compiles, so
+    #   cycles/byte = total/100/RUNS * CLOCK / bytes
+    # and CLOCK/100 is exact, which keeps this in integers.
+    printf '%-16s %-14s %2d runs  %d.%02d s  %d.%03d s each  %d cycles/byte\n' \
         "$(basename "$ACC")" "$(basename "$SRC")" "$RUNS" \
         $((total / 100)) $((total % 100)) \
-        $((total / RUNS / 100)) $((total * 10 / RUNS % 1000))
+        $((total / RUNS / 100)) $((total * 10 / RUNS % 1000)) \
+        $((total * (CLOCK / 100) / (RUNS * bytes)))
 done
 
-printf '%-16s %-14s %2d runs  %d.%02d s\n' \
-    "$(basename "$ACC")" "(all)" "$RUNS" $((total_all / 100)) $((total_all % 100))
+printf '%-16s %-14s %2d runs  %d.%02d s%*s%d cycles/byte\n' \
+    "$(basename "$ACC")" "(all)" "$RUNS" \
+    $((total_all / 100)) $((total_all % 100)) 17 "" \
+    $((bytes_all == 0 ? 0 : total_all * (CLOCK / 100) / (RUNS * bytes_all)))
 
 exit $status
