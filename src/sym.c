@@ -83,11 +83,17 @@ int sym_push(NameRef name, int kind, int val)
 
 int sym_find(NameRef name)
 {
-    int i;
+    /* The counter is unsigned so the loop test is not a signed compare. Two
+     * signed ints compared with `<` cannot be done in one subtract on this
+     * target, so the compiler adds `call pe, __setflag` to repair the flags
+     * on overflow -- in a walk that runs once per name the parser sees and is
+     * as long as the program has functions. A count cannot be negative, so
+     * saying so in the type costs nothing. */
+    unsigned i = (unsigned) nsyms;
 
-    for (i = nsyms - 1; i >= 0; i--)
+    while (i-- > 0)
         if (syms[i].name == name)
-            return i;
+            return (int) i;
 
     return SYM_NONE;
 }

@@ -50,6 +50,8 @@ test: all unit $(BIN)/acc-asan
 unit: | $(BIN)
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_timing test/test_timing.c
 	@$(BIN)/test_timing
+	@$(CC) $(SAN) $(WARN) -Isrc -Itest -DACC_HASH_STATS -o $(BIN)/test_hash test/test_hash.c src/lex.c
+	@$(BIN)/test_hash
 
 clean:
 	$(RM) -r $(BIN)

@@ -122,9 +122,12 @@ void vdrop(void)
 
 static int reg_busy(int r)
 {
-    int i;
+    /* Unsigned for the same reason as everywhere else here: a signed `<` is
+     * a helper call to repair the flags, and this runs for every register
+     * the allocator considers. */
+    unsigned i, n = (unsigned) vtop;
 
-    for (i = 0; i < vtop; i++)
+    for (i = 0; i < n; i++)
         if (vstack[i].kind == VAL_REG && vstack[i].v == r)
             return 1;
 

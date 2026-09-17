@@ -31,23 +31,77 @@ static size_t names_len, names_cap;
 static NameRef *buckets;
 static unsigned nbuckets, nnames;
 
-/* FNV-1a, in a type that is 32 bits on the host and on the Agon alike.
+#ifdef ACC_HASH_STATS
+/* Counts probes so a test can tell a hash that spreads from one that does
+ * not -- both give correct answers, and only one of them is fast. Compiled
+ * only when the test asks for it: in the compiler this would be an increment
+ * on the hottest loop there is. */
+unsigned long name_probes;
+#define PROBE() (name_probes++)
+#else
+#define PROBE() ((void) 0)
+#endif
+
+/* Pearson hashing: one table lookup per character, and nothing else.
  *
- * `unsigned` is 24 bits on the target, where the offset basis truncates from
- * 2166136261 to 1875397 and the two builds stop agreeing about which bucket a
- * name lands in. Nothing would break -- a hash only has to be consistent with
- * itself -- but a constant that quietly means something different on the
- * machine than it does on the host is the shape of every bug the previous
- * compiler had, and it costs nothing to say which width is meant. */
-static unsigned long name_hash(const char *s, int len)
+ * FNV-1a was here, and on this target it was the most expensive thing in the
+ * compiler. `h * 16777619` in a 32-bit accumulator is `call __lmulu`, and the
+ * xor before it is `call __lxor` -- two calls into the long-arithmetic library
+ * for every character of every identifier, including every `int` and every
+ * `return`. The eZ80 has no multiplier wider than the 8-bit MLT and no 32-bit
+ * anything, so there was no instruction for either half of it.
+ *
+ * Pearson replaces the arithmetic with `t[h ^ c]`, which is an 8-bit xor and
+ * an indexed load from 256 bytes -- both real instructions. Two lanes, seeded
+ * differently, give the 16 bits the bucket index needs; one lane's 8 would cap
+ * the table at 256 names.
+ *
+ * The table is a permutation of 0..255, which is what makes the lanes mix at
+ * all: any repeated value would collapse the two inputs that map to it. */
+static const unsigned char pearson[256] = {
+    203,  49,  73,  37, 250,  58, 130, 246,  54, 244,  89, 107,
+    253, 227, 167,  57,   3, 231, 230,  80,   9, 235, 197, 113,
+    251,  78,  22,  47, 193, 238, 176, 132, 109, 217, 225, 190,
+     53, 236,  72, 120,  75, 242,  39, 205,  70,  20,  64,   5,
+    166,  69,  15,  86, 100, 212, 177, 232,  41,  60,  23, 171,
+      8, 108, 125,  82, 219, 165,  26,  28, 180,  25, 218,  74,
+    209, 133, 102,  51, 207, 118,  92, 237, 153,  18, 211,  81,
+     36, 127,  43, 175,  85,  52, 189, 131, 183,  17,  95, 192,
+    213,  88,  16,   1, 110,  99, 119, 240, 186, 172, 170, 228,
+    137, 162, 158, 145, 255, 214, 199,  65, 157,   0, 160, 245,
+     91,  35, 181,  10,  59, 243, 194, 123, 134,  79, 249, 115,
+    178,  34, 101, 144, 248, 239,  84, 141,  67, 185, 215, 140,
+    184, 198, 149, 173, 187,  45, 223, 210, 117,  38, 161, 252,
+     50, 229, 216, 139, 247,  98,  96,  90,  14,   2, 168, 196,
+     42,  30,  56,  87, 201,  24, 142,   4,  33, 126, 148,  71,
+     55, 159, 147,  13,  29, 234,  31, 179,  77, 150, 233, 114,
+    200, 155, 104,  66, 224,  83,   6,  93,  12,  19,   7,  48,
+    122, 182, 220, 254,  76, 152, 121,  46, 202, 206,  11, 124,
+    191,  32, 103, 208, 135, 106, 226, 105, 204, 116, 163, 138,
+     68, 111,  44,  63,  62, 136, 156, 143, 188, 128, 154, 146,
+    169, 112, 151, 195, 221,  61, 129,  94,  27, 164, 222,  40,
+    241,  97, 174,  21
+};
+
+/* Returns 16 bits. The caller masks it down to the table size. */
+static unsigned name_hash(const char *s, int len)
 {
-    unsigned long h = 2166136261UL;
-    int i;
+    unsigned char a = 0;
+    unsigned char b = (unsigned char) len;   /* so "ab" and "ba" differ */
+    unsigned n = (unsigned) len, i;
 
-    for (i = 0; i < len; i++)
-        h = (h ^ (unsigned char) s[i]) * 16777619UL;
+    /* Unsigned, so the loop test is not a signed compare: `i < len` on two
+     * ints is `call pe, __setflag` to repair the flags on overflow, and this
+     * loop runs once per character of every identifier in the program. */
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char) s[i];
 
-    return h;
+        a = pearson[a ^ c];
+        b = pearson[b ^ c];
+    }
+
+    /* One shift per name interned, not one per character. */
+    return ((unsigned) a << 8) | b;
 }
 
 static void names_grow(size_t need)
@@ -74,7 +128,7 @@ static void buckets_rehash(unsigned newn)
 
         if (r == NAME_NONE)
             continue;
-        h = (unsigned) (name_hash(names + r, (int) strlen(names + r)) & (newn - 1));
+        h = name_hash(names + r, (int) strlen(names + r)) & (newn - 1);
         while (nb[h] != NAME_NONE)
             h = (h + 1) & (newn - 1);
         nb[h] = r;
@@ -104,11 +158,13 @@ NameRef name_intern(const char *s, int len)
     if ((nnames + 1) * 2 >= nbuckets)
         buckets_rehash(nbuckets * 2);
 
-    h = (unsigned) (name_hash(s, len) & (nbuckets - 1));
+    h = name_hash(s, len) & (nbuckets - 1);
+    PROBE();
     while ((r = buckets[h]) != NAME_NONE) {
         if ((int) strlen(names + r) == len && memcmp(names + r, s, len) == 0)
             return r;
         h = (h + 1) & (nbuckets - 1);
+        PROBE();
     }
 
     names_grow(len + 1);
