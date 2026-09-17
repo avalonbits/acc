@@ -1475,6 +1475,19 @@ static int float_helper(int op)
     switch (op) {
     case TK_PLUS:  return RT_FADD;
     case TK_MINUS: return RT_FSUB;
+    case TK_STAR:  return RT_FMUL;
+    case TK_SLASH: return RT_FDIV;
+
+    /* The rest are not missing, they are not allowed: C requires integer
+     * operands for the remainder, the bitwise operators and the shifts, so a
+     * float there is the program's mistake and not acc's shortfall. Saying
+     * "not implemented yet" would send someone looking for a routine that
+     * should never exist. */
+    case TK_PERCENT:
+    case TK_AMP: case TK_PIPE: case TK_CARET:
+    case TK_SHL: case TK_SHR:
+        acc_error_at(tok_line, "%s takes integers, not floating-point values",
+                     tok_spelling(op));
     }
 
     return -1;

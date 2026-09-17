@@ -1451,9 +1451,9 @@ _acc_rt_fadd:
 	push	de
 	push	hl
 
-	ld	ix, -16
-	add	ix, sp
-	ld	sp, ix
+	ld	ix, -24			; the same size fmul uses, because the
+	add	ix, sp			; two share everything from the
+	ld	sp, ix			; rounding onwards
 	ld	(ix + 12), hl		; the destination, which is also the left
 					; operand, kept where clobbering hl
 					; cannot lose it
@@ -1673,7 +1673,7 @@ _acc_rt_fadd:
 	ld	(hl), a
 
 .fadd_done:
-	ld	hl, 16
+	ld	hl, 24
 	add	hl, sp
 	ld	sp, hl
 	pop	hl
@@ -1720,3 +1720,381 @@ _acc_rt_fadd:
 	pop	iy
 	pop	bc
 	ret
+
+; --------------------------------------------------- float multiply
+; (hl) = (hl) * (de).
+;
+; The significands are twenty-four bits each and their product is forty-eight,
+; built from the nine partial products of their bytes -- MLT again, and this
+; time none of the nine can be dropped, because the top of the product is
+; exactly the part that is kept.
+;
+; Two twenty-four bit numbers with their leading bit set multiply to something
+; in [2^46, 2^48), so the answer needs at most one shift to put its leading
+; bit at 47. Which of the two cases it is decides the exponent: a product that
+; already reaches bit 47 is between 2 and 4 and takes one more exponent than
+; the sum of the operands'.
+;
+; The frame is laid out like fadd's on purpose -- significand at ix+1..3,
+; exponent at ix+8, sign at ix+10, destination at ix+12 -- so that the
+; rounding and packing at the end of fadd serve this too. What is above ix+15
+; is the part fadd has no use for: the forty-eight bit product, and the
+; exponent before it is known to fit in a byte.
+
+	.global _acc_rt_fmul
+
+; The 16-bit product of significand byte \i of the left and \j of the right,
+; added into the running product at byte \k and carried up to the top.
+	.macro	FMUL_AT i, j, k
+	ld	b, (ix + 1 + \i)
+	ld	c, (ix + 5 + \j)
+	mlt	bc
+	ld	a, (ix + 16 + \k)
+	add	a, c
+	ld	(ix + 16 + \k), a
+	ld	a, (ix + 17 + \k)
+	adc	a, b
+	ld	(ix + 17 + \k), a
+	.if \k < 4
+	ld	a, (ix + 18 + \k)
+	adc	a, 0
+	ld	(ix + 18 + \k), a
+	.endif
+	.if \k < 3
+	ld	a, (ix + 19 + \k)
+	adc	a, 0
+	ld	(ix + 19 + \k), a
+	.endif
+	.if \k < 2
+	ld	a, (ix + 20 + \k)
+	adc	a, 0
+	ld	(ix + 20 + \k), a
+	.endif
+	.if \k < 1
+	ld	a, (ix + 21 + \k)
+	adc	a, 0
+	ld	(ix + 21 + \k), a
+	.endif
+	.endm
+
+_acc_rt_fmul:
+	push	ix
+	push	iy
+	push	bc
+	push	de
+	push	hl
+
+	ld	ix, -24
+	add	ix, sp
+	ld	sp, ix
+	ld	(ix + 12), hl
+
+	push	ix
+	pop	iy
+	call	.funpack
+	ld	(ix + 8), b
+	ld	(ix + 10), c
+
+	push	ix
+	pop	iy
+	ld	bc, 4
+	add	iy, bc
+	ex	de, hl
+	call	.funpack
+	ex	de, hl
+	ld	(ix + 9), b
+	ld	(ix + 11), c
+
+	ld	a, (ix + 10)		; the sign is the two signs differing
+	xor	a, (ix + 11)
+	and	a, 0x80
+	ld	(ix + 10), a
+
+	ld	a, (ix + 8)		; either operand zero makes the product
+	or	a, a			; zero, and there is no exponent for it
+	jp	z, .fadd_zero
+	ld	a, (ix + 9)
+	or	a, a
+	jp	z, .fadd_zero
+
+	ld	(ix + 16), 0		; the product, in six bytes
+	ld	(ix + 17), 0
+	ld	(ix + 18), 0
+	ld	(ix + 19), 0
+	ld	(ix + 20), 0
+	ld	(ix + 21), 0
+
+	FMUL_AT 0, 0, 0
+	FMUL_AT 0, 1, 1
+	FMUL_AT 1, 0, 1
+	FMUL_AT 0, 2, 2
+	FMUL_AT 1, 1, 2
+	FMUL_AT 2, 0, 2
+	FMUL_AT 1, 2, 3
+	FMUL_AT 2, 1, 3
+	FMUL_AT 2, 2, 4
+
+	; The exponent, which does not fit in a byte until the range has been
+	; checked: two biased exponents add to as much as 508.
+	ld	hl, 0
+	ld	l, (ix + 8)
+	ld	de, 0
+	ld	e, (ix + 9)
+	add	hl, de
+	ld	de, 127			; one bias too many, having added two
+	or	a, a
+	sbc	hl, de
+
+	bit	7, (ix + 21)		; already at bit 47: between 2 and 4,
+	jr	z, .fmul_shift		; so one more exponent
+	inc	hl
+	jr	.fmul_exponent
+
+.fmul_shift:
+	sla	(ix + 16)		; below bit 47: one place up, and the
+	rl	(ix + 17)		; exponent is the sum as it stands
+	rl	(ix + 18)
+	rl	(ix + 19)
+	rl	(ix + 20)
+	rl	(ix + 21)
+
+.fmul_exponent:
+	push	hl			; nothing left of the number
+	pop	de
+	ld	a, d
+	or	a, a
+	jp	nz, .fmul_range		; the high byte says out of a byte's range
+	ld	a, e
+	or	a, a
+	jp	z, .fadd_zero
+	cp	a, 255
+	jp	nc, .fadd_overflow
+	ld	(ix + 8), e
+
+	; The significand is the top twenty-four bits; the twenty-four below
+	; are what rounding reads. Half is exactly 0x800000 of them.
+	ld	a, (ix + 19)
+	ld	(ix + 1), a
+	ld	a, (ix + 20)
+	ld	(ix + 2), a
+	ld	a, (ix + 21)
+	ld	(ix + 3), a
+
+	ld	a, (ix + 18)
+	cp	a, 0x80
+	jp	c, .fadd_pack		; below half
+	jr	nz, .fmul_up		; above half
+	ld	a, (ix + 16)		; exactly half only if nothing is left
+	or	a, (ix + 17)		; below the halfway bit
+	jr	nz, .fmul_up
+	bit	0, (ix + 1)		; a true tie: to the even significand
+	jp	z, .fadd_pack
+
+.fmul_up:
+	ld	a, (ix + 1)
+	add	a, 1
+	ld	(ix + 1), a
+	ld	a, (ix + 2)
+	adc	a, 0
+	ld	(ix + 2), a
+	ld	a, (ix + 3)
+	adc	a, 0
+	ld	(ix + 3), a
+	jp	nc, .fadd_pack
+	ld	(ix + 3), 0x80		; carried out: the next power of two
+	inc	(ix + 8)
+	jp	z, .fadd_overflow
+	jp	.fadd_pack
+
+.fmul_range:
+	; The high byte is nonzero, so the exponent is either far too large or
+	; has gone negative. Negative is a borrow out of the subtract above,
+	; which leaves 0xff there.
+	ld	a, d
+	cp	a, 0xff
+	jp	z, .fadd_zero
+	jp	.fadd_overflow
+
+; --------------------------------------------------- float divide
+; (hl) = (hl) / (de).
+;
+; Both significands are twenty-four bits with the leading one set, so their
+; ratio is between a half and two and the quotient needs at most one place of
+; shifting -- which is decided up front by comparing them, and shows up as
+; which of two biases the exponent takes.
+;
+; The division itself is the restoring loop the integers use, except that
+; everything in it fits in a register: hl holds the remainder and de the
+; divisor, both twenty-four bits, so a step is `add hl, hl` and one `sbc`.
+; Doubling the remainder can carry out of twenty-four bits, and as in the long
+; division that carry means the divisor fits whatever the borrow says.
+;
+; Twenty-four bits of quotient are produced, then one more as the guard bit,
+; and whether anything is left over afterwards is the sticky: a remainder of
+; zero with the guard set is a true tie and goes to the even significand,
+; while any remainder at all makes it round up.
+;
+; The frame is fadd's, so the packing at the end of fadd finishes this too.
+
+	.global _acc_rt_fdiv
+
+_acc_rt_fdiv:
+	push	ix
+	push	iy
+	push	bc
+	push	de
+	push	hl
+
+	ld	ix, -24
+	add	ix, sp
+	ld	sp, ix
+	ld	(ix + 12), hl
+
+	push	ix
+	pop	iy
+	call	.funpack
+	ld	(ix + 8), b
+	ld	(ix + 10), c
+
+	push	ix
+	pop	iy
+	ld	bc, 4
+	add	iy, bc
+	ex	de, hl
+	call	.funpack
+	ex	de, hl
+	ld	(ix + 9), b
+	ld	(ix + 11), c
+
+	ld	a, (ix + 10)		; the sign is the two signs differing
+	xor	a, (ix + 11)
+	and	a, 0x80
+	ld	(ix + 10), a
+
+	ld	a, (ix + 8)		; zero divided by anything is zero
+	or	a, a
+	jp	z, .fadd_zero
+	ld	a, (ix + 9)		; and dividing by zero is undefined, so
+	or	a, a			; the largest finite float will do
+	jp	z, .fadd_overflow
+
+	; Which bias the exponent takes, and how many bits the loop has to
+	; produce: a dividend at least the divisor gives its leading 1 at once,
+	; and one fewer iteration is needed for the same twenty-four bits.
+	ld	de, (ix + 5)		; the divisor's significand
+	ld	hl, (ix + 1)		; the dividend's
+	or	a, a
+	sbc	hl, de
+	jr	nc, .fdiv_ge
+
+	add	hl, de			; smaller: the subtract did not happen,
+	ld	(ix + 16), hl		; so the whole dividend is the remainder
+	ld	(ix + 1), 0		; and the whole quotient comes from the
+	ld	(ix + 2), 0		; loop, one exponent lower
+	ld	(ix + 3), 0
+	ld	b, 25			; twenty-four bits and the guard
+	ld	c, 126
+	jr	.fdiv_exponent
+
+.fdiv_ge:
+	ld	(ix + 16), hl		; what the leading 1 left behind
+	ld	(ix + 1), 1		; and that 1, already in place
+	ld	(ix + 2), 0
+	ld	(ix + 3), 0
+	ld	b, 24			; twenty-three more and the guard
+	ld	c, 127
+
+.fdiv_exponent:
+	push	bc			; the count and the bias
+	ld	hl, 0
+	ld	l, (ix + 8)
+	ld	de, 0
+	ld	e, (ix + 9)
+	or	a, a
+	sbc	hl, de			; the exponents' difference, which may
+	ld	de, 0			; have gone negative
+	ld	e, c
+	add	hl, de			; plus the bias
+
+	push	hl			; the high byte says whether a byte
+	pop	de			; can hold it
+	ld	a, d
+	or	a, a
+	jr	z, .fdiv_exp_byte
+	pop	bc
+	cp	a, 0xff			; negative, so far below the smallest
+	jp	z, .fadd_zero
+	jp	.fadd_overflow
+
+.fdiv_exp_byte:
+	ld	a, e
+	or	a, a
+	jr	nz, .fdiv_exp_high
+	pop	bc
+	jp	.fadd_zero
+.fdiv_exp_high:
+	cp	a, 255
+	jr	c, .fdiv_exp_ok
+	pop	bc
+	jp	.fadd_overflow
+.fdiv_exp_ok:
+	ld	(ix + 8), e
+	pop	bc			; the count back into b
+
+	ld	hl, (ix + 16)		; the remainder, in a register for the
+	ld	de, (ix + 5)		; whole loop, as is the divisor
+
+.fdiv_loop:
+	sla	(ix + 1)		; the quotient makes room for the bit
+	rl	(ix + 2)
+	rl	(ix + 3)
+	add	hl, hl			; and the remainder doubles
+	jr	c, .fdiv_force
+	or	a, a
+	sbc	hl, de
+	jr	nc, .fdiv_fits
+	add	hl, de			; it did not fit, so put it back
+	jr	.fdiv_next
+.fdiv_force:
+	or	a, a			; above twenty-four bits, so the divisor
+	sbc	hl, de			; fits however the borrow reads
+.fdiv_fits:
+	inc	(ix + 1)		; the shift left bit 0 clear
+.fdiv_next:
+	djnz	.fdiv_loop
+
+	; The last bit produced is the guard; it sits at the bottom of the
+	; quotient and has to come out before the significand is packed.
+	ld	a, (ix + 1)
+	push	af
+	srl	(ix + 3)
+	rr	(ix + 2)
+	rr	(ix + 1)
+	pop	af
+	bit	0, a
+	jp	z, .fadd_pack		; below half
+
+	; The guard is set: a remainder of nothing is a tie, anything else is
+	; above half.
+	ld	de, 0			; hl == 0 over all three bytes: `ld a, h`
+	or	a, a			; would reach two of them and the third
+	sbc	hl, de			; has no name, but a subtract of zero
+	jr	nz, .fdiv_up		; sets Z from the whole width
+	bit	0, (ix + 1)		; a true tie: to the even significand
+	jp	z, .fadd_pack
+
+.fdiv_up:
+	ld	a, (ix + 1)
+	add	a, 1
+	ld	(ix + 1), a
+	ld	a, (ix + 2)
+	adc	a, 0
+	ld	(ix + 2), a
+	ld	a, (ix + 3)
+	adc	a, 0
+	ld	(ix + 3), a
+	jp	nc, .fadd_pack
+	ld	(ix + 3), 0x80		; carried out: the next power of two
+	inc	(ix + 8)
+	jp	z, .fadd_overflow
+	jp	.fadd_pack
