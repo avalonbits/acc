@@ -20,29 +20,29 @@ int main(void) {
     if (a == 44) r = r + 1;
 
     a = a - b;              /* 44 - 100 is negative: 200 */
-    if (a == 200) r = r + 2;
+    if (a == 200) r = r + 1;
 
     a = a & 60;
-    if (a == 8) r = r + 4;
+    if (a == 8) r = r + 1;
 
     a = a | 3;
-    if (a == 11) r = r + 8;
+    if (a == 11) r = r + 1;
 
     a = a ^ 255;
-    if (a == 244) r = r + 16;
+    if (a == 244) r = r + 1;
 
     a = a >> 2;             /* unsigned: zeros shift in */
-    if (a == 61) r = r + 32;
+    if (a == 61) r = r + 1;
 
     s = s + t;              /* 200 does not fit a signed char: -56 */
-    if (s == -56) r = r + 64;
+    if (s == -56) r = r + 1;
 
     s = s >> 2;             /* signed: the sign shifts down, -14 */
-    if (s == -14) r = r + 128;
+    if (s == -14) r = r + 1;
 
     t = t << 2;             /* 400 does not fit: -112 */
-    if (t == -112) r = r + 256;
-    /* 511 */
+    if (t == -112) r = r + 1;
+    /* 9 */
 
-    return r - 469;
+    return r + 33;
 }

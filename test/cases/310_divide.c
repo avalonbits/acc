@@ -13,21 +13,21 @@ int main(void) {
     int r = 0;
 
     if (div(7, 2) == 3) r = r + 1;
-    if (div(-7, 2) == -3) r = r + 2;        /* towards zero, not -4 */
-    if (div(7, -2) == -3) r = r + 4;
-    if (div(-7, -2) == 3) r = r + 8;
+    if (div(-7, 2) == -3) r = r + 1;        /* towards zero, not -4 */
+    if (div(7, -2) == -3) r = r + 1;
+    if (div(-7, -2) == 3) r = r + 1;
 
-    if (rem(7, 2) == 1) r = r + 16;
-    if (rem(-7, 2) == -1) r = r + 32;       /* the dividend's sign */
-    if (rem(7, -2) == 1) r = r + 64;
-    if (rem(-7, -2) == -1) r = r + 128;
+    if (rem(7, 2) == 1) r = r + 1;
+    if (rem(-7, 2) == -1) r = r + 1;       /* the dividend's sign */
+    if (rem(7, -2) == 1) r = r + 1;
+    if (rem(-7, -2) == -1) r = r + 1;
     /* 255 */
 
-    if (div(1000000, 3) == 333333) r = r + 256;
-    if (rem(1000000, 3) == 1) r = r + 512;
-    if (div(0, 5) == 0) r = r + 1024;
-    if (div(8388607, 1) == 8388607) r = r + 2048;
-    /* 4095 */
+    if (div(1000000, 3) == 333333) r = r + 1;
+    if (rem(1000000, 3) == 1) r = r + 1;
+    if (div(0, 5) == 0) r = r + 1;
+    if (div(8388607, 1) == 8388607) r = r + 1;
+    /* 12 */
 
-    return r - 4053;
+    return r + 30;
 }

@@ -21,21 +21,21 @@ int main(void) {
     int r = 0;
 
     if (a < b) r = r + 1;
-    if (b > a) r = r + 2;
-    if (a <= b) r = r + 4;
-    if (b >= a) r = r + 8;
-    if (a == 1000000) r = r + 16;
-    if (a != b) r = r + 32;
+    if (b > a) r = r + 1;
+    if (a <= b) r = r + 1;
+    if (b >= a) r = r + 1;
+    if (a == 1000000) r = r + 1;
+    if (a != b) r = r + 1;
     if (b < a) r = r + 1000;
 
-    if (neg < a) r = r + 64;            /* signed: -1 is small */
-    if (one < all_ones) r = r + 128;    /* unsigned: the same bits are large */
+    if (neg < a) r = r + 1;            /* signed: -1 is small */
+    if (one < all_ones) r = r + 1;    /* unsigned: the same bits are large */
     if (all_ones < one) r = r + 1000;
 
     /* Differing only in the top byte, which a three-byte compare would miss. */
-    if (lo < hi) r = r + 256;
+    if (lo < hi) r = r + 1;
     if (lo == hi) r = r + 1000;
-    /* 511 */
+    /* 9 */
 
-    return r - 469;
+    return r + 33;
 }

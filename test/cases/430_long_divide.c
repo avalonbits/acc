@@ -22,21 +22,21 @@ int main(void) {
     long r = 0;
 
     if (a / seven == 142857) r = r + 1;
-    if (a % seven == 1) r = r + 2;
+    if (a % seven == 1) r = r + 1;
 
     /* Truncation towards zero, and the remainder following the dividend. */
-    if (-a / seven == -142857) r = r + 4;
-    if (-a % seven == -1) r = r + 8;
-    if (a / -seven == -142857) r = r + 16;
-    if (a % -seven == 1) r = r + 32;
-    if (-a / -seven == 142857) r = r + 64;
-    if (-a % -seven == -1) r = r + 128;
+    if (-a / seven == -142857) r = r + 1;
+    if (-a % seven == -1) r = r + 1;
+    if (a / -seven == -142857) r = r + 1;
+    if (a % -seven == 1) r = r + 1;
+    if (-a / -seven == 142857) r = r + 1;
+    if (-a % -seven == -1) r = r + 1;
 
     /* A divisor above 2^31, where the remainder needs its thirty-third bit. */
-    if (top / half == 1) r = r + 256;
-    if (top % half == 2147483646) r = r + 512;
-    if (top / 3 == 1431655765) r = r + 1024;
+    if (top / half == 1) r = r + 1;
+    if (top % half == 2147483646) r = r + 1;
+    if (top / 3 == 1431655765) r = r + 1;
 
-    /* 2047 */
-    return r - 2005;
+    /* 11 */
+    return r + 31;
 }

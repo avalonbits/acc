@@ -12,17 +12,17 @@ int main(void) {
     long r = 0;
 
     if (-a == -1000000) r = r + 1;
-    if (-(-a) == 1000000) r = r + 2;
-    if (~a == -1000001) r = r + 4;
-    if (-0 == 0) r = r + 8;
+    if (-(-a) == 1000000) r = r + 1;
+    if (~a == -1000001) r = r + 1;
+    if (-0 == 0) r = r + 1;
 
     /* The cases the 24-bit path could not reach. */
-    if (-wide < 0) r = r + 16;
-    if (-wide + wide == 0) r = r + 32;
-    if (-wide == -1574716585) r = r + 64;
-    if (~bits == 0xF0F0F0F0) r = r + 128;
-    if (~wide == -1574716586) r = r + 256;
+    if (-wide < 0) r = r + 1;
+    if (-wide + wide == 0) r = r + 1;
+    if (-wide == -1574716585) r = r + 1;
+    if (~bits == 0xF0F0F0F0) r = r + 1;
+    if (~wide == -1574716586) r = r + 1;
 
-    /* 511 */
-    return r - 469;
+    /* 9 */
+    return r + 33;
 }
