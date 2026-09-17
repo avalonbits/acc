@@ -55,6 +55,8 @@ unit: | $(BIN)
 	@$(BIN)/test_hash
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_ctype test/test_ctype.c
 	@$(BIN)/test_ctype
+	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_out test/test_out.c src/out.c
+	@$(BIN)/test_out
 
 clean:
 	$(RM) -r $(BIN)

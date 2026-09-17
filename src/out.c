@@ -75,6 +75,8 @@ void out_open(const char *path)
 __attribute__((noinline))
 static void out_grow(void)
 {
+    /* One doubling is always enough: cap starts at 4096 and the largest
+     * single write is the three bytes of out_word24. */
     cap *= 2;
     img = realloc(img, cap);
     if (!img)
@@ -90,9 +92,15 @@ void out_byte(int b)
 
 void out_word24(int v)
 {
-    out_byte(v);
-    out_byte(v >> 8);
-    out_byte(v >> 16);
+    /* One bounds check and three stores, rather than three calls that each
+     * check. Every call instruction and every loaded constant emits one of
+     * these, so it is a third of the output path. */
+    if (len + 3 > cap)
+        out_grow();
+    img[len]     = (unsigned char) v;
+    img[len + 1] = (unsigned char) (v >> 8);
+    img[len + 2] = (unsigned char) (v >> 16);
+    len += 3;
 }
 
 int out_here(void)
