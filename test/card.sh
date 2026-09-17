@@ -87,25 +87,29 @@ That 2A is 42.
 What acc can do today
 ---------------------
 
-  int, and nothing else yet
+  char, short, int, and the unsigned form of each
   functions, parameters, locals, calls, recursion
   + - and unary minus, ~
   assignment
+  < > <= >= == !=, signed or unsigned according to the operands
   if, else, else if, while
   /* block */ and // line comments, anywhere a space can go
 
-A condition is a value and is true when it is not zero. With no comparison
-operators yet, "n is zero" is written `n` and "n is three" is written
-`n - 3`.
+char is one byte, short two, int three -- agondev's widths, so a program
+compiled by either comes out the same. Arithmetic happens at int width and
+only a store narrows, which is what C says.
 
 What it cannot do yet
 ---------------------
 
   * / % & | ^ << >>   -- the eZ80 has no instruction for any of these on a
                          24-bit value, so they need runtime helpers
-  < > <= >= == != ! && || -- no comparisons, so a condition is a bare value
+  ! && ||              -- no logical operators; a condition is a value, or
+                          a comparison
   for do break continue   -- while is the only loop
-  char short long      -- one type
+  long, long long      -- they need a value to live in more than one
+                          register, which is not done yet
+  float double         -- no floating point
   pointers, arrays, structs
   #include, #define    -- no preprocessor
   declarations inside a block -- they go at the start of the function
