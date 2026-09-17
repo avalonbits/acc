@@ -71,6 +71,7 @@ static void need_disp(int d)
                   "of reach of (ix+d), which spans -128 to 127", d);
 }
 
+static int  spill_slot(void);
 static void evict_reg(int reg);
 static void force_into(Value *target, int want);
 static int  needs_helper(int op);
@@ -241,8 +242,30 @@ static Value *vsp = vstack;
 
 /* Locals are at negative offsets from IX and grow downwards. Arguments are
  * above the saved IX and the return address, so the first one is at ix+6. */
-static int frame_size;
+/* The frame is in two parts. The declared locals sit at the top of it and
+ * last as long as the function does. Below them is a scratch area the
+ * allocator spills registers into, which is reused: it is empty at every
+ * statement boundary, because that is where the value stack is empty, so a
+ * statement's spills can occupy the same bytes as the last one's.
+ *
+ * Without the reuse, a function with enough calls in it ran out of frame --
+ * every spill took new bytes and never gave them back, so a hundred or so
+ * calls put a slot past the -128 that (ix+d) reaches. The compiler refused
+ * rather than emitting something wrong, which made it a ceiling on how large
+ * a function could be rather than a bug, but a real one.
+ *
+ * The prologue reserves the locals plus the deepest the scratch area ever
+ * got, which is not known until the function ends -- so it is patched, like
+ * the frame size always was. */
+static int locals_size;          /* the declared locals */
+static int spill_used;           /* the scratch in use right now */
+static int spill_peak;           /* the most it ever held */
 static int frame_patch;          /* where the prologue's frame size is written */
+
+static int frame_size(void)
+{
+    return locals_size + spill_peak;
+}
 
 static void vcheck(void)
 {
@@ -329,6 +352,12 @@ void vdrop(void)
         acc_error("internal: value stack underflow");
     vtop--;
     vsp--;
+
+    /* Nothing is spilled once nothing is on the stack, so the scratch area
+     * starts again. This is where the reuse happens, and it needs no help
+     * from the parser: an empty value stack *is* a statement boundary. */
+    if (vtop == 0)
+        spill_used = 0;
 }
 
 static int reg_busy(int reg)
@@ -354,7 +383,7 @@ static void spill_one(void)
 
     for (i = 0; i < vtop; i++) {
         if (vstack[i].kind == VAL_REG) {
-            int off = gen_local(ACC_INT_SIZE);
+            int off = spill_slot();
 
             need_disp(off);
             ld_ix_rr(off, vstack[i].val);
@@ -375,7 +404,7 @@ static void save_regs_below(int n)
 
     for (i = 0; i < vtop - n; i++) {
         if (vstack[i].kind == VAL_REG) {
-            int off = gen_local(ACC_INT_SIZE);
+            int off = spill_slot();
 
             need_disp(off);
             ld_ix_rr(off, vstack[i].val);
@@ -1156,9 +1185,22 @@ void gen_startup(int report_by_exit)
 
 int gen_local(int size)
 {
-    frame_size += size;
+    locals_size += size;
 
-    return -frame_size;
+    return -locals_size;
+}
+
+/* A slot for a spilled register, which lasts until the end of the statement.
+ * They are handed out in order and all released together, so this is a
+ * high-water mark and not a free list -- there is nothing to free, since the
+ * whole area goes at once. */
+static int spill_slot(void)
+{
+    spill_used += ACC_INT_SIZE;
+    if (spill_used > spill_peak)
+        spill_peak = spill_used;
+
+    return -(locals_size + spill_used);
 }
 
 void gen_func_begin(int fn, int nparams, Type returns)
@@ -1170,7 +1212,9 @@ void gen_func_begin(int fn, int nparams, Type returns)
     sym_at(fn)->val = out_here();
     vtop = 0;
     vsp = vstack;
-    frame_size = 0;
+    locals_size = 0;
+    spill_used = 0;
+    spill_peak = 0;
 
     /* push ix / ld ix, 0 / add ix, sp -- the frame agondev's __frameset
      * builds, written out rather than called, because there is nothing to
@@ -1198,7 +1242,7 @@ void gen_func_end(void)
     out_byte(0xdd); out_byte(0xe1);              /* pop ix */
     out_byte(0xc9);                              /* ret */
 
-    out_patch24(frame_patch, -frame_size);
+    out_patch24(frame_patch, -frame_size());
 }
 
 void gen_return(void)

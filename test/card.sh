@@ -114,8 +114,8 @@ missing rather than excluded.
                           a comparison
   a constant above 16777215 -- and C99 would call one above 8388607 a long,
                           where acc makes it unsigned int
-  a function with a hundred or more calls in it -- spill slots are never
-                          reused, so its frame runs past what (ix+d) reaches
+  more than 42 int locals in one function -- (ix+d) reaches 128 bytes and
+                          that is what fits
   for do break continue   -- while is the only loop
   long, long long      -- they need a value to live in more than one
                           register, which is not done yet
