@@ -20,6 +20,7 @@ HDR      = src/acc.h src/timing.h src/ctype.h
 # -fno-sanitize-recover makes undefined behaviour stop the compiler instead of
 # printing a line and carrying on, so a test cannot pass over the top of one.
 SAN      = -fsanitize=address,undefined -fno-sanitize-recover=all \
+           -DACC_CHECK_VSTACK \
            -fsigned-char -O1 -g
 
 BIN = bin

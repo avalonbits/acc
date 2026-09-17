@@ -78,6 +78,19 @@ static void need_disp(int d)
 static Value vstack[VSTACK_MAX];
 static int   vtop;               /* number of live entries */
 
+/* One past the top, kept in step with vtop.
+ *
+ * `vstack[vtop - 1]` is `vstack + (vtop - 1) * 4`, and scaling an index is a
+ * helper call on this target -- `call __ishl` for a 4-byte element. The top
+ * two entries are reached on every value pushed, every binary operation and
+ * every negation, and reaching them through a pointer the stack already has
+ * makes the offset a constant instead.
+ *
+ * It buys nothing where the offset is a variable, as in force_into, because
+ * that scale is still a scale. Those are left as subscripts, which say what
+ * they mean. */
+static Value *vsp = vstack;
+
 /* Locals are at negative offsets from IX and grow downwards. Arguments are
  * above the saved IX and the return address, so the first one is at ix+6. */
 static int frame_size;
@@ -85,32 +98,41 @@ static int frame_patch;          /* where the prologue's frame size is written *
 
 static void vcheck(void)
 {
+    /* The two have to agree, and nothing but a bug can make them disagree.
+     * Checked in the sanitized build the tests run, not in the compiler:
+     * this is on the path of every value the parser produces. */
+#ifdef ACC_CHECK_VSTACK
+    if (vsp != vstack + vtop)
+        acc_error("internal: the value stack pointer and its count disagree");
+#endif
     if (vtop >= VSTACK_MAX)
         acc_error("expression is nested too deeply");
 }
 
-void vpush_const(int v)
+/* The one place that writes an entry and moves the top, so that the pointer
+ * and the count cannot get out of step anywhere else. */
+static void vpush(int kind, int v)
 {
     vcheck();
-    vstack[vtop].kind = VAL_CONST;
-    vstack[vtop].v = v;
+    vsp->kind = (unsigned char) kind;
+    vsp->v = v;
+    vsp++;
     vtop++;
+}
+
+void vpush_const(int v)
+{
+    vpush(VAL_CONST, v);
 }
 
 void vpush_local(int offset)
 {
-    vcheck();
-    vstack[vtop].kind = VAL_LOCAL;
-    vstack[vtop].v = offset;
-    vtop++;
+    vpush(VAL_LOCAL, offset);
 }
 
 void vpush_reg(int reg)
 {
-    vcheck();
-    vstack[vtop].kind = VAL_REG;
-    vstack[vtop].v = reg;
-    vtop++;
+    vpush(VAL_REG, reg);
 }
 
 void vdrop(void)
@@ -118,6 +140,7 @@ void vdrop(void)
     if (vtop <= 0)
         acc_error("internal: value stack underflow");
     vtop--;
+    vsp--;
 }
 
 static int reg_busy(int r)
@@ -212,7 +235,7 @@ static int reg_alloc_other(int avoid)
  * it. Anything already in a register stays where it is. */
 static int force_reg_at(int depth)
 {
-    Value *val = &vstack[vtop - 1 - depth];
+    Value *val = vsp - 1 - depth;
     int r;
 
     if (val->kind == VAL_REG)
@@ -321,8 +344,8 @@ static int const_fold(int t, int a, int b, int *out)
 
 void vbinop(int t)
 {
-    Value *lhs = &vstack[vtop - 2];
-    Value *rhs = &vstack[vtop - 1];
+    Value *lhs = vsp - 2;
+    Value *rhs = vsp - 1;
     int folded, r;
 
     if (vtop < 2)
@@ -387,7 +410,7 @@ void vstore_local(int offset)
 
 void vneg(void)
 {
-    Value *v = &vstack[vtop - 1];
+    Value *v = vsp - 1;
     int r;
 
     if (v->kind == VAL_CONST) {
@@ -465,6 +488,7 @@ void gen_finish(void)
 void gen_init(void)
 {
     vtop = 0;
+    vsp = vstack;
 }
 
 /* The first thing in the image, because MOS enters at its first byte.
@@ -533,6 +557,7 @@ void gen_func_begin(int fn, int nparams)
 
     sym_at(fn)->val = out_here();
     vtop = 0;
+    vsp = vstack;
     frame_size = 0;
 
     /* push ix / ld ix, 0 / add ix, sp -- the frame agondev's __frameset
