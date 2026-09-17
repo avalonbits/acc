@@ -102,6 +102,9 @@ only a store narrows, which is what C says.
 What it cannot do yet
 ---------------------
 
+The language acc is being written towards is C99. Everything below is
+missing rather than excluded.
+
   * / % & | ^ << >>   -- the eZ80 has no instruction for any of these on a
                          24-bit value, so they need runtime helpers
   ! && ||              -- no logical operators; a condition is a value, or

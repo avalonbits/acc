@@ -10,6 +10,11 @@
  * them. That is tinycc's model and it is the right one: it is the fastest
  * way to compile C, and more to the point here it is the smallest.
  *
+ * The language is C99. What is here is a subset of it, grown a feature at a
+ * time with a test for each; every gap is something not written yet rather
+ * than something ruled out, and the ones that are are named where the
+ * compiler refuses them.
+ *
  * What is not tinycc's is the memory. The Agon gives a program 448 KB for
  * code, data, heap and stack together, and measured on that machine tinycc
  * spends 31 bytes on every symbol and 75 KB on machinery for a preprocessor
