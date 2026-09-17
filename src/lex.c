@@ -225,6 +225,7 @@ int      tok;
 int      tok_val;
 NameRef  tok_name;
 int      tok_line;
+Type     tok_type;
 int      tok_prev_line;
 
 void lex_open(const char *path)
@@ -359,33 +360,60 @@ void next(void)
     }
 
     if (is_digit(c)) {
-        int v = 0;
+        /* Accumulated with the bound checked before each step rather than
+         * after, so the accumulator never overflows and there is nothing to
+         * detect after the fact. Everything here stays in an int, which on
+         * this target is the 24 bits the answer has to fit in anyway. */
+        int value = 0;
+        int is_hex = 0;
 
         if (c == '0' && (cursor[1] == 'x' || cursor[1] == 'X')) {
+            is_hex = 1;
             cursor += 2;
             if (!is_alnum((unsigned char) *cursor))
                 acc_error_at(line, "hex constant with no digits");
             while (is_alnum((unsigned char) *cursor)) {
-                int d = *cursor;
+                int digit = *cursor;
 
-                if (is_digit(d))          d -= '0';
-                else if (d >= 'a' && d <= 'f') d -= 'a' - 10;
-                else if (d >= 'A' && d <= 'F') d -= 'A' - 10;
-                else acc_error_at(line, "bad digit '%c' in a hex constant", d);
-                v = v * 16 + d;
+                if (is_digit(digit))                     digit -= '0';
+                else if (digit >= 'a' && digit <= 'f')   digit -= 'a' - 10;
+                else if (digit >= 'A' && digit <= 'F')   digit -= 'A' - 10;
+                else acc_error_at(line, "bad digit '%c' in a hex constant", digit);
+                if (value > 0xfffff)
+                    acc_error_at(line, "the constant does not fit in %d bits",
+                                 ACC_INT_SIZE * 8);
+                value = value * 16 + digit;
                 cursor++;
             }
         } else {
-            while (is_digit((unsigned char) *cursor))
-                v = v * 10 + (*cursor++ - '0');
+            while (is_digit((unsigned char) *cursor)) {
+                int digit = *cursor - '0';
+
+                if (value > 1677721 || (value == 1677721 && digit > 5))
+                    acc_error_at(line, "the constant does not fit in %d bits",
+                                 ACC_INT_SIZE * 8);
+                value = value * 10 + digit;
+                cursor++;
+            }
         }
-        /* Narrowed to what the target can hold, so that a literal on the
-         * value stack is the number the machine would have. */
-        v &= 0xffffff;
-        if (v & 0x800000)
-            v -= 0x1000000;
+
+        /* C99 types a constant by the first type that can hold it. A decimal
+         * one goes int, long int, long long int; a hex or octal one may also
+         * be unsigned at each step. acc has no long, so anything above
+         * INT_MAX becomes unsigned int, which is where the two part company:
+         * C99 would call 16777215 a long, and `16777215 == -1` false, where
+         * acc makes both sides unsigned and says true. Refusing the range
+         * outright was worse -- `unsigned int all_ones = 16777215;` is
+         * ordinary code and C99 defines it. */
+        (void) is_hex;
+        if (value > 0x7fffff) {
+            tok_type = TY_UINT;
+            value -= 0x1000000;         /* the same bits, read as signed */
+        } else {
+            tok_type = TY_INT;
+        }
         tok = TK_INT;
-        tok_val = v;
+        tok_val = value;
         return;
     }
 
@@ -492,7 +520,6 @@ const char *tok_spelling(int token)
 int tok_is_unimplemented_op(int token)
 {
     switch (token) {
-    case TK_STAR: case TK_SLASH: case TK_PERCENT:
     case TK_NOT:
         return 1;
     }

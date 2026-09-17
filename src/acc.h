@@ -120,6 +120,7 @@ enum {
 
 extern int      tok;        /* the current token */
 extern int      tok_val;    /* its value, when TK_INT */
+extern Type     tok_type;   /* and its type, which C99 fixes by its size */
 extern NameRef  tok_name;   /* its name, when TK_IDENT */
 extern int      tok_line;   /* the line it started on */
 extern int      tok_prev_line; /* where the token before it ended */
@@ -202,7 +203,7 @@ void gen_func_begin(int fn, int nparams, Type returns);
 void gen_func_end(void);
 int  gen_local(int size);             /* reserve a slot; returns its offset */
 
-void vpush_const(int val);
+void vpush_const(int val, Type type);
 void vconvert(Type to);               /* narrow the top, then widen it back */
 Type vtype(void);                     /* the type of the top */
 void vpush_local(int offset, Type type);

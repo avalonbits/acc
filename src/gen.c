@@ -269,9 +269,9 @@ static void vpush(int kind, Type type, int val)
     vtop++;
 }
 
-void vpush_const(int val)
+void vpush_const(int val, Type type)
 {
-    vpush(VAL_CONST, TY_INT, val);
+    vpush(VAL_CONST, type, val);
 }
 
 void vpush_local(int offset, Type type)
@@ -558,6 +558,22 @@ static int const_fold(int op, int left, int right, int *out)
             return 0;
         *out = left >> right;
         return 1;
+
+    case TK_STAR:  *out = trunc_int(left * right); return 1;
+
+    /* Division by zero is undefined, and folding it would make the compiler
+     * trap on a program that might never reach the expression. */
+    case TK_SLASH:
+        if (right == 0)
+            return 0;
+        *out = trunc_int(left / right);
+        return 1;
+
+    case TK_PERCENT:
+        if (right == 0)
+            return 0;
+        *out = trunc_int(left % right);
+        return 1;
     }
 
     return 0;
@@ -584,9 +600,11 @@ void vbinop(int op)
     /* Both sides known: the answer is known, and nothing is emitted. */
     if (lhs->kind == VAL_CONST && rhs->kind == VAL_CONST
         && const_fold(op, lhs->val, rhs->val, &folded)) {
+        Type folded_type = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
+
         vdrop();
         vdrop();
-        vpush_const(folded);
+        vpush_const(folded, folded_type);
 
         return;
     }
@@ -643,6 +661,20 @@ void vbinop(int op)
     case TK_SHL:   rt_call(RT_SHL); break;
     case TK_SHR:
         rt_call(type_unsigned(lhs_type) ? RT_SHRU : RT_SHRS);
+        break;
+
+    /* Signed and unsigned multiply agree in two's complement, so there is
+     * one routine. */
+    case TK_STAR:  rt_call(RT_MUL); break;
+
+    /* Division does care which it is: -7 / 2 is -3 and 16777209 / 2 is
+     * 8388604, from the same twenty-four bits. */
+    case TK_SLASH:
+        rt_call(type_unsigned(result) ? RT_DIVU : RT_DIVS);
+        break;
+
+    case TK_PERCENT:
+        rt_call(type_unsigned(result) ? RT_REMU : RT_REMS);
         break;
 
     default:
@@ -706,7 +738,7 @@ void vnot(void)
 {
     /* ~x is -x - 1, which needs no instruction this chip does not have. */
     vneg();
-    vpush_const(1);
+    vpush_const(1, TY_INT);
     vbinop(TK_MINUS);
 }
 
@@ -845,7 +877,7 @@ void vcmp(int op)
         && const_fold(op, lhs->val, rhs->val, &folded)) {
         vdrop();
         vdrop();
-        vpush_const(folded);
+        vpush_const(folded, TY_INT);    /* a comparison is an int either way */
 
         return;
     }
@@ -967,9 +999,15 @@ void gen_label(int hole)
  *
  * Calls to them are recorded like calls to a function defined further down
  * the file, because that is what they are: the address is not known until the
- * end, when whichever ones were used are laid out after the last function. */
-static int rt_addr[RT_COUNT];           /* where each landed, once emitted */
-static unsigned char rt_used[RT_COUNT];
+ * end, when the runtime is laid out after the last function.
+ *
+ * It goes in whole rather than a routine at a time, because the routines
+ * share code -- the four ways of dividing are one loop with four ways in --
+ * and splitting them would mean four copies of that loop. A program that uses
+ * any of them carries all of them, which at a few hundred bytes against the
+ * Agon's 448 KB is the cheaper trade. */
+static int rt_base = 0;                 /* where the blob landed */
+static int rt_any_used;
 
 typedef struct {
     unsigned char which;
@@ -985,6 +1023,7 @@ static int needs_helper(int op)
     switch (op) {
     case TK_AMP: case TK_PIPE: case TK_CARET:
     case TK_SHL: case TK_SHR:
+    case TK_STAR: case TK_SLASH: case TK_PERCENT:
         return 1;
     }
 
@@ -999,7 +1038,7 @@ static void rt_call(int which)
         if (!rt_fixups)
             acc_error("out of memory for the runtime fixups");
     }
-    rt_used[which] = 1;
+    rt_any_used = 1;
 
     out_byte(0xcd);                              /* call nn */
     rt_fixups[nrt_fixups].which = (unsigned char) which;
@@ -1010,17 +1049,23 @@ static void rt_call(int which)
 
 static void rt_emit_used(void)
 {
-    int which, i;
+    int i;
 
-    for (which = 0; which < RT_COUNT; which++) {
-        if (!rt_used[which])
-            continue;
-        rt_addr[which] = out_here();
-        for (i = rt_span[which].at; i < rt_span[which].end; i++)
-            out_byte(rt_code[i]);
-    }
+    if (!rt_any_used)
+        return;
+
+    rt_base = out_here();
+    for (i = 0; i < (int) sizeof rt_code; i++)
+        out_byte(rt_code[i]);
+
+    /* The calls the routines make to each other, now that the blob has an
+     * address. */
+    for (i = 0; i < RT_NFIX; i++)
+        out_patch24(rt_base + rt_fix[i].at, rt_base + rt_fix[i].to);
+
+    /* And the calls the compiled program makes to them. */
     for (i = 0; i < nrt_fixups; i++)
-        out_patch24(rt_fixups[i].at, rt_addr[rt_fixups[i].which]);
+        out_patch24(rt_fixups[i].at, rt_base + rt_entry[rt_fixups[i].which]);
 }
 
 void gen_finish(void)

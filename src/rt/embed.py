@@ -7,9 +7,16 @@ bytes out of the object, and writes the header gen.c includes. Getting a byte
 wrong in a table of opcodes is not something review catches, so the table is
 not written by a person.
 
-Each helper must be position independent and self-contained -- no relocations
-at all, which this checks. That is what lets acc drop one into an image at
-whatever address is free and call it, with nothing to fix up but the call.
+The routines share code -- the four signed and unsigned division entries are
+one loop with four ways in -- so they are emitted as one blob with a table of
+entry points, rather than one at a time. A program that uses any of them
+carries all of them; at a few hundred bytes against the Agon's 448 KB that is
+the cheaper trade than four copies of a division loop.
+
+Sharing means internal calls, which means relocations, so those are extracted
+too and acc applies them when it drops the blob in. Anything that is not a
+call within the blob is rejected here: there is nothing else for acc to
+resolve against.
 """
 import re
 import subprocess
@@ -24,28 +31,32 @@ def main(asm, out, tools):
     obj = out + '.o'
     run(tools + '/ez80-none-elf-as', '-march=ez80+full', asm, '-o', obj)
 
-    relocs = run(tools + '/ez80-none-elf-readelf', '-r', obj).strip()
-    if re.search(r'^0[0-9a-f]+\s', relocs, re.M):
-        sys.exit('%s: a helper needs relocation, so it cannot be dropped in as bytes:\n%s'
-                 % (asm, relocs))
-
     text = subprocess.run([tools + '/ez80-none-elf-objcopy', '-O', 'binary',
                            '--only-section=.text', obj, '/dev/stdout'],
                           capture_output=True, check=True).stdout
 
+    # Internal references: each is a 24-bit address of somewhere in .text.
+    fixups = []
+    for line in run(tools + '/ez80-none-elf-readelf', '-r', obj).splitlines():
+        m = re.match(r'^([0-9a-f]{8})\s+\S+\s+(\S+)\s+\S+\s+(\S+)\s*\+\s*(\S+)', line)
+        if not m:
+            continue
+        at, kind, sym, addend = m.group(1), m.group(2), m.group(3), m.group(4)
+        if kind != 'R_Z80_24' or sym != '.text':
+            sys.exit('%s: a helper refers to %s, which acc has nothing to resolve '
+                     'against' % (asm, sym))
+        fixups.append((int(at, 16), int(addend, 16)))
+
     # Global symbols only: the entry points, in address order.
     entries = []
     for line in run(tools + '/ez80-none-elf-nm', obj).splitlines():
-        addr, kind, name = line.split()
+        parts = line.split()
+        if len(parts) != 3:
+            continue                    # undefined or absolute; not an entry
+        addr, kind, name = parts
         if kind == 'T' and name.startswith('_acc_rt_'):
             entries.append((int(addr, 16), name[len('_acc_rt_'):]))
     entries.sort()
-
-    # Each helper runs to the next one, or to the end.
-    spans = []
-    for i, (addr, name) in enumerate(entries):
-        end = entries[i + 1][0] if i + 1 < len(entries) else len(text)
-        spans.append((name, addr, end))
 
     with open(out, 'w') as f:
         f.write('/* Generated from %s by %s. Do not edit.\n'
@@ -57,18 +68,28 @@ def main(asm, out, tools):
         for i in range(0, len(text), 12):
             f.write('    ' + ' '.join('0x%02x,' % b for b in text[i:i + 12]) + '\n')
         f.write('};\n\n')
-        f.write('/* Where each helper starts and ends within rt_code. */\n')
-        f.write('typedef struct { short at, end; } RtSpan;\n\n')
+        f.write('/* Where each entry point sits within rt_code. */\n')
         f.write('enum {\n')
-        for name, _, _ in spans:
+        for _, name in entries:
             f.write('    RT_%s,\n' % name.upper())
         f.write('    RT_COUNT\n};\n\n')
-        f.write('static const RtSpan rt_span[RT_COUNT] = {\n')
-        for name, at, end in spans:
-            f.write('    { %d, %d },   /* %s, %d bytes */\n' % (at, end, name, end - at))
-        f.write('};\n\n#endif /* ACC_RT_HELPERS_H */\n')
+        f.write('static const short rt_entry[RT_COUNT] = {\n')
+        for addr, name in entries:
+            f.write('    %d,   /* %s */\n' % (addr, name))
+        f.write('};\n\n')
+        f.write('/* Calls from one routine to another: the address at `at` is the\n'
+                ' * blob\'s base plus `to`. */\n')
+        f.write('typedef struct { short at, to; } RtFix;\n\n')
+        f.write('#define RT_NFIX %d\n\n' % len(fixups))
+        if fixups:
+            f.write('static const RtFix rt_fix[RT_NFIX] = {\n')
+            for at, to in sorted(fixups):
+                f.write('    { %d, %d },\n' % (at, to))
+            f.write('};\n\n')
+        f.write('#endif /* ACC_RT_HELPERS_H */\n')
 
-    print('[%s: %d bytes in %d helpers]' % (out, len(text), len(spans)))
+    print('[%s: %d bytes, %d entry points, %d internal calls]'
+          % (out, len(text), len(entries), len(fixups)))
 
 
 if __name__ == '__main__':

@@ -53,7 +53,7 @@ static void expr(void);
 static void primary(void)
 {
     if (tok == TK_INT) {
-        vpush_const(tok_val);
+        vpush_const(tok_val, tok_type);
         next();
 
         return;
@@ -133,10 +133,16 @@ static void primary(void)
         return;
     }
 
+    /* A `*` or `&` where an expression was meant to start is a dereference or
+     * an address-of, not the binary operator of the same spelling. Say which
+     * feature is missing rather than which character was unexpected. */
+    if (tok == TK_STAR || tok == TK_AMP)
+        acc_error_at(tok_line, "pointers are not supported yet");
+
     /* An operator acc has not got to yet, where an expression was meant to
-     * start -- a leading `!` or `*`. Name the operator, as expect() does when
-     * one turns up where a statement was meant to end; "expected an
-     * expression" is true and sends the reader looking for the wrong thing. */
+     * start. Name the operator, as expect() does when one turns up where a
+     * statement was meant to end; "expected an expression" is true and sends
+     * the reader looking for the wrong thing. */
     if (tok_is_unimplemented_op(tok))
         acc_error_at(tok_line, "%s is not supported yet", tok_spelling(tok));
 
@@ -163,7 +169,8 @@ enum {
     PREC_EQUALITY   = 4,        /* ==  != */
     PREC_RELATIONAL = 5,        /* <  >  <=  >= */
     PREC_SHIFT      = 6,        /* <<  >> */
-    PREC_ADDITIVE   = 7         /* +  - */
+    PREC_ADDITIVE   = 7,        /* +  - */
+    PREC_MULTIPLY   = 8         /* *  /  % */
 };
 
 static const unsigned char prec[TK_COUNT] = {
@@ -174,7 +181,9 @@ static const unsigned char prec[TK_COUNT] = {
     [TK_LT] = PREC_RELATIONAL, [TK_GT] = PREC_RELATIONAL,
     [TK_LE] = PREC_RELATIONAL, [TK_GE] = PREC_RELATIONAL,
     [TK_SHL] = PREC_SHIFT,     [TK_SHR] = PREC_SHIFT,
-    [TK_PLUS] = PREC_ADDITIVE, [TK_MINUS] = PREC_ADDITIVE
+    [TK_PLUS] = PREC_ADDITIVE, [TK_MINUS] = PREC_ADDITIVE,
+    [TK_STAR] = PREC_MULTIPLY, [TK_SLASH] = PREC_MULTIPLY,
+    [TK_PERCENT] = PREC_MULTIPLY
 };
 
 /* The operators that leave a 0 or 1 behind rather than a number. Named one at
