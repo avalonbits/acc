@@ -12,7 +12,7 @@ CC      ?= cc
 CFLAGS  ?= -O2 -g
 WARN     = -Wall -Wextra -Wno-unused-parameter
 SRC      = src/lex.c src/sym.c src/gen.c src/out.c src/parse.c
-HDR      = src/acc.h
+HDR      = src/acc.h src/timing.h
 
 # -fsigned-char because char is signed on the eZ80, so the host build should
 # read a source file the same way the target build does.
@@ -24,7 +24,7 @@ SAN      = -fsanitize=address,undefined -fno-sanitize-recover=all \
 
 BIN = bin
 
-.PHONY: all clean test
+.PHONY: all clean test unit
 all: $(BIN)/acc
 
 $(BIN)/acc: $(SRC) $(HDR) | $(BIN)
@@ -41,9 +41,15 @@ $(BIN)/acc-asan: $(SRC) $(HDR) | $(BIN)
 $(BIN):
 	@mkdir -p $(BIN)
 
-test: all $(BIN)/acc-asan
+# unit first: it needs no emulator and no agondev, so it is the part that
+# always runs and the part that fails fastest.
+test: all unit $(BIN)/acc-asan
 	@ACC=$(BIN)/acc-asan test/errors.sh
 	@ACC=$(BIN)/acc-asan test/run.sh
+
+unit: | $(BIN)
+	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_timing test/test_timing.c
+	@$(BIN)/test_timing
 
 clean:
 	$(RM) -r $(BIN)

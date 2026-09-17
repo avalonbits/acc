@@ -13,6 +13,7 @@
 #include <stdlib.h>
 
 #include "acc.h"
+#include "timing.h"
 
 const char *lex_path(void);
 
@@ -337,6 +338,8 @@ int main(int argc, char **argv)
     const char *in = NULL, *out = NULL;
     int by_exit = 0;
     int i;
+    clock_t begin;
+    unsigned cs;
 
     for (i = 1; i < argc; i++) {
         if (argv[i][0] == '-' && argv[i][1] == 'o') {
@@ -359,6 +362,8 @@ int main(int argc, char **argv)
     if (!in || !out)
         usage();
 
+    begin = clock();
+
     name_init();
     lex_init();
     sym_init();
@@ -370,6 +375,13 @@ int main(int argc, char **argv)
     gen_finish();
     lex_close();
     out_close();
+
+    /* Reported the way zap reports it, down to the wording, so that the two
+     * halves of a build can be read as one number. Measured from after the
+     * arguments are checked to after the file is written: everything a
+     * "how long did that take" is asking about, and nothing else. */
+    cs = elapsed_cs(begin, clock());
+    printf("Done in %u.%02u seconds\r\n", cs / 100, cs % 100);
 
     return 0;
 }
