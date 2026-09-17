@@ -1,5 +1,5 @@
-/* expect: 3: error: the constant does not fit in 24 bits */
+/* expect: 3: error: the constant does not fit in 32 bits */
 int main(void) {
-    int n = 0x1000000;
+    long n = 0x100000000;
     return n;
 }

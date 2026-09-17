@@ -72,6 +72,9 @@ static void need_disp(int d)
 }
 
 static int  spill_slot(void);
+static int  force_reg_at(int depth);
+static int  long_scratch(void);
+static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
 static void force_into(Value *target, int want);
 static int  needs_helper(int op);
@@ -315,7 +318,33 @@ void vconvert(Type to)
 
     if (vtop <= 0)
         acc_error("internal: nothing to convert");
+
+    if (type_wide(to)) {
+        int slot;
+
+        if (top->kind == VAL_LOCAL && type_wide(top->type)) {
+            top->type = to;     /* already four bytes in the frame */
+
+            return;
+        }
+        slot = long_scratch();
+        need_disp(slot);
+        need_disp(slot + ACC_LONG_SIZE - 1);
+        materialise_long(slot, to);
+        vdrop();
+        vpush(VAL_LOCAL, to, slot);
+
+        return;
+    }
     if (type_size(to) >= ACC_INT_SIZE) {
+        /* Widening. A value still sitting in the frame at its own narrow
+         * width has to be loaded before it can be called an int, because the
+         * load is what widens it -- relabelling it would have the next load
+         * read three bytes of a one-byte object. A constant and a register
+         * are already at int width and only need the label. */
+        if (type_size(top->type) < ACC_INT_SIZE
+            && (top->kind == VAL_LOCAL || top->kind == VAL_ACC))
+            force_reg_at(0);
         top->type = to;
 
         return;
@@ -346,18 +375,36 @@ Type vtype(void)
     return (vsp - 1)->type;
 }
 
+Type vtype_at(int depth)
+{
+    if (vtop <= depth)
+        acc_error("internal: asked the type of nothing");
+
+    return (vsp - 1 - depth)->type;
+}
+
 void vdrop(void)
 {
     if (vtop <= 0)
         acc_error("internal: value stack underflow");
     vtop--;
     vsp--;
+}
 
-    /* Nothing is spilled once nothing is on the stack, so the scratch area
-     * starts again. This is where the reuse happens, and it needs no help
-     * from the parser: an empty value stack *is* a statement boundary. */
-    if (vtop == 0)
-        spill_used = 0;
+/* The scratch area is free again at a statement boundary, and only there.
+ *
+ * It used to reset whenever the value stack emptied, on the reasoning that an
+ * empty stack is a statement boundary. That stopped being true when longs
+ * arrived: a long lives in the scratch area, and an operation on two of them
+ * drops both operands -- emptying the stack -- and then pushes a result that
+ * points into it. The next allocation started from zero and handed out the
+ * slot the result was sitting in, so `a + b == c` compared c with itself.
+ *
+ * Caught by breaking the four-byte add to three and finding that a test still
+ * passed: the comparison was not comparing what it looked like it was. */
+void gen_stmt_end(void)
+{
+    spill_used = 0;
 }
 
 static int reg_busy(int reg)
@@ -751,6 +798,16 @@ void vstore_local(int offset, Type type)
 {
     int reg;
 
+    if (type_wide(type)) {
+        need_disp(offset);
+        need_disp(offset + ACC_LONG_SIZE - 1);
+        materialise_long(offset, type);
+        vdrop();
+        vpush(VAL_LOCAL, type, offset);
+
+        return;
+    }
+
     if ((vsp - 1)->kind == VAL_ACC && (vsp - 1)->type == type) {
         /* Already in A at its own width, which is where a byte store reads
          * from. Nothing to convert and nothing to move. */
@@ -1123,6 +1180,199 @@ void vcmp(int op)
 }
 
 /* ------------------------------------------------------------------ */
+/* long                                                                */
+
+/* A long is four bytes and every register is three, so a long value never
+ * lives in one. It stays in the frame, and the operations work on it there:
+ * HL points at the destination, DE at the other operand, and a helper walks
+ * the four bytes. That is the shape the chip is good at for something wider
+ * than a register, and it reuses the scratch area the allocator already has.
+ *
+ * On the stack a long is therefore always VAL_LOCAL. Anything that forces it
+ * into a register is asking for the int it converts to, which is its low
+ * three bytes -- so force_reg_at does exactly that and needs no special case.
+ */
+
+static int spill_slot_of(int size);
+
+/* lea rr, ix+d -- the address of a frame slot, which is what the helpers take.
+ * The second byte is the register, and these are the assembler's own numbers
+ * rather than a reading of the opcode map: guessing DE cost a debugging pass. */
+static void lea_rr_ix(int reg, int disp)
+{
+    static const unsigned char lea_code[NREGS] = { 0x22, 0x12, 0x02 };
+
+    out_byte(0xed);
+    out_byte(lea_code[reg]);
+    out_byte(disp);
+}
+
+/* Copy four bytes from one frame slot to another. */
+static void copy_long(int to, int from)
+{
+    int i;
+
+    for (i = 0; i < ACC_LONG_SIZE; i++) {
+        ld_a_ix(from + i);
+        ld_ix_a(to + i);
+    }
+}
+
+/* Write an int-wide value, already in HL, into a long slot: three bytes and
+ * then the byte the sign or the zero extension calls for. */
+static void store_int_as_long(int disp, int is_unsigned)
+{
+    need_disp(disp);
+    ld_ix_rr(disp, R_HL);
+    if (is_unsigned) {
+        out_byte(0xaf);                 /* xor a, a */
+    } else {
+        /* The sign of a 24-bit value is bit 23, which has no name -- but
+         * `add hl, hl` shifts it into the carry, and a push and a pop either
+         * side leave HL as it was. */
+        push_rr(R_HL);
+        add_hl_rr(R_HL);
+        pop_rr(R_HL);
+        out_byte(0x9f);                 /* sbc a, a: 0 or 0xff */
+    }
+    ld_ix_a(disp + ACC_INT_SIZE);
+}
+
+/* Put the top of the stack into a long slot, whatever width it arrived as. */
+static void materialise_long(int disp, Type type)
+{
+    Value *top = vsp - 1;
+
+    if (top->kind == VAL_LOCAL && type_wide(top->type)) {
+        copy_long(disp, top->val);
+
+        return;
+    }
+    force_into(top, R_HL);
+    store_int_as_long(disp, type_unsigned(top->type));
+}
+
+/* A constant too wide for a register goes straight to a frame slot, which is
+ * where every long lives. */
+void vpush_const_long(long val, Type type)
+{
+    int slot = spill_slot_of(ACC_LONG_SIZE);
+    int i;
+
+    need_disp(slot);
+    need_disp(slot + ACC_LONG_SIZE - 1);
+    for (i = 0; i < ACC_LONG_SIZE; i++) {
+        out_byte(0x3e);                         /* ld a, n */
+        out_byte((int) ((val >> (i * 8)) & 0xff));
+        ld_ix_a(slot + i);
+    }
+    vpush(VAL_LOCAL, type, slot);
+}
+
+/* One scratch long, for the left operand of an operation to be built in and
+ * overwritten by the result. */
+static int long_scratch(void)
+{
+    return spill_slot_of(ACC_LONG_SIZE);
+}
+
+static int long_helper(int op, Type type)
+{
+    switch (op) {
+    case TK_PLUS:  return RT_LADD;
+    case TK_MINUS: return RT_LSUB;
+    case TK_AMP:   return RT_LAND;
+    case TK_PIPE:  return RT_LOR;
+    case TK_CARET: return RT_LXOR;
+    }
+    (void) type;
+
+    return -1;
+}
+
+/* Is either side of the top pair a long? Then C converts both to long and the
+ * result is one. */
+int vlong_pair(void)
+{
+    if (vtop < 2)
+        return 0;
+
+    return type_wide((vsp - 2)->type) || type_wide((vsp - 1)->type);
+}
+
+void vbinop_long(int op, Type result)
+{
+    int which = long_helper(op, result);
+    int left, right;
+
+    if (which < 0)
+        acc_error("the operator %s is not implemented for long yet",
+                  tok_spelling(op));
+
+    /* The right operand first, because building the left one may need HL and
+     * the right may still be an expression on the stack. */
+    right = long_scratch();
+    materialise_long(right, result);
+    vdrop();
+
+    left = long_scratch();
+    materialise_long(left, result);
+    vdrop();
+
+    need_disp(left);
+    need_disp(right);
+    lea_rr_ix(R_HL, left);
+    lea_rr_ix(R_DE, right);
+    rt_call(which);
+
+    vpush(VAL_LOCAL, result, left);
+}
+
+void vcmp_long(int op, Type operand)
+{
+    int left, right;
+
+    right = long_scratch();
+    materialise_long(right, operand);
+    vdrop();
+
+    left = long_scratch();
+    materialise_long(left, operand);
+    vdrop();
+
+    need_disp(left);
+    need_disp(right);
+
+    /* `a > b` is `b < a` and `a <= b` is `b >= a`, done by which address goes
+     * in which register rather than by a second routine. */
+    if (op == TK_GT || op == TK_LE) {
+        int swap = left;
+
+        left = right;
+        right = swap;
+        op = (op == TK_GT) ? TK_LT : TK_GE;
+    }
+    lea_rr_ix(R_HL, left);
+    lea_rr_ix(R_DE, right);
+
+    if (op == TK_EQ || op == TK_NE) {
+        rt_call(RT_LCMPEQ);
+        cmp_equal(op == TK_EQ);
+    } else {
+        /* The last subtract of the four leaves S, P/V and C describing the
+         * whole width, so the same branch sequence the 24-bit comparisons use
+         * reads them unchanged. */
+        rt_call(RT_LCMPORD);
+        if (type_unsigned(operand))
+            cmp_unsigned(op == TK_LT);
+        else
+            cmp_signed(op == TK_LT);
+    }
+    vpush_reg(R_HL);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* branches                                                            */
 
 /* Every jump here is a three-byte absolute `jp` and never a two-byte `jr`.
@@ -1374,6 +1624,15 @@ int gen_local(int size)
  * They are handed out in order and all released together, so this is a
  * high-water mark and not a free list -- there is nothing to free, since the
  * whole area goes at once. */
+static int spill_slot_of(int size)
+{
+    spill_used += size;
+    if (spill_used > spill_peak)
+        spill_peak = spill_used;
+
+    return -(locals_size + spill_used);
+}
+
 static int spill_slot(void)
 {
     spill_used += ACC_INT_SIZE;
@@ -1433,6 +1692,23 @@ void gen_return(void)
     if (vtop > 0) {
         int reg;
 
+        if (type_wide(return_type)) {
+            /* HL with the high byte in E, which is where agondev puts a
+             * four-byte result. The value is in the frame, so this is two
+             * loads. */
+            vconvert(return_type);
+            need_disp((vsp - 1)->val);
+            need_disp((vsp - 1)->val + ACC_LONG_SIZE - 1);
+            ld_rr_ix(R_HL, (vsp - 1)->val);
+            ld_e_ix((vsp - 1)->val + ACC_INT_SIZE);
+            vdrop();
+            out_byte(0xdd); out_byte(0xf9);      /* ld sp, ix */
+            out_byte(0xdd); out_byte(0xe1);      /* pop ix */
+            out_byte(0xc9);                      /* ret */
+
+            return;
+        }
+
         vconvert(return_type);
         reg = vpop_reg();
         if (reg != R_HL)
@@ -1452,9 +1728,9 @@ void gen_return(void)
 
 /* Arguments are pushed right to left, each in a whole three-byte slot, and
  * the caller takes them off again -- which is agondev's convention. */
-void gen_call(int fn, int nargs)
+void gen_call(int fn, int nargs, int params_first, int nparams)
 {
-    int i;
+    int i, argslots = 0;
 
     /* Anything still live in a register has to come out before the call.
      * The result comes back in HL and the callee is free with the rest, so a
@@ -1464,9 +1740,36 @@ void gen_call(int fn, int nargs)
     save_regs_below(nargs);
 
     for (i = 0; i < nargs; i++) {
-        int reg = vpop_reg();
+        /* Converted to the type the parameter was declared with. The
+         * arguments come off the stack last one first, so this is the
+         * parameter that many from the end. */
+        int which = nargs - 1 - i;
 
-        push_rr(reg);
+        if (which < nparams)
+            vconvert(sym_param_type(params_first, which));
+
+        if (type_wide(vtype())) {
+            /* Two slots, six bytes, which is what agondev gives a long. The
+             * high half goes first because the stack grows downwards, so the
+             * low bytes end up at the lower address. */
+            int slot = (vsp - 1)->val;
+
+            need_disp(slot);
+            need_disp(slot + ACC_LONG_SIZE - 1);
+            ld_e_ix(slot + ACC_INT_SIZE);
+            ld_rr_imm(R_HL, 0);
+            out_byte(0x6b);                      /* ld l, e */
+            push_rr(R_HL);
+            ld_rr_ix(R_HL, slot);
+            push_rr(R_HL);
+            vdrop();
+            argslots += 2;      /* six bytes, so two slots to take back */
+        } else {
+            int reg = vpop_reg();
+
+            push_rr(reg);
+            argslots++;
+        }
     }
 
     out_byte(0xcd);                              /* call nn */
@@ -1480,8 +1783,22 @@ void gen_call(int fn, int nargs)
         out_word24(0);
     }
 
-    for (i = 0; i < nargs; i++)
+    for (i = 0; i < argslots; i++)
         pop_rr(R_DE);                            /* discard, cheapest form */
+
+    if (type_wide(sym_at(fn)->type)) {
+        /* HL with the high byte in E; put it where every long lives. */
+        int slot = spill_slot_of(ACC_LONG_SIZE);
+
+        need_disp(slot);
+        need_disp(slot + ACC_LONG_SIZE - 1);
+        ld_ix_rr(slot, R_HL);
+        out_byte(0x7b);                          /* ld a, e */
+        ld_ix_a(slot + ACC_INT_SIZE);
+        vpush(VAL_LOCAL, sym_at(fn)->type, slot);
+
+        return;
+    }
 
     /* Read the answer from where the callee's type says it is. */
     if (RETURNS_IN_A(sym_at(fn)->type)) {

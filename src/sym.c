@@ -196,6 +196,7 @@ int sym_push(NameRef name, int kind, int val)
     sym->val = val;
     sym->type = TY_INT;         /* a function called before it is defined is
                                  * assumed to return int, as C says */
+    sym_set_params(nglobals, 0, 0);     /* and to take nothing known */
     nsyms++;
     index_add(name, nglobals);
 
@@ -229,6 +230,85 @@ Sym *sym_at(int i)
 /* The end of a function. Functions do not nest, so there is exactly one
  * scope to drop and no mark to remember: everything above the file-scope
  * region is this function's. */
+/* ------------------------------------------------------------------ */
+/* what a function takes                                               */
+
+/* The declared type of every parameter of every function, end to end, with
+ * each function's Sym recording where its run starts and how long it is.
+ *
+ * A call has to convert each argument to the type the parameter was declared
+ * with -- a long takes four bytes in two slots where an int takes three in
+ * one, so without this a call to a function with a long parameter puts the
+ * bytes in the wrong places and everything after it reads the wrong slot.
+ * C89 would call that the programmer's fault for not writing a prototype;
+ * C99, which acc is aimed at, requires the conversion.
+ *
+ * Kept beside the symbols rather than in them: a Sym is eight bytes and
+ * indexing one is a shift, and two more fields would make it twelve. */
+static Type    *param_type;
+static unsigned param_used, param_cap;
+
+/* Where each function's run starts and how long it is, indexed by its symbol.
+ * File-scope symbols keep their index when others are added, so this stays
+ * lined up with them. */
+static int          *fn_first;
+static unsigned char *fn_count;
+static unsigned      fn_cap;
+
+static void fn_room(unsigned want)
+{
+    if (want < fn_cap)
+        return;
+    while (fn_cap <= want)
+        fn_cap = fn_cap ? fn_cap * 2 : 64;
+    fn_first = realloc(fn_first, fn_cap * sizeof *fn_first);
+    fn_count = realloc(fn_count, fn_cap * sizeof *fn_count);
+    if (!fn_first || !fn_count)
+        acc_error("out of memory for the function signatures");
+}
+
+void sym_set_params(int sym, int first, int count)
+{
+    fn_room((unsigned) sym);
+    fn_first[sym] = first;
+    fn_count[sym] = (unsigned char) count;
+}
+
+int sym_params_first(int sym)
+{
+    fn_room((unsigned) sym);
+
+    return fn_first[sym];
+}
+
+int sym_nparams(int sym)
+{
+    fn_room((unsigned) sym);
+
+    return fn_count[sym];
+}
+
+int sym_params_begin(void)
+{
+    return (int) param_used;
+}
+
+void sym_param_add(Type type)
+{
+    if (param_used == param_cap) {
+        param_cap = param_cap ? param_cap * 2 : 64;
+        param_type = realloc(param_type, param_cap * sizeof *param_type);
+        if (!param_type)
+            acc_error("out of memory for the parameter types");
+    }
+    param_type[param_used++] = type;
+}
+
+Type sym_param_type(int first, int index)
+{
+    return param_type[first + index];
+}
+
 void sym_drop_locals(void)
 {
     nsyms = nglobals;

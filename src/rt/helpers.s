@@ -409,3 +409,159 @@ _acc_rt_rems:
 	pop	iy
 	pop	de
 	ret
+
+; ---------------------------------------------------------------- long
+; A long is four bytes, wider than any register, so it lives in the frame and
+; these work on it there: HL points at the destination, DE at the other
+; operand, and the destination is overwritten.
+;
+; Little endian, so the loop runs from the low byte up and the carry chains
+; the way the arithmetic needs.
+
+	.global _acc_rt_ladd
+	.global _acc_rt_lsub
+	.global _acc_rt_land
+	.global _acc_rt_lor
+	.global _acc_rt_lxor
+	.global _acc_rt_lcmpeq
+	.global _acc_rt_lcmpord
+
+_acc_rt_ladd:
+	push	bc
+	push	de
+	push	hl
+	or	a, a			; no carry into the low byte
+	ld	b, 4
+.ladd_loop:
+	ld	a, (de)
+	adc	a, (hl)
+	ld	(hl), a
+	inc	hl
+	inc	de
+	djnz	.ladd_loop
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+; Only (hl) has an `sbc a, (rr)` form, so the right-hand byte goes through C
+; on the way. Neither `ld c, a` nor `ld a, (hl)` touches the carry, so the
+; borrow still chains from one byte to the next.
+_acc_rt_lsub:
+	push	bc
+	push	de
+	push	hl
+	or	a, a
+	ld	b, 4
+.lsub_loop:
+	ld	a, (de)
+	ld	c, a
+	ld	a, (hl)
+	sbc	a, c
+	ld	(hl), a
+	inc	hl
+	inc	de
+	djnz	.lsub_loop
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+_acc_rt_land:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 4
+.land_loop:
+	ld	a, (de)
+	and	a, (hl)
+	ld	(hl), a
+	inc	hl
+	inc	de
+	djnz	.land_loop
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+_acc_rt_lor:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 4
+.lor_loop:
+	ld	a, (de)
+	or	a, (hl)
+	ld	(hl), a
+	inc	hl
+	inc	de
+	djnz	.lor_loop
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+_acc_rt_lxor:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 4
+.lxor_loop:
+	ld	a, (de)
+	xor	a, (hl)
+	ld	(hl), a
+	inc	hl
+	inc	de
+	djnz	.lxor_loop
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+; Z set if the four bytes at (hl) equal those at (de). Neither is changed.
+; Compared a byte at a time and stopped at the first difference, rather than
+; subtracted: a subtract's Z would describe only the byte it was done on.
+_acc_rt_lcmpeq:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 4
+.lcmpeq_loop:
+	ld	a, (de)
+	cp	a, (hl)
+	jr	nz, .lcmpeq_differ
+	inc	hl
+	inc	de
+	djnz	.lcmpeq_loop
+	xor	a, a			; every byte matched: Z
+	jr	.lcmpeq_done
+.lcmpeq_differ:
+	ld	a, 1
+	or	a, a			; NZ, whatever the bytes were
+.lcmpeq_done:
+	pop	hl			; pop leaves the flags alone
+	pop	de
+	pop	bc
+	ret
+
+; The flags of (hl) - (de) as a four-byte subtract, for ordering. The last
+; sbc leaves S, P/V and C describing the whole width, which is what the
+; caller's branch sequence reads. Neither operand is changed.
+_acc_rt_lcmpord:
+	push	bc
+	push	de
+	push	hl
+	or	a, a
+	ld	b, 4
+.lcmpord_loop:
+	ld	a, (de)
+	ld	c, a
+	ld	a, (hl)
+	sbc	a, c
+	inc	hl
+	inc	de
+	djnz	.lcmpord_loop
+	pop	hl			; pop leaves the flags alone
+	pop	de
+	pop	bc
+	ret

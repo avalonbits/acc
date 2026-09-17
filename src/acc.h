@@ -32,6 +32,7 @@
  * difficulty of the previous compiler was code that assumed 4. */
 #define ACC_INT_SIZE   3
 #define ACC_PTR_SIZE   3
+#define ACC_LONG_SIZE  4
 
 /* ------------------------------------------------------------------ */
 /* types                                                               */
@@ -56,7 +57,14 @@ typedef unsigned char Type;
 #define TY_USHORT   ((Type) (2 | TY_UNSIGNED))
 #define TY_INT      ((Type) ACC_INT_SIZE)
 #define TY_UINT     ((Type) (ACC_INT_SIZE | TY_UNSIGNED))
+#define TY_LONG     ((Type) ACC_LONG_SIZE)
+#define TY_ULONG    ((Type) (ACC_LONG_SIZE | TY_UNSIGNED))
 #define TY_VOID     ((Type) 0)
+
+/* A long is wider than any register, so it never lives in one: it stays in
+ * the frame and the code generator works on it there. type_wide says which
+ * values that applies to. */
+#define type_wide(ty)     (type_size(ty) > ACC_INT_SIZE)
 
 #define type_size(ty)     ((int) ((ty) & TY_SIZE_MASK))
 #define type_unsigned(ty) ((ty) & TY_UNSIGNED)
@@ -119,7 +127,10 @@ enum {
 };
 
 extern int      tok;        /* the current token */
-extern int      tok_val;    /* its value, when TK_INT */
+/* Wide enough for a long, because C99 types a constant by the first type that
+ * can hold it and acc now has one. It is read once per numeric token, so the
+ * long arithmetic that costs on this target is not on a path that matters. */
+extern long     tok_val;    /* its value, when TK_INT */
 extern Type     tok_type;   /* and its type, which C99 fixes by its size */
 extern NameRef  tok_name;   /* its name, when TK_IDENT */
 extern int      tok_line;   /* the line it started on */
@@ -157,6 +168,16 @@ typedef struct {
     int           val;
     Type          type;         /* fits in what was the pad byte */
 } Sym;
+
+/* A function's parameter types, kept beside the symbols. A call converts each
+ * argument to the type the parameter was declared with, which matters because
+ * a long takes two argument slots where everything else takes one. */
+int  sym_params_begin(void);
+void sym_param_add(Type type);
+Type sym_param_type(int first, int index);
+void sym_set_params(int sym, int first, int count);
+int  sym_params_first(int sym);
+int  sym_nparams(int sym);
 
 void sym_init(void);
 /* Symbols are referred to by index. A Sym * is only good until the next push,
@@ -205,8 +226,10 @@ void gen_func_end(void);
 int  gen_local(int size);             /* reserve a slot; returns its offset */
 
 void vpush_const(int val, Type type);
+void vpush_const_long(long val, Type type);  /* four bytes, so it goes to the frame */
 void vconvert(Type to);               /* narrow the top, then widen it back */
 Type vtype(void);                     /* the type of the top */
+Type vtype_at(int depth);             /* 0 is the top, 1 the one below */
 void vpush_local(int offset, Type type);
 void vpush_reg(int reg);
 void vstore_local(int offset, Type type); /* pop the top into a local */
@@ -219,12 +242,20 @@ void vcmp(int op);                    /* compare the top two; leaves 0 or 1 */
  * whether the two values on the stack are in a shape this can use. */
 int  vnarrow_ready(int op, Type to);
 void vbinop_narrow(int op, Type to);
+
+/* A long is four bytes and every register is three, so it lives in the frame
+ * and these work on it there. vlong_pair says whether the top two values need
+ * that treatment. */
+int  vlong_pair(void);
+void vbinop_long(int op, Type result);
+void vcmp_long(int op, Type operand);
 void vneg(void);
 void vnot(void);
 int  vpop_reg(void);                  /* force the top into a register */
 void vdrop(void);
+void gen_stmt_end(void);              /* the scratch area is free again */
 
-void gen_call(int fn, int nargs);
+void gen_call(int fn, int nargs, int params_first, int nparams);
 
 /* Branches. A jump whose target is not known yet is emitted with a hole and
  * filled in by gen_label once the target is reached; one going backwards is

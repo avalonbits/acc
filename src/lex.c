@@ -222,7 +222,7 @@ static const char *src_path;
 static int   line;
 
 int      tok;
-int      tok_val;
+long     tok_val;
 NameRef  tok_name;
 int      tok_line;
 Type     tok_type;
@@ -382,7 +382,10 @@ void next(void)
          * after, so the accumulator never overflows and there is nothing to
          * detect after the fact. Everything here stays in an int, which on
          * this target is the 24 bits the answer has to fit in anyway. */
-        int value = 0;
+        /* Unsigned, because the largest constant acc takes is 0xFFFFFFFF and
+         * long on this target is 32 bits signed. The bits are what is wanted;
+         * tok_val holds them and the type says how to read them. */
+        unsigned long value = 0;
         int is_hex = 0;
 
         if (c == '0' && (cursor[1] == 'x' || cursor[1] == 'X')) {
@@ -397,9 +400,9 @@ void next(void)
                 else if (digit >= 'a' && digit <= 'f')   digit -= 'a' - 10;
                 else if (digit >= 'A' && digit <= 'F')   digit -= 'A' - 10;
                 else acc_error_at(line, "bad digit '%c' in a hex constant", digit);
-                if (value > 0xfffff)
+                if (value > 0xfffffffUL)
                     acc_error_at(line, "the constant does not fit in %d bits",
-                                 ACC_INT_SIZE * 8);
+                                 ACC_LONG_SIZE * 8);
                 value = value * 16 + digit;
                 cursor++;
             }
@@ -407,9 +410,10 @@ void next(void)
             while (is_digit((unsigned char) *cursor)) {
                 int digit = *cursor - '0';
 
-                if (value > 1677721 || (value == 1677721 && digit > 5))
+                if (value > 429496729UL
+                    || (value == 429496729UL && digit > 5))
                     acc_error_at(line, "the constant does not fit in %d bits",
-                                 ACC_INT_SIZE * 8);
+                                 ACC_LONG_SIZE * 8);
                 value = value * 10 + digit;
                 cursor++;
             }
@@ -417,21 +421,26 @@ void next(void)
 
         /* C99 types a constant by the first type that can hold it. A decimal
          * one goes int, long int, long long int; a hex or octal one may also
-         * be unsigned at each step. acc has no long, so anything above
-         * INT_MAX becomes unsigned int, which is where the two part company:
-         * C99 would call 16777215 a long, and `16777215 == -1` false, where
-         * acc makes both sides unsigned and says true. Refusing the range
-         * outright was worse -- `unsigned int all_ones = 16777215;` is
-         * ordinary code and C99 defines it. */
-        (void) is_hex;
-        if (value > 0x7fffff) {
-            tok_type = TY_UINT;
-            value -= 0x1000000;         /* the same bits, read as signed */
-        } else {
+         * be unsigned at each step, which is the only place the two forms
+         * differ. acc has no long long, so past the end of long it refuses. */
+        if (value <= 0x7fffffUL) {
             tok_type = TY_INT;
+        } else if (is_hex && value <= 0xffffffUL) {
+            tok_type = TY_UINT;
+            /* Normalised to the signed pattern of the same 24 bits, so that
+             * acc folds it identically whether it is itself running on a
+             * 24-bit int or a 32-bit one. */
+            value -= 0x1000000UL;
+        } else if (value <= 0x7fffffffUL) {
+            tok_type = TY_LONG;
+        } else if (is_hex) {
+            tok_type = TY_ULONG;
+        } else {
+            acc_error_at(line, "the constant is too large for a long, and "
+                               "long long is not supported yet");
         }
         tok = TK_INT;
-        tok_val = value;
+        tok_val = (long) value;
         return;
     }
 

@@ -63,7 +63,10 @@ static Type narrow_dest;
 static void primary(void)
 {
     if (tok == TK_INT) {
-        vpush_const(tok_val, tok_type);
+        if (type_wide(tok_type))
+            vpush_const_long(tok_val, tok_type);
+        else
+            vpush_const((int) tok_val, tok_type);
         next();
 
         return;
@@ -134,7 +137,7 @@ static void primary(void)
                 narrow_dest = outer;
             }
             expect(TK_RPAREN, "')'");
-            gen_call(sym, nargs);
+            gen_call(sym, nargs, sym_params_first(sym), sym_nparams(sym));
 
             return;
         }
@@ -261,7 +264,18 @@ static void binary_rest(int min_prec)
         primary();
         binary_rest(op_prec + 1);       /* everything binding tighter first */
 
-        if (is_comparison(op))
+        if (vlong_pair()) {
+            /* C converts both sides to long when either is one, and the
+             * result is a long -- or, for a comparison, an int taken from a
+             * long-wide comparison. */
+            Type wide = (type_unsigned(vtype_at(1)) || type_unsigned(vtype_at(0)))
+                        ? TY_ULONG : TY_LONG;
+
+            if (is_comparison(op))
+                vcmp_long(op, wide);
+            else
+                vbinop_long(op, wide);
+        } else if (is_comparison(op))
             vcmp(op);
         else if (narrow_dest && transparent_op(op) && expression_ends_here()
                  && vnarrow_ready(op, narrow_dest))
@@ -337,7 +351,7 @@ static void expr(void)
                 narrow_dest = outer;
             }
             expect(TK_RPAREN, "')'");
-            gen_call(fn, nargs);
+            gen_call(fn, nargs, sym_params_first(fn), sym_nparams(fn));
         } else {
             sym = sym_find(name);
             if (sym == SYM_NONE)
@@ -370,11 +384,8 @@ static void expr(void)
  * were seven comparisons each and cost 4.7% of a compile.
  *
  * The entry is the type biased by one, so that void -- which is zero -- is
- * still distinguishable from "not a specifier". `long` is a specifier acc
- * recognises and refuses, so it has an entry that is not a type.
+ * still distinguishable from "not a specifier".
  */
-#define SPEC_LONG 0xff
-
 static const unsigned char spec_alone[TK_COUNT] = {
     [TK_KW_VOID]     = TY_VOID + 1,
     [TK_KW_CHAR]     = TY_CHAR + 1,
@@ -382,7 +393,7 @@ static const unsigned char spec_alone[TK_COUNT] = {
     [TK_KW_INT]      = TY_INT + 1,
     [TK_KW_SIGNED]   = TY_INT + 1,
     [TK_KW_UNSIGNED] = TY_UINT + 1,
-    [TK_KW_LONG]     = SPEC_LONG
+    [TK_KW_LONG]     = TY_LONG + 1
 };
 
 static int starts_type(int token)
@@ -414,14 +425,16 @@ static Type type_specifier_slow(int first, int line)
         next();
     }
 
-    if (is_long)
-        acc_error_at(line, "'long' is not supported yet");
+    if (is_long > 1)
+        acc_error_at(line, "'long long' is not supported yet");
     if (is_signed && is_unsigned)
         acc_error_at(line, "'signed' and 'unsigned' together");
-    if (is_void && (is_char || is_short || is_int || is_signed || is_unsigned))
+    if (is_void && (is_char || is_short || is_int || is_long || is_signed || is_unsigned))
         acc_error_at(line, "'void' with another type");
-    if (is_char && is_short)
-        acc_error_at(line, "'char' and 'short' together");
+    if (is_char && (is_short || is_long))
+        acc_error_at(line, "'char' with another width");
+    if (is_short && is_long)
+        acc_error_at(line, "'short' and 'long' together");
 
     if (is_void)
         return TY_VOID;
@@ -429,6 +442,8 @@ static Type type_specifier_slow(int first, int line)
         return is_unsigned ? TY_UCHAR : TY_CHAR;
     if (is_short)
         return is_unsigned ? TY_USHORT : TY_SHORT;
+    if (is_long)
+        return is_unsigned ? TY_ULONG : TY_LONG;
 
     return is_unsigned ? TY_UINT : TY_INT;
 }
@@ -440,7 +455,7 @@ static Type type_specifier(void)
     unsigned char alone = spec_alone[first];
 
     next();
-    if (alone != SPEC_LONG && !starts_type(tok))
+    if (!starts_type(tok))
         return (Type) (alone - 1);      /* one keyword, which is most of them */
 
     return type_specifier_slow(first, line);
@@ -533,6 +548,11 @@ static void condition(void)
  * for each form the language gains. */
 static void statement(void)
 {
+    /* Whatever the last statement left in the frame's scratch area is done
+     * with. This is the only place that is true: a long result lives there
+     * and outlives the values it was computed from. */
+    gen_stmt_end();
+
     switch (tok) {
     case TK_KW_IF: {
         int to_else;
@@ -610,7 +630,7 @@ static void function(void)
 {
     NameRef name;
     int fn;
-    int nparams = 0, argoff;
+    int nparams = 0, argoff, params_first;
     Type ret_type;
 
     ret_type = object_type("a function");
@@ -628,6 +648,7 @@ static void function(void)
     sym_at(fn)->type = ret_type;
 
     /* The first argument sits above the saved ix and the return address. */
+    params_first = sym_params_begin();
     argoff = 2 * ACC_PTR_SIZE;
     if (tok == TK_KW_VOID) {
         next();
@@ -641,12 +662,12 @@ static void function(void)
                              tok_spelling(tok));
             psym = sym_push(tok_name, SYM_LOCAL, argoff);
             sym_at(psym)->type = ptype;
+            sym_param_add(ptype);
 
-            /* Every argument occupies a full slot however narrow it is, which
-             * is what agondev does and what keeps the stack aligned with the
-             * order they were pushed in. The narrow ones are read from the
-             * low bytes of their slot. */
-            argoff += ACC_INT_SIZE;
+            /* Every argument occupies whole slots: one however narrow it is,
+             * two for a long. That is what agondev does, and the narrow ones
+             * are read from the low bytes of their slot. */
+            argoff += type_wide(ptype) ? 2 * ACC_INT_SIZE : ACC_INT_SIZE;
             nparams++;
             next();
             if (!accept(TK_COMMA))
@@ -656,6 +677,7 @@ static void function(void)
     expect(TK_RPAREN, "')'");
     expect(TK_LBRACE, "'{'");
 
+    sym_set_params(fn, params_first, nparams);
     gen_func_begin(fn, nparams, ret_type);
     while (starts_type(tok))
         declaration();
