@@ -59,9 +59,13 @@ $(BIN):
 # agondev's calling convention actually is -- acc matches it deliberately, and
 # a toolchain update that moved it would otherwise show up as a program
 # crashing on the Agon. It skips with 77 when agondev is not installed, which
-# is not a failure.
+# is not a failure. abi-acc.sh is the other half: it reads the code acc
+# generates and checks it against the same table. The differential tests
+# cannot do that job -- acc links with nothing, so a convention it gets
+# consistently wrong agrees with itself everywhere.
 test: all unit $(BIN)/acc-asan
 	@test/abi.sh || [ $$? -eq 77 ]
+	@test/abi-acc.sh
 	@ACC=$(BIN)/acc-asan test/errors.sh
 	@ACC=$(BIN)/acc-asan test/run.sh
 
