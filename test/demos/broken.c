@@ -1,6 +1,9 @@
-/* Not valid, on purpose: acc should say so and say where. Multiplication is
-   one of the things it cannot do yet. Prints an error. */
+/* Not valid, on purpose: acc should say so and say where.
+ *
+ * It used to be multiplication. That works now, so this asks for a pointer
+ * instead -- the point of the file is to show what a refusal looks like, not
+ * which feature happens to be missing this week. */
 int main(void) {
-    int x = 6;
-    return x * 7;
+    int n = 6;
+    return *n;
 }

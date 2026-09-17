@@ -89,7 +89,8 @@ What acc can do today
 
   char, short, int, and the unsigned form of each
   functions, parameters, locals, calls, recursion
-  + - and unary minus, ~
+  + - * / % and unary minus, ~
+  & | ^ << >>
   assignment
   < > <= >= == !=, signed or unsigned according to the operands
   if, else, else if, while
@@ -99,16 +100,22 @@ char is one byte, short two, int three -- agondev's widths, so a program
 compiled by either comes out the same. Arithmetic happens at int width and
 only a store narrows, which is what C says.
 
+The eZ80 has no instruction for * / % & | ^ << or >> on a 24-bit value, so
+acc carries the routines and puts the ones a program uses into that
+program's image. A program that uses none pays nothing for them.
+
 What it cannot do yet
 ---------------------
 
 The language acc is being written towards is C99. Everything below is
 missing rather than excluded.
 
-  * / % & | ^ << >>   -- the eZ80 has no instruction for any of these on a
-                         24-bit value, so they need runtime helpers
   ! && ||              -- no logical operators; a condition is a value, or
                           a comparison
+  a constant above 16777215 -- and C99 would call one above 8388607 a long,
+                          where acc makes it unsigned int
+  a function with a hundred or more calls in it -- spill slots are never
+                          reused, so its frame runs past what (ix+d) reaches
   for do break continue   -- while is the only loop
   long, long long      -- they need a value to live in more than one
                           register, which is not done yet
