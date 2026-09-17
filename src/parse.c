@@ -91,7 +91,7 @@ static void primary(void)
 
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
-        Sym *s;
+        int s;
 
         next();
 
@@ -100,11 +100,11 @@ static void primary(void)
 
             next();
             s = sym_find(name);
-            if (!s) {
+            if (s == SYM_NONE) {
                 /* Not seen yet. Assumed to be a function defined further
                  * down; gen_finish reports it if it never is. */
                 s = sym_push(name, SYM_FUNC, 0);
-            } else if (s->kind != SYM_FUNC) {
+            } else if (sym_at(s)->kind != SYM_FUNC) {
                 acc_error_at(tok_line, "'%s' is not a function", name_text(name));
             }
 
@@ -123,11 +123,11 @@ static void primary(void)
         }
 
         s = sym_find(name);
-        if (!s)
+        if (s == SYM_NONE)
             acc_error_at(tok_line, "'%s' is not declared", name_text(name));
-        if (s->kind != SYM_LOCAL)
+        if (sym_at(s)->kind != SYM_LOCAL)
             acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
-        vpush_local(s->val);
+        vpush_local(sym_at(s)->val);
 
         return;
     }
@@ -153,7 +153,7 @@ static void expr(void)
 {
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
-        Sym *s;
+        int s;
 
         /* Look one token ahead by remembering this one: an identifier
          * followed by '=' is an assignment, anything else is a value. */
@@ -162,9 +162,9 @@ static void expr(void)
             next();
             expr();
             s = sym_find(name);
-            if (!s || s->kind != SYM_LOCAL)
+            if (s == SYM_NONE || sym_at(s)->kind != SYM_LOCAL)
                 acc_error_at(tok_line, "'%s' cannot be assigned to", name_text(name));
-            vstore_local(s->val);
+            vstore_local(sym_at(s)->val);
 
             return;
         }
@@ -173,12 +173,12 @@ static void expr(void)
          * than by pushing the token back, which would need a queue. */
         if (tok == TK_LPAREN) {
             int nargs = 0;
-            Sym *fn = sym_find(name);
+            int fn = sym_find(name);
 
             next();
-            if (!fn)
+            if (fn == SYM_NONE)
                 fn = sym_push(name, SYM_FUNC, 0);
-            else if (fn->kind != SYM_FUNC)
+            else if (sym_at(fn)->kind != SYM_FUNC)
                 acc_error_at(tok_line, "'%s' is not a function", name_text(name));
             if (tok != TK_RPAREN) {
                 for (;;) {
@@ -192,11 +192,11 @@ static void expr(void)
             gen_call(fn, nargs);
         } else {
             s = sym_find(name);
-            if (!s)
+            if (s == SYM_NONE)
                 acc_error_at(tok_line, "'%s' is not declared", name_text(name));
-            if (s->kind != SYM_LOCAL)
+            if (sym_at(s)->kind != SYM_LOCAL)
                 acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
-            vpush_local(s->val);
+            vpush_local(sym_at(s)->val);
         }
 
         while (tok == TK_PLUS || tok == TK_MINUS) {
@@ -265,8 +265,8 @@ static void statement(void)
 static void function(void)
 {
     NameRef name;
-    Sym *fn;
-    int mark, nparams = 0, argoff;
+    int fn;
+    int nparams = 0, argoff;
 
     expect(TK_KW_INT, "'int'");
     if (tok != TK_IDENT)
@@ -276,12 +276,10 @@ static void function(void)
     expect(TK_LPAREN, "'('");
 
     fn = sym_find(name);
-    if (fn && fn->kind == SYM_FUNC && fn->val)
+    if (fn != SYM_NONE && sym_at(fn)->kind == SYM_FUNC && sym_at(fn)->val)
         acc_error_at(tok_line, "'%s' is defined twice", name_text(name));
-    if (!fn)
+    if (fn == SYM_NONE)
         fn = sym_push(name, SYM_FUNC, 0);
-
-    mark = sym_mark();
 
     /* The first argument sits above the saved ix and the return address. */
     argoff = 2 * ACC_PTR_SIZE;
@@ -312,7 +310,7 @@ static void function(void)
     expect(TK_RBRACE, "'}'");
     gen_func_end();
 
-    sym_release(mark);
+    sym_drop_locals();
 }
 
 static void translation_unit(void)

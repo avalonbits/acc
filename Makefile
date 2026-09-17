@@ -14,6 +14,14 @@ WARN     = -Wall -Wextra -Wno-unused-parameter
 SRC      = src/lex.c src/sym.c src/gen.c src/out.c src/parse.c
 HDR      = src/acc.h
 
+# -fsigned-char because char is signed on the eZ80, so the host build should
+# read a source file the same way the target build does.
+#
+# -fno-sanitize-recover makes undefined behaviour stop the compiler instead of
+# printing a line and carrying on, so a test cannot pass over the top of one.
+SAN      = -fsanitize=address,undefined -fno-sanitize-recover=all \
+           -fsigned-char -O1 -g
+
 BIN = bin
 
 .PHONY: all clean test
@@ -22,11 +30,20 @@ all: $(BIN)/acc
 $(BIN)/acc: $(SRC) $(HDR) | $(BIN)
 	$(CC) $(CFLAGS) $(WARN) -Isrc -o $@ $(SRC)
 
+# The compiler is where the bugs are, so the tests drive a sanitized build of
+# it rather than a sanitized unit test beside it. It found the use-after-
+# realloc in the symbol table that the ordinary build compiled straight past:
+# glibc left the freed block readable and the answer came out right, while on
+# the Agon the block was reused and 'main' came out undefined.
+$(BIN)/acc-asan: $(SRC) $(HDR) | $(BIN)
+	$(CC) $(SAN) $(WARN) -Isrc -o $@ $(SRC)
+
 $(BIN):
 	@mkdir -p $(BIN)
 
-test: all
-	@test/run.sh
+test: all $(BIN)/acc-asan
+	@ACC=$(BIN)/acc-asan test/errors.sh
+	@ACC=$(BIN)/acc-asan test/run.sh
 
 clean:
 	$(RM) -r $(BIN)

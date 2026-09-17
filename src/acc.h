@@ -101,10 +101,14 @@ typedef struct {
 } Sym;
 
 void sym_init(void);
-Sym *sym_find(NameRef name);             /* innermost first; NULL if unknown */
-Sym *sym_push(NameRef name, int kind, int val);
-int  sym_mark(void);                     /* remember the current scope depth */
-void sym_release(int mark);              /* drop everything pushed since */
+/* Symbols are referred to by index. A Sym * is only good until the next push,
+ * because the table is grown with realloc; see sym.c. */
+#define SYM_NONE (-1)
+
+int  sym_find(NameRef name);             /* innermost first; SYM_NONE if unknown */
+int  sym_push(NameRef name, int kind, int val);
+Sym *sym_at(int i);                      /* valid until the next sym_push */
+void sym_drop_locals(void);              /* at the end of a function */
 
 /* ------------------------------------------------------------------ */
 /* values                                                              */
@@ -132,7 +136,7 @@ typedef struct {
 enum { R_HL = 0, R_DE, R_BC, NREGS };
 
 void gen_init(void);
-void gen_func_begin(Sym *fn, int nparams);
+void gen_func_begin(int fn, int nparams);
 void gen_func_end(void);
 int  gen_local(void);                 /* reserve a slot; returns its offset */
 
@@ -146,7 +150,7 @@ void vnot(void);
 int  vpop_reg(void);                  /* force the top into a register */
 void vdrop(void);
 
-void gen_call(Sym *fn, int nargs);
+void gen_call(int fn, int nargs);
 void gen_return(void);
 void gen_finish(void);          /* resolve calls to functions defined later */
 void gen_startup(int report_by_exit);  /* the entry stub MOS lands on */

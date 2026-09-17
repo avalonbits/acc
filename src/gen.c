@@ -425,14 +425,14 @@ void vnot(void)
  * many of these as there are forward calls, which is nothing beside keeping
  * the whole program in memory to make two passes over it. */
 typedef struct {
-    Sym *fn;
+    int fn;                 /* index, not a pointer: see sym.c */
     int  at;
 } Fixup;
 
 static Fixup *fixups;
 static int    nfixups, fixups_cap;
 
-static void fixup_add(Sym *fn, int at)
+static void fixup_add(int fn, int at)
 {
     if (nfixups == fixups_cap) {
         fixups_cap = fixups_cap ? fixups_cap * 2 : 32;
@@ -450,7 +450,7 @@ void gen_finish(void)
     int i;
 
     for (i = 0; i < nfixups; i++) {
-        Sym *fn = fixups[i].fn;
+        Sym *fn = sym_at(fixups[i].fn);
 
         if (!fn->val)
             acc_error("'%s' is called but never defined", name_text(fn->name));
@@ -500,7 +500,7 @@ static const struct { int at, to; } print_calls[] = {
 
 void gen_startup(int report_by_exit)
 {
-    Sym *m = sym_push(name_intern("main", 4), SYM_FUNC, 0);
+    int m = sym_push(name_intern("main", 4), SYM_FUNC, 0);
     const unsigned char *stub = report_by_exit ? startup_exit : startup_print;
     int n = report_by_exit ? (int) sizeof startup_exit : (int) sizeof startup_print;
     int base = out_here();
@@ -524,11 +524,11 @@ int gen_local(void)
     return -frame_size;
 }
 
-void gen_func_begin(Sym *fn, int nparams)
+void gen_func_begin(int fn, int nparams)
 {
     (void) nparams;
 
-    fn->val = out_here();
+    sym_at(fn)->val = out_here();
     vtop = 0;
     frame_size = 0;
 
@@ -579,7 +579,7 @@ void gen_return(void)
 
 /* Arguments are pushed right to left, each in a whole three-byte slot, and
  * the caller takes them off again -- which is agondev's convention. */
-void gen_call(Sym *fn, int nargs)
+void gen_call(int fn, int nargs)
 {
     int i;
 
@@ -597,8 +597,8 @@ void gen_call(Sym *fn, int nargs)
     }
 
     out_byte(0xcd);                              /* call nn */
-    if (fn->val) {
-        out_word24(fn->val);
+    if (sym_at(fn)->val) {
+        out_word24(sym_at(fn)->val);
     } else {
         /* Defined further down the file, or not at all. The site is recorded
          * and filled in once the whole file has been read; gen_finish says so

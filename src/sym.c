@@ -5,21 +5,37 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "acc.h"
 
-/* One array used as a stack: file-scope symbols at the bottom, a function's
- * parameters and locals pushed above them and dropped when it ends. Lookup
- * walks backwards, so an inner name naturally shadows an outer one without
- * any scope chain to maintain.
+/* One array in two regions: file-scope symbols at the bottom, the current
+ * function's parameters and locals above them, dropped when it ends. Lookup
+ * walks backwards, so a local naturally shadows a file-scope name without any
+ * scope chain to maintain.
+ *
+ * Which region a symbol goes in follows from its kind, so no caller can put
+ * one in the wrong place. That matters because the tempting thing -- push
+ * wherever the parser happens to be -- is wrong for the case that matters
+ * most: a call to a function that has not been defined yet creates the
+ * symbol, and the call is inside some other function, so pushing it as a
+ * local would drop it at that function's closing brace and leave the call
+ * pointing at nothing.
  *
  * Backwards-linear rather than hashed on purpose. A function has a handful of
  * locals and the walk stops at the first match, so the hash would cost more in
  * table than it saved in comparisons. If a program ever has enough file-scope
  * functions for the tail of the walk to matter, that tail is the part to
- * index -- it is the part that does not change. */
+ * index -- it is the part that does not change.
+ *
+ * Symbols are named by index and not by address. The array is grown with
+ * realloc, so every Sym * in the program is invalidated by the next push, and
+ * the two places that most want to hold on to a symbol -- a call waiting for
+ * its callee's address, and a function definition waiting to record its own --
+ * are both separated from their push by an arbitrary amount of parsing. Handing
+ * out indices makes that safe by construction rather than by remembering. */
 static Sym    *syms;
-static int     nsyms, cap;
+static int     nsyms, nglobals, cap;
 
 void sym_init(void)
 {
@@ -27,10 +43,10 @@ void sym_init(void)
     syms = malloc(cap * sizeof *syms);
     if (!syms)
         acc_error("out of memory for symbols");
-    nsyms = 0;
+    nsyms = nglobals = 0;
 }
 
-Sym *sym_push(NameRef name, int kind, int val)
+int sym_push(NameRef name, int kind, int val)
 {
     Sym *s;
 
@@ -40,31 +56,53 @@ Sym *sym_push(NameRef name, int kind, int val)
         if (!syms)
             acc_error("out of memory for symbols");
     }
-    s = &syms[nsyms++];
+    if (kind == SYM_LOCAL) {
+        s = &syms[nsyms];
+        s->name = name;
+        s->kind = (unsigned char) kind;
+        s->val = val;
+
+        return nsyms++;
+    }
+
+    /* File scope. It goes in below the locals, which keeps every index
+     * already handed out for a file-scope symbol -- the ones the code
+     * generator is holding in its fixups -- pointing at the same symbol.
+     * Only the locals move, and nothing holds a local's index across a push.
+     * A function has a handful of them, so the move is a few dozen bytes. */
+    memmove(&syms[nglobals + 1], &syms[nglobals],
+            (size_t) (nsyms - nglobals) * sizeof *syms);
+    s = &syms[nglobals];
     s->name = name;
     s->kind = (unsigned char) kind;
     s->val = val;
+    nsyms++;
 
-    return s;
+    return nglobals++;
 }
 
-Sym *sym_find(NameRef name)
+int sym_find(NameRef name)
 {
     int i;
 
     for (i = nsyms - 1; i >= 0; i--)
         if (syms[i].name == name)
-            return &syms[i];
+            return i;
 
-    return NULL;
+    return SYM_NONE;
 }
 
-int sym_mark(void)
+/* Good until the next sym_push and no longer. Callers fetch it where they use
+ * it; nothing keeps one across a push. */
+Sym *sym_at(int i)
 {
-    return nsyms;
+    return &syms[i];
 }
 
-void sym_release(int mark)
+/* The end of a function. Functions do not nest, so there is exactly one
+ * scope to drop and no mark to remember: everything above the file-scope
+ * region is this function's. */
+void sym_drop_locals(void)
 {
-    nsyms = mark;
+    nsyms = nglobals;
 }
