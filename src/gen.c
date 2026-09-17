@@ -71,7 +71,7 @@ static void need_disp(int d)
 }
 
 static void evict_reg(int reg);
-static void force_into(int depth, int want);
+static void force_into(Value *target, int want);
 
 /* ------------------------------------------------------------------ */
 /* narrow widths                                                       */
@@ -307,7 +307,7 @@ void vconvert(Type to)
         return;
     }
 
-    force_into(0, R_HL);
+    force_into(vsp - 1, R_HL);
     convert_in_hl(to);
     top->type = type_promote(to);
 }
@@ -461,38 +461,39 @@ static void evict_reg(int reg)
 
 /* Materialises the entry at `depth` into one particular register, moving
  * whatever else is living there out of the way first. */
-static void force_into(int depth, int want)
+/* Named by pointer rather than by depth from the top. Every caller says
+ * `vsp - 1` or `vsp - 2`, which is a constant offset; a depth has to be
+ * turned into an address, and scaling an index is a helper call here. */
+static void force_into(Value *target, int want)
 {
-    int idx = vtop - 1 - depth;
-    int i;
+    Value *entry;
 
-    for (i = 0; i < vtop; i++) {
-        if (i == idx)
+    for (entry = vstack; entry < vsp; entry++) {
+        if (entry == target)
             continue;
-        if (vstack[i].kind == VAL_REG && vstack[i].val == want) {
+        if (entry->kind == VAL_REG && entry->val == want) {
             int reg = reg_alloc_other(want);
 
             mov_rr(reg, want);
-            vstack[i].val = reg;
+            entry->val = reg;
         }
     }
-    (void) i;
 
-    if (vstack[idx].kind == VAL_REG) {
-        if (vstack[idx].val != want)
-            mov_rr(want, vstack[idx].val);
-    } else if (vstack[idx].kind == VAL_CONST) {
-        ld_rr_imm(want, vstack[idx].val);
+    if (target->kind == VAL_REG) {
+        if (target->val != want)
+            mov_rr(want, target->val);
+    } else if (target->kind == VAL_CONST) {
+        ld_rr_imm(want, target->val);
     } else {
-        need_disp(vstack[idx].val);
-        if (type_size(vstack[idx].type) < ACC_INT_SIZE)
-            load_narrow_into(want, vstack[idx].val, vstack[idx].type);
+        need_disp(target->val);
+        if (type_size(target->type) < ACC_INT_SIZE)
+            load_narrow_into(want, target->val, target->type);
         else
-            ld_rr_ix(want, vstack[idx].val);
+            ld_rr_ix(want, target->val);
     }
-    vstack[idx].kind = VAL_REG;
-    vstack[idx].type = type_promote(vstack[idx].type);
-    vstack[idx].val = want;
+    target->kind = VAL_REG;
+    target->type = type_promote(target->type);
+    target->val = want;
 }
 
 int vpop_reg(void)
@@ -583,7 +584,7 @@ void vbinop(int op)
      * the allocator rather than by moving registers about by hand: a scratch
      * register chosen without asking whether anything already lives in it is
      * how `f(a,b,c) + f(1,2,3)` lost an argument. */
-    force_into(1, R_HL);
+    force_into(vsp - 2, R_HL);
     right = force_reg_at(0);
 
     result = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
@@ -617,7 +618,7 @@ void vstore_local(int offset, Type type)
 
     if (type_size(type) < ACC_INT_SIZE) {
         /* The narrow stores write out of HL, so the value goes there. */
-        force_into(0, R_HL);
+        force_into(vsp - 1, R_HL);
         vconvert(type);
         need_disp(offset);
         store_narrow(offset, type);
@@ -644,7 +645,7 @@ void vneg(void)
     /* 0 - x, so the operand goes anywhere but HL and HL is then cleared of
      * whatever else was in it -- the zero is about to overwrite it. */
     if (!(top->kind == VAL_REG && top->val != R_HL))
-        force_into(0, reg_alloc_other(R_HL));
+        force_into(top, reg_alloc_other(R_HL));
     right = top->val;
     evict_reg(R_HL);
 
@@ -813,7 +814,7 @@ void vcmp(int op)
         op = (op == TK_GT) ? TK_LT : TK_GE;
     }
 
-    force_into(1, R_HL);
+    force_into(vsp - 2, R_HL);
     right = force_reg_at(0);
 
     or_a_a();                   /* sbc reads the carry, so clear it */
