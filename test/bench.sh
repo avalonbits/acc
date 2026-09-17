@@ -42,10 +42,26 @@ fi
 sd=$(emu_card); trap 'rm -rf "$sd"' EXIT
 cp "$ACC" "$sd/bin/acc.bin"
 cp "$SRC" "$sd/in.c"
-: > "$sd/autoexec.txt"
-for _ in $(seq "$RUNS"); do printf 'acc in.c -o out.bin\r\n' >> "$sd/autoexec.txt"; done
 
-out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-900} emu_run "$sd" -z)
+# MOS runs autoexec and then sits at the prompt: the emulator has no way to
+# stop itself, so without this every measurement burned the whole timeout and
+# grew a capture file for the length of it. A program built with -x writes its
+# result to IO port 0, which is what stops the emulator, so the card ends by
+# running one. It is compiled by the host acc, not the one being measured, so
+# that a broken candidate cannot leave the run hanging.
+[ -x bin/acc ] || { echo "bin/acc missing -- run make" >&2; exit 2; }
+echo 'int main(void) { return 0; }' > "$sd/stop.c"
+bin/acc "$sd/stop.c" -o "$sd/bin/stop.bin" -x >/dev/null || exit 2
+rm -f "$sd/stop.c"
+
+# One compile more than is read. Halting the machine drops whatever the console
+# still has in flight, which is reliably the last line; the spare one flushes
+# the ones that count. Only the first RUNS readings are the measurement.
+: > "$sd/autoexec.txt"
+for _ in $(seq $((RUNS + 1))); do printf 'acc in.c -o out.bin\r\n' >> "$sd/autoexec.txt"; done
+printf 'stop\r\n' >> "$sd/autoexec.txt"
+
+out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-600} emu_run "$sd" -z)
 
 times=$(printf '%s' "$out" | sed -n 's/.*Done in \([0-9]*\)\.\([0-9][0-9]\) seconds.*/\1\2/p')
 n=$(printf '%s\n' "$times" | grep -c .)
