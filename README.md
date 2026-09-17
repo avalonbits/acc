@@ -3,9 +3,21 @@
 A C compiler written for the Agon Light: one that runs **on** the machine,
 in the 448 KB it gives a program for code, data, heap and stack together.
 
-It is early. What works today is straight-line integer code -- functions,
-parameters, locals, `+`, `-`, unary minus, `~`, assignment and calls -- and it
-runs on the Agon.
+It is early, and it is being written towards C99. What works today:
+
+  * `char`, `short`, `int` and the `unsigned` form of each, at agondev's
+    widths -- 1, 2 and 3 bytes -- so a program compiled by either comes out
+    the same
+  * functions, parameters, locals, calls, recursion, forward references
+  * `+ - * / %`, unary minus, `~`, `& | ^ << >>`, and all six comparisons,
+    signed or unsigned according to the operands
+  * `if`, `else`, `else if`, `while`
+  * both comment forms
+
+One `.c` file in, a runnable MOS binary out: no linker, no preprocessor and
+no library. `* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value, so
+acc carries those routines and emits the ones a program uses into that
+program's image.
 
     $ cat t.c
     int add(int a, int b) { return a + b; }
@@ -17,17 +29,20 @@ runs on the Agon.
 
 ## Why not tinycc
 
-There was a tinycc port first, and it works -- it compiles and links on the
-Agon. It lives in `old-acc/`, and what it is good for now is answering
-questions: it is a known-correct implementation of everything this one does
-not do yet.
+There was a tinycc port first, and it worked: it compiled and linked on the
+Agon. What it could not do is fit.
 
-What it could not do is fit. Measured on the machine, a 200-line source
-compiles in about 8 seconds and a 400-line source does not finish at all: its
-peak is 235 KB against 206 KB of heap and stack. The reason is its data
-structures rather than its algorithms -- 31 bytes for every symbol, and 75 KB
-of machinery for a preprocessor -- which is not something to fix by tuning.
-`old-acc/docs/porting-notes.md` has the measurements.
+Measured on the machine, it compiled a 200-line source in about 8 seconds and
+did not finish a 400-line one at all -- its peak was 235 KB against the 206 KB
+of heap and stack it had. The cause was its data structures rather than its
+algorithms: 31 bytes for every symbol, and 75 KB of machinery for a
+preprocessor that had to be resident whether or not a program used one. That
+is not something tuning fixes.
+
+This compiler does 416 lines in under a second and its image is 28 KB, which
+leaves 439 KB for the heap and the stack. The port has been deleted; it was
+kept for a while as a known-correct reference, and the differential tests
+against agondev do that job better.
 
 ## How it works
 

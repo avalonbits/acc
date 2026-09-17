@@ -4,9 +4,7 @@
 #
 #   acc      on the host, targeting the eZ80. Where it is developed.
 #   acc.bin  built by agondev, to run on the Agon. See Makefile.agon.
-#
-# The compiler that came before this one lives in old-acc/ and is not built
-# from here.
+
 
 CC      ?= cc
 CFLAGS  ?= -O2 -g
