@@ -78,6 +78,7 @@ static int  long_scratch(void);
 static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
+static void vunary_long(int which, Type type);
 static void force_into(Value *target, int want);
 static int  needs_helper(int op);
 static void rt_call(int which);
@@ -855,6 +856,15 @@ void vneg(void)
     Value *top = vsp - 1;
     int right;
 
+    if (type_wide(top->type)) {
+        if (type_float(top->type))
+            acc_error_at(tok_line,
+                         "floating-point arithmetic is not implemented yet");
+        vunary_long(RT_LNEG, top->type);
+
+        return;
+    }
+
     if (top->kind == VAL_CONST) {
         top->val = trunc_int(-top->val);
 
@@ -877,6 +887,20 @@ void vneg(void)
 
 void vnot(void)
 {
+    Value *top = vsp - 1;
+
+    /* A long has its own routine rather than going round through -x - 1:
+     * that composition would need a long subtract as well, and complementing
+     * four bytes is four instructions. */
+    if (type_wide(top->type)) {
+        if (type_float(top->type))
+            acc_error_at(tok_line,
+                         "floating-point arithmetic is not implemented yet");
+        vunary_long(RT_LNOT, top->type);
+
+        return;
+    }
+
     /* ~x is -x - 1, which needs no instruction this chip does not have. */
     vneg();
     vpush_const(1, TY_INT);
@@ -1340,10 +1364,43 @@ static int long_helper(int op, Type type)
     case TK_AMP:   return RT_LAND;
     case TK_PIPE:  return RT_LOR;
     case TK_CARET: return RT_LXOR;
+    case TK_STAR:  return RT_LMUL;
+    case TK_SHL:   return RT_LSHL;
+
+    /* The ones that read the sign. A shift right fills with the sign for a
+     * signed left operand and with zero for an unsigned one, and division
+     * has to truncate towards zero, which the unsigned loop cannot do. */
+    case TK_SHR:   return type_unsigned(type) ? RT_LSHRU : RT_LSHRS;
+    case TK_SLASH: return type_unsigned(type) ? RT_LDIVU : RT_LDIVS;
+    case TK_PERCENT: return type_unsigned(type) ? RT_LREMU : RT_LREMS;
     }
-    (void) type;
 
     return -1;
+}
+
+/* -x and ~x on a long, which are the same shape: the value goes to a scratch
+ * slot and the routine works on it there. The 24-bit forms hold the value in
+ * HL and cannot be reached for: a long does not fit in a register.
+ *
+ * save_regs_below(1) for the reason vbinop_long has it -- the lea loads HL
+ * behind the register allocator's back, so anything else living in a register
+ * has to come out first. The top is exempt: it is the operand. */
+static void vunary_long(int which, Type type)
+{
+    int slot;
+
+    save_regs_below(1);
+
+    slot = long_scratch();
+    materialise_long(slot, type);
+    vdrop();
+
+    need_disp(slot);
+    need_disp(slot + ACC_LONG_SIZE - 1);
+    lea_rr_ix(R_HL, slot);
+    rt_call(which);
+
+    vpush(VAL_LOCAL, type, slot);
 }
 
 static void vbinop_long(int op, Type result)
@@ -1351,12 +1408,22 @@ static void vbinop_long(int op, Type result)
     int which;
     int left, right;
 
+
     /* The four-byte routines are integer ones: they walk the bytes with a
      * carry, which is not what the exponent and mantissa of a float want. A
      * float would come out of them as arithmetic on its bit pattern, which is
      * silently wrong, so it is refused until there is a routine for it. */
     if (type_float(result))
         acc_error_at(tok_line, "floating-point arithmetic is not implemented yet");
+
+    /* Anything else live in a register has to come out first. The two lea
+     * instructions below load HL and DE with addresses, behind the register
+     * allocator's back -- it is not told, because these are not values it
+     * will ever be asked for. A result of an earlier operator sitting in DE
+     * was overwritten by the second of them, so `(a == 1) + (b == 2)` lost
+     * the first comparison. The top two are the operands and are exempt:
+     * they are about to be copied into the frame and dropped. */
+    save_regs_below(2);
 
     which = long_helper(op, result);
     if (which < 0)
@@ -1388,6 +1455,15 @@ static void vcmp_long(int op, Type operand)
 
     if (type_float(operand))
         acc_error_at(tok_line, "comparing floating-point values is not implemented yet");
+
+    /* Anything else live in a register has to come out first. The two lea
+     * instructions below load HL and DE with addresses, behind the register
+     * allocator's back -- it is not told, because these are not values it
+     * will ever be asked for. A result of an earlier operator sitting in DE
+     * was overwritten by the second of them, so `(a == 1) + (b == 2)` lost
+     * the first comparison. The top two are the operands and are exempt:
+     * they are about to be copied into the frame and dropped. */
+    save_regs_below(2);
 
     right = long_scratch();
     materialise_long(right, operand);
@@ -1903,6 +1979,30 @@ void vapply(int op, Type narrow)
 
     left  = (vsp - 2)->type;
     right = (vsp - 1)->type;
+
+    /* A shift is not one of the operators the usual arithmetic conversions
+     * apply to. C99 6.5.7 promotes each operand on its own and gives the
+     * result the type of the promoted left one, so a long count does not
+     * make the shift a long shift, and an int shifted by a long stays an
+     * int: `(unsigned) 0x400000 << 2L` has to wrap at 24 bits like any other
+     * unsigned int, and acc gave 16777216 for it while agondev gave 0.
+     *
+     * Which also settles what the runtime should fill with on a right
+     * shift -- the sign of the left operand, never the count's. */
+    if (op == TK_SHL || op == TK_SHR) {
+        if (type_wide(left)) {
+            vbinop_long(op, left);
+
+            return;
+        }
+
+        /* The count comes down to a width a register holds. Only its low
+         * bits can matter: anything from the width up is undefined. */
+        if (type_wide(right)) {
+            vconvert(TY_INT);
+            right = (vsp - 1)->type;
+        }
+    }
 
     /* Either side a long makes both of them one, and the result is a long --
      * or, for a comparison, an int taken from a comparison at long width.

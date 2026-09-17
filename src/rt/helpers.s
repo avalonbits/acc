@@ -565,3 +565,520 @@ _acc_rt_lcmpord:
 	pop	de
 	pop	bc
 	ret
+
+; --------------------------------------------------- long shifts
+; (hl) = (hl) shifted by the low byte of (de).
+;
+; The count arrives as a long because vbinop_long converts both operands, but
+; only its low byte can matter: as with the 24-bit shifts the count is masked
+; to five bits, so the loop terminates and a count of 32 or more shifts every
+; bit out.
+;
+; iy points at the destination, because (iy+d) reaches all four bytes and
+; there is no (hl+d).
+
+	.global _acc_rt_lshl
+	.global _acc_rt_lshru
+	.global _acc_rt_lshrs
+
+_acc_rt_lshl:
+	ld	a, (de)
+	and	a, 31
+	ret	z
+	push	bc
+	push	iy
+	push	hl
+	pop	iy
+	ld	c, a
+.lshl_loop:
+	sla	(iy + 0)
+	rl	(iy + 1)
+	rl	(iy + 2)
+	rl	(iy + 3)
+	dec	c
+	jr	nz, .lshl_loop
+	pop	iy
+	pop	bc
+	ret
+
+_acc_rt_lshru:
+	ld	a, (de)
+	and	a, 31
+	ret	z
+	push	bc
+	push	iy
+	push	hl
+	pop	iy
+	ld	c, a
+.lshru_loop:
+	srl	(iy + 3)
+	rr	(iy + 2)
+	rr	(iy + 1)
+	rr	(iy + 0)
+	dec	c
+	jr	nz, .lshru_loop
+	pop	iy
+	pop	bc
+	ret
+
+_acc_rt_lshrs:
+	ld	a, (de)
+	and	a, 31
+	ret	z
+	push	bc
+	push	iy
+	push	hl
+	pop	iy
+	ld	c, a
+.lshrs_loop:
+	sra	(iy + 3)		; the sign is carried down, not zero
+	rr	(iy + 2)
+	rr	(iy + 1)
+	rr	(iy + 0)
+	dec	c
+	jr	nz, .lshrs_loop
+	pop	iy
+	pop	bc
+	ret
+
+; --------------------------------------------------- long multiply
+; (hl) = (hl) * (de), four bytes, wrapping.
+;
+; The same shape as the 24-bit multiply: MLT is 8x8 -> 16, so the product is
+; assembled from the partial products of the bytes, and a pair whose place
+; value is already past bit 31 is not computed at all. With the operands as
+; a0..a3 and b0..b3 that leaves ten of the sixteen pairs.
+;
+; Both operands are copied to a stack buffer first because the destination is
+; the left operand: accumulating into it in place would overwrite bytes that
+; later partial products still have to read. ix reaches the copies -- the left
+; at ix+0..3 and the right at ix+4..7 -- and iy the destination.
+
+	.global _acc_rt_lmul
+
+; Add the 16-bit product of left byte \i and right byte \j into the result at
+; byte \k, carrying up as far as byte 3. Four shapes rather than one with a
+; count, because what the top byte drops is the point: at \k = 3 the high half
+; of the product is past the width and is not added at all.
+	.macro	LMUL_AT_0 i, j
+	ld	b, (ix + \i)
+	ld	c, (ix + 4 + \j)
+	mlt	bc
+	ld	a, (iy + 0)
+	add	a, c
+	ld	(iy + 0), a
+	ld	a, (iy + 1)
+	adc	a, b
+	ld	(iy + 1), a
+	ld	a, (iy + 2)
+	adc	a, 0
+	ld	(iy + 2), a
+	ld	a, (iy + 3)
+	adc	a, 0
+	ld	(iy + 3), a
+	.endm
+
+	.macro	LMUL_AT_1 i, j
+	ld	b, (ix + \i)
+	ld	c, (ix + 4 + \j)
+	mlt	bc
+	ld	a, (iy + 1)
+	add	a, c
+	ld	(iy + 1), a
+	ld	a, (iy + 2)
+	adc	a, b
+	ld	(iy + 2), a
+	ld	a, (iy + 3)
+	adc	a, 0
+	ld	(iy + 3), a
+	.endm
+
+	.macro	LMUL_AT_2 i, j
+	ld	b, (ix + \i)
+	ld	c, (ix + 4 + \j)
+	mlt	bc
+	ld	a, (iy + 2)
+	add	a, c
+	ld	(iy + 2), a
+	ld	a, (iy + 3)
+	adc	a, b
+	ld	(iy + 3), a
+	.endm
+
+	.macro	LMUL_AT_3 i, j
+	ld	b, (ix + \i)
+	ld	c, (ix + 4 + \j)
+	mlt	bc
+	ld	a, (iy + 3)
+	add	a, c
+	ld	(iy + 3), a
+	.endm
+
+_acc_rt_lmul:
+	push	ix
+	push	iy
+	push	bc
+	push	de
+	push	hl
+	push	hl
+	pop	iy			; iy -> the destination, which is also
+					; the left operand
+	ld	hl, -8			; eight bytes of room for the copies
+	add	hl, sp
+	ld	sp, hl
+	push	hl
+	pop	ix
+
+	ld	a, (iy + 0)
+	ld	(ix + 0), a
+	ld	a, (iy + 1)
+	ld	(ix + 1), a
+	ld	a, (iy + 2)
+	ld	(ix + 2), a
+	ld	a, (iy + 3)
+	ld	(ix + 3), a
+	ld	a, (de)
+	ld	(ix + 4), a
+	inc	de
+	ld	a, (de)
+	ld	(ix + 5), a
+	inc	de
+	ld	a, (de)
+	ld	(ix + 6), a
+	inc	de
+	ld	a, (de)
+	ld	(ix + 7), a
+
+	ld	(iy + 0), 0
+	ld	(iy + 1), 0
+	ld	(iy + 2), 0
+	ld	(iy + 3), 0
+
+	LMUL_AT_0 0, 0
+	LMUL_AT_1 0, 1
+	LMUL_AT_1 1, 0
+	LMUL_AT_2 0, 2
+	LMUL_AT_2 1, 1
+	LMUL_AT_2 2, 0
+	LMUL_AT_3 0, 3
+	LMUL_AT_3 1, 2
+	LMUL_AT_3 2, 1
+	LMUL_AT_3 3, 0
+
+	ld	hl, 8
+	add	hl, sp
+	ld	sp, hl
+	pop	hl
+	pop	de
+	pop	bc
+	pop	iy
+	pop	ix
+	ret
+
+; --------------------------------------------------- long divide
+; (hl) = (hl) / (de) and (de) = (hl) % (de), four bytes.
+;
+; The same restoring long division as the 24-bit routine, thirty-two
+; iterations of it: shift a bit out of the dividend into the remainder and
+; subtract the divisor whenever it fits, with the quotient growing into the
+; space the dividend vacates. Both answers come back, because a caller that
+; wanted the remainder would otherwise have to divide twice.
+;
+; The remainder needs thirty-three bits, not thirty-two. It stays below the
+; divisor, so after doubling it can reach 2*(2^32-1)+1, and a divisor above
+; 2^31 makes that overflow. The bit that falls out of the top is kept in b,
+; and when it is set the subtract fits whatever the borrow says.
+;
+; The divisor is overwritten by the remainder, which is what the caller wants
+; and is safe besides: vbinop_long gives each operand its own scratch slot and
+; the right one is dead once the operator has been applied.
+;
+; Dividing by zero is undefined in C. These leave zero rather than looping.
+
+	.global _acc_rt_ldivu
+	.global _acc_rt_lremu
+	.global _acc_rt_ldivs
+	.global _acc_rt_lrems
+
+; The magnitude of the four bytes at iy, and the same at ix. Flags only; the
+; pointers and every other register come back unchanged.
+.labs_iy:
+	bit	7, (iy + 3)
+	ret	z
+.lneg_iy:
+	ld	a, 0
+	sub	a, (iy + 0)
+	ld	(iy + 0), a
+	ld	a, 0			; ld leaves the borrow alone
+	sbc	a, (iy + 1)
+	ld	(iy + 1), a
+	ld	a, 0
+	sbc	a, (iy + 2)
+	ld	(iy + 2), a
+	ld	a, 0
+	sbc	a, (iy + 3)
+	ld	(iy + 3), a
+	ret
+
+.labs_ix:
+	bit	7, (ix + 3)
+	ret	z
+	ld	a, 0
+	sub	a, (ix + 0)
+	ld	(ix + 0), a
+	ld	a, 0
+	sbc	a, (ix + 1)
+	ld	(ix + 1), a
+	ld	a, 0
+	sbc	a, (ix + 2)
+	ld	(ix + 2), a
+	ld	a, 0
+	sbc	a, (ix + 3)
+	ld	(ix + 3), a
+	ret
+
+; iy -> the dividend, which becomes the quotient; de -> the divisor, which is
+; overwritten by the remainder. Both unsigned.
+;
+; The divisor is copied to a stack buffer and the remainder built beside it,
+; at ix+0..3 and ix+4..7. Neither can live in the caller's frame: the divisor
+; slot is only four bytes wide and what follows it belongs to some other
+; value, so the remainder has nowhere there to go.
+.ludivmod_core:
+	push	bc
+	push	de
+	push	hl
+	push	ix
+
+	ld	hl, -8
+	add	hl, sp
+	ld	sp, hl
+	push	hl
+	pop	ix
+
+	ld	a, (de)			; the divisor, copied
+	ld	(ix + 0), a
+	inc	de
+	ld	a, (de)
+	ld	(ix + 1), a
+	inc	de
+	ld	a, (de)
+	ld	(ix + 2), a
+	inc	de
+	ld	a, (de)
+	ld	(ix + 3), a
+	dec	de
+	dec	de
+	dec	de
+
+	ld	a, (ix + 0)		; a zero divisor is undefined in C
+	or	a, (ix + 1)
+	or	a, (ix + 2)
+	or	a, (ix + 3)
+	jr	nz, .ldiv_go
+
+	ld	(iy + 0), 0		; say zero rather than loop
+	ld	(iy + 1), 0
+	ld	(iy + 2), 0
+	ld	(iy + 3), 0
+	jp	.ldiv_store
+
+.ldiv_go:
+	ld	(ix + 4), 0		; the remainder
+	ld	(ix + 5), 0
+	ld	(ix + 6), 0
+	ld	(ix + 7), 0
+	ld	c, 32
+
+.ldiv_loop:
+	; {remainder:quotient} <<= 1, the bit out of the dividend going in at
+	; the bottom of the remainder
+	sla	(iy + 0)
+	rl	(iy + 1)
+	rl	(iy + 2)
+	rl	(iy + 3)
+	rl	(ix + 4)
+	rl	(ix + 5)
+	rl	(ix + 6)
+	rl	(ix + 7)
+	ld	a, 0
+	adc	a, 0			; b = the thirty-third bit
+	ld	b, a
+
+	; remainder - divisor, kept only if it does not borrow
+	ld	a, (ix + 4)
+	sub	a, (ix + 0)
+	ld	(ix + 4), a
+	ld	a, (ix + 5)		; ld leaves the borrow alone
+	sbc	a, (ix + 1)
+	ld	(ix + 5), a
+	ld	a, (ix + 6)
+	sbc	a, (ix + 2)
+	ld	(ix + 6), a
+	ld	a, (ix + 7)
+	sbc	a, (ix + 3)
+	ld	(ix + 7), a
+	jr	nc, .ldiv_fits
+	bit	0, b			; it borrowed, but the bit above the
+	jr	nz, .ldiv_fits		; width says it fitted after all
+
+	ld	a, (ix + 4)		; put the remainder back
+	add	a, (ix + 0)
+	ld	(ix + 4), a
+	ld	a, (ix + 5)
+	adc	a, (ix + 1)
+	ld	(ix + 5), a
+	ld	a, (ix + 6)
+	adc	a, (ix + 2)
+	ld	(ix + 6), a
+	ld	a, (ix + 7)
+	adc	a, (ix + 3)
+	ld	(ix + 7), a
+	jr	.ldiv_next
+
+.ldiv_fits:
+	set	0, (iy + 0)		; the bit the shift left empty
+.ldiv_next:
+	dec	c
+	jr	nz, .ldiv_loop
+
+.ldiv_store:
+	ld	a, (ix + 4)		; the remainder belongs where the
+	ld	(de), a			; divisor was
+	inc	de
+	ld	a, (ix + 5)
+	ld	(de), a
+	inc	de
+	ld	a, (ix + 6)
+	ld	(de), a
+	inc	de
+	ld	a, (ix + 7)
+	ld	(de), a
+
+	ld	hl, 8
+	add	hl, sp
+	ld	sp, hl
+	pop	ix
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+_acc_rt_ldivu:
+	push	iy
+	push	hl
+	pop	iy
+	call	.ludivmod_core
+	pop	iy
+	ret
+
+_acc_rt_lremu:
+	push	ix
+	push	iy
+	push	hl
+	pop	iy
+	push	de
+	pop	ix
+	call	.ludivmod_core
+	ld	a, (ix + 0)		; the remainder is the answer, and the
+	ld	(iy + 0), a		; core left it where the divisor was
+	ld	a, (ix + 1)
+	ld	(iy + 1), a
+	ld	a, (ix + 2)
+	ld	(iy + 2), a
+	ld	a, (ix + 3)
+	ld	(iy + 3), a
+	pop	iy
+	pop	ix
+	ret
+
+; C99 has division truncate towards zero and the remainder take the sign of
+; the dividend, which is what dividing the magnitudes and fixing the sign
+; afterwards gives.
+_acc_rt_ldivs:
+	push	ix
+	push	iy
+	push	bc
+	push	hl
+	pop	iy
+	push	de
+	pop	ix
+	ld	a, (iy + 3)		; the quotient is negative when the
+	xor	a, (ix + 3)		; operands differ in sign
+	and	a, 0x80
+	ld	b, a
+	call	.labs_iy
+	call	.labs_ix
+	call	.ludivmod_core
+	bit	7, b
+	call	nz, .lneg_iy
+	pop	bc
+	pop	iy
+	pop	ix
+	ret
+
+_acc_rt_lrems:
+	push	ix
+	push	iy
+	push	bc
+	push	hl
+	pop	iy
+	push	de
+	pop	ix
+	ld	a, (iy + 3)		; the remainder takes the dividend's
+	and	a, 0x80			; sign
+	ld	b, a
+	call	.labs_iy
+	call	.labs_ix
+	call	.ludivmod_core
+	ld	a, (ix + 0)
+	ld	(iy + 0), a
+	ld	a, (ix + 1)
+	ld	(iy + 1), a
+	ld	a, (ix + 2)
+	ld	(iy + 2), a
+	ld	a, (ix + 3)
+	ld	(iy + 3), a
+	bit	7, b
+	call	nz, .lneg_iy
+	pop	bc
+	pop	iy
+	pop	ix
+	ret
+
+; --------------------------------------------------- long unary
+; (hl) = -(hl) and (hl) = ~(hl), four bytes.
+;
+; The 24-bit forms are `0 - x` in HL and the same less one, which the chip can
+; do in a register. A long cannot be held in one, so these work in the frame
+; like the rest of the long routines.
+
+	.global _acc_rt_lneg
+	.global _acc_rt_lnot
+
+_acc_rt_lneg:
+	push	iy
+	push	hl
+	pop	iy
+	call	.lneg_iy
+	pop	iy
+	ret
+
+_acc_rt_lnot:
+	push	iy
+	push	hl
+	pop	iy
+	ld	a, (iy + 0)
+	cpl
+	ld	(iy + 0), a
+	ld	a, (iy + 1)
+	cpl
+	ld	(iy + 1), a
+	ld	a, (iy + 2)
+	cpl
+	ld	(iy + 2), a
+	ld	a, (iy + 3)
+	cpl
+	ld	(iy + 3), a
+	pop	iy
+	ret
