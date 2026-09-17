@@ -466,21 +466,55 @@ void gen_init(void)
 
 /* The first thing in the image, because MOS enters at its first byte.
  *
- * It calls main and hands the low byte of the result to IO port 0, which is
- * how a program says how it went on this machine -- the emulator makes that
- * byte its exit status, so a test can check an answer without a C library, a
- * linker, or anything to print with. */
-void gen_startup(void)
+ * The bytes come from src/rt/startup.s, assembled and copied in rather than
+ * hand-encoded, so that the source of truth is assembly anyone can read and
+ * reassemble. Two versions:
+ *
+ *   print  calls main, writes the result as six hex digits and returns to
+ *          MOS. The default, because it is the one that works at a command
+ *          prompt and on a real Agon.
+ *   exit   calls main and hands the low byte to IO port 0, which stops the
+ *          emulator with that byte as its exit status. That is how the tests
+ *          read an answer with no C library and nothing to print with.
+ */
+static const unsigned char startup_exit[] = {
+    0xcd, 0x00, 0x00, 0x00, 0x7d, 0xd3, 0x00, 0xc9
+};
+
+static const unsigned char startup_print[] = {
+    0xcd, 0x00, 0x00, 0x00, 0xe5, 0xfd, 0x21, 0x00, 0x00, 0x00, 0xfd, 0x39,
+    0xfd, 0x7e, 0x02, 0xcd, 0x33, 0x00, 0x00, 0xfd, 0x7e, 0x01, 0xcd, 0x33,
+    0x00, 0x00, 0xfd, 0x7e, 0x00, 0xcd, 0x33, 0x00, 0x00, 0xe1, 0x3e, 0x0d,
+    0x5b, 0xd7, 0x3e, 0x0a, 0x5b, 0xd7, 0xc9, 0xf5, 0x1f, 0x1f, 0x1f, 0x1f,
+    0xcd, 0x3d, 0x00, 0x00, 0xf1, 0xe6, 0x0f, 0xc6, 0x30, 0xfe, 0x3a, 0x38,
+    0x02, 0xc6, 0x07, 0x5b, 0xd7, 0xc9
+};
+
+/* Where the print stub calls within itself, as offsets from its first byte.
+ * They are absolute calls, so they have to be filled in once the stub's
+ * address is known. */
+static const struct { int at, to; } print_calls[] = {
+    { 0x10, 0x2b }, { 0x17, 0x2b }, { 0x1e, 0x2b },   /* hexbyte */
+    { 0x31, 0x35 }                                    /* hexnib */
+};
+
+void gen_startup(int report_by_exit)
 {
     Sym *m = sym_push(name_intern("main", 4), SYM_FUNC, 0);
+    const unsigned char *stub = report_by_exit ? startup_exit : startup_print;
+    int n = report_by_exit ? (int) sizeof startup_exit : (int) sizeof startup_print;
+    int base = out_here();
+    int i;
 
-    out_byte(0xcd);              /* call main */
-    fixup_add(m, out_here());
-    out_word24(0);
+    for (i = 0; i < n; i++)
+        out_byte(stub[i]);
 
-    out_byte(0x7d);              /* ld a, l */
-    out_byte(0xd3); out_byte(0x00);   /* out (0), a */
-    out_byte(0xc9);              /* ret */
+    /* The call to main is the first instruction in either version. */
+    fixup_add(m, base + 1);
+
+    if (!report_by_exit)
+        for (i = 0; i < (int) (sizeof print_calls / sizeof *print_calls); i++)
+            out_patch24(base + print_calls[i].at, base + print_calls[i].to);
 }
 
 int gen_local(void)

@@ -325,13 +325,19 @@ static void translation_unit(void)
 
 static void usage(void)
 {
-    fprintf(stderr, "usage: acc <source.c> -o <out.bin>\n");
+    fprintf(stderr,
+        "usage: acc <source.c> -o <out.bin> [-x]\n"
+        "\n"
+        "  The program prints what main returned, as six hex digits.\n"
+        "  -x  report it to IO port 0 instead, which stops an emulator\n"
+        "      with the low byte as its exit status.\n");
     exit(2);
 }
 
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL;
+    int by_exit = 0;
     int i;
 
     for (i = 1; i < argc; i++) {
@@ -342,6 +348,8 @@ int main(int argc, char **argv)
                 out = argv[i];
             else
                 usage();
+        } else if (argv[i][0] == '-' && argv[i][1] == 'x' && !argv[i][2]) {
+            by_exit = 1;
         } else if (argv[i][0] == '-') {
             usage();
         } else if (!in) {
@@ -358,7 +366,7 @@ int main(int argc, char **argv)
     sym_init();
     gen_init();
     out_open(out);
-    gen_startup();
+    gen_startup(by_exit);
     lex_open(in);
     translation_unit();
     gen_finish();

@@ -31,13 +31,21 @@ static size_t names_len, names_cap;
 static NameRef *buckets;
 static unsigned nbuckets, nnames;
 
-static unsigned name_hash(const char *s, int len)
+/* FNV-1a, in a type that is 32 bits on the host and on the Agon alike.
+ *
+ * `unsigned` is 24 bits on the target, where the offset basis truncates from
+ * 2166136261 to 1875397 and the two builds stop agreeing about which bucket a
+ * name lands in. Nothing would break -- a hash only has to be consistent with
+ * itself -- but a constant that quietly means something different on the
+ * machine than it does on the host is the shape of every bug the previous
+ * compiler had, and it costs nothing to say which width is meant. */
+static unsigned long name_hash(const char *s, int len)
 {
-    unsigned h = 2166136261u;
+    unsigned long h = 2166136261UL;
     int i;
 
     for (i = 0; i < len; i++)
-        h = (h ^ (unsigned char) s[i]) * 16777619u;
+        h = (h ^ (unsigned char) s[i]) * 16777619UL;
 
     return h;
 }
@@ -66,7 +74,7 @@ static void buckets_rehash(unsigned newn)
 
         if (r == NAME_NONE)
             continue;
-        h = name_hash(names + r, (int) strlen(names + r)) & (newn - 1);
+        h = (unsigned) (name_hash(names + r, (int) strlen(names + r)) & (newn - 1));
         while (nb[h] != NAME_NONE)
             h = (h + 1) & (newn - 1);
         nb[h] = r;
@@ -96,7 +104,7 @@ NameRef name_intern(const char *s, int len)
     if ((nnames + 1) * 2 >= nbuckets)
         buckets_rehash(nbuckets * 2);
 
-    h = name_hash(s, len) & (nbuckets - 1);
+    h = (unsigned) (name_hash(s, len) & (nbuckets - 1));
     while ((r = buckets[h]) != NAME_NONE) {
         if ((int) strlen(names + r) == len && memcmp(names + r, s, len) == 0)
             return r;
@@ -321,6 +329,7 @@ const char *tok_spelling(int t)
 
     return "that";
 }
+
 
 int accept(int t)
 {

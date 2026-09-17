@@ -15,7 +15,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 for src in test/cases/*.c; do
     name=$(basename "$src" .c)
 
-    if ! err=$(bin/acc "$src" -o "$tmp/acc.bin" 2>&1); then
+    if ! err=$(bin/acc "$src" -o "$tmp/acc.bin" -x 2>&1); then
         printf '  FAIL %-18s acc could not compile it\n%s\n' "$name" \
             "$(printf '%s' "$err" | sed 's/^/         /')"
         fail=$((fail+1)); continue

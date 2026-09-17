@@ -1,0 +1,59 @@
+# Builds acc to run on the Agon itself, with agondev.
+#
+#   make -f Makefile.agon          # bin/acc.bin
+#
+# Separate from the host Makefile because this is a different compiler
+# producing a different kind of output, and because it needs agondev on the
+# path while the host build does not.
+
+AGONDEV ?= $(HOME)/agondev
+TOOLS    = $(AGONDEV)/bin
+CC       = $(TOOLS)/ez80-none-elf-clang
+LD       = $(TOOLS)/ez80-none-elf-ld
+
+BIN = bin
+OBJ = obj/agon
+
+# -Oz because the budget is space. The Agon gives a program 448 KB for code,
+# data, heap and stack together, and every byte acc is not is a byte left for
+# the symbol table of whatever it is compiling.
+CFLAGS = -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
+         -nostdinc -Isrc -isystem $(AGONDEV)/include \
+         -target ez80-none-elf -DAGONDEV \
+         -Oz -Wa,-march=ez80+full -fno-threadsafe-statics
+
+# acc takes a command line, so it needs the argument splitting that agondev's
+# crt0 leaves to a defsym.
+LDFLAGS = -defsym=RAM_START=0x40000 -defsym=RAM_SIZE=0x70000 \
+          -defsym=_has_exit_handler=0 \
+          -defsym=_parse_option=___arg_processing \
+          -defsym=_putchar=_putchar_arg_processing \
+          -defsym=_getchar=_getchar_arg_processing \
+          -T $(AGONDEV)/config/linker.conf --oformat binary
+
+SRCS = src/lex.c src/sym.c src/gen.c src/out.c src/parse.c
+OBJS = $(patsubst src/%.c,$(OBJ)/%.o,$(SRCS))
+
+.PHONY: all clean size
+all: $(BIN)/acc.bin
+
+$(BIN)/acc.bin: $(OBJS) | $(BIN)
+	@echo [linking $@]
+	$(LD) $(LDFLAGS) -Map=$(BIN)/acc.map -o $@ $(OBJS) -L$(AGONDEV)/lib -lagon
+	$(TOOLS)/agondev-setname $@ >/dev/null
+	@$(MAKE) -s -f Makefile.agon size
+
+$(OBJ)/%.o: src/%.c src/acc.h | $(OBJ)
+	@echo [compiling $<]
+	$(CC) $(CFLAGS) -c $< -o $@
+
+size: $(BIN)/acc.bin
+	@echo "[$$(stat -c%s $(BIN)/acc.bin) bytes of image, of 458752 available]"
+	@$(TOOLS)/ez80-none-elf-size $(OBJS) | tail -n +2 \
+	  | awk '{t+=$$1; d+=$$2; b+=$$3} END {printf "[text %d  data %d  bss %d  = %d, leaving %d for heap and stack]\n", t, d, b, t+d+b, 458752-(t+d+b)}'
+
+$(BIN) $(OBJ):
+	@mkdir -p $@
+
+clean:
+	$(RM) -r $(OBJ) $(BIN)/acc.bin $(BIN)/acc.map

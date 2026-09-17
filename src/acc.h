@@ -79,7 +79,7 @@ void lex_close(void);
 void next(void);                 /* advance to the following token */
 int  accept(int t);              /* consume t if present; say whether it was */
 void expect(int t, const char *what);
-const char *tok_spelling(int t); /* for diagnostics */
+const char *tok_spelling(int t);
 
 /* ------------------------------------------------------------------ */
 /* symbols                                                             */
@@ -147,7 +147,7 @@ void vdrop(void);
 void gen_call(Sym *fn, int nargs);
 void gen_return(void);
 void gen_finish(void);          /* resolve calls to functions defined later */
-void gen_startup(void);         /* the entry stub MOS lands on */
+void gen_startup(int report_by_exit);  /* the entry stub MOS lands on */
 
 /* ------------------------------------------------------------------ */
 /* output                                                              */
