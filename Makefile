@@ -57,6 +57,8 @@ unit: | $(BIN)
 	@$(BIN)/test_ctype
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_out test/test_out.c src/out.c
 	@$(BIN)/test_out
+	@$(CC) $(SAN) $(WARN) -Isrc -Itest -DACC_HASH_STATS -o $(BIN)/test_sym test/test_sym.c src/sym.c
+	@$(BIN)/test_sym
 
 clean:
 	$(RM) -r $(BIN)

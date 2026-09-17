@@ -22,11 +22,18 @@
  * local would drop it at that function's closing brace and leave the call
  * pointing at nothing.
  *
- * Backwards-linear rather than hashed on purpose. A function has a handful of
- * locals and the walk stops at the first match, so the hash would cost more in
- * table than it saved in comparisons. If a program ever has enough file-scope
- * functions for the tail of the walk to matter, that tail is the part to
- * index -- it is the part that does not change.
+ * The locals are walked backwards and the file-scope names are indexed, which
+ * is the split the shape of the problem asks for. A function has a handful of
+ * locals and the walk stops at the first match, so a table would cost more
+ * than it saved. File scope is the other way round: it only grows, every call
+ * searches all of it, and the search is as long as the program has functions.
+ *
+ * Measured, before the index existed: two inputs identical byte for byte
+ * except which of two hundred functions main called -- the last one declared
+ * or the first -- took 7.80 s and 8.76 s for ten compiles. Forty-four cycles
+ * a symbol walked, on a walk whose length is the program's, done once per
+ * name the program mentions. Quadratic, and this machine is not fast enough
+ * to carry that.
  *
  * Symbols are named by index and not by address. The array is grown with
  * realloc, so every Sym * in the program is invalidated by the next push, and
@@ -37,6 +44,91 @@
 static Sym    *syms;
 static int     nsyms, nglobals, cap;
 
+/* Name to file-scope symbol, open addressed, so that finding a function is a
+ * hash and a compare rather than a walk. A name has at most one file-scope
+ * symbol -- every push of one goes through a sym_find that came back empty --
+ * which is what lets a plain map stand in for a search.
+ *
+ * Keyed on the NameRef, which is an offset into the name arena and so already
+ * distinct per name; the low bits spread well enough because names are laid
+ * down end to end and their lengths vary. No hashing of the text: the text
+ * was hashed once when the name was interned, and this is the cheaper thing
+ * to do with the result.
+ *
+ * Entries are never removed. File scope does not end. */
+static NameRef *gkey;
+static int     *gval;
+static unsigned gcap, gcount;
+
+#ifdef ACC_HASH_STATS
+unsigned long sym_probes;
+#define GPROBE() (sym_probes++)
+#else
+#define GPROBE() ((void) 0)
+#endif
+
+static void gtable_alloc(unsigned n)
+{
+    gkey = calloc(n, sizeof *gkey);
+    gval = malloc(n * sizeof *gval);
+    if (!gkey || !gval)
+        acc_error("out of memory for the symbol index");
+    gcap = n;
+}
+
+static void gtable_grow(void)
+{
+    NameRef *oldk = gkey;
+    int     *oldv = gval;
+    unsigned oldn = gcap, i;
+
+    gtable_alloc(oldn * 2);
+    for (i = 0; i < oldn; i++) {
+        unsigned h;
+
+        if (oldk[i] == NAME_NONE)
+            continue;
+        h = oldk[i] & (gcap - 1);
+        while (gkey[h] != NAME_NONE)
+            h = (h + 1) & (gcap - 1);
+        gkey[h] = oldk[i];
+        gval[h] = oldv[i];
+    }
+    free(oldk);
+    free(oldv);
+}
+
+static void gput(NameRef name, int idx)
+{
+    unsigned h;
+
+    /* Kept under half full. Past that a linear probe starts walking. */
+    if ((gcount + 1) * 2 >= gcap)
+        gtable_grow();
+
+    h = name & (gcap - 1);
+    while (gkey[h] != NAME_NONE)
+        h = (h + 1) & (gcap - 1);
+    gkey[h] = name;
+    gval[h] = idx;
+    gcount++;
+}
+
+static int gget(NameRef name)
+{
+    unsigned h = name & (gcap - 1);
+
+    GPROBE();
+    while (gkey[h] != NAME_NONE) {
+        if (gkey[h] == name)
+            return gval[h];
+        h = (h + 1) & (gcap - 1);
+        GPROBE();
+    }
+
+    return SYM_NONE;
+}
+
 void sym_init(void)
 {
     cap = 64;
@@ -44,6 +136,8 @@ void sym_init(void)
     if (!syms)
         acc_error("out of memory for symbols");
     nsyms = nglobals = 0;
+    gtable_alloc(128);
+    gcount = 0;
 }
 
 /* Out of line for the same reason out_grow is: sym_push runs for every name
@@ -87,25 +181,26 @@ int sym_push(NameRef name, int kind, int val)
     s->kind = (unsigned char) kind;
     s->val = val;
     nsyms++;
+    gput(name, nglobals);
 
     return nglobals++;
 }
 
 int sym_find(NameRef name)
 {
-    /* The counter is unsigned so the loop test is not a signed compare. Two
-     * signed ints compared with `<` cannot be done in one subtract on this
-     * target, so the compiler adds `call pe, __setflag` to repair the flags
-     * on overflow -- in a walk that runs once per name the parser sees and is
-     * as long as the program has functions. A count cannot be negative, so
-     * saying so in the type costs nothing. */
+    /* The locals, innermost first, so one shadows a file-scope name of the
+     * same spelling. There are a handful and the walk stops at the first
+     * match. The counter is unsigned so the loop test is not a signed
+     * compare, which on this target is a helper call to repair the flags. */
     unsigned i = (unsigned) nsyms;
 
-    while (i-- > 0)
+    while (i-- > (unsigned) nglobals) {
+        GPROBE();
         if (syms[i].name == name)
             return (int) i;
+    }
 
-    return SYM_NONE;
+    return gget(name);
 }
 
 /* Good until the next sym_push and no longer. Callers fetch it where they use
