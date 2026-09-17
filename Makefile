@@ -43,8 +43,13 @@ $(BIN):
 	@mkdir -p $(BIN)
 
 # unit first: it needs no emulator and no agondev, so it is the part that
-# always runs and the part that fails fastest.
+# always runs and the part that fails fastest. Then abi.sh, which pins what
+# agondev's calling convention actually is -- acc matches it deliberately, and
+# a toolchain update that moved it would otherwise show up as a program
+# crashing on the Agon. It skips with 77 when agondev is not installed, which
+# is not a failure.
 test: all unit $(BIN)/acc-asan
+	@test/abi.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/errors.sh
 	@ACC=$(BIN)/acc-asan test/run.sh
 
