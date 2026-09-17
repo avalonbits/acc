@@ -43,8 +43,8 @@ void acc_error_at(int line, const char *fmt, ...);
 typedef unsigned int NameRef;
 #define NAME_NONE ((NameRef) 0)
 
-NameRef     name_intern(const char *s, int len);
-const char *name_text(NameRef n);
+NameRef     name_intern(const char *text, int len);
+const char *name_text(NameRef ref);
 void        name_init(void);
 
 /* ------------------------------------------------------------------ */
@@ -83,10 +83,10 @@ void lex_init(void);
 void lex_open(const char *path);
 void lex_close(void);
 void next(void);                 /* advance to the following token */
-int  accept(int t);              /* consume t if present; say whether it was */
-void expect(int t, const char *what);
-const char *tok_spelling(int t);
-int         tok_is_unimplemented_op(int t); /* for diagnostics */
+int  accept(int token);          /* consume it if present; say whether it was */
+void expect(int token, const char *what);
+const char *tok_spelling(int token);
+int         tok_is_unimplemented_op(int token); /* for diagnostics */
 
 /* ------------------------------------------------------------------ */
 /* symbols                                                             */
@@ -134,9 +134,12 @@ enum {
     VAL_REG         /* already in register v */
 };
 
+/* What the parser knows about a value it has not had to emit yet: a constant,
+ * a local at a frame offset, or something already in a register. `val` is the
+ * constant, the offset or the register number, according to `kind`. */
 typedef struct {
     unsigned char kind;
-    int           v;
+    int           val;
 } Value;
 
 /* ------------------------------------------------------------------ */

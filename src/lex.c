@@ -85,24 +85,24 @@ static const unsigned char pearson[256] = {
 };
 
 /* Returns 16 bits. The caller masks it down to the table size. */
-static unsigned name_hash(const char *s, int len)
+static unsigned name_hash(const char *text, int len)
 {
-    unsigned char a = 0;
-    unsigned char b = (unsigned char) len;   /* so "ab" and "ba" differ */
+    unsigned char high = 0;
+    unsigned char low = (unsigned char) len;   /* so "ab" and "ba" differ */
     unsigned n = (unsigned) len, i;
 
     /* Unsigned, so the loop test is not a signed compare: `i < len` on two
      * ints is `call pe, __setflag` to repair the flags on overflow, and this
      * loop runs once per character of every identifier in the program. */
     for (i = 0; i < n; i++) {
-        unsigned char c = (unsigned char) s[i];
+        unsigned char c = (unsigned char) text[i];
 
-        a = pearson[a ^ c];
-        b = pearson[b ^ c];
+        high = pearson[high ^ c];
+        low  = pearson[low ^ c];
     }
 
     /* One shift per name interned, not one per character. */
-    return ((unsigned) a << 8) | b;
+    return ((unsigned) high << 8) | low;
 }
 
 /* Split so that the test can be inlined into name_intern and the growth
@@ -126,24 +126,24 @@ static void names_grow(size_t need)
 
 static void buckets_rehash(unsigned newn)
 {
-    NameRef *nb = calloc(newn, sizeof *nb);
+    NameRef *fresh = calloc(newn, sizeof *fresh);
     unsigned i;
 
-    if (!nb)
+    if (!fresh)
         acc_error("out of memory for the name table");
     for (i = 0; i < nbuckets; i++) {
-        NameRef r = buckets[i];
-        unsigned h;
+        NameRef ref = buckets[i];
+        unsigned slot;
 
-        if (r == NAME_NONE)
+        if (ref == NAME_NONE)
             continue;
-        h = name_hash(names + r, (int) strlen(names + r)) & (newn - 1);
-        while (nb[h] != NAME_NONE)
-            h = (h + 1) & (newn - 1);
-        nb[h] = r;
+        slot = name_hash(names + ref, (int) strlen(names + ref)) & (newn - 1);
+        while (fresh[slot] != NAME_NONE)
+            slot = (slot + 1) & (newn - 1);
+        fresh[slot] = ref;
     }
     free(buckets);
-    buckets = nb;
+    buckets = fresh;
     nbuckets = newn;
 }
 
@@ -158,43 +158,43 @@ void name_init(void)
     buckets_rehash(256);
 }
 
-NameRef name_intern(const char *s, int len)
+NameRef name_intern(const char *text, int len)
 {
-    unsigned h;
-    NameRef r;
+    unsigned slot;
+    NameRef ref;
 
     /* Kept under half full. Past that a linear probe starts walking. */
     if ((nnames + 1) * 2 >= nbuckets)
         buckets_rehash(nbuckets * 2);
 
-    h = name_hash(s, len) & (nbuckets - 1);
+    slot = name_hash(text, len) & (nbuckets - 1);
     PROBE();
-    while ((r = buckets[h]) != NAME_NONE) {
+    while ((ref = buckets[slot]) != NAME_NONE) {
         /* Compare, then check the terminator, rather than measure first.
          * strlen walks the stored name to its end before memcmp walks it
          * again, and it walked it even when the first character already said
          * the two were different. This runs 1.54 times per identifier in the
          * program. */
-        if (memcmp(names + r, s, len) == 0 && names[r + len] == '\0')
-            return r;
-        h = (h + 1) & (nbuckets - 1);
+        if (memcmp(names + ref, text, len) == 0 && names[ref + len] == '\0')
+            return ref;
+        slot = (slot + 1) & (nbuckets - 1);
         PROBE();
     }
 
     names_grow(len + 1);
-    r = (NameRef) names_len;
-    memcpy(names + names_len, s, len);
+    ref = (NameRef) names_len;
+    memcpy(names + names_len, text, len);
     names[names_len + len] = '\0';
     names_len += len + 1;
-    buckets[h] = r;
+    buckets[slot] = ref;
     nnames++;
 
-    return r;
+    return ref;
 }
 
-const char *name_text(NameRef n)
+const char *name_text(NameRef ref)
 {
-    return names + n;
+    return names + ref;
 }
 
 /* ------------------------------------------------------------------ */
@@ -301,15 +301,15 @@ static void skip_space(void)
 static NameRef kw_limit;
 static unsigned char kw_tok[64];
 
-static void keyword(const char *s, int len, int t)
+static void keyword(const char *text, int len, int token)
 {
-    NameRef r = name_intern(s, len);
+    NameRef ref = name_intern(text, len);
 
-    if (r >= (NameRef) sizeof kw_tok)
+    if (ref >= (NameRef) sizeof kw_tok)
         acc_error("internal: the keyword table is too small");
-    kw_tok[r] = (unsigned char) t;
-    if (r + 1 > kw_limit)
-        kw_limit = r + 1;
+    kw_tok[ref] = (unsigned char) token;
+    if (ref + 1 > kw_limit)
+        kw_limit = ref + 1;
 }
 
 static void keywords_init(void)
@@ -422,9 +422,9 @@ void next(void)
     acc_error_at(line, "stray '%c' in the source", c);
 }
 
-const char *tok_spelling(int t)
+const char *tok_spelling(int token)
 {
-    switch (t) {
+    switch (token) {
     case TK_EOF:       return "end of file";
     case TK_INT:       return "a number";
     case TK_IDENT:     return "a name";
@@ -467,9 +467,9 @@ const char *tok_spelling(int t)
 /* The operators the lexer knows and the code generator does not, so that the
  * parser can name the missing feature rather than complain about a ';'. The
  * eZ80 has no instruction for any of them; they are the next milestone. */
-int tok_is_unimplemented_op(int t)
+int tok_is_unimplemented_op(int token)
 {
-    switch (t) {
+    switch (token) {
     case TK_STAR: case TK_SLASH: case TK_PERCENT:
     case TK_AMP:  case TK_PIPE:  case TK_CARET:
     case TK_SHL:  case TK_SHR:
@@ -480,18 +480,18 @@ int tok_is_unimplemented_op(int t)
     return 0;
 }
 
-int accept(int t)
+int accept(int token)
 {
-    if (tok != t)
+    if (tok != token)
         return 0;
     next();
 
     return 1;
 }
 
-void expect(int t, const char *what)
+void expect(int token, const char *what)
 {
-    if (tok != t) {
+    if (tok != token) {
         /* An operator acc has not got to yet turns up where a statement was
          * meant to end. Say which operator rather than ask for the ';'. */
         if (tok_is_unimplemented_op(tok))

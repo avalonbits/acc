@@ -29,7 +29,7 @@ static const char    *out_path;
 void out_open(const char *path)
 {
     static const unsigned char hdr[HEADER_SIZE - 4] = { 0 };
-    const char *base, *q;
+    const char *base, *scan;
 
     cap = 4096;
     img = malloc(cap);
@@ -48,15 +48,15 @@ void out_open(const char *path)
     /* The name MOS lists the program under, which is the file it is written
      * to. agondev has a separate step for this; there is no reason for one. */
     base = path;
-    for (q = path; *q; q++)
-        if (*q == '/' || *q == '\\')
-            base = q + 1;
+    for (scan = path; *scan; scan++)
+        if (*scan == '/' || *scan == '\\')
+            base = scan + 1;
     {
-        size_t n = strlen(base);
+        size_t name_len = strlen(base);
 
-        if (n > 0x40 - 4 - 1)
-            n = 0x40 - 4 - 1;
-        memcpy(img + 4, base, n);
+        if (name_len > 0x40 - 4 - 1)
+            name_len = 0x40 - 4 - 1;
+        memcpy(img + 4, base, name_len);
     }
     img[0x40] = 'M';
     img[0x41] = 'O';
@@ -83,23 +83,23 @@ static void out_grow(void)
         acc_error("out of memory for the output");
 }
 
-void out_byte(int b)
+void out_byte(int byte)
 {
     if (len == cap)
         out_grow();
-    img[len++] = (unsigned char) b;
+    img[len++] = (unsigned char) byte;
 }
 
-void out_word24(int v)
+void out_word24(int value)
 {
     /* One bounds check and three stores, rather than three calls that each
      * check. Every call instruction and every loaded constant emits one of
      * these, so it is a third of the output path. */
     if (len + 3 > cap)
         out_grow();
-    img[len]     = (unsigned char) v;
-    img[len + 1] = (unsigned char) (v >> 8);
-    img[len + 2] = (unsigned char) (v >> 16);
+    img[len]     = (unsigned char) value;
+    img[len + 1] = (unsigned char) (value >> 8);
+    img[len + 2] = (unsigned char) (value >> 16);
     len += 3;
 }
 
@@ -108,26 +108,26 @@ int out_here(void)
     return LOAD_ADDR + len;
 }
 
-void out_patch24(int at, int v)
+void out_patch24(int at, int value)
 {
     int off = at - LOAD_ADDR;
 
     if (off < 0 || off + 3 > len)
         acc_error("internal: patch at %06x is outside the image", at);
-    img[off]     = (unsigned char) v;
-    img[off + 1] = (unsigned char) (v >> 8);
-    img[off + 2] = (unsigned char) (v >> 16);
+    img[off]     = (unsigned char) value;
+    img[off + 1] = (unsigned char) (value >> 8);
+    img[off + 2] = (unsigned char) (value >> 16);
 }
 
 void out_close(void)
 {
-    FILE *f = fopen(out_path, "wb");
+    FILE *file = fopen(out_path, "wb");
 
-    if (!f)
+    if (!file)
         acc_error("cannot write '%s'", out_path);
-    if ((int) fwrite(img, 1, len, f) != len)
+    if ((int) fwrite(img, 1, len, file) != len)
         acc_error("short write on '%s'", out_path);
-    fclose(f);
+    fclose(file);
     free(img);
     img = NULL;
 }

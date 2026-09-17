@@ -20,33 +20,33 @@
 /* Z80 numbers a register pair in a two-bit field: BC 0, DE 1, HL 2. acc
  * numbers them HL, DE, BC so that HL -- the one everything returns in -- is
  * register zero. This maps between the two. */
-static const unsigned char pp[NREGS] = { 2, 1, 0 };
+static const unsigned char reg_code[NREGS] = { 2, 1, 0 };
 
-static void ld_rr_imm(int r, int v)        /* ld rr, nn */
+static void ld_rr_imm(int reg, int imm)    /* ld rr, nn */
 {
-    out_byte(0x01 + pp[r] * 0x10);
-    out_word24(v);
+    out_byte(0x01 + reg_code[reg] * 0x10);
+    out_word24(imm);
 }
 
-static void ld_rr_ix(int r, int d)         /* ld rr, (ix+d) */
-{
-    out_byte(0xdd);
-    out_byte(0x07 + pp[r] * 0x10);
-    out_byte(d);
-}
-
-static void ld_ix_rr(int d, int r)         /* ld (ix+d), rr */
+static void ld_rr_ix(int reg, int disp)    /* ld rr, (ix+d) */
 {
     out_byte(0xdd);
-    out_byte(0x0f + pp[r] * 0x10);
-    out_byte(d);
+    out_byte(0x07 + reg_code[reg] * 0x10);
+    out_byte(disp);
 }
 
-static void push_rr(int r) { out_byte(0xc5 + pp[r] * 0x10); }
-static void pop_rr(int r)  { out_byte(0xc1 + pp[r] * 0x10); }
+static void ld_ix_rr(int disp, int reg)    /* ld (ix+d), rr */
+{
+    out_byte(0xdd);
+    out_byte(0x0f + reg_code[reg] * 0x10);
+    out_byte(disp);
+}
 
-static void add_hl_rr(int r) { out_byte(0x09 + pp[r] * 0x10); }
-static void sbc_hl_rr(int r) { out_byte(0xed); out_byte(0x42 + pp[r] * 0x10); }
+static void push_rr(int reg) { out_byte(0xc5 + reg_code[reg] * 0x10); }
+static void pop_rr(int reg)  { out_byte(0xc1 + reg_code[reg] * 0x10); }
+
+static void add_hl_rr(int reg) { out_byte(0x09 + reg_code[reg] * 0x10); }
+static void sbc_hl_rr(int reg) { out_byte(0xed); out_byte(0x42 + reg_code[reg] * 0x10); }
 static void or_a_a(void)     { out_byte(0xb7); }
 
 /* There is no ld rr, rr' on this chip. Always through the stack and never
@@ -111,18 +111,18 @@ static void vcheck(void)
 
 /* The one place that writes an entry and moves the top, so that the pointer
  * and the count cannot get out of step anywhere else. */
-static void vpush(int kind, int v)
+static void vpush(int kind, int val)
 {
     vcheck();
     vsp->kind = (unsigned char) kind;
-    vsp->v = v;
+    vsp->val = val;
     vsp++;
     vtop++;
 }
 
-void vpush_const(int v)
+void vpush_const(int val)
 {
-    vpush(VAL_CONST, v);
+    vpush(VAL_CONST, val);
 }
 
 void vpush_local(int offset)
@@ -143,7 +143,7 @@ void vdrop(void)
     vsp--;
 }
 
-static int reg_busy(int r)
+static int reg_busy(int reg)
 {
     /* Unsigned for the same reason as everywhere else here: a signed `<` is
      * a helper call to repair the flags, and this runs for every register
@@ -151,7 +151,7 @@ static int reg_busy(int r)
     unsigned i, n = (unsigned) vtop;
 
     for (i = 0; i < n; i++)
-        if (vstack[i].kind == VAL_REG && vstack[i].v == r)
+        if (vstack[i].kind == VAL_REG && vstack[i].val == reg)
             return 1;
 
     return 0;
@@ -169,9 +169,9 @@ static void spill_one(void)
             int off = gen_local();
 
             need_disp(off);
-            ld_ix_rr(off, vstack[i].v);
+            ld_ix_rr(off, vstack[i].val);
             vstack[i].kind = VAL_LOCAL;
-            vstack[i].v = off;
+            vstack[i].val = off;
 
             return;
         }
@@ -190,24 +190,24 @@ static void save_regs_below(int n)
             int off = gen_local();
 
             need_disp(off);
-            ld_ix_rr(off, vstack[i].v);
+            ld_ix_rr(off, vstack[i].val);
             vstack[i].kind = VAL_LOCAL;
-            vstack[i].v = off;
+            vstack[i].val = off;
         }
     }
 }
 
 static int reg_alloc(void)
 {
-    int r;
+    int reg;
 
-    for (r = 0; r < NREGS; r++)
-        if (!reg_busy(r))
-            return r;
+    for (reg = 0; reg < NREGS; reg++)
+        if (!reg_busy(reg))
+            return reg;
     spill_one();
-    for (r = 0; r < NREGS; r++)
-        if (!reg_busy(r))
-            return r;
+    for (reg = 0; reg < NREGS; reg++)
+        if (!reg_busy(reg))
+            return reg;
     acc_error("internal: no register after spilling");
 
     return 0;
@@ -217,15 +217,15 @@ static int reg_alloc(void)
  * be. */
 static int reg_alloc_other(int avoid)
 {
-    int r;
+    int reg;
 
-    for (r = 0; r < NREGS; r++)
-        if (r != avoid && !reg_busy(r))
-            return r;
+    for (reg = 0; reg < NREGS; reg++)
+        if (reg != avoid && !reg_busy(reg))
+            return reg;
     spill_one();
-    for (r = 0; r < NREGS; r++)
-        if (r != avoid && !reg_busy(r))
-            return r;
+    for (reg = 0; reg < NREGS; reg++)
+        if (reg != avoid && !reg_busy(reg))
+            return reg;
     acc_error("internal: no register after spilling");
 
     return 0;
@@ -236,22 +236,22 @@ static int reg_alloc_other(int avoid)
 static int force_reg_at(int depth)
 {
     Value *val = vsp - 1 - depth;
-    int r;
+    int reg;
 
     if (val->kind == VAL_REG)
-        return val->v;
+        return val->val;
 
-    r = reg_alloc();
+    reg = reg_alloc();
     if (val->kind == VAL_CONST) {
-        ld_rr_imm(r, val->v);
+        ld_rr_imm(reg, val->val);
     } else {
-        need_disp(val->v);
-        ld_rr_ix(r, val->v);
+        need_disp(val->val);
+        ld_rr_ix(reg, val->val);
     }
     val->kind = VAL_REG;
-    val->v = r;
+    val->val = reg;
 
-    return r;
+    return reg;
 }
 
 /* Moves every value out of `reg`, so that it can be written without losing
@@ -261,11 +261,11 @@ static void evict_reg(int reg)
     int i;
 
     for (i = 0; i < vtop; i++) {
-        if (vstack[i].kind == VAL_REG && vstack[i].v == reg) {
+        if (vstack[i].kind == VAL_REG && vstack[i].val == reg) {
             int to = reg_alloc_other(reg);
 
             mov_rr(to, reg);
-            vstack[i].v = to;
+            vstack[i].val = to;
         }
     }
 }
@@ -280,35 +280,35 @@ static void force_into(int depth, int want)
     for (i = 0; i < vtop; i++) {
         if (i == idx)
             continue;
-        if (vstack[i].kind == VAL_REG && vstack[i].v == want) {
-            int r = reg_alloc_other(want);
+        if (vstack[i].kind == VAL_REG && vstack[i].val == want) {
+            int reg = reg_alloc_other(want);
 
-            mov_rr(r, want);
-            vstack[i].v = r;
+            mov_rr(reg, want);
+            vstack[i].val = reg;
         }
     }
     (void) i;
 
     if (vstack[idx].kind == VAL_REG) {
-        if (vstack[idx].v != want)
-            mov_rr(want, vstack[idx].v);
+        if (vstack[idx].val != want)
+            mov_rr(want, vstack[idx].val);
     } else if (vstack[idx].kind == VAL_CONST) {
-        ld_rr_imm(want, vstack[idx].v);
+        ld_rr_imm(want, vstack[idx].val);
     } else {
-        need_disp(vstack[idx].v);
-        ld_rr_ix(want, vstack[idx].v);
+        need_disp(vstack[idx].val);
+        ld_rr_ix(want, vstack[idx].val);
     }
     vstack[idx].kind = VAL_REG;
-    vstack[idx].v = want;
+    vstack[idx].val = want;
 }
 
 int vpop_reg(void)
 {
-    int r = force_reg_at(0);
+    int reg = force_reg_at(0);
 
     vdrop();
 
-    return r;
+    return reg;
 }
 
 /* ------------------------------------------------------------------ */
@@ -323,43 +323,43 @@ int vpop_reg(void)
  * comparison do. Narrowing here, where the value is produced, means the stack
  * always holds what the machine would have, and those operations get the right
  * answer when they arrive rather than a bug to find later. */
-static int trunc_int(int v)
+static int trunc_int(int value)
 {
-    v &= 0xffffff;
-    if (v & 0x800000)
-        v -= 0x1000000;
+    value &= 0xffffff;
+    if (value & 0x800000)
+        value -= 0x1000000;
 
-    return v;
+    return value;
 }
 
-static int const_fold(int t, int a, int b, int *out)
+static int const_fold(int op, int left, int right, int *out)
 {
-    switch (t) {
-    case TK_PLUS:  *out = trunc_int(a + b); return 1;
-    case TK_MINUS: *out = trunc_int(a - b); return 1;
-    case TK_LT:    *out = a <  b; return 1;
-    case TK_GT:    *out = a >  b; return 1;
-    case TK_LE:    *out = a <= b; return 1;
-    case TK_GE:    *out = a >= b; return 1;
-    case TK_EQ:    *out = a == b; return 1;
-    case TK_NE:    *out = a != b; return 1;
+    switch (op) {
+    case TK_PLUS:  *out = trunc_int(left + right); return 1;
+    case TK_MINUS: *out = trunc_int(left - right); return 1;
+    case TK_LT:    *out = left <  right; return 1;
+    case TK_GT:    *out = left >  right; return 1;
+    case TK_LE:    *out = left <= right; return 1;
+    case TK_GE:    *out = left >= right; return 1;
+    case TK_EQ:    *out = left == right; return 1;
+    case TK_NE:    *out = left != right; return 1;
     }
 
     return 0;
 }
 
-void vbinop(int t)
+void vbinop(int op)
 {
     Value *lhs = vsp - 2;
     Value *rhs = vsp - 1;
-    int folded, r;
+    int folded, right;
 
     if (vtop < 2)
         acc_error("internal: binary operator with nothing to work on");
 
     /* Both sides known: the answer is known, and nothing is emitted. */
     if (lhs->kind == VAL_CONST && rhs->kind == VAL_CONST
-        && const_fold(t, lhs->v, rhs->v, &folded)) {
+        && const_fold(op, lhs->val, rhs->val, &folded)) {
         vdrop();
         vdrop();
         vpush_const(folded);
@@ -369,8 +369,8 @@ void vbinop(int t)
 
     /* Adding or subtracting nothing is nothing. Worth the two lines: it is
      * what makes `p + 0` and the zero cases of generated code free. */
-    if (rhs->kind == VAL_CONST && rhs->v == 0
-        && (t == TK_PLUS || t == TK_MINUS)) {
+    if (rhs->kind == VAL_CONST && rhs->val == 0
+        && (op == TK_PLUS || op == TK_MINUS)) {
         vdrop();
 
         return;
@@ -382,20 +382,20 @@ void vbinop(int t)
      * register chosen without asking whether anything already lives in it is
      * how `f(a,b,c) + f(1,2,3)` lost an argument. */
     force_into(1, R_HL);
-    r = force_reg_at(0);
+    right = force_reg_at(0);
 
-    switch (t) {
+    switch (op) {
     case TK_PLUS:
-        add_hl_rr(r);
+        add_hl_rr(right);
         break;
 
     case TK_MINUS:
         or_a_a();               /* sbc reads the carry, so clear it */
-        sbc_hl_rr(r);
+        sbc_hl_rr(right);
         break;
 
     default:
-        acc_error("the operator %s is not implemented yet", tok_spelling(t));
+        acc_error("the operator %s is not implemented yet", tok_spelling(op));
     }
 
     vdrop();
@@ -408,33 +408,33 @@ void vbinop(int t)
  * is what makes `a = b = 0` work without a special case. */
 void vstore_local(int offset)
 {
-    int r = force_reg_at(0);
+    int right = force_reg_at(0);
 
     need_disp(offset);
-    ld_ix_rr(offset, r);
+    ld_ix_rr(offset, right);
 }
 
 void vneg(void)
 {
-    Value *v = vsp - 1;
-    int r;
+    Value *top = vsp - 1;
+    int right;
 
-    if (v->kind == VAL_CONST) {
-        v->v = trunc_int(-v->v);
+    if (top->kind == VAL_CONST) {
+        top->val = trunc_int(-top->val);
 
         return;
     }
 
     /* 0 - x, so the operand goes anywhere but HL and HL is then cleared of
      * whatever else was in it -- the zero is about to overwrite it. */
-    if (!(v->kind == VAL_REG && v->v != R_HL))
+    if (!(top->kind == VAL_REG && top->val != R_HL))
         force_into(0, reg_alloc_other(R_HL));
-    r = v->v;
+    right = top->val;
     evict_reg(R_HL);
 
     ld_rr_imm(R_HL, 0);
     or_a_a();
-    sbc_hl_rr(r);
+    sbc_hl_rr(right);
     vdrop();
     vpush_reg(R_HL);
 }
@@ -560,7 +560,7 @@ void vcmp(int op)
         acc_error("internal: a comparison with nothing to compare");
 
     if (lhs->kind == VAL_CONST && rhs->kind == VAL_CONST
-        && const_fold(op, lhs->v, rhs->v, &folded)) {
+        && const_fold(op, lhs->val, rhs->val, &folded)) {
         vdrop();
         vdrop();
         vpush_const(folded);
@@ -649,10 +649,10 @@ void gen_jump_to(int target)
 
 int gen_jump_if_false(void)
 {
-    int r = vpop_reg();
+    int reg = vpop_reg();
 
-    if (r != R_HL)
-        mov_rr(R_HL, r);
+    if (reg != R_HL)
+        mov_rr(R_HL, reg);
 
     /* There is no "is this register zero" instruction for a 24-bit value.
      * The upper byte of HL is not addressable, so the 16-bit idiom -- `ld a,l`
@@ -799,10 +799,10 @@ void gen_return(void)
      * worth matching even with nothing to link against, because it is what
      * lets the two be mixed later. */
     if (vtop > 0) {
-        int r = vpop_reg();
+        int reg = vpop_reg();
 
-        if (r != R_HL)
-            mov_rr(R_HL, r);
+        if (reg != R_HL)
+            mov_rr(R_HL, reg);
     }
     out_byte(0xdd); out_byte(0xf9);              /* ld sp, ix */
     out_byte(0xdd); out_byte(0xe1);              /* pop ix */
@@ -823,9 +823,9 @@ void gen_call(int fn, int nargs)
     save_regs_below(nargs);
 
     for (i = 0; i < nargs; i++) {
-        int r = vpop_reg();
+        int reg = vpop_reg();
 
-        push_rr(r);
+        push_rr(reg);
     }
 
     out_byte(0xcd);                              /* call nn */

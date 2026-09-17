@@ -92,7 +92,7 @@ static void primary(void)
 
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
-        int s;
+        int sym;
 
         next();
 
@@ -100,12 +100,12 @@ static void primary(void)
             int nargs = 0;
 
             next();
-            s = sym_find(name);
-            if (s == SYM_NONE) {
+            sym = sym_find(name);
+            if (sym == SYM_NONE) {
                 /* Not seen yet. Assumed to be a function defined further
                  * down; gen_finish reports it if it never is. */
-                s = sym_push(name, SYM_FUNC, 0);
-            } else if (sym_at(s)->kind != SYM_FUNC) {
+                sym = sym_push(name, SYM_FUNC, 0);
+            } else if (sym_at(sym)->kind != SYM_FUNC) {
                 acc_error_at(tok_line, "'%s' is not a function", name_text(name));
             }
 
@@ -118,17 +118,17 @@ static void primary(void)
                 }
             }
             expect(TK_RPAREN, "')'");
-            gen_call(s, nargs);
+            gen_call(sym, nargs);
 
             return;
         }
 
-        s = sym_find(name);
-        if (s == SYM_NONE)
+        sym = sym_find(name);
+        if (sym == SYM_NONE)
             acc_error_at(tok_line, "'%s' is not declared", name_text(name));
-        if (sym_at(s)->kind != SYM_LOCAL)
+        if (sym_at(sym)->kind != SYM_LOCAL)
             acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
-        vpush_local(sym_at(s)->val);
+        vpush_local(sym_at(sym)->val);
 
         return;
     }
@@ -165,9 +165,10 @@ static void additive(void)
     additive_rest();
 }
 
-static int is_relational(int t)
+static int is_relational(int token)
 {
-    return t == TK_LT || t == TK_GT || t == TK_LE || t == TK_GE;
+    return token == TK_LT || token == TK_GT
+        || token == TK_LE || token == TK_GE;
 }
 
 static void relational_rest(void)
@@ -224,7 +225,7 @@ static void expr(void)
 {
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
-        int s;
+        int sym;
 
         /* Look one token ahead by remembering this one: an identifier
          * followed by '=' is an assignment, anything else is a value. */
@@ -232,10 +233,10 @@ static void expr(void)
         if (tok == TK_ASSIGN) {
             next();
             expr();
-            s = sym_find(name);
-            if (s == SYM_NONE || sym_at(s)->kind != SYM_LOCAL)
+            sym = sym_find(name);
+            if (sym == SYM_NONE || sym_at(sym)->kind != SYM_LOCAL)
                 acc_error_at(tok_line, "'%s' cannot be assigned to", name_text(name));
-            vstore_local(sym_at(s)->val);
+            vstore_local(sym_at(sym)->val);
 
             return;
         }
@@ -262,12 +263,12 @@ static void expr(void)
             expect(TK_RPAREN, "')'");
             gen_call(fn, nargs);
         } else {
-            s = sym_find(name);
-            if (s == SYM_NONE)
+            sym = sym_find(name);
+            if (sym == SYM_NONE)
                 acc_error_at(tok_line, "'%s' is not declared", name_text(name));
-            if (sym_at(s)->kind != SYM_LOCAL)
+            if (sym_at(sym)->kind != SYM_LOCAL)
                 acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
-            vpush_local(sym_at(s)->val);
+            vpush_local(sym_at(sym)->val);
         }
 
         equality_rest();

@@ -56,74 +56,76 @@ static int     nsyms, nglobals, cap;
  * to do with the result.
  *
  * Entries are never removed. File scope does not end. */
-static NameRef *gkey;
-static int     *gval;
-static unsigned gcap, gcount;
+/* Two columns of one table: the name a slot holds, and the symbol it maps to.
+ * An empty slot has NAME_NONE in index_name. */
+static NameRef *index_name;
+static int     *index_sym;
+static unsigned index_cap, index_count;
 
 #ifdef ACC_HASH_STATS
 unsigned long sym_probes;
-#define GPROBE() (sym_probes++)
+#define COUNT_PROBE() (sym_probes++)
 #else
-#define GPROBE() ((void) 0)
+#define COUNT_PROBE() ((void) 0)
 #endif
 
-static void gtable_alloc(unsigned n)
+static void index_alloc(unsigned n)
 {
-    gkey = calloc(n, sizeof *gkey);
-    gval = malloc(n * sizeof *gval);
-    if (!gkey || !gval)
+    index_name = calloc(n, sizeof *index_name);
+    index_sym = malloc(n * sizeof *index_sym);
+    if (!index_name || !index_sym)
         acc_error("out of memory for the symbol index");
-    gcap = n;
+    index_cap = n;
 }
 
-static void gtable_grow(void)
+static void index_grow(void)
 {
-    NameRef *oldk = gkey;
-    int     *oldv = gval;
-    unsigned oldn = gcap, i;
+    NameRef *old_name = index_name;
+    int     *old_sym = index_sym;
+    unsigned old_cap = index_cap, i;
 
-    gtable_alloc(oldn * 2);
-    for (i = 0; i < oldn; i++) {
-        unsigned h;
+    index_alloc(old_cap * 2);
+    for (i = 0; i < old_cap; i++) {
+        unsigned slot;
 
-        if (oldk[i] == NAME_NONE)
+        if (old_name[i] == NAME_NONE)
             continue;
-        h = oldk[i] & (gcap - 1);
-        while (gkey[h] != NAME_NONE)
-            h = (h + 1) & (gcap - 1);
-        gkey[h] = oldk[i];
-        gval[h] = oldv[i];
+        slot = old_name[i] & (index_cap - 1);
+        while (index_name[slot] != NAME_NONE)
+            slot = (slot + 1) & (index_cap - 1);
+        index_name[slot] = old_name[i];
+        index_sym[slot] = old_sym[i];
     }
-    free(oldk);
-    free(oldv);
+    free(old_name);
+    free(old_sym);
 }
 
-static void gput(NameRef name, int idx)
+static void index_add(NameRef name, int sym)
 {
-    unsigned h;
+    unsigned slot;
 
     /* Kept under half full. Past that a linear probe starts walking. */
-    if ((gcount + 1) * 2 >= gcap)
-        gtable_grow();
+    if ((index_count + 1) * 2 >= index_cap)
+        index_grow();
 
-    h = name & (gcap - 1);
-    while (gkey[h] != NAME_NONE)
-        h = (h + 1) & (gcap - 1);
-    gkey[h] = name;
-    gval[h] = idx;
-    gcount++;
+    slot = name & (index_cap - 1);
+    while (index_name[slot] != NAME_NONE)
+        slot = (slot + 1) & (index_cap - 1);
+    index_name[slot] = name;
+    index_sym[slot] = sym;
+    index_count++;
 }
 
-static int gget(NameRef name)
+static int index_find(NameRef name)
 {
-    unsigned h = name & (gcap - 1);
+    unsigned slot = name & (index_cap - 1);
 
-    GPROBE();
-    while (gkey[h] != NAME_NONE) {
-        if (gkey[h] == name)
-            return gval[h];
-        h = (h + 1) & (gcap - 1);
-        GPROBE();
+    COUNT_PROBE();
+    while (index_name[slot] != NAME_NONE) {
+        if (index_name[slot] == name)
+            return index_sym[slot];
+        slot = (slot + 1) & (index_cap - 1);
+        COUNT_PROBE();
     }
 
     return SYM_NONE;
@@ -136,8 +138,8 @@ void sym_init(void)
     if (!syms)
         acc_error("out of memory for symbols");
     nsyms = nglobals = 0;
-    gtable_alloc(128);
-    gcount = 0;
+    index_alloc(128);
+    index_count = 0;
 }
 
 /* Out of line for the same reason out_grow is: sym_push runs for every name
@@ -156,15 +158,15 @@ static void syms_grow(void)
 
 int sym_push(NameRef name, int kind, int val)
 {
-    Sym *s;
+    Sym *sym;
 
     if (nsyms == cap)
         syms_grow();
     if (kind == SYM_LOCAL) {
-        s = &syms[nsyms];
-        s->name = name;
-        s->kind = (unsigned char) kind;
-        s->val = val;
+        sym = &syms[nsyms];
+        sym->name = name;
+        sym->kind = (unsigned char) kind;
+        sym->val = val;
 
         return nsyms++;
     }
@@ -176,12 +178,12 @@ int sym_push(NameRef name, int kind, int val)
      * A function has a handful of them, so the move is a few dozen bytes. */
     memmove(&syms[nglobals + 1], &syms[nglobals],
             (size_t) (nsyms - nglobals) * sizeof *syms);
-    s = &syms[nglobals];
-    s->name = name;
-    s->kind = (unsigned char) kind;
-    s->val = val;
+    sym = &syms[nglobals];
+    sym->name = name;
+    sym->kind = (unsigned char) kind;
+    sym->val = val;
     nsyms++;
-    gput(name, nglobals);
+    index_add(name, nglobals);
 
     return nglobals++;
 }
@@ -195,12 +197,12 @@ int sym_find(NameRef name)
     unsigned i = (unsigned) nsyms;
 
     while (i-- > (unsigned) nglobals) {
-        GPROBE();
+        COUNT_PROBE();
         if (syms[i].name == name)
             return (int) i;
     }
 
-    return gget(name);
+    return index_find(name);
 }
 
 /* Good until the next sym_push and no longer. Callers fetch it where they use
