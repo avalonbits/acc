@@ -248,22 +248,18 @@ Type vtype_at(int depth);             /* 0 is the top, 1 the one below */
 void vpush_local(int offset, Type type);
 void vpush_reg(int reg);
 void vstore_local(int offset, Type type); /* pop the top into a local */
-void vbinop(int t);                   /* combine the top two with token t */
-void vcmp(int op);                    /* compare the top two; leaves 0 or 1 */
 
-/* Byte and short arithmetic, done at its own width in A rather than promoted
- * to int and narrowed again. Legal only where the result goes straight into
- * an object of that width, which the parser decides; vnarrow_ready says
- * whether the two values on the stack are in a shape this can use. */
-int  vnarrow_ready(int op, Type to);
-void vbinop_narrow(int op, Type to);
-
-/* A long is four bytes and every register is three, so it lives in the frame
- * and these work on it there. vlong_pair says whether the top two values need
- * that treatment. */
-int  vlong_pair(void);
-void vbinop_long(int op, Type result);
-void vcmp_long(int op, Type operand);
+/* Combine the top two values with the binary operator `op`. Which of the six
+ * ways that happens -- long or int width, arithmetic or comparison, and for
+ * the narrow types whether it can stay in A -- follows from the types of the
+ * two values, which only the generator can see, so it decides.
+ *
+ * `narrow` is the one-byte or two-byte type the result is on its way into,
+ * and 0 when there is no such destination or the operator is not one that may
+ * truncate as it goes. It is the parser's to answer because it is a fact
+ * about the text after the operator, not about the values.
+ */
+void vapply(int op, Type narrow);
 void vneg(void);
 void vnot(void);
 int  vpop_reg(void);                  /* force the top into a register */

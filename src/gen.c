@@ -320,6 +320,13 @@ void vconvert(Type to)
 
     if (vtop <= 0)
         acc_error("internal: nothing to convert");
+
+    /* Converting to the type it already has is nothing at all, and that is
+     * the common case now that every argument of every call comes through
+     * here on its way to a parameter. */
+    if (top->type == to)
+        return;
+
     check_no_float_mix(to, top);
 
     if (type_wide(to)) {
@@ -700,7 +707,7 @@ static int either_unsigned(const Value *lhs, const Value *rhs)
     return type_unsigned(lhs->type) || type_unsigned(rhs->type);
 }
 
-void vbinop(int op)
+static void vbinop(int op)
 {
     Value *lhs = vsp - 2;
     Value *rhs = vsp - 1;
@@ -986,7 +993,7 @@ static int narrow_operand(const Value *val, Type to, int as_left)
     return 0;
 }
 
-int vnarrow_ready(int op, Type to)
+static int vnarrow_ready(int op, Type to)
 {
     const Value *lhs = vsp - 2;
     const Value *rhs = vsp - 1;
@@ -1021,7 +1028,7 @@ int vnarrow_ready(int op, Type to)
     return narrow_operand(lhs, to, 1) && narrow_operand(rhs, to, 0);
 }
 
-void vbinop_narrow(int op, Type to)
+static void vbinop_narrow(int op, Type to)
 {
     Value *lhs = vsp - 2;
     Value *rhs = vsp - 1;
@@ -1138,7 +1145,7 @@ static void cmp_signed(int when_negative)
     patch_to_here(to_done_from_overflow);
 }
 
-void vcmp(int op)
+static void vcmp(int op)
 {
     Value *lhs = vsp - 2;
     Value *rhs = vsp - 1;
@@ -1339,17 +1346,7 @@ static int long_helper(int op, Type type)
     return -1;
 }
 
-/* Is either side of the top pair a long? Then C converts both to long and the
- * result is one. */
-int vlong_pair(void)
-{
-    if (vtop < 2)
-        return 0;
-
-    return type_wide((vsp - 2)->type) || type_wide((vsp - 1)->type);
-}
-
-void vbinop_long(int op, Type result)
+static void vbinop_long(int op, Type result)
 {
     int which;
     int left, right;
@@ -1385,7 +1382,7 @@ void vbinop_long(int op, Type result)
     vpush(VAL_LOCAL, result, left);
 }
 
-void vcmp_long(int op, Type operand)
+static void vcmp_long(int op, Type operand)
 {
     int left, right;
 
@@ -1872,4 +1869,74 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
     }
     vpush_reg(R_HL);
     (vsp - 1)->type = type_promote(sym_at(fn)->type);
+}
+
+/* The operators that leave a 0 or 1 behind rather than a number. */
+static int is_comparison(int op)
+{
+    switch (op) {
+    case TK_EQ: case TK_NE:
+    case TK_LT: case TK_GT: case TK_LE: case TK_GE:
+        return 1;
+    }
+
+    return 0;
+}
+
+/* Every binary operator in the program comes through here.
+ *
+ * The parser used to make this decision itself, which cost it a call to ask
+ * whether either side was a long, two more to fetch the types it would need
+ * if one was, and a fourth to ask whether the narrow path could take it --
+ * four calls across the file boundary before a byte was emitted, for an
+ * answer that is entirely in the top two values of a stack the parser cannot
+ * see. Asking once and deciding here is the same decision made where the
+ * facts are, and the pieces of it fold into each other because they are no
+ * longer separately reachable.
+ */
+void vapply(int op, Type narrow)
+{
+    Type left, right;
+
+    if (vtop < 2)
+        acc_error("internal: an operator with nothing to apply it to");
+
+    left  = (vsp - 2)->type;
+    right = (vsp - 1)->type;
+
+    /* Either side a long makes both of them one, and the result is a long --
+     * or, for a comparison, an int taken from a comparison at long width.
+     * C's conversions: floating wins over integer, and among the integers
+     * unsigned wins. */
+    if (type_wide(left) || type_wide(right)) {
+        Type wide;
+
+        if (type_float(left) || type_float(right))
+            wide = TY_FLOAT;
+        else if (type_unsigned(left) || type_unsigned(right))
+            wide = TY_ULONG;
+        else
+            wide = TY_LONG;
+
+        if (is_comparison(op))
+            vcmp_long(op, wide);
+        else
+            vbinop_long(op, wide);
+
+        return;
+    }
+
+    if (is_comparison(op)) {
+        vcmp(op);
+
+        return;
+    }
+
+    if (narrow && vnarrow_ready(op, narrow)) {
+        vbinop_narrow(op, narrow);
+
+        return;
+    }
+
+    vbinop(op);
 }

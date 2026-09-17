@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -366,6 +367,126 @@ static const unsigned char punct[256] = {
     ['<'] = TK_LT,     ['>'] = TK_GT
 };
 
+/* Read a floating literal from the cursor, which is at its first character.
+ *
+ * Converted by the host's own strtod, whose float is the same four-byte IEEE
+ * 754 single this target uses -- so the bits acc emits are the bits the
+ * machine would have computed, rather than a second implementation of the
+ * format to get wrong separately.
+ *
+ * Out of line because next() is the hottest function in the compiler and most
+ * programs have no floating literals at all. */
+__attribute__((noinline))
+static void lex_floating(int line)
+{
+    char *end;
+
+    tok_fval = (float) strtod(cursor, &end);
+    if (end == cursor)
+        acc_error_at(line, "a floating-point number with no digits");
+    cursor = end;
+    if (*cursor == 'f' || *cursor == 'F')
+        cursor++;
+    tok = TK_FLOAT;
+    tok_type = TY_FLOAT;
+}
+
+/* Out of line, and the attribute is load-bearing -- there is one caller, so
+ * it goes straight back inline without it.
+ *
+ * It is not about the size of the code. `value` is an unsigned long, which is
+ * four bytes on a three-byte machine, and the accumulator and the bound it is
+ * checked against want frame slots. Inline, next() opened a frame wide enough
+ * for them on every token it read, and the tokens a program is mostly made of
+ * are names and punctuation, which need no frame at all. Out of line, the
+ * cost is paid by the numeric constants and by nothing else. */
+__attribute__((noinline))
+static void lex_number(int line)
+{
+    /* Accumulated with the bound checked before each step rather than
+     * after, so the accumulator never overflows and there is nothing to
+     * detect after the fact. Everything here stays in an int, which on
+     * this target is the 24 bits the answer has to fit in anyway. */
+    /* Unsigned, because the largest constant acc takes is 0xFFFFFFFF and
+     * long on this target is 32 bits signed. The bits are what is wanted;
+     * tok_val holds them and the type says how to read them.
+     *
+     * Exactly 32 bits, and not `unsigned long`, which is 32 bits when acc is
+     * compiled for the Agon and 64 when it is compiled for the host it is
+     * tested on. With the guard below reading a width that changes, the two
+     * builds disagreed about which constants a program may contain: the host
+     * build accumulated an eleven-digit constant without complaint and let
+     * the ladder decide, while the Agon build wrapped and refused it. The
+     * width the answer has to fit in is a fact about the language acc
+     * compiles, not about the machine acc is running on. */
+    uint32_t value = 0;
+    int is_hex = 0;
+    char *start = cursor;
+
+    if (*cursor == '0' && (cursor[1] == 'x' || cursor[1] == 'X')) {
+        is_hex = 1;
+        cursor += 2;
+        if (!is_alnum((unsigned char) *cursor))
+            acc_error_at(line, "hex constant with no digits");
+        while (is_alnum((unsigned char) *cursor)) {
+            int digit = *cursor;
+
+            if (is_digit(digit))                     digit -= '0';
+            else if (digit >= 'a' && digit <= 'f')   digit -= 'a' - 10;
+            else if (digit >= 'A' && digit <= 'F')   digit -= 'A' - 10;
+            else acc_error_at(line, "bad digit '%c' in a hex constant", digit);
+            if (value > 0xfffffffUL)
+                acc_error_at(line, "the constant does not fit in %d bits",
+                             ACC_LONG_SIZE * 8);
+            value = value * 16 + digit;
+            cursor++;
+        }
+    } else {
+        while (is_digit((unsigned char) *cursor)) {
+            int digit = *cursor - '0';
+
+            if (value > 429496729UL
+                || (value == 429496729UL && digit > 5))
+                acc_error_at(line, "the constant does not fit in %d bits",
+                             ACC_LONG_SIZE * 8);
+            value = value * 10 + digit;
+            cursor++;
+        }
+    }
+
+    /* C99 types a constant by the first type that can hold it. A decimal
+     * one goes int, long int, long long int; a hex or octal one may also
+     * be unsigned at each step, which is the only place the two forms
+     * differ. acc has no long long, so past the end of long it refuses. */
+    /* The character the digits stopped at decides which kind it was. */
+    if (*cursor == '.' || *cursor == 'e' || *cursor == 'E'
+        || *cursor == 'f' || *cursor == 'F') {
+        cursor = start;
+        lex_floating(line);
+
+        return;
+    }
+
+    if (value <= 0x7fffffUL) {
+        tok_type = TY_INT;
+    } else if (is_hex && value <= 0xffffffUL) {
+        tok_type = TY_UINT;
+        /* Normalised to the signed pattern of the same 24 bits, so that
+         * acc folds it identically whether it is itself running on a
+         * 24-bit int or a 32-bit one. */
+        value -= 0x1000000UL;
+    } else if (value <= 0x7fffffffUL) {
+        tok_type = TY_LONG;
+    } else if (is_hex) {
+        tok_type = TY_ULONG;
+    } else {
+        acc_error_at(line, "the constant is too large for a long, and "
+                           "long long is not supported yet");
+    }
+    tok = TK_INT;
+    tok_val = (long) value;
+}
+
 void next(void)
 {
     int c;
@@ -380,116 +501,21 @@ void next(void)
         return;
     }
 
-    /* A floating literal is a run of digits with a `.`, an exponent, or an
-     * `f` suffix somewhere in it. Which it is cannot be told from the first
-     * character, so the run is looked over before it is read: everything up
-     * to the first character that can be in neither kind. */
-    if (is_digit(c) || (c == '.' && is_digit((unsigned char) cursor[1]))) {
-        const char *scan = cursor;
-        int floating = (c == '.');
+    /* A leading `.` can only begin a floating literal. A leading digit might
+     * begin either, and which it is shows at the character the digits stop
+     * at -- so the integer is read first and handed back if that character
+     * says it was one after all. Scanning ahead to decide instead cost every
+     * numeric token in the program a second pass over its digits. */
+    if (c == '.' && is_digit((unsigned char) cursor[1]))
+    {
+        lex_floating(line);
 
-        while (is_digit((unsigned char) *scan))
-            scan++;
-        if (*scan == '.') {
-            floating = 1;
-            scan++;
-            while (is_digit((unsigned char) *scan))
-                scan++;
-        }
-        if (*scan == 'e' || *scan == 'E') {
-            const char *exp = scan + 1;
-
-            if (*exp == '+' || *exp == '-')
-                exp++;
-            if (is_digit((unsigned char) *exp))
-                floating = 1;
-        }
-        if (*scan == 'f' || *scan == 'F')
-            floating = 1;
-
-        if (floating) {
-            /* Converted by the host's own strtod, whose float is the same
-             * four-byte IEEE 754 single this target uses -- so the bits acc
-             * emits are the bits the machine would have computed. */
-            char *end;
-
-            tok_fval = (float) strtod(cursor, &end);
-            if (end == cursor)
-                acc_error_at(line, "a floating-point number with no digits");
-            cursor = end;
-            if (*cursor == 'f' || *cursor == 'F')
-                cursor++;
-            tok = TK_FLOAT;
-            tok_type = TY_FLOAT;
-
-            return;
-        }
+        return;
     }
 
     if (is_digit(c)) {
-        /* Accumulated with the bound checked before each step rather than
-         * after, so the accumulator never overflows and there is nothing to
-         * detect after the fact. Everything here stays in an int, which on
-         * this target is the 24 bits the answer has to fit in anyway. */
-        /* Unsigned, because the largest constant acc takes is 0xFFFFFFFF and
-         * long on this target is 32 bits signed. The bits are what is wanted;
-         * tok_val holds them and the type says how to read them. */
-        unsigned long value = 0;
-        int is_hex = 0;
+        lex_number(line);
 
-        if (c == '0' && (cursor[1] == 'x' || cursor[1] == 'X')) {
-            is_hex = 1;
-            cursor += 2;
-            if (!is_alnum((unsigned char) *cursor))
-                acc_error_at(line, "hex constant with no digits");
-            while (is_alnum((unsigned char) *cursor)) {
-                int digit = *cursor;
-
-                if (is_digit(digit))                     digit -= '0';
-                else if (digit >= 'a' && digit <= 'f')   digit -= 'a' - 10;
-                else if (digit >= 'A' && digit <= 'F')   digit -= 'A' - 10;
-                else acc_error_at(line, "bad digit '%c' in a hex constant", digit);
-                if (value > 0xfffffffUL)
-                    acc_error_at(line, "the constant does not fit in %d bits",
-                                 ACC_LONG_SIZE * 8);
-                value = value * 16 + digit;
-                cursor++;
-            }
-        } else {
-            while (is_digit((unsigned char) *cursor)) {
-                int digit = *cursor - '0';
-
-                if (value > 429496729UL
-                    || (value == 429496729UL && digit > 5))
-                    acc_error_at(line, "the constant does not fit in %d bits",
-                                 ACC_LONG_SIZE * 8);
-                value = value * 10 + digit;
-                cursor++;
-            }
-        }
-
-        /* C99 types a constant by the first type that can hold it. A decimal
-         * one goes int, long int, long long int; a hex or octal one may also
-         * be unsigned at each step, which is the only place the two forms
-         * differ. acc has no long long, so past the end of long it refuses. */
-        if (value <= 0x7fffffUL) {
-            tok_type = TY_INT;
-        } else if (is_hex && value <= 0xffffffUL) {
-            tok_type = TY_UINT;
-            /* Normalised to the signed pattern of the same 24 bits, so that
-             * acc folds it identically whether it is itself running on a
-             * 24-bit int or a 32-bit one. */
-            value -= 0x1000000UL;
-        } else if (value <= 0x7fffffffUL) {
-            tok_type = TY_LONG;
-        } else if (is_hex) {
-            tok_type = TY_ULONG;
-        } else {
-            acc_error_at(line, "the constant is too large for a long, and "
-                               "long long is not supported yet");
-        }
-        tok = TK_INT;
-        tok_val = (long) value;
         return;
     }
 

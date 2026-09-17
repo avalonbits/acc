@@ -212,21 +212,6 @@ static const unsigned char prec[TK_COUNT] = {
     [TK_PERCENT] = PREC_MULTIPLY
 };
 
-/* The operators that leave a 0 or 1 behind rather than a number. Named one at
- * a time rather than as a range of precedences: the range was right only by
- * accident of where the comparisons sat, and it stopped being right the
- * moment the bitwise operators went in below them. */
-static int is_comparison(int token)
-{
-    switch (token) {
-    case TK_EQ: case TK_NE:
-    case TK_LT: case TK_GT: case TK_LE: case TK_GE:
-        return 1;
-    }
-
-    return 0;
-}
-
 /* Operators for which truncating as you go gives what truncating at the end
  * would. Division and the comparisons are not among them, and neither is a
  * call, which is why the fast path also insists the expression ends here. */
@@ -271,32 +256,13 @@ static void binary_rest(int min_prec)
         primary();
         binary_rest(op_prec + 1);       /* everything binding tighter first */
 
-        if (vlong_pair()) {
-            /* C converts both sides to long when either is one, and the
-             * result is a long -- or, for a comparison, an int taken from a
-             * long-wide comparison. */
-            /* C's conversions: floating wins over integer, and among the
-             * integers unsigned wins. */
-            Type wide;
-
-            if (type_float(vtype_at(1)) || type_float(vtype_at(0)))
-                wide = TY_FLOAT;
-            else if (type_unsigned(vtype_at(1)) || type_unsigned(vtype_at(0)))
-                wide = TY_ULONG;
-            else
-                wide = TY_LONG;
-
-            if (is_comparison(op))
-                vcmp_long(op, wide);
-            else
-                vbinop_long(op, wide);
-        } else if (is_comparison(op))
-            vcmp(op);
-        else if (narrow_dest && transparent_op(op) && expression_ends_here()
-                 && vnarrow_ready(op, narrow_dest))
-            vbinop_narrow(op, narrow_dest);
-        else
-            vbinop(op);
+        /* Which of the six ways to apply an operator this is depends on the
+         * types of the two values, which the generator has and this does not.
+         * All this contributes is the one thing it knows and the generator
+         * cannot: whether the text after the operator lets the result be
+         * truncated as it goes rather than at the end. */
+        vapply(op, (narrow_dest && transparent_op(op) && expression_ends_here())
+                   ? narrow_dest : 0);
     }
 }
 

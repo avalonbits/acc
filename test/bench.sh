@@ -77,9 +77,17 @@ rm -f "$sd/stop.c"
 # being measured.
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
+# Searched with the comments stripped. Every input opens with one, so a bare
+# `*` or `/` matched the `/*` of a comment and every input looked to use both
+# -- and the word "long" in a sentence covered the keyword.
+for src in $SRCS; do
+    sed 's|//.*||' "$src" | tr '\n' '\001' | sed 's=/\*[^\*]*\*\+\([^/\*][^\*]*\*\+\)*/= =g' \
+        | tr '\001' '\n' >> "$tmp/code.c"
+done
+
 missing=
 for kw in $(sed -n 's/.*keyword("\([a-z]*\)".*/\1/p' src/lex.c); do
-    grep -qE "(^|[^A-Za-z_])$kw([^A-Za-z_0-9]|\$)" $SRCS || missing="$missing $kw"
+    grep -qE "(^|[^A-Za-z_])$kw([^A-Za-z_0-9]|\$)" "$tmp/code.c" || missing="$missing $kw"
 done
 
 # And the operators. Keywords alone missed the comparisons, which are not
@@ -91,13 +99,6 @@ done
 # Globbing off while this runs, or `*` matches the working directory and the
 # note lists the contents of the repo.
 set -f
-# Searched with the comments stripped. Every input opens with one, so a bare
-# `*` or `/` matched the `/*` of a comment and every input looked to use both.
-for src in $SRCS; do
-    sed 's|//.*||' "$src" | tr '\n' '\001' | sed 's=/\*[^\*]*\*\+\([^/\*][^\*]*\*\+\)*/= =g' \
-        | tr '\001' '\n' >> "$tmp/code.c"
-done
-
 check_op() {
     printf '%s\n' "$2" > "$tmp/op.c"
     bin/acc "$tmp/op.c" -o "$tmp/op.bin" -x >/dev/null 2>&1 || return 0

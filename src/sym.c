@@ -274,17 +274,17 @@ void sym_set_params(int sym, int first, int count)
     fn_count[sym] = (unsigned char) count;
 }
 
+/* The reads need no room check: a symbol only has a signature because
+ * sym_push or sym_set_params made room for it first, and both run before any
+ * call site can ask. Checking on every read cost a compare and a branch on
+ * the path of every argument of every call. */
 int sym_params_first(int sym)
 {
-    fn_room((unsigned) sym);
-
     return fn_first[sym];
 }
 
 int sym_nparams(int sym)
 {
-    fn_room((unsigned) sym);
-
     return fn_count[sym];
 }
 
