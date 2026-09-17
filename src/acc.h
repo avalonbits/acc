@@ -94,10 +94,17 @@ enum {
 /* Seven bytes on the target: a name, a kind, and one number whose meaning the
  * kind decides. tinycc's equivalent is 31, and at four hundred lines of input
  * that difference was 40 KB of a 206 KB budget. */
+/* Eight bytes and not seven. Turning an index into an address always costs a
+ * helper call on this target -- there is no barrel shifter and no multiplier
+ * wider than the 8-bit MLT -- and the only choice is which one: a 7-byte
+ * element is `call __imulu`, an 8-byte element is `call __ishl`, which is the
+ * cheaper of the two. sym_push alone does five of them. The pad byte costs
+ * one byte per symbol in a program that has a few thousand. */
 typedef struct {
     NameRef       name;
     unsigned char kind;
     int           val;
+    unsigned char pad;
 } Sym;
 
 void sym_init(void);
