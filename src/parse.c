@@ -152,24 +152,44 @@ static void primary(void)
  * 1.2% on a benchmark containing none. A level costs nothing here until an
  * operator at that level actually turns up.
  */
+/* C's precedence, loosest first. The numbers are relative and only their
+ * order matters; they are C's levels rather than acc's, so that adding an
+ * operator is a row in the table and not a decision. */
 enum {
     PREC_NONE       = 0,        /* not a binary operator */
-    PREC_EQUALITY   = 1,        /* ==  != */
-    PREC_RELATIONAL = 2,        /* <  >  <=  >= */
-    PREC_ADDITIVE   = 3         /* +  - */
+    PREC_BIT_OR     = 1,        /* | */
+    PREC_BIT_XOR    = 2,        /* ^ */
+    PREC_BIT_AND    = 3,        /* & */
+    PREC_EQUALITY   = 4,        /* ==  != */
+    PREC_RELATIONAL = 5,        /* <  >  <=  >= */
+    PREC_SHIFT      = 6,        /* <<  >> */
+    PREC_ADDITIVE   = 7         /* +  - */
 };
 
 static const unsigned char prec[TK_COUNT] = {
+    [TK_PIPE]  = PREC_BIT_OR,
+    [TK_CARET] = PREC_BIT_XOR,
+    [TK_AMP]   = PREC_BIT_AND,
     [TK_EQ] = PREC_EQUALITY,   [TK_NE] = PREC_EQUALITY,
     [TK_LT] = PREC_RELATIONAL, [TK_GT] = PREC_RELATIONAL,
     [TK_LE] = PREC_RELATIONAL, [TK_GE] = PREC_RELATIONAL,
+    [TK_SHL] = PREC_SHIFT,     [TK_SHR] = PREC_SHIFT,
     [TK_PLUS] = PREC_ADDITIVE, [TK_MINUS] = PREC_ADDITIVE
 };
 
-/* The levels that leave a 0 or 1 behind rather than a number. */
+/* The operators that leave a 0 or 1 behind rather than a number. Named one at
+ * a time rather than as a range of precedences: the range was right only by
+ * accident of where the comparisons sat, and it stopped being right the
+ * moment the bitwise operators went in below them. */
 static int is_comparison(int token)
 {
-    return prec[token] <= PREC_RELATIONAL;
+    switch (token) {
+    case TK_EQ: case TK_NE:
+    case TK_LT: case TK_GT: case TK_LE: case TK_GE:
+        return 1;
+    }
+
+    return 0;
 }
 
 /* The operator loop, with the left operand already on the stack. `min_prec`
@@ -252,12 +272,12 @@ static void expr(void)
             vpush_local(sym_at(sym)->val, sym_at(sym)->type);
         }
 
-        binary_rest(PREC_EQUALITY);
+        binary_rest(PREC_BIT_OR);
 
         return;
     }
 
-    binary(PREC_EQUALITY);
+    binary(PREC_BIT_OR);
 }
 
 /* ------------------------------------------------------------------ */

@@ -58,6 +58,17 @@ for src in test/cases/*.c; do
     [ $want -eq 77 ] && { printf '  skip %-18s no emulator\n' "$name"; skip=$((skip+1)); continue; }
     test/agon.sh "$tmp/acc.bin" >/dev/null 2>&1; got=$?
 
+    # Every case is written to come out at 42. Agreeing with agondev is not
+    # enough on its own: a branch whose condition is false in both compilers
+    # agrees perfectly and tests nothing, which is how two of these shipped
+    # with arithmetic I had got wrong in the expected values. The answer being
+    # 42 is what says the branches fired.
+    if [ "$got" -eq "$want" ] && [ "$got" -ne 42 ]; then
+        printf '  FAIL %-18s both say %d, but a case has to come out at 42\n' \
+            "$name" "$got"
+        fail=$((fail+1)); continue
+    fi
+
     if [ "$got" -eq "$want" ]; then
         printf '  ok   %-18s %3d\n' "$name" "$got"
         pass=$((pass+1))

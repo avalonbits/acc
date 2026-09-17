@@ -12,7 +12,7 @@ CC      ?= cc
 CFLAGS  ?= -O2 -g
 WARN     = -Wall -Wextra -Wno-unused-parameter
 SRC      = src/lex.c src/sym.c src/gen.c src/out.c src/parse.c
-HDR      = src/acc.h src/timing.h src/ctype.h
+HDR      = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h
 
 # -fsigned-char because char is signed on the eZ80, so the host build should
 # read a source file the same way the target build does.
@@ -27,6 +27,20 @@ BIN = bin
 
 .PHONY: all clean test unit
 all: $(BIN)/acc
+
+# The runtime helpers are assembly, and the table acc emits them from is
+# generated rather than transcribed: getting a byte wrong in a page of opcodes
+# is not something review catches. Regenerated only when the assembly is newer
+# and agondev is installed -- the header is committed, so a host without the
+# toolchain still builds.
+AGONDEV ?= $(HOME)/agondev
+
+src/rt_helpers.h: src/rt/helpers.s src/rt/embed.py
+	@if [ -x $(AGONDEV)/bin/ez80-none-elf-as ]; then \
+	    python3 src/rt/embed.py $< $@ $(AGONDEV)/bin; \
+	else \
+	    echo "[no agondev: keeping the committed $@]"; touch $@; \
+	fi
 
 $(BIN)/acc: $(SRC) $(HDR) | $(BIN)
 	$(CC) $(CFLAGS) $(WARN) -Isrc -o $@ $(SRC)

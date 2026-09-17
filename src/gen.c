@@ -13,6 +13,7 @@
 #include <stdlib.h>
 
 #include "acc.h"
+#include "rt_helpers.h"
 
 /* ------------------------------------------------------------------ */
 /* instructions                                                        */
@@ -72,6 +73,8 @@ static void need_disp(int d)
 
 static void evict_reg(int reg);
 static void force_into(Value *target, int want);
+static int  needs_helper(int op);
+static void rt_call(int which);
 
 /* ------------------------------------------------------------------ */
 /* narrow widths                                                       */
@@ -537,6 +540,24 @@ static int const_fold(int op, int left, int right, int *out)
     case TK_GE:    *out = left >= right; return 1;
     case TK_EQ:    *out = left == right; return 1;
     case TK_NE:    *out = left != right; return 1;
+    case TK_AMP:   *out = left & right; return 1;
+    case TK_PIPE:  *out = left | right; return 1;
+    case TK_CARET: *out = left ^ right; return 1;
+
+    /* Shifts fold only where C defines them. A negative or over-wide count is
+     * undefined, and folding it would bake this host's answer into a program
+     * that has to run on the Agon. */
+    case TK_SHL:
+        if (right < 0 || right >= ACC_INT_SIZE * 8)
+            return 0;
+        *out = trunc_int(left << right);
+        return 1;
+
+    case TK_SHR:
+        if (right < 0 || right >= ACC_INT_SIZE * 8)
+            return 0;
+        *out = left >> right;
+        return 1;
     }
 
     return 0;
@@ -555,7 +576,7 @@ void vbinop(int op)
     Value *lhs = vsp - 2;
     Value *rhs = vsp - 1;
     int folded, right;
-    Type result;
+    Type result, lhs_type;
 
     if (vtop < 2)
         acc_error("internal: binary operator with nothing to work on");
@@ -585,9 +606,23 @@ void vbinop(int op)
      * register chosen without asking whether anything already lives in it is
      * how `f(a,b,c) + f(1,2,3)` lost an argument. */
     force_into(vsp - 2, R_HL);
-    right = force_reg_at(0);
+    if (needs_helper(op)) {
+        /* The helpers take their right operand in BC, by the convention
+         * agondev uses for the same operations. */
+        force_into(vsp - 1, R_BC);
+        right = R_BC;
+    } else {
+        right = force_reg_at(0);
+    }
 
+    lhs_type = type_promote(lhs->type);
     result = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
+
+    /* A shift's result takes its type from the left operand alone: `1u >> x`
+     * is unsigned and `1 >> u` is not, which is C's rule and not the usual
+     * arithmetic conversions. */
+    if (op == TK_SHL || op == TK_SHR)
+        result = type_unsigned(lhs_type) ? TY_UINT : TY_INT;
 
     switch (op) {
     case TK_PLUS:
@@ -597,6 +632,17 @@ void vbinop(int op)
     case TK_MINUS:
         or_a_a();               /* sbc reads the carry, so clear it */
         sbc_hl_rr(right);
+        break;
+
+    /* No instruction does any of these on a 24-bit value, so they go to a
+     * helper acc emits into the image. The helper takes its right operand in
+     * BC, which is where force_into has just put it. */
+    case TK_AMP:   rt_call(RT_AND); break;
+    case TK_PIPE:  rt_call(RT_OR);  break;
+    case TK_CARET: rt_call(RT_XOR); break;
+    case TK_SHL:   rt_call(RT_SHL); break;
+    case TK_SHR:
+        rt_call(type_unsigned(lhs_type) ? RT_SHRU : RT_SHRS);
         break;
 
     default:
@@ -911,6 +957,72 @@ void gen_label(int hole)
     patch_to_here(hole);
 }
 
+/* ------------------------------------------------------------------ */
+/* the runtime helpers                                                 */
+
+/* The operations the chip has no instruction for. acc has nothing to link
+ * against, so it carries them and drops the ones a program uses into that
+ * program's image -- see src/rt/helpers.s, which is where they are written
+ * and read. A program that uses none pays nothing.
+ *
+ * Calls to them are recorded like calls to a function defined further down
+ * the file, because that is what they are: the address is not known until the
+ * end, when whichever ones were used are laid out after the last function. */
+static int rt_addr[RT_COUNT];           /* where each landed, once emitted */
+static unsigned char rt_used[RT_COUNT];
+
+typedef struct {
+    unsigned char which;
+    int at;
+} RtFixup;
+
+static RtFixup *rt_fixups;
+static int      nrt_fixups, rt_fixups_cap;
+
+/* The operators with no instruction behind them. */
+static int needs_helper(int op)
+{
+    switch (op) {
+    case TK_AMP: case TK_PIPE: case TK_CARET:
+    case TK_SHL: case TK_SHR:
+        return 1;
+    }
+
+    return 0;
+}
+
+static void rt_call(int which)
+{
+    if (nrt_fixups == rt_fixups_cap) {
+        rt_fixups_cap = rt_fixups_cap ? rt_fixups_cap * 2 : 16;
+        rt_fixups = realloc(rt_fixups, rt_fixups_cap * sizeof *rt_fixups);
+        if (!rt_fixups)
+            acc_error("out of memory for the runtime fixups");
+    }
+    rt_used[which] = 1;
+
+    out_byte(0xcd);                              /* call nn */
+    rt_fixups[nrt_fixups].which = (unsigned char) which;
+    rt_fixups[nrt_fixups].at = out_here();
+    nrt_fixups++;
+    out_word24(0);
+}
+
+static void rt_emit_used(void)
+{
+    int which, i;
+
+    for (which = 0; which < RT_COUNT; which++) {
+        if (!rt_used[which])
+            continue;
+        rt_addr[which] = out_here();
+        for (i = rt_span[which].at; i < rt_span[which].end; i++)
+            out_byte(rt_code[i]);
+    }
+    for (i = 0; i < nrt_fixups; i++)
+        out_patch24(rt_fixups[i].at, rt_addr[rt_fixups[i].which]);
+}
+
 void gen_finish(void)
 {
     int i;
@@ -933,6 +1045,8 @@ void gen_finish(void)
                          name_text(fn->name));
         out_patch24(fixups[i].at, fn->val);
     }
+
+    rt_emit_used();
 }
 
 

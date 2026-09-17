@@ -493,8 +493,6 @@ int tok_is_unimplemented_op(int token)
 {
     switch (token) {
     case TK_STAR: case TK_SLASH: case TK_PERCENT:
-    case TK_AMP:  case TK_PIPE:  case TK_CARET:
-    case TK_SHL:  case TK_SHR:
     case TK_NOT:
         return 1;
     }

@@ -3,5 +3,5 @@
 int g(int a, int b) { return a - b; }
 int main(void) {
     int a = 1, b = 2, c = 3, d = 4, e = 5;
-    return ((a + b) - (c + d)) + ((e - a) + (b - c)) + (g(d, c) + g(e, b)) + 44;
+    return ((a + b) - (c + d)) + ((e - a) + (b - c)) + (g(d, c) + g(e, b)) + 39;
 }
