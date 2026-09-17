@@ -175,9 +175,10 @@ void sym_drop_locals(void);              /* at the end of a function */
  * turned into instructions until something needs it in a register, so
  * `1 + 2` never reaches the code generator and `x + 1` loads x once. */
 enum {
-    VAL_CONST,      /* a literal; v holds it */
-    VAL_LOCAL,      /* a local at frame offset v */
-    VAL_REG         /* already in register v */
+    VAL_CONST,      /* a literal; val holds it */
+    VAL_LOCAL,      /* a local at frame offset val */
+    VAL_REG,        /* already in register val */
+    VAL_ACC         /* in A, still narrow: see the note on byte arithmetic */
 };
 
 /* What the parser knows about a value it has not had to emit yet: a constant,
@@ -211,6 +212,13 @@ void vpush_reg(int reg);
 void vstore_local(int offset, Type type); /* pop the top into a local */
 void vbinop(int t);                   /* combine the top two with token t */
 void vcmp(int op);                    /* compare the top two; leaves 0 or 1 */
+
+/* Byte and short arithmetic, done at its own width in A rather than promoted
+ * to int and narrowed again. Legal only where the result goes straight into
+ * an object of that width, which the parser decides; vnarrow_ready says
+ * whether the two values on the stack are in a shape this can use. */
+int  vnarrow_ready(int op, Type to);
+void vbinop_narrow(int op, Type to);
 void vneg(void);
 void vnot(void);
 int  vpop_reg(void);                  /* force the top into a register */

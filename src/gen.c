@@ -458,6 +458,24 @@ static int force_reg_at(int depth)
     if (val->kind == VAL_REG)
         return val->val;
 
+    if (val->kind == VAL_ACC) {
+        /* Widen out of A. This is the escape hatch that makes the byte path
+         * safe: anything that does not understand VAL_ACC forces a register
+         * and gets the promoted value, which is what C says it should see. */
+        reg = R_HL;
+        evict_reg(R_HL);
+        if (type_unsigned(val->type))
+            fill_hl_with_zero();
+        else
+            fill_hl_with_sign_of_a();
+        ld_l_a();
+        val->kind = VAL_REG;
+        val->type = type_promote(val->type);
+        val->val = reg;
+
+        return reg;
+    }
+
     reg = reg_alloc();
     if (val->kind == VAL_CONST) {
         ld_rr_imm(reg, val->val);
@@ -511,7 +529,17 @@ static void force_into(Value *target, int want)
         }
     }
 
-    if (target->kind == VAL_REG) {
+    if (target->kind == VAL_ACC) {
+        if (want != R_HL)
+            evict_reg(R_HL);
+        if (type_unsigned(target->type))
+            fill_hl_with_zero();
+        else
+            fill_hl_with_sign_of_a();
+        ld_l_a();
+        if (want != R_HL)
+            mov_rr(want, R_HL);
+    } else if (target->kind == VAL_REG) {
         if (target->val != want)
             mov_rr(want, target->val);
     } else if (target->kind == VAL_CONST) {
@@ -723,6 +751,15 @@ void vstore_local(int offset, Type type)
 {
     int reg;
 
+    if ((vsp - 1)->kind == VAL_ACC && (vsp - 1)->type == type) {
+        /* Already in A at its own width, which is where a byte store reads
+         * from. Nothing to convert and nothing to move. */
+        need_disp(offset);
+        ld_ix_a(offset);
+
+        return;
+    }
+
     if (type_size(type) < ACC_INT_SIZE) {
         /* The narrow stores write out of HL, so the value goes there. */
         force_into(vsp - 1, R_HL);
@@ -801,6 +838,135 @@ static void fixup_add(int fn, int at)
     fixups[nfixups].at = at;
     fixups[nfixups].line = tok_line;
     nfixups++;
+}
+
+/* ------------------------------------------------------------------ */
+/* arithmetic at byte and short width                                  */
+
+/* C promotes anything narrower than int before operating on it, so acc widens
+ * every narrow load and narrows every narrow store. That is correct and, on
+ * this chip, expensive: a byte load becomes `or a,a` / `sbc hl,hl` /
+ * `ld l,(ix+d)`, getting the second operand into BC goes through the stack
+ * because `sbc hl,hl` only works in HL, and `&` becomes a call into a helper
+ * that pushes both operands to reach the byte of HL that has no name.
+ *
+ * Measured, a six-operation function in unsigned char came to 289 bytes
+ * against 208 for the same in int -- narrow types cost more than wide ones,
+ * on a machine whose ALU is eight bits wide.
+ *
+ * They need not. `add a,r` and `and a,r` are one cycle each in UM0077, the
+ * same as `add hl,rr`, and `add a,(ix+d)` is four -- so `t = t + b` is three
+ * instructions rather than the dozen promotion costs.
+ *
+ * The rule that makes it legal: promote-then-truncate and truncate-as-you-go
+ * agree for + - & | ^ << and >>, because arithmetic modulo 2^8 is a ring
+ * homomorphism. So computing in eight bits is indistinguishable from C
+ * exactly when the result is narrowed back to that width and nothing
+ * downstream sees the wider value. The parser decides that; this only emits.
+ */
+
+static void ld_a_imm(int value)  { out_byte(0x3e); out_byte(value & 0xff); }
+static void ld_a_ix_b(int disp)  { out_byte(0xdd); out_byte(0x7e); out_byte(disp); }
+
+/* The A-with-memory and A-with-immediate forms, by token. */
+static int alu_ix_op(int op)
+{
+    switch (op) {
+    case TK_PLUS:  return 0x86;         /* add a,(ix+d) */
+    case TK_MINUS: return 0x96;         /* sub a,(ix+d) */
+    case TK_AMP:   return 0xa6;         /* and a,(ix+d) */
+    case TK_PIPE:  return 0xb6;         /* or  a,(ix+d) */
+    case TK_CARET: return 0xae;         /* xor a,(ix+d) */
+    }
+
+    return 0;
+}
+
+static int alu_imm_op(int op)
+{
+    switch (op) {
+    case TK_PLUS:  return 0xc6;
+    case TK_MINUS: return 0xd6;
+    case TK_AMP:   return 0xe6;
+    case TK_PIPE:  return 0xf6;
+    case TK_CARET: return 0xee;
+    }
+
+    return 0;
+}
+
+/* A shift of A by one, which is what a constant count is unrolled into. */
+static void shift_a_once(int op, Type to)
+{
+    out_byte(0xcb);
+    if (op == TK_SHL)
+        out_byte(0x27);                 /* sla a */
+    else
+        out_byte(type_unsigned(to) ? 0x3f : 0x2f);   /* srl a : sra a */
+}
+
+/* Is this value one the byte path can take as an operand? */
+static int narrow_operand(const Value *val, Type to, int as_left)
+{
+    if (val->kind == VAL_CONST)
+        return 1;                       /* any constant; it is masked in */
+    if (val->kind == VAL_ACC)
+        return as_left;                 /* A is the accumulator, not a source */
+    if (val->kind == VAL_LOCAL)
+        return val->type == to;         /* same width and signedness */
+
+    return 0;
+}
+
+int vnarrow_ready(int op, Type to)
+{
+    const Value *lhs = vsp - 2;
+    const Value *rhs = vsp - 1;
+
+    if (vtop < 2 || type_size(to) != 1)
+        return 0;                       /* bytes only for now; short is wider
+                                         * than A and needs a pair */
+    if (op == TK_SHL || op == TK_SHR) {
+        /* Only a constant count, unrolled. A variable one is a loop, which is
+         * what the helper already is. */
+        if (rhs->kind != VAL_CONST || rhs->val < 0 || rhs->val > 8)
+            return 0;
+        return narrow_operand(lhs, to, 1);
+    }
+    if (!alu_ix_op(op))
+        return 0;
+
+    return narrow_operand(lhs, to, 1) && narrow_operand(rhs, to, 0);
+}
+
+void vbinop_narrow(int op, Type to)
+{
+    Value *lhs = vsp - 2;
+    Value *rhs = vsp - 1;
+
+    /* The left operand into A, unless it is already there. */
+    if (lhs->kind == VAL_CONST)
+        ld_a_imm(lhs->val);
+    else if (lhs->kind == VAL_LOCAL)
+        ld_a_ix_b(lhs->val);
+
+    if (op == TK_SHL || op == TK_SHR) {
+        int count = rhs->val;
+
+        while (count-- > 0)
+            shift_a_once(op, to);
+    } else if (rhs->kind == VAL_CONST) {
+        out_byte(alu_imm_op(op));
+        out_byte(rhs->val & 0xff);
+    } else {
+        out_byte(0xdd);
+        out_byte(alu_ix_op(op));
+        out_byte(rhs->val);
+    }
+
+    vdrop();
+    vdrop();
+    vpush(VAL_ACC, to, 0);
 }
 
 /* ------------------------------------------------------------------ */

@@ -49,6 +49,16 @@ void acc_error(const char *fmt, ...)
 
 static void expr(void);
 
+/* The width the value being parsed is going straight into, when that is
+ * narrower than an int -- the destination of an assignment or an initialiser.
+ * Zero the rest of the time.
+ *
+ * It is what makes byte arithmetic legal: computing in eight bits is
+ * indistinguishable from C's promote-then-truncate exactly when the result is
+ * truncated to that width and nothing wider ever sees it. */
+static Type narrow_dest;
+
+
 /* A name used as a value: a local read, or a call. */
 static void primary(void)
 {
@@ -110,12 +120,18 @@ static void primary(void)
             }
 
             if (tok != TK_RPAREN) {
+                Type outer = narrow_dest;
+
+                /* An argument is not the destination: it is passed at int
+                 * width whatever the parameter is declared as. */
+                narrow_dest = 0;
                 for (;;) {
                     expr();
                     nargs++;
                     if (!accept(TK_COMMA))
                         break;
                 }
+                narrow_dest = outer;
             }
             expect(TK_RPAREN, "')'");
             gen_call(sym, nargs);
@@ -201,6 +217,35 @@ static int is_comparison(int token)
     return 0;
 }
 
+/* Operators for which truncating as you go gives what truncating at the end
+ * would. Division and the comparisons are not among them, and neither is a
+ * call, which is why the fast path also insists the expression ends here. */
+static int transparent_op(int token)
+{
+    switch (token) {
+    case TK_PLUS: case TK_MINUS:
+    case TK_AMP: case TK_PIPE: case TK_CARET:
+    case TK_SHL: case TK_SHR:
+        return 1;
+    }
+
+    return 0;
+}
+
+/* Nothing follows that could want the wider value. A single token is enough
+ * to know: the operator being applied is the last one in the expression, so
+ * its result goes to the destination and nowhere else.
+ *
+ * `c = a + b > 3` is why this is checked rather than assumed -- the `+` is
+ * applied before the `>` is parsed, and narrowing it would truncate a value
+ * the comparison is entitled to see in full. In a longer chain only the last
+ * operation takes this path, which is correct and still the whole win for
+ * the one-operator statements that byte code is mostly made of. */
+static int expression_ends_here(void)
+{
+    return tok == TK_SEMI || tok == TK_COMMA || tok == TK_RPAREN;
+}
+
 /* The operator loop, with the left operand already on the stack. `min_prec`
  * is the loosest binding this call will take: an operator looser than that
  * belongs to the caller. */
@@ -218,6 +263,9 @@ static void binary_rest(int min_prec)
 
         if (is_comparison(op))
             vcmp(op);
+        else if (narrow_dest && transparent_op(op) && expression_ends_here()
+                 && vnarrow_ready(op, narrow_dest))
+            vbinop_narrow(op, narrow_dest);
         else
             vbinop(op);
     }
@@ -241,8 +289,20 @@ static void expr(void)
          * followed by '=' is an assignment, anything else is a value. */
         next();
         if (tok == TK_ASSIGN) {
+            int dest = sym_find(name);
+            Type outer = narrow_dest;
+
             next();
+            /* The destination's width, for the expression about to be parsed.
+             * Looked up before rather than after so the operator loop can use
+             * it; the check that it is assignable stays below, where the
+             * diagnostic belongs. */
+            narrow_dest = 0;
+            if (dest != SYM_NONE && sym_at(dest)->kind == SYM_LOCAL
+                && type_size(sym_at(dest)->type) < ACC_INT_SIZE)
+                narrow_dest = sym_at(dest)->type;
             expr();
+            narrow_dest = outer;
             sym = sym_find(name);
             if (sym == SYM_NONE || sym_at(sym)->kind != SYM_LOCAL)
                 acc_error_at(tok_line, "'%s' cannot be assigned to", name_text(name));
@@ -263,12 +323,18 @@ static void expr(void)
             else if (sym_at(fn)->kind != SYM_FUNC)
                 acc_error_at(tok_line, "'%s' is not a function", name_text(name));
             if (tok != TK_RPAREN) {
+                Type outer = narrow_dest;
+
+                /* An argument is not the destination: it is passed at int
+                 * width whatever the parameter is declared as. */
+                narrow_dest = 0;
                 for (;;) {
                     expr();
                     nargs++;
                     if (!accept(TK_COMMA))
                         break;
                 }
+                narrow_dest = outer;
             }
             expect(TK_RPAREN, "')'");
             gen_call(fn, nargs);
@@ -413,7 +479,11 @@ static void declaration(void)
 
         off = gen_local(type_size(type));
         if (accept(TK_ASSIGN)) {
+            Type outer = narrow_dest;
+
+            narrow_dest = (type_size(type) < ACC_INT_SIZE) ? type : 0;
             expr();
+            narrow_dest = outer;
             vstore_local(off, type);
             vdrop();            /* a declaration is not an expression */
         }
@@ -447,6 +517,12 @@ static void block(void)
 
 static void condition(void)
 {
+    /* narrow_dest is not cleared here, and does not need to be: it is only
+     * set while an assignment's right-hand side is being parsed, and a
+     * condition belongs to an if or a while, which are statements. There is
+     * no way to reach one from inside an expression. The same goes for a
+     * return. If `?:` or a statement expression ever arrives, both become
+     * reachable and will need it. */
     expect(TK_LPAREN, "'('");
     expr();
     expect(TK_RPAREN, "')'");
