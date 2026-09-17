@@ -1,7 +1,7 @@
 #!/bin/bash
 # How long acc takes to compile test/bench/big.c, on the Agon.
 #
-#   test/bench.sh [runs]        # default 10
+#   test/bench.sh [runs] [source.c ...]     # default 10, all of test/bench
 #
 # Measured on the target because the host is not a proxy for it: the same
 # change can look like a 1.4x win here and a 3.2x win there, and host counts
@@ -26,8 +26,19 @@ cd "$(dirname "$0")/.."
 . test/emu.sh
 
 ACC=${ACC_BIN:-bin/acc.bin}
-SRC=${ACC_BENCH_SRC:-test/bench/big.c}
 RUNS=${1:-10}
+shift 2>/dev/null
+
+# Every input by default, so that adding a feature to the compiler and not to
+# the benchmark shows up as an input that is not there rather than as a
+# measurement that quietly stops covering it. if/else/while were measured as
+# costing nothing for a while, on a program with no if and no while in it.
+if [ $# -gt 0 ]; then
+    SRCS="$*"
+else
+    SRCS=$(echo test/bench/*.c)
+fi
+[ -n "${ACC_BENCH_SRC:-}" ] && SRCS=$ACC_BENCH_SRC
 
 emu_available || exit 77
 [ -f "$ACC" ] || { echo "no $ACC -- run make -f Makefile.agon" >&2; exit 2; }
@@ -41,12 +52,11 @@ fi
 
 sd=$(emu_card); trap 'rm -rf "$sd"' EXIT
 cp "$ACC" "$sd/bin/acc.bin"
-cp "$SRC" "$sd/in.c"
 
 # MOS runs autoexec and then sits at the prompt: the emulator has no way to
 # stop itself, so without this every measurement burned the whole timeout and
 # grew a capture file for the length of it. A program built with -x writes its
-# result to IO port 0, which is what stops the emulator, so the card ends by
+# result to IO port 0, which is what stops the machine, so the card ends by
 # running one. It is compiled by the host acc, not the one being measured, so
 # that a broken candidate cannot leave the run hanging.
 [ -x bin/acc ] || { echo "bin/acc missing -- run make" >&2; exit 2; }
@@ -54,28 +64,66 @@ echo 'int main(void) { return 0; }' > "$sd/stop.c"
 bin/acc "$sd/stop.c" -o "$sd/bin/stop.bin" -x >/dev/null || exit 2
 rm -f "$sd/stop.c"
 
-# One compile more than is read. Halting the machine drops whatever the console
-# still has in flight, which is reliably the last line; the spare one flushes
-# the ones that count. Only the first RUNS readings are the measurement.
-: > "$sd/autoexec.txt"
-for _ in $(seq $((RUNS + 1))); do printf 'acc in.c -o out.bin\r\n' >> "$sd/autoexec.txt"; done
-printf 'stop\r\n' >> "$sd/autoexec.txt"
+# Which keywords the compiler knows, against which ones any input uses. This
+# is the check that was missing: if/else/while were added to the compiler and
+# not to the benchmark, so the benchmark went on reporting a number that could
+# not see them, and the feature measured as free on a program that never used
+# it. A keyword the benchmark never compiles is a keyword whose code is not
+# being measured.
+missing=
+for kw in $(sed -n 's/.*keyword("\([a-z]*\)".*/\1/p' src/lex.c); do
+    grep -qE "(^|[^A-Za-z_])$kw([^A-Za-z_0-9]|\$)" $SRCS || missing="$missing $kw"
+done
+[ -z "$missing" ] || echo "note: no benchmark input uses:$missing" >&2
 
-out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-600} emu_run "$sd" -z)
+status=0
+total_all=0
 
-times=$(printf '%s' "$out" | sed -n 's/.*Done in \([0-9]*\)\.\([0-9][0-9]\) seconds.*/\1\2/p')
-n=$(printf '%s\n' "$times" | grep -c .)
+for SRC in $SRCS; do
+    [ -f "$SRC" ] || { echo "no such input: $SRC" >&2; status=1; continue; }
 
-# The emulator has no way to stop itself, so it is killed by the timeout and
-# autoexec may have looped. Only the first RUNS readings are this measurement.
-if [ "$n" -lt "$RUNS" ]; then
-    echo "only $n of $RUNS runs reported -- the compile failed or timed out" >&2
-    printf '%s\n' "$out" | grep -i error >&2
-    exit 1
-fi
+    # The benchmark is also a test. A miscompiled input would be timed just as
+    # happily as a correct one, and the number would mean nothing; every input
+    # is written to return 42, and this says so before the clock is read.
+    if ! bin/acc "$SRC" -o "$sd/check.bin" -x >/dev/null 2>&1; then
+        echo "$(basename "$SRC"): the host acc cannot compile it" >&2
+        status=1; continue
+    fi
+    test/agon.sh "$sd/check.bin" >/dev/null 2>&1; v=$?
+    if [ "$v" -ne 42 ] && [ "$v" -ne 77 ]; then
+        echo "$(basename "$SRC"): returns $v, not 42 -- not timing a miscompile" >&2
+        status=1; continue
+    fi
+    rm -f "$sd/check.bin"
 
-total=$(printf '%s\n' "$times" | head -n "$RUNS" | awk '{t+=$1} END {print t}')
-printf '%-16s %2d runs  %d.%02d s total  %d.%03d s each\n' \
-    "$(basename "$ACC")" "$RUNS" \
-    $((total / 100)) $((total % 100)) \
-    $((total / RUNS / 100)) $((total * 10 / RUNS % 1000))
+    cp "$SRC" "$sd/in.c"
+
+    # One compile more than is read. Halting the machine drops whatever the
+    # console still has in flight, which is reliably the last line; the spare
+    # one flushes the ones that count. Only the first RUNS are the measurement.
+    : > "$sd/autoexec.txt"
+    for _ in $(seq $((RUNS + 1))); do printf 'acc in.c -o out.bin\r\n' >> "$sd/autoexec.txt"; done
+    printf 'stop\r\n' >> "$sd/autoexec.txt"
+
+    out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-600} emu_run "$sd" -z)
+
+    times=$(printf '%s' "$out" | sed -n 's/.*Done in \([0-9]*\)\.\([0-9][0-9]\) seconds.*/\1\2/p')
+    n=$(printf '%s\n' "$times" | grep -c .)
+    if [ "$n" -lt "$RUNS" ]; then
+        echo "$(basename "$SRC"): only $n of $RUNS runs reported" >&2
+        printf '%s\n' "$out" | grep -i error >&2
+        status=1; continue
+    fi
+
+    total=$(printf '%s\n' "$times" | head -n "$RUNS" | awk '{t+=$1} END {print t}')
+    total_all=$((total_all + total))
+    printf '%-16s %-14s %2d runs  %d.%02d s  %d.%03d s each\n' \
+        "$(basename "$ACC")" "$(basename "$SRC")" "$RUNS" \
+        $((total / 100)) $((total % 100)) \
+        $((total / RUNS / 100)) $((total * 10 / RUNS % 1000))
+done
+
+printf '%-16s %-14s %2d runs  %d.%02d s\n' \
+    "$(basename "$ACC")" "(all)" "$RUNS" $((total_all / 100)) $((total_all % 100))
+
+exit $status
