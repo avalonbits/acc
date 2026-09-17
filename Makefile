@@ -12,7 +12,7 @@ CC      ?= cc
 CFLAGS  ?= -O2 -g
 WARN     = -Wall -Wextra -Wno-unused-parameter
 SRC      = src/lex.c src/sym.c src/gen.c src/out.c src/parse.c
-HDR      = src/acc.h src/timing.h
+HDR      = src/acc.h src/timing.h src/ctype.h
 
 # -fsigned-char because char is signed on the eZ80, so the host build should
 # read a source file the same way the target build does.
@@ -52,6 +52,8 @@ unit: | $(BIN)
 	@$(BIN)/test_timing
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -DACC_HASH_STATS -o $(BIN)/test_hash test/test_hash.c src/lex.c
 	@$(BIN)/test_hash
+	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_ctype test/test_ctype.c
+	@$(BIN)/test_ctype
 
 clean:
 	$(RM) -r $(BIN)

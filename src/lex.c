@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "acc.h"
+#include "ctype.h"
 
 /* ------------------------------------------------------------------ */
 /* the name arena                                                      */
@@ -241,11 +242,6 @@ void lex_close(void)
 
 const char *lex_path(void) { return src_path; }
 int lex_line(void)         { return line; }
-
-static int is_space(int c)  { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
-static int is_digit(int c)  { return c >= '0' && c <= '9'; }
-static int is_alpha(int c)  { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
-static int is_alnum(int c)  { return is_alpha(c) || is_digit(c); }
 
 static void skip_space(void)
 {
