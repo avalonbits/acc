@@ -56,10 +56,25 @@ static int     nsyms, nglobals, cap;
  * to do with the result.
  *
  * Entries are never removed. File scope does not end. */
-/* Two columns of one table: the name a slot holds, and the symbol it maps to.
- * An empty slot has NAME_NONE in index_name. */
-static NameRef *index_name;
-static int     *index_sym;
+/* One entry per slot, eight bytes wide. Two things about that.
+ *
+ * It is one array rather than two columns because a probe reads both halves
+ * of an entry, and two arrays mean two addresses to work out where one does.
+ *
+ * It is eight bytes rather than six because turning a slot number into an
+ * address costs a helper call either way on this target, and the only choice
+ * is which: six bytes is `call __imulu` and eight is `call __ishl`, which is
+ * cheaper. The two spare bytes are per slot in a table that is twice the
+ * number of functions in the program.
+ *
+ * An empty slot has NAME_NONE in name. */
+typedef struct {
+    NameRef       name;
+    int           sym;
+    unsigned char pad[2];
+} SymSlot;
+
+static SymSlot *index_table;
 static unsigned index_cap, index_count;
 
 #ifdef ACC_HASH_STATS
@@ -71,33 +86,29 @@ unsigned long sym_probes;
 
 static void index_alloc(unsigned n)
 {
-    index_name = calloc(n, sizeof *index_name);
-    index_sym = malloc(n * sizeof *index_sym);
-    if (!index_name || !index_sym)
+    index_table = calloc(n, sizeof *index_table);
+    if (!index_table)
         acc_error("out of memory for the symbol index");
     index_cap = n;
 }
 
 static void index_grow(void)
 {
-    NameRef *old_name = index_name;
-    int     *old_sym = index_sym;
+    SymSlot *old_table = index_table;
     unsigned old_cap = index_cap, i;
 
     index_alloc(old_cap * 2);
     for (i = 0; i < old_cap; i++) {
         unsigned slot;
 
-        if (old_name[i] == NAME_NONE)
+        if (old_table[i].name == NAME_NONE)
             continue;
-        slot = old_name[i] & (index_cap - 1);
-        while (index_name[slot] != NAME_NONE)
+        slot = old_table[i].name & (index_cap - 1);
+        while (index_table[slot].name != NAME_NONE)
             slot = (slot + 1) & (index_cap - 1);
-        index_name[slot] = old_name[i];
-        index_sym[slot] = old_sym[i];
+        index_table[slot] = old_table[i];
     }
-    free(old_name);
-    free(old_sym);
+    free(old_table);
 }
 
 static void index_add(NameRef name, int sym)
@@ -109,10 +120,10 @@ static void index_add(NameRef name, int sym)
         index_grow();
 
     slot = name & (index_cap - 1);
-    while (index_name[slot] != NAME_NONE)
+    while (index_table[slot].name != NAME_NONE)
         slot = (slot + 1) & (index_cap - 1);
-    index_name[slot] = name;
-    index_sym[slot] = sym;
+    index_table[slot].name = name;
+    index_table[slot].sym = sym;
     index_count++;
 }
 
@@ -121,9 +132,9 @@ static int index_find(NameRef name)
     unsigned slot = name & (index_cap - 1);
 
     COUNT_PROBE();
-    while (index_name[slot] != NAME_NONE) {
-        if (index_name[slot] == name)
-            return index_sym[slot];
+    while (index_table[slot].name != NAME_NONE) {
+        if (index_table[slot].name == name)
+            return index_table[slot].sym;
         slot = (slot + 1) & (index_cap - 1);
         COUNT_PROBE();
     }

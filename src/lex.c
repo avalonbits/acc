@@ -29,7 +29,19 @@ static size_t names_len, names_cap;
  * walks forward. Sized as a power of two so the modulo is a mask, and grown by
  * doubling so the transient peak stays near 1.5x rather than 2x -- the
  * difference matters on a machine with no virtual memory. */
-static NameRef *buckets;
+/* A slot is four bytes and not three, for the reason the symbol index is
+ * eight and not six: turning a slot number into an address costs a helper
+ * call whatever the width, and a three-byte element buys `call __imulu`
+ * where a four-byte one buys the cheaper `call __ishl`. The probe runs for
+ * every identifier in the program, which is what the compiler does most.
+ *
+ * An empty slot holds NAME_NONE. */
+typedef struct {
+    NameRef       ref;
+    unsigned char pad;
+} Bucket;
+
+static Bucket  *buckets;
 static unsigned nbuckets, nnames;
 
 #ifdef ACC_HASH_STATS
@@ -126,21 +138,21 @@ static void names_grow(size_t need)
 
 static void buckets_rehash(unsigned newn)
 {
-    NameRef *fresh = calloc(newn, sizeof *fresh);
+    Bucket *fresh = calloc(newn, sizeof *fresh);
     unsigned i;
 
     if (!fresh)
         acc_error("out of memory for the name table");
     for (i = 0; i < nbuckets; i++) {
-        NameRef ref = buckets[i];
+        NameRef ref = buckets[i].ref;
         unsigned slot;
 
         if (ref == NAME_NONE)
             continue;
         slot = name_hash(names + ref, (int) strlen(names + ref)) & (newn - 1);
-        while (fresh[slot] != NAME_NONE)
+        while (fresh[slot].ref != NAME_NONE)
             slot = (slot + 1) & (newn - 1);
-        fresh[slot] = ref;
+        fresh[slot].ref = ref;
     }
     free(buckets);
     buckets = fresh;
@@ -169,7 +181,7 @@ NameRef name_intern(const char *text, int len)
 
     slot = name_hash(text, len) & (nbuckets - 1);
     PROBE();
-    while ((ref = buckets[slot]) != NAME_NONE) {
+    while ((ref = buckets[slot].ref) != NAME_NONE) {
         /* Compare, then check the terminator, rather than measure first.
          * strlen walks the stored name to its end before memcmp walks it
          * again, and it walked it even when the first character already said
@@ -186,7 +198,7 @@ NameRef name_intern(const char *text, int len)
     memcpy(names + names_len, text, len);
     names[names_len + len] = '\0';
     names_len += len + 1;
-    buckets[slot] = ref;
+    buckets[slot].ref = ref;
     nnames++;
 
     return ref;
