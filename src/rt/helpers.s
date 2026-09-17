@@ -1305,3 +1305,418 @@ _acc_rt_ftoi:
 	pop	bc
 	pop	iy
 	ret
+
+; The four bytes at (hl) rewritten as an unsigned key that sorts the same way
+; the float does. Comparing floats is then the long comparison already here,
+; rather than a second four-byte compare that knows about exponents.
+;
+; IEEE-754 was laid out so that the bits of two floats of the same sign
+; already compare as integers -- the exponent sits above the mantissa for
+; exactly that reason. Only the sign spoils it, and only in two ways: a
+; negative float has its top bit set where a positive one does not, and among
+; negatives the order runs backwards. Setting the top bit of a positive and
+; complementing the whole of a negative fixes both.
+;
+; Zero is the case that needs saying out loud. -0.0 and 0.0 are different
+; bytes and the same number, so -0.0 is turned into 0.0 before the transform
+; and the two come out with one key. Without that they would be different
+; keys, and `-0.0 < 0.0` would be true.
+
+	.global _acc_rt_fkey
+
+_acc_rt_fkey:
+	push	iy
+	push	bc
+	push	hl
+	pop	iy
+
+	ld	a, (iy + 0)		; zero, whatever its sign, becomes +0
+	or	a, (iy + 1)
+	or	a, (iy + 2)
+	ld	b, a
+	ld	a, (iy + 3)
+	and	a, 0x7f
+	or	a, b
+	jr	nz, .fkey_signed
+	ld	(iy + 3), 0
+
+.fkey_signed:
+	bit	7, (iy + 3)
+	jr	nz, .fkey_negative
+	set	7, (iy + 3)		; positive: above every negative
+	jr	.fkey_done
+
+.fkey_negative:
+	ld	a, (iy + 0)		; negative: below every positive, and
+	cpl				; in the opposite order to its bits
+	ld	(iy + 0), a
+	ld	a, (iy + 1)
+	cpl
+	ld	(iy + 1), a
+	ld	a, (iy + 2)
+	cpl
+	ld	(iy + 2), a
+	ld	a, (iy + 3)
+	cpl
+	ld	(iy + 3), a
+
+.fkey_done:
+	pop	bc
+	pop	iy
+	ret
+
+; --------------------------------------------------- float add and subtract
+; (hl) = (hl) + (de), and the same less the sign of the right operand.
+;
+; Both significands are unpacked into a thirty-two bit field with the
+; twenty-four bits of the number at the top and eight spare bits below them.
+; Those eight are what makes the result the one IEEE asks for rather than
+; merely close: aligning the smaller operand shifts bits down into them, and
+; the bit that falls off the bottom is kept by OR-ing it back into the lowest
+; one, so that a value that is not exactly half way up cannot pretend to be.
+; Rounding then reads that byte -- above half rounds up, below half truncates,
+; and exactly half goes to the even significand, which is the tie rule that
+; keeps a long run of sums from drifting.
+;
+; The frame, reached through ix:
+;   ix+0..3   the left significand, the number in bits 31..8
+;   ix+4..7   the right, the same way
+;   ix+8      the left exponent          ix+9   the right
+;   ix+10     the left sign in bit 7     ix+11  the right
+
+	.global _acc_rt_fadd
+	.global _acc_rt_fsub
+
+; Unpack the float at (hl) into the four bytes at (iy), the exponent into b and
+; the sign into c. An exponent of zero is a zero or a denormal, and both come
+; out as zero: there are no denormals here.
+.funpack:
+	ld	a, (hl)
+	ld	(iy + 1), a		; mantissa 7..0
+	inc	hl
+	ld	a, (hl)
+	ld	(iy + 2), a		; mantissa 15..8
+	inc	hl
+	ld	a, (hl)
+	and	a, 0x7f
+	or	a, 0x80			; the leading 1, which is not stored
+	ld	(iy + 3), a
+	ld	(iy + 0), 0		; the eight spare bits below the number
+	ld	a, (hl)
+	rlca				; the exponent's low bit
+	and	a, 1
+	ld	b, a
+	inc	hl
+	ld	a, (hl)
+	ld	c, a
+	and	a, 0x7f
+	add	a, a
+	add	a, b
+	ld	b, a			; b = the biased exponent
+	ld	a, c
+	and	a, 0x80
+	ld	c, a			; c = the sign, in place
+	dec	hl
+	dec	hl
+	dec	hl
+
+	ld	a, b			; exponent zero: no leading 1 after all
+	or	a, a
+	ret	nz
+	ld	(iy + 0), 0
+	ld	(iy + 1), 0
+	ld	(iy + 2), 0
+	ld	(iy + 3), 0
+	ret
+
+_acc_rt_fsub:
+	push	hl			; the same as adding the right operand
+	push	de			; with its sign turned over, and the
+	push	bc			; operand is the caller's scratch slot,
+	ex	de, hl			; dead once the operator has been applied
+	ld	bc, 3
+	add	hl, bc
+	ld	a, (hl)
+	xor	a, 0x80
+	ld	(hl), a
+	pop	bc
+	pop	de
+	pop	hl
+	; fall through
+
+_acc_rt_fadd:
+	push	ix
+	push	iy
+	push	bc
+	push	de
+	push	hl
+
+	ld	ix, -16
+	add	ix, sp
+	ld	sp, ix
+	ld	(ix + 12), hl		; the destination, which is also the left
+					; operand, kept where clobbering hl
+					; cannot lose it
+
+	push	ix
+	pop	iy
+	call	.funpack
+	ld	(ix + 8), b
+	ld	(ix + 10), c
+
+	push	ix
+	pop	iy
+	ld	bc, 4
+	add	iy, bc
+	ex	de, hl			; the right operand's address
+	call	.funpack
+	ex	de, hl
+	ld	(ix + 9), b
+	ld	(ix + 11), c
+
+	; The larger exponent has to be the left one, so that aligning only
+	; ever shifts the right operand down.
+	ld	a, (ix + 8)
+	cp	a, (ix + 9)
+	jr	nc, .fadd_aligned_order
+	call	.fadd_swap
+.fadd_aligned_order:
+	ld	a, (ix + 8)
+	cp	a, (ix + 9)
+	jr	nz, .fadd_align
+	; Equal exponents: the larger significand has to be on the left too,
+	; because a subtract here must not borrow past the top.
+	ld	a, (ix + 3)
+	cp	a, (ix + 7)
+	jr	c, .fadd_need_swap
+	jr	nz, .fadd_align
+	ld	a, (ix + 2)
+	cp	a, (ix + 6)
+	jr	c, .fadd_need_swap
+	jr	nz, .fadd_align
+	ld	a, (ix + 1)
+	cp	a, (ix + 5)
+	jr	c, .fadd_need_swap
+	jr	.fadd_align
+.fadd_need_swap:
+	call	.fadd_swap
+
+.fadd_align:
+	ld	a, (ix + 8)		; how far the right operand is down
+	sub	a, (ix + 9)
+	jr	z, .fadd_combine
+	cp	a, 33			; further than the field is wide: all
+	jr	c, .fadd_shift_loop	; that is left of it is a sticky bit
+	ld	a, (ix + 4)
+	or	a, (ix + 5)
+	or	a, (ix + 6)
+	or	a, (ix + 7)
+	ld	(ix + 4), 0
+	ld	(ix + 5), 0
+	ld	(ix + 6), 0
+	ld	(ix + 7), 0
+	jr	z, .fadd_combine
+	ld	(ix + 4), 1
+	jp	.fadd_combine
+
+.fadd_shift_loop:
+	ld	b, a
+.fadd_shift:
+	srl	(ix + 7)
+	rr	(ix + 6)
+	rr	(ix + 5)
+	rr	(ix + 4)
+	jr	nc, .fadd_shift_next
+	set	0, (ix + 4)		; what falls off the bottom is not lost,
+					; it is remembered in the lowest bit
+.fadd_shift_next:
+	djnz	.fadd_shift
+
+.fadd_combine:
+	ld	a, (ix + 10)		; like signs add, unlike signs subtract
+	xor	a, (ix + 11)
+	jp	m, .fadd_subtract
+
+	ld	a, (ix + 0)
+	add	a, (ix + 4)
+	ld	(ix + 0), a
+	ld	a, (ix + 1)
+	adc	a, (ix + 5)
+	ld	(ix + 1), a
+	ld	a, (ix + 2)
+	adc	a, (ix + 6)
+	ld	(ix + 2), a
+	ld	a, (ix + 3)
+	adc	a, (ix + 7)
+	ld	(ix + 3), a
+	jr	nc, .fadd_normalise
+	; carried out of the top: one place right, and one more exponent
+	rr	(ix + 3)		; the carry is the bit coming back in
+	rr	(ix + 2)
+	rr	(ix + 1)
+	rr	(ix + 0)
+	jr	nc, .fadd_carry_exp
+	set	0, (ix + 0)
+.fadd_carry_exp:
+	inc	(ix + 8)
+	jp	z, .fadd_overflow
+	jp	.fadd_round
+
+.fadd_subtract:
+	ld	a, (ix + 0)
+	sub	a, (ix + 4)
+	ld	(ix + 0), a
+	ld	a, (ix + 1)
+	sbc	a, (ix + 5)
+	ld	(ix + 1), a
+	ld	a, (ix + 2)
+	sbc	a, (ix + 6)
+	ld	(ix + 2), a
+	ld	a, (ix + 3)
+	sbc	a, (ix + 7)
+	ld	(ix + 3), a
+
+.fadd_normalise:
+	ld	a, (ix + 0)		; an exact cancellation is +0, which is
+	or	a, (ix + 1)		; what IEEE asks for in this rounding
+	or	a, (ix + 2)		; mode
+	or	a, (ix + 3)
+	jp	z, .fadd_zero
+.fadd_norm_loop:
+	bit	7, (ix + 3)
+	jr	nz, .fadd_round
+	sla	(ix + 0)
+	rl	(ix + 1)
+	rl	(ix + 2)
+	rl	(ix + 3)
+	dec	(ix + 8)
+	jr	nz, .fadd_norm_loop
+	jp	.fadd_zero		; shifted down past the smallest exponent
+
+.fadd_round:
+	ld	a, (ix + 0)		; the eight bits below the number
+	cp	a, 0x80
+	jr	c, .fadd_pack		; below half: truncate
+	jr	nz, .fadd_round_up	; above half: up
+	bit	0, (ix + 1)		; exactly half: to the even significand
+	jr	z, .fadd_pack
+.fadd_round_up:
+	ld	a, (ix + 1)
+	add	a, 1
+	ld	(ix + 1), a
+	ld	a, (ix + 2)
+	adc	a, 0
+	ld	(ix + 2), a
+	ld	a, (ix + 3)
+	adc	a, 0
+	ld	(ix + 3), a
+	jr	nc, .fadd_pack
+	; rounding carried out of the top, so the number is a power of two
+	ld	(ix + 3), 0x80
+	inc	(ix + 8)
+	jp	z, .fadd_overflow
+
+.fadd_pack:
+	ld	a, (ix + 8)
+	or	a, a
+	jp	z, .fadd_zero		; no exponent left to write it with
+	cp	a, 255
+	jp	nc, .fadd_overflow
+
+	ld	hl, (ix + 12)
+	ld	a, (ix + 1)
+	ld	(hl), a
+	inc	hl
+	ld	a, (ix + 2)
+	ld	(hl), a
+	inc	hl
+	ld	a, (ix + 3)
+	and	a, 0x7f			; the leading 1 goes back to being implied
+	ld	b, a
+	ld	a, (ix + 8)
+	rrca				; the exponent's low bit sits above the
+	and	a, 0x80			; mantissa
+	or	a, b
+	ld	(hl), a
+	inc	hl
+	ld	a, (ix + 8)
+	srl	a
+	or	a, (ix + 10)		; and the sign above the exponent
+	ld	(hl), a
+	jp	.fadd_done
+
+.fadd_overflow:
+	; Nothing here makes an infinity, so the largest finite float is the
+	; answer. It is wrong, and it is wrong by less than an infinity would
+	; be for a program that goes on to compute with it.
+	ld	hl, (ix + 12)
+	ld	(hl), 0xff
+	inc	hl
+	ld	(hl), 0xff
+	inc	hl
+	ld	(hl), 0x7f
+	inc	hl
+	ld	a, (ix + 10)
+	or	a, 0x7f
+	ld	(hl), a
+	jp	.fadd_done
+
+.fadd_zero:
+	ld	hl, (ix + 12)
+	xor	a, a
+	ld	(hl), a
+	inc	hl
+	ld	(hl), a
+	inc	hl
+	ld	(hl), a
+	inc	hl
+	ld	(hl), a
+
+.fadd_done:
+	ld	hl, 16
+	add	hl, sp
+	ld	sp, hl
+	pop	hl
+	pop	de
+	pop	bc
+	pop	iy
+	pop	ix
+	ret
+
+; The two operands exchanged: the significands, which are four bytes four
+; apart, and then the exponents and the signs, which are one byte one apart.
+; Walking six pairs four apart instead was the same loop written once for
+; three groups that are not laid out alike, and it swapped the right
+; significand with the left exponent.
+.fadd_swap:
+	push	bc
+	push	iy
+	push	ix
+	pop	iy
+	ld	b, 4
+.fadd_swap_sig:
+	ld	a, (iy + 0)
+	ld	c, a
+	ld	a, (iy + 4)
+	ld	(iy + 0), a
+	ld	a, c
+	ld	(iy + 4), a
+	inc	iy
+	djnz	.fadd_swap_sig
+
+	ld	a, (ix + 8)
+	ld	c, a
+	ld	a, (ix + 9)
+	ld	(ix + 8), a
+	ld	a, c
+	ld	(ix + 9), a
+
+	ld	a, (ix + 10)
+	ld	c, a
+	ld	a, (ix + 11)
+	ld	(ix + 10), a
+	ld	a, c
+	ld	(ix + 11), a
+	pop	iy
+	pop	bc
+	ret

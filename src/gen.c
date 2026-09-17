@@ -1465,8 +1465,26 @@ static int long_scratch(void)
     return spill_slot_of(ACC_LONG_SIZE);
 }
 
+/* Which routine applies an operator to two four-byte values. A float has its
+ * own for everything, because the bytes mean something different: the integer
+ * add walks them with a carry, which on a float is arithmetic on the bit
+ * pattern and not on the number -- 3.0 + 1.0 done that way comes out as a
+ * value with every exponent bit set. */
+static int float_helper(int op)
+{
+    switch (op) {
+    case TK_PLUS:  return RT_FADD;
+    case TK_MINUS: return RT_FSUB;
+    }
+
+    return -1;
+}
+
 static int long_helper(int op, Type type)
 {
+    if (type_float(type))
+        return float_helper(op);
+
     switch (op) {
     case TK_PLUS:  return RT_LADD;
     case TK_MINUS: return RT_LSUB;
@@ -1517,14 +1535,6 @@ static void vbinop_long(int op, Type result)
     int which;
     int left, right;
 
-
-    /* The four-byte routines are integer ones: they walk the bytes with a
-     * carry, which is not what the exponent and mantissa of a float want. A
-     * float would come out of them as arithmetic on its bit pattern, which is
-     * silently wrong, so it is refused until there is a routine for it. */
-    if (type_float(result))
-        acc_error_at(tok_line, "floating-point arithmetic is not implemented yet");
-
     /* Anything else live in a register has to come out first. The two lea
      * instructions below load HL and DE with addresses, behind the register
      * allocator's back -- it is not told, because these are not values it
@@ -1536,8 +1546,8 @@ static void vbinop_long(int op, Type result)
 
     which = long_helper(op, result);
     if (which < 0)
-        acc_error("the operator %s is not implemented for long yet",
-                  tok_spelling(op));
+        acc_error_at(tok_line, "the operator %s is not implemented for %s yet",
+                     tok_spelling(op), type_float(result) ? "float" : "long");
 
     /* The right operand first, because building the left one may need HL and
      * the right may still be an expression on the stack. */
@@ -1558,12 +1568,17 @@ static void vbinop_long(int op, Type result)
     vpush(VAL_LOCAL, result, left);
 }
 
-static void vcmp_long(int op, Type operand)
+/* Comparing two four-byte values, whether they are longs or floats.
+ *
+ * A float goes through fkey first, which rewrites it as the unsigned integer
+ * that sorts the way it does. After that it is the same comparison as any
+ * other four bytes, which is the whole reason for doing it that way: the
+ * ordering of floats is not a second four-byte compare that knows about
+ * exponents, it is this one with the operands prepared. */
+static void vcmp_wide(int op, Type operand)
 {
+    int floating = type_float(operand);
     int left, right;
-
-    if (type_float(operand))
-        acc_error_at(tok_line, "comparing floating-point values is not implemented yet");
 
     /* Anything else live in a register has to come out first. The two lea
      * instructions below load HL and DE with addresses, behind the register
@@ -1585,6 +1600,13 @@ static void vcmp_long(int op, Type operand)
     need_disp(left);
     need_disp(right);
 
+    if (floating) {
+        lea_rr_ix(R_HL, left);
+        rt_call(RT_FKEY);
+        lea_rr_ix(R_HL, right);
+        rt_call(RT_FKEY);
+    }
+
     /* `a > b` is `b < a` and `a <= b` is `b >= a`, done by which address goes
      * in which register rather than by a second routine. */
     if (op == TK_GT || op == TK_LE) {
@@ -1605,7 +1627,10 @@ static void vcmp_long(int op, Type operand)
          * whole width, so the same branch sequence the 24-bit comparisons use
          * reads them unchanged. */
         rt_call(RT_LCMPORD);
-        if (type_unsigned(operand))
+
+        /* A key is unsigned by construction: that is what makes the negative
+         * floats sort below the positive ones. */
+        if (floating || type_unsigned(operand))
             cmp_unsigned(op == TK_LT);
         else
             cmp_signed(op == TK_LT);
@@ -2128,7 +2153,7 @@ void vapply(int op, Type narrow)
             wide = TY_LONG;
 
         if (is_comparison(op))
-            vcmp_long(op, wide);
+            vcmp_wide(op, wide);
         else
             vbinop_long(op, wide);
 
