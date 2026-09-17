@@ -86,10 +86,17 @@ done
 # Globbing off while this runs, or `*` matches the working directory and the
 # note lists the contents of the repo.
 set -f
+# Searched with the comments stripped. Every input opens with one, so a bare
+# `*` or `/` matched the `/*` of a comment and every input looked to use both.
+for src in $SRCS; do
+    sed 's|//.*||' "$src" | tr '\n' '\001' | sed 's=/\*[^\*]*\*\+\([^/\*][^\*]*\*\+\)*/= =g' \
+        | tr '\001' '\n' >> "$tmp/code.c"
+done
+
 check_op() {
     printf '%s\n' "$2" > "$tmp/op.c"
     bin/acc "$tmp/op.c" -o "$tmp/op.bin" -x >/dev/null 2>&1 || return 0
-    grep -qF -- "$1" $SRCS || missing="$missing $1"
+    grep -qF -- "$1" "$tmp/code.c" || missing="$missing $1"
 }
 for op in + - '*' / % '&' '|' '^' '<<' '>>' '<' '>' '<=' '>=' '==' '!='; do
     check_op "$op" "int main(void) { int a = 1; int b = 2; return a $op b; }"
