@@ -79,6 +79,8 @@ static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
 static void vunary_long(int which, Type type);
+static void convert_int_to_float(void);
+static void convert_float_to_int(Type to);
 static void force_into(Value *target, int want);
 static int  needs_helper(int op);
 static void rt_call(int which);
@@ -327,6 +329,30 @@ void vconvert(Type to)
      * here on its way to a parameter. */
     if (top->type == to)
         return;
+
+    /* Between a float and an integer is a conversion of the value, not of
+     * the label on it. Both directions go through an int, so a narrow type
+     * widens first and a long is still refused. */
+    if (type_float(to) != type_float(top->type)
+        && !(top->kind == VAL_CONST && top->val == 0)) {
+        if (type_float(to)) {
+            if (type_wide(top->type))
+                acc_error_at(tok_line, "converting a long to a floating-point "
+                                       "type is not implemented yet");
+            convert_int_to_float();
+            if (to != TY_FLOAT)
+                (vsp - 1)->type = to;
+
+            return;
+        }
+
+        if (type_wide(to))
+            acc_error_at(tok_line, "converting a floating-point type to a long "
+                                   "is not implemented yet");
+        convert_float_to_int(to);
+
+        return;
+    }
 
     check_no_float_mix(to, top);
 
@@ -815,7 +841,13 @@ void vstore_local(int offset, Type type)
 {
     int reg;
 
-    check_no_float_mix(type, vsp - 1);
+    /* An assignment converts the value to the type of the object, and
+     * between a float and an integer that is arithmetic rather than a
+     * relabelling. vconvert is where it lives; this used to refuse instead,
+     * which is why a float could be stored and read back but never made from
+     * anything. */
+    if (type_float(type) != type_float((vsp - 1)->type))
+        vconvert(type);
 
     if (type_wide(type)) {
         need_disp(offset);
@@ -856,10 +888,26 @@ void vneg(void)
     Value *top = vsp - 1;
     int right;
 
+    if (type_float(top->type)) {
+        /* Negating a float is its sign bit flipped and nothing else -- no
+         * routine, and correct for zero and for every other value alike. */
+        int slot = long_scratch();
+
+        save_regs_below(1);
+        materialise_long(slot, top->type);
+        vdrop();
+
+        need_disp(slot + ACC_LONG_SIZE - 1);
+        ld_a_ix(slot + ACC_LONG_SIZE - 1);
+        out_byte(0xee);                 /* xor a, 0x80 */
+        out_byte(0x80);
+        ld_ix_a(slot + ACC_LONG_SIZE - 1);
+        vpush(VAL_LOCAL, top->type, slot);
+
+        return;
+    }
+
     if (type_wide(top->type)) {
-        if (type_float(top->type))
-            acc_error_at(tok_line,
-                         "floating-point arithmetic is not implemented yet");
         vunary_long(RT_LNEG, top->type);
 
         return;
@@ -892,10 +940,13 @@ void vnot(void)
     /* A long has its own routine rather than going round through -x - 1:
      * that composition would need a long subtract as well, and complementing
      * four bytes is four instructions. */
+    /* ~ takes an integer. C makes a float operand a constraint violation
+     * rather than something to define, so it is named rather than refused as
+     * unfinished work. */
+    if (type_float(top->type))
+        acc_error_at(tok_line, "'~' takes an integer, not a floating-point value");
+
     if (type_wide(top->type)) {
-        if (type_float(top->type))
-            acc_error_at(tok_line,
-                         "floating-point arithmetic is not implemented yet");
         vunary_long(RT_LNOT, top->type);
 
         return;
@@ -1278,6 +1329,64 @@ static void store_int_as_long(int disp, int is_unsigned)
         out_byte(0x9f);                 /* sbc a, a: 0 or 0xff */
     }
     ld_ix_a(disp + ACC_INT_SIZE);
+}
+
+/* An integer becoming a float, and a float becoming an integer. The bytes
+ * mean different things, so this is arithmetic and not a relabelling.
+ *
+ * Both go through an int: the narrow types widen to one on the way in, and a
+ * long is not handled here because thirty-two bits do not fit in a float's
+ * twenty-four of significand without rounding, and there is no routine for
+ * that rounding yet.
+ *
+ * save_regs_below(1) for the reason the long operators have it: the lea
+ * loads a register with an address behind the allocator's back. */
+static void convert_int_to_float(void)
+{
+    Value *top = vsp - 1;
+    int unsign = type_unsigned(top->type) && type_size(top->type) >= ACC_INT_SIZE;
+    int slot;
+
+    save_regs_below(1);
+    force_into(top, R_HL);
+
+    slot = long_scratch();
+    need_disp(slot);
+    need_disp(slot + ACC_LONG_SIZE - 1);
+    lea_rr_ix(R_DE, slot);
+    rt_call(unsign ? RT_UITOF : RT_ITOF);
+    vdrop();
+    vpush(VAL_LOCAL, TY_FLOAT, slot);
+}
+
+static void convert_float_to_int(Type to)
+{
+    Value *top = vsp - 1;
+    int slot;
+
+    save_regs_below(1);
+
+    /* The routine takes an address, so a float that is not already in the
+     * frame has to be put there. Every float is, as it happens -- four bytes
+     * do not fit in a register -- but materialise_long is what says so. */
+    slot = long_scratch();
+    materialise_long(slot, TY_FLOAT);
+    vdrop();
+
+    need_disp(slot);
+    need_disp(slot + ACC_LONG_SIZE - 1);
+    lea_rr_ix(R_HL, slot);
+    rt_call(RT_FTOI);
+    vpush_reg(R_HL);
+    (vsp - 1)->type = TY_INT;
+
+    /* And then down to whatever narrow type was asked for, which is the
+     * ordinary integer conversion and not this one. */
+    if (type_size(to) < ACC_INT_SIZE)
+        vconvert(to);
+    else
+        (vsp - 1)->type = to;
+    (void) top;
 }
 
 /* The bytes of a float and of an integer mean different things, so moving a

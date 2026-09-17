@@ -1082,3 +1082,226 @@ _acc_rt_lnot:
 	ld	(iy + 3), a
 	pop	iy
 	ret
+
+; --------------------------------------------------- float
+; IEEE-754 single precision, which is what agondev's float and double both
+; are: a sign bit, eight exponent bits biased by 127, and twenty-three
+; mantissa bits below a leading 1 that is not stored. Little endian, so the
+; four bytes in memory are
+;
+;   b0  mantissa 7..0
+;   b1  mantissa 15..8
+;   b2  exponent bit 0 in bit 7, mantissa 22..16 below it
+;   b3  sign in bit 7, exponent 7..1 below it
+;
+; The same four bytes agondev uses, which is the point: the two compilers
+; have to be able to call each other.
+;
+; What is here covers the numbers a program computes with. Denormals are
+; flushed to zero rather than represented, and nothing generates an infinity
+; or a NaN -- an overflow saturates and an underflow goes to zero. That is
+; short of C99 and is written down as such; it is not a silent divergence.
+
+	.global _acc_rt_itof
+	.global _acc_rt_uitof
+	.global _acc_rt_ftoi
+
+; hl = the int, de -> the four bytes to write.
+;
+; Every int on this machine converts exactly. A float keeps twenty-four bits
+; of significand counting the one it does not store, and an int here is
+; twenty-four bits wide, so there is never anything to round away -- which is
+; why this is not the routine a long goes through.
+_acc_rt_itof:
+	push	iy
+	push	bc
+	push	hl			; saved
+	push	hl			; the working copy, whose bytes need
+	ld	iy, 0			; addresses the upper one can be
+	add	iy, sp			; reached through
+
+	ld	b, 0			; b = the sign, already in place
+	bit	7, (iy + 2)
+	jr	z, .itof_magnitude
+	ld	b, 0x80
+	ld	a, 0
+	sub	a, (iy + 0)
+	ld	(iy + 0), a
+	ld	a, 0			; ld leaves the borrow alone
+	sbc	a, (iy + 1)
+	ld	(iy + 1), a
+	ld	a, 0
+	sbc	a, (iy + 2)
+	ld	(iy + 2), a
+	jr	.itof_magnitude
+
+_acc_rt_uitof:
+	push	iy
+	push	bc
+	push	hl
+	push	hl
+	ld	iy, 0
+	add	iy, sp
+	ld	b, 0			; never negative, so no sign and no
+					; magnitude to take
+
+.itof_magnitude:
+	ld	a, (iy + 0)		; zero is the one value with no leading
+	or	a, (iy + 1)		; 1 to find
+	or	a, (iy + 2)
+	jr	nz, .itof_normalise
+
+	xor	a, a
+	ld	(de), a
+	inc	de
+	ld	(de), a
+	inc	de
+	ld	(de), a
+	inc	de
+	ld	(de), a
+	dec	de
+	dec	de
+	dec	de
+	jr	.itof_done
+
+.itof_normalise:
+	ld	c, 150			; 127 + 23: the exponent when the top
+					; bit is already bit 23
+.itof_shift:
+	bit	7, (iy + 2)
+	jr	nz, .itof_pack
+	sla	(iy + 0)
+	rl	(iy + 1)
+	rl	(iy + 2)
+	dec	c
+	jr	.itof_shift
+
+.itof_pack:
+	res	7, (iy + 2)		; the leading 1 is implied, not stored
+	bit	0, c			; and the exponent's low bit takes the
+	jr	z, .itof_exp_even	; place it leaves
+	set	7, (iy + 2)
+.itof_exp_even:
+	ld	a, c
+	srl	a
+	or	a, b			; the sign goes above the exponent
+	ld	c, a
+
+	ld	a, (iy + 0)
+	ld	(de), a
+	inc	de
+	ld	a, (iy + 1)
+	ld	(de), a
+	inc	de
+	ld	a, (iy + 2)
+	ld	(de), a
+	inc	de
+	ld	a, c
+	ld	(de), a
+	dec	de
+	dec	de
+	dec	de
+
+.itof_done:
+	pop	bc			; the working copy, discarded
+	pop	hl
+	pop	bc
+	pop	iy
+	ret
+
+; hl -> the float; the int comes back in hl, truncated towards zero as C says.
+; A value too large for an int is undefined in C and is left to wrap.
+_acc_rt_ftoi:
+	push	iy
+	push	bc
+	push	de
+	push	hl
+	pop	iy			; iy -> the float
+
+	ld	a, (iy + 3)		; the exponent, which is split across
+	and	a, 0x7f			; two bytes with the sign above it
+	add	a, a
+	ld	b, a
+	ld	a, (iy + 2)
+	rlca
+	and	a, 1
+	add	a, b
+	ld	b, a			; b = the biased exponent
+
+	ld	c, 0			; c = the sign
+	bit	7, (iy + 3)
+	jr	z, .ftoi_significand
+	ld	c, 1
+
+.ftoi_significand:
+	ld	e, (iy + 0)		; the stored mantissa with its leading
+	ld	d, (iy + 1)		; 1 put back
+	ld	a, (iy + 2)
+	and	a, 0x7f
+	or	a, 0x80
+
+	ld	hl, -3			; somewhere the three bytes can be
+	add	hl, sp			; shifted as one value
+	ld	sp, hl
+	push	hl
+	pop	iy
+	ld	(iy + 0), e
+	ld	(iy + 1), d
+	ld	(iy + 2), a
+
+	ld	a, b
+	cp	a, 127			; below 1, so the integer part is 0
+	jr	c, .ftoi_zero
+	sub	a, 127			; how far the point has moved right
+	ld	b, a
+	ld	a, 23
+	sub	a, b
+	jr	c, .ftoi_left		; past the top of the significand
+
+	or	a, a			; already an integer when a is zero
+	jr	z, .ftoi_signed
+	ld	b, a
+.ftoi_right:
+	srl	(iy + 2)
+	rr	(iy + 1)
+	rr	(iy + 0)
+	djnz	.ftoi_right
+	jr	.ftoi_signed
+
+.ftoi_left:
+	neg				; a was 23 - shift and went negative
+	ld	b, a
+.ftoi_left_loop:
+	sla	(iy + 0)
+	rl	(iy + 1)
+	rl	(iy + 2)
+	djnz	.ftoi_left_loop
+	jr	.ftoi_signed
+
+.ftoi_zero:
+	ld	(iy + 0), 0
+	ld	(iy + 1), 0
+	ld	(iy + 2), 0
+
+.ftoi_signed:
+	bit	0, c
+	jr	z, .ftoi_out
+	ld	a, 0
+	sub	a, (iy + 0)
+	ld	(iy + 0), a
+	ld	a, 0
+	sbc	a, (iy + 1)
+	ld	(iy + 1), a
+	ld	a, 0
+	sbc	a, (iy + 2)
+	ld	(iy + 2), a
+
+.ftoi_out:
+	ld	hl, (iy + 0)
+	ld	iy, 3			; give the three bytes back
+	add	iy, sp
+	ld	sp, iy
+	pop	de
+	pop	bc
+	pop	iy
+	ret
