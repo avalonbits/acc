@@ -33,6 +33,7 @@
 # undef __attribute__
 #endif
 #include <string.h>
+#include <limits.h>
 #include <errno.h>
 #include <math.h>
 #include <fcntl.h>
@@ -641,8 +642,12 @@ typedef struct Section {
     TCCState *s1;
     int sh_name;             /* elf section name (only used during output) */
     int sh_num;              /* elf section number */
-    int sh_type;             /* elf section type */
-    int sh_flags;            /* elf section flags */
+    /* ElfW(Word), not int: a section type can be SHT_GNU_HASH (0x6ffffff6)
+       and a flag word can be SHF_PRIVATE (0x80000000), neither of which fits
+       in this target's 24-bit int. Held in one, every comparison against them
+       is always false and the sections sort into the wrong order. */
+    ElfW(Word) sh_type;      /* elf section type */
+    ElfW(Word) sh_flags;     /* elf section flags */
     int sh_info;             /* elf section info */
     int sh_addralign;        /* elf section alignment */
     int sh_entsize;          /* elf entry size */
@@ -1172,13 +1177,23 @@ struct filespec {
 /* currently unused: 0x000[248]0000  */
 
 #define VT_STRUCT_SHIFT 20     /* shift for bitfield shift values (32 - 2*6) */
-#define VT_STRUCT_MASK (((1U << (6+6)) - 1) << VT_STRUCT_SHIFT | VT_BITFIELD)
-#define BIT_POS(t) (((t) >> VT_STRUCT_SHIFT) & 0x3f)
-#define BIT_SIZE(t) (((t) >> (VT_STRUCT_SHIFT + 6)) & 0x3f)
 
-#define VT_UNION    (1 << VT_STRUCT_SHIFT | VT_STRUCT)
-#define VT_ENUM     (2 << VT_STRUCT_SHIFT) /* integral type is an enum really */
-#define VT_ENUM_VAL (3 << VT_STRUCT_SHIFT) /* integral type is an enum constant really */
+/* Every one of these shifts is done in ctype_t, the type of the field they
+ * describe, and not in int.
+ *
+ * In int it is not merely narrow, it is silently wrong on a 24-bit target and
+ * nothing warns: unsigned overflow truncates rather than being undefined, so
+ * `(1U << 12) - 1) << 20` came out as 0xf00080 instead of 0xfff00080 and
+ * `0x3f << 26` -- the whole bitfield *size* field -- came out as zero. Every
+ * bitfield wider than what BIT_POS alone describes was mis-laid-out, and
+ * VT_STRUCT_MASK did not cover the bits it is meant to mask. */
+#define VT_STRUCT_MASK ((((ctype_t)1 << (6+6)) - 1) << VT_STRUCT_SHIFT | VT_BITFIELD)
+#define BIT_POS(t) (((ctype_t)(t) >> VT_STRUCT_SHIFT) & 0x3f)
+#define BIT_SIZE(t) (((ctype_t)(t) >> (VT_STRUCT_SHIFT + 6)) & 0x3f)
+
+#define VT_UNION    ((ctype_t)1 << VT_STRUCT_SHIFT | VT_STRUCT)
+#define VT_ENUM     ((ctype_t)2 << VT_STRUCT_SHIFT) /* integral type is an enum really */
+#define VT_ENUM_VAL ((ctype_t)3 << VT_STRUCT_SHIFT) /* integral type is an enum constant really */
 
 #define IS_ENUM(t) ((t & VT_STRUCT_MASK) == VT_ENUM)
 #define IS_ENUM_VAL(t) ((t & VT_STRUCT_MASK) == VT_ENUM_VAL)
@@ -1191,17 +1206,19 @@ struct filespec {
 #define VT_TYPE (~(VT_STORAGE|VT_STRUCT_MASK))
 
 /* symbol was created by tccasm.c first */
-#define VT_ASM (VT_VOID | 4 << VT_STRUCT_SHIFT)
-#define VT_ASM_FUNC (VT_VOID | 5 << VT_STRUCT_SHIFT)
-#define IS_ASM_SYM(sym) (((sym)->type.t & ((VT_BTYPE|VT_STRUCT_MASK) & ~(1<<VT_STRUCT_SHIFT))) == VT_ASM)
+#define VT_ASM (VT_VOID | (ctype_t)4 << VT_STRUCT_SHIFT)
+#define VT_ASM_FUNC (VT_VOID | (ctype_t)5 << VT_STRUCT_SHIFT)
+#define IS_ASM_SYM(sym) (((sym)->type.t & ((VT_BTYPE|VT_STRUCT_MASK) & ~((ctype_t)1<<VT_STRUCT_SHIFT))) == VT_ASM)
 #define IS_ASM_FUNC(t) ((t & (VT_BTYPE|VT_STRUCT_MASK)) == VT_ASM_FUNC)
 
 /* base type is array (from typedef/typeof) */
-#define VT_BT_ARRAY (6 << VT_STRUCT_SHIFT)
+#define VT_BT_ARRAY ((ctype_t)6 << VT_STRUCT_SHIFT)
 #define IS_BT_ARRAY(t) ((t & VT_STRUCT_MASK) == VT_BT_ARRAY)
 
 /* general: set/get the pseudo-bitfield value for bit-mask M */
-#define BFVAL(M,N) ((unsigned)((M) & ~((M) << 1)) * (N))
+/* uint32_t and not `unsigned`: the masks this is handed can reach bit 31, and
+   an unsigned here is 24 bits wide on the eZ80. */
+#define BFVAL(M,N) ((uint32_t)((M) & ~((M) << 1)) * (N))
 #define BFGET(X,M) (((X) & (M)) / BFVAL(M,1))
 #define BFSET(X,M,N) ((X) = ((X) & ~(M)) | BFVAL(M,N))
 

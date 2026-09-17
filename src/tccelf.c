@@ -2422,7 +2422,7 @@ static int sort_sections(TCCState *s1, int *sec_order, struct dyn_inf *d)
     return n;
 }
 
-static ElfW(Phdr) *fill_phdr(ElfW(Phdr) *ph, int type, Section *s)
+static ElfW(Phdr) *fill_phdr(ElfW(Phdr) *ph, ElfW(Word) type, Section *s)
 {
     ph->p_type = type;
     ph->p_flags = PF_R;
@@ -2439,7 +2439,7 @@ static ElfW(Phdr) *fill_phdr(ElfW(Phdr) *ph, int type, Section *s)
     return ph;
 }
 
-static ElfW(Phdr) *update_phdr(ElfW(Phdr) *ph, int type, Section *s, addr_t addr, int file_offset)
+static ElfW(Phdr) *update_phdr(ElfW(Phdr) *ph, ElfW(Word) type, Section *s, addr_t addr, int file_offset)
 {
     if (ph->p_type == 0) {
         fill_phdr(ph, type, s);
@@ -2603,7 +2603,7 @@ static int layout_sections(TCCState *s1, int *sec_order, struct dyn_inf *d)
 }
 
 /* put dynamic tag */
-static void put_dt(Section *dynamic, int dt, addr_t val)
+static void put_dt(Section *dynamic, ElfW(Sword) dt, addr_t val)
 {
     ElfW(Dyn) *dyn;
     dyn = section_ptr_add(dynamic, sizeof(ElfW(Dyn)));
@@ -3211,7 +3211,10 @@ static int elf_output_file(TCCState *s1, const char *filename)
     int i, ret, file_type, *sec_order;
     struct dyn_inf dyninf = {0};
     Section *interp, *dynstr, *dynamic;
-    int textrel, got_sym, dt_flags_1;
+    int textrel, got_sym;
+    /* ElfW(Word): the DF_1_* flags run up to DF_1_PIE at 0x08000000, past the
+       end of this target's int. */
+    ElfW(Word) dt_flags_1;
 
     file_type = s1->output_type;
     ret = -1;

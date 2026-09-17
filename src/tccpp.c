@@ -366,7 +366,8 @@ ST_INLN char *unicode_to_utf8 (char *b, uint32_t Uc)
     else if (Uc-0xd800u<0x800) goto error;
     else if (Uc<0x10000) *b++=224+Uc/4096, *b++=128+Uc/64%64, *b++=128+Uc%64;
     else if (Uc<0x110000) *b++=240+Uc/262144, *b++=128+Uc/4096%64, *b++=128+Uc/64%64, *b++=128+Uc%64;
-    else error: tcc_error("0x%x is not a valid universal character", Uc);
+    else error: tcc_error("0x%lx is not a valid universal character",
+                          (unsigned long) Uc);
     return b;
 }
 
@@ -2370,8 +2371,13 @@ static void parse_number(const char *p)
             if (ch < '0' || ch > '9')
                 expect("exponent digits");
             while (ch >= '0' && ch <= '9') {
-		/* If exp_val is this large ldexp will return HUGE_VAL */
-		if (exp_val < 100000000)
+		/* Stop before the multiply overflows; past this ldexp returns
+		   HUGE_VAL anyway. Written from the type's own limit rather
+		   than as a literal: the 100000000 this used to be is larger
+		   than INT_MAX on a 24-bit int, so the guard was always true
+		   and the multiply below was the overflow it was meant to
+		   prevent. */
+		if (exp_val < (INT_MAX - 9) / 10)
                     exp_val = exp_val * 10 + ch - '0';
                 ch = *p++;
             }

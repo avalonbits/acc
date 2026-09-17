@@ -31,12 +31,22 @@ cp "$AGONDEV/lib/libagon.a" "$sd/lib/"
 DELAY="06 03 21 00 00 00 2b 7c b5 20 fb 10 f5"
 python3 test/moshdr.py exit_ok.bin "$sd/bin/exit_ok.bin" $DELAY af d3 00 c9
 
+# Bitfields are in here on purpose. VT_STRUCT_MASK and the BIT_SIZE field sit
+# at bits 20-31 of a type word, and building them in an int truncates them
+# silently on this target -- unsigned overflow is defined, so nothing warns and
+# the host build is unaffected. Only acc-compiled-for-the-Agon can catch it.
 cat > "$sd/t.c" <<'CEOF'
 int printf(const char *, ...);
+struct F { unsigned a : 3; unsigned b : 5; unsigned c : 9; unsigned d : 7; };
 int fact(int n) { int r = 1; while (n > 1) { r = r * n; n = n - 1; } return r; }
 int main(void) {
+    struct F f;
     int i;
+
     for (i = 1; i < 9; i++) printf("%d! = %d\r\n", i, fact(i));
+    f.a = 5; f.b = 21; f.c = 300; f.d = 99;
+    f.c = f.c + 1;
+    printf("bf %d %d %d %d\r\n", f.a, f.b, f.c, f.d);
     return 0;
 }
 CEOF
@@ -61,7 +71,8 @@ want='1! = 1
 5! = 120
 6! = 720
 7! = 5040
-8! = 40320'
+8! = 40320
+bf 5 21 301 99'
 
 if [ ! -f "$sd/t.bin" ]; then
     echo "  FAIL acc produced no binary on the Agon"

@@ -425,10 +425,59 @@ unrecognised file, both hid this for far longer than they should have.
 the tree: these bugs compile, run and pass every test on a 32-bit host, and on
 the Agon they do not fail gently.
 
-It found `new_section` and `new_symtab` taking ELF section types and flags as
-`int`, so `SHF_PRIVATE` (0x80000000) and the `SHT_GNU_*` constants truncated to
-nothing and the symbol table came out wrong. Roughly a dozen remain -- bitfield
-masks shifted past 24 bits in `tccgen.c`, NaN and infinity patterns truncated
-in the float paths, a range check that is always true. Each wants reading
-rather than silencing, and the fix is almost always to give the variable the
-width the value needs.
+It is now clean. What it found, in four kinds:
+
+* **ELF words held in `int`.** `Section.sh_type` and `sh_flags`, the parameters
+  of `new_section`, `new_symtab`, `fill_phdr`, `update_phdr` and `put_dt`, and
+  `dt_flags_1`. `SHF_PRIVATE` is 0x80000000 and `SHT_GNU_HASH` is 0x6ffffff6;
+  in an int they are unrepresentable, every comparison against them is always
+  false, and the sections sorted into the wrong order.
+* **Bit patterns that need 32 bits.** The `float`/`unsigned` union in
+  `gen_opif` (0x7fc00000 is a nan, and truncated it is a small positive
+  number), and the `__NAN__`, `__SNAN__` and `__INF__` literals, which now go
+  through `vpush64` rather than being narrowed on the way into `vpushi`.
+* **`nocode_wanted`.** Four fields in one int, with `DATA_ONLY_WANTED` in the
+  sign bit -- which is what makes `NODATA_WANTED` a plain `> 0` test. Repacked
+  rather than widened: it is tested on every byte the backend emits, and at 32
+  bits each of those tests would be a helper call. The counters lose depth
+  nothing can use.
+* **An overflow guard that could not fire.** `if (exp_val < 100000000)` is
+  always true when `exp_val` is a 24-bit int, so the multiply it was meant to
+  protect was the overflow. Written from the type's own limit now.
+
+## Bitfields
+
+Two of the fixes above were found by the warnings target; the bitfield bugs
+were not, and they were the ones that actually produced wrong answers.
+
+`struct F { unsigned a:3; unsigned b:5; unsigned c:9; unsigned d:7; }` read
+back as rubbish, and `f.c = f.c + 1` on a working read still stored the wrong
+value. Two separate causes, both the same shape -- a 32-bit register assumed
+where this target has 24:
+
+* **The container width.** tinycc extracts a bitfield by shifting it to the
+  top of its container and back down, with the container width written as
+  `(type.t & VT_BTYPE) == VT_LLONG ? 64 : 32`. An int container is 24 bits
+  here, so shifting by `32 - bit_size` pushed the field clean out of the
+  register. It now comes from `type_size`, which knows the real width for
+  every target.
+* **The cast into the container.** `gen_cast` narrows with a shift pair sized
+  from `ss`, the register width, and `ss` is normalised in a
+  `#if PTR_SIZE == 4 / #elif PTR_SIZE == 8` pair -- which matches neither arm
+  when PTR_SIZE is 3. The normalisation never ran, the shift pair was computed
+  against a four-byte register that does not exist, and a 9-bit value lost its
+  top bit on the way into a two-byte container. The guard is `PTR_SIZE != 8`
+  now, for the same reason `gen_opl`, `lexpand` and `lbuild` are: this is the
+  path for every target that builds a long long out of two machine words.
+
+Both are covered by `test/exec/70_bitfields.c`, and reverting either one fails
+it.
+
+Two more casts in the same family are correctness rather than repair.
+`VT_STRUCT_MASK` built in an int comes out as 0xf00080 instead of 0xfff00080,
+and `0x3fU << 26` -- the whole bitfield *size* field -- comes out as zero;
+both are verified by running them on the machine. Writing BIT_SIZE through a
+24-bit unsigned is undefined rather than merely truncating, and agondev
+happened to compute it in a wider register, so no test shows the old code
+failing. They are fixed because they are wrong, not because something caught
+them.

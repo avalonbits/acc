@@ -51,20 +51,40 @@ static SValue _vstack[1 + VSTACK_SIZE];
 
 ST_DATA int nocode_wanted; /* no code generation wanted */
 #define NODATA_WANTED (nocode_wanted > 0) /* no static data output wanted either */
+
+/* nocode_wanted is four fields in one int: two nesting counters, a flag, and
+ * DATA_ONLY_WANTED in the sign bit -- which is what makes NODATA_WANTED above
+ * a plain `> 0` test.
+ *
+ * Upstream spreads them over 32 bits. This target's int has 24, so the same
+ * four fields are packed smaller rather than the word widened: nocode_wanted
+ * is tested on every byte the backend emits, and at 32 bits each of those
+ * tests would be a helper call. The counters lose depth they cannot use --
+ * 1024 levels of nested sizeof() or of nested constant expressions -- and
+ * DATA_ONLY_WANTED stays the sign bit, written as ~INT_MAX because the
+ * positive form of it is one past what the type holds. */
+#ifdef TCC_TARGET_EZ80
+#define DATA_ONLY_WANTED  (~0x7fffff) /* bit 23, the sign bit */
+#define CODE_OFF_BIT      0x00100000  /* bit 20 */
+#define NOEVAL_MASK       0x000003ff  /* bits 0-9 */
+#define CONST_WANTED_BIT  0x00000400  /* bits 10-19 */
+#define CONST_WANTED_MASK 0x000ffc00
+#else
 #define DATA_ONLY_WANTED 0x80000000 /* ON outside of functions and for static initializers */
+#define CODE_OFF_BIT 0x20000000
+#define NOEVAL_MASK 0x0000FFFF
+#define CONST_WANTED_BIT  0x00010000
+#define CONST_WANTED_MASK 0x0FFF0000
+#endif
 
 /* no code output after unconditional jumps such as with if (0) ... */
-#define CODE_OFF_BIT 0x20000000
 #define CODE_OFF() if(!nocode_wanted)(nocode_wanted |= CODE_OFF_BIT)
 #define CODE_ON() (nocode_wanted &= ~CODE_OFF_BIT)
 
 /* no code output when parsing sizeof()/typeof() etc. (using nocode_wanted++/--) */
-#define NOEVAL_MASK 0x0000FFFF
 #define NOEVAL_WANTED (nocode_wanted & NOEVAL_MASK)
 
 /* no code output when parsing constant expressions */
-#define CONST_WANTED_BIT  0x00010000
-#define CONST_WANTED_MASK 0x0FFF0000
 #define CONST_WANTED  (nocode_wanted & CONST_WANTED_MASK)
 
 ST_DATA int global_expr;  /* true if compound literals must be allocated globally (used during initializers parsing */
@@ -1771,6 +1791,20 @@ static void incr_bf_adr(int o)
 }
 
 /* single-byte load mode for packed or otherwise unaligned bitfields */
+/* The width in bits of the integer a bitfield is read through and written
+ * back into.
+ *
+ * Not 32 everywhere: the container here is whatever `type` says, and an int is
+ * 24 bits on the eZ80. Shifting by 32 - bit_size on that target pushes the
+ * field clean out of the register, which is what made every bitfield read back
+ * as rubbish. type_size knows the real width for every target. */
+static int bitfield_bits(CType *type)
+{
+    int align;
+
+    return type_size(type, &align) * 8;
+}
+
 static void load_packed_bf(CType *type, int bit_pos, int bit_size)
 {
     int n, o, bits;
@@ -1797,7 +1831,7 @@ static void load_packed_bf(CType *type, int bit_pos, int bit_size)
     } while (bit_size);
     vswap(), vpop();
     if (!(type->t & VT_UNSIGNED)) {
-        n = ((type->t & VT_BTYPE) == VT_LLONG ? 64 : 32) - bits;
+        n = bitfield_bits(type) - bits;
         vpushi(n), gen_op(TOK_SHL);
         vpushi(n), gen_op(TOK_SAR);
     }
@@ -1884,7 +1918,7 @@ ST_FUNC int gv(int rc)
         if (bf_type == VT_STRUCT) {
             load_packed_bf(&type, bit_pos, bit_size);
         } else {
-            int bits = (type.t & VT_BTYPE) == VT_LLONG ? 64 : 32;
+            int bits = bitfield_bits(&type);
             /* cast to int to propagate signedness in following ops */
             gen_cast(&type);
             /* generate shifts */
@@ -2601,7 +2635,11 @@ static void gen_opif(int op)
         case '*': f1 *= f2; break;
         case '/': 
             if (f2 == 0.0) {
-                union { float f; unsigned u; } x1, x2, y;
+                /* uint32_t, not unsigned: these are the bit patterns of a
+                   binary32, and 0x7fc00000 does not fit in this target's
+                   24-bit unsigned int -- it truncates to 0xc00000, which is a
+                   small positive number rather than a nan. */
+                union { float f; uint32_t u; } x1, x2, y;
 		/* If not in initializer we need to potentially generate
 		   FP exceptions at runtime, otherwise we want to fold.  */
                 if (!CONST_WANTED)
@@ -3439,7 +3477,14 @@ error:
         gv(RC_INT);
 
         trunc = 0;
-#if PTR_SIZE == 4
+/* PTR_SIZE != 8 rather than == 4: this is the path for every target that
+ * builds a long long out of two machine words with lbuild and lexpand, and
+ * the eZ80 is one of those with a 3-byte word. Written as == 4 it matched
+ * neither arm of the #if there, so the normalisation below never ran and the
+ * shift-pair cast further down was computed against a 4-byte register that
+ * does not exist. A 9-bit bitfield value then lost its top bit on the way
+ * into a 2-byte container. */
+#if PTR_SIZE != 8
         if (ds == 8) {
             /* generate high word */
             if (sbt & VT_UNSIGNED) {
@@ -3447,7 +3492,7 @@ error:
                 gv(RC_INT);
             } else {
                 gv_dup();
-                vpushi(31);
+                vpushi(INT_SIZE * 8 - 1);
                 gen_op(TOK_SAR);
             }
             lbuild(dbt);
@@ -3456,7 +3501,8 @@ error:
             lexpand();
             vpop();
         }
-        ss = 4;
+        /* the width of the register the shifts below work in */
+        ss = INT_SIZE;
 
 #elif PTR_SIZE == 8
         if (ds == 8) {
@@ -4353,8 +4399,8 @@ static void struct_layout(CType *type, AttributeDef *ad)
                 prev_bit_size = bit_size;
 	    }
 
-	    f->type.t = (f->type.t & ~(0x3f << VT_STRUCT_SHIFT))
-		        | (bit_pos << VT_STRUCT_SHIFT);
+	    f->type.t = (f->type.t & ~((ctype_t)0x3f << VT_STRUCT_SHIFT))
+		        | ((ctype_t)bit_pos << VT_STRUCT_SHIFT);
 	    bit_pos += bit_size;
 	}
 	if (align > maxalign)
@@ -4451,8 +4497,8 @@ static void struct_layout(CType *type, AttributeDef *ad)
             /* update offset and bit position */
             f->c = cx;
             bit_pos = px;
-	    f->type.t = (f->type.t & ~(0x3f << VT_STRUCT_SHIFT))
-		        | (bit_pos << VT_STRUCT_SHIFT);
+	    f->type.t = (f->type.t & ~((ctype_t)0x3f << VT_STRUCT_SHIFT))
+		        | ((ctype_t)bit_pos << VT_STRUCT_SHIFT);
             if (s != size)
                 f->auxtype = t.t;
 #ifdef BF_DEBUG
@@ -4695,7 +4741,7 @@ do_decl:
                         } else {
                             type1.t = (type1.t & ~VT_STRUCT_MASK)
                                 | VT_BITFIELD
-                                | ((unsigned)bit_size << (VT_STRUCT_SHIFT + 6));
+                                | ((ctype_t)bit_size << (VT_STRUCT_SHIFT + 6));
                         }
                     }
                     if (v != 0 || (type1.t & VT_BTYPE) == VT_STRUCT) {
@@ -5633,6 +5679,7 @@ ST_FUNC void unary(void)
 {
     int n, t, align, size, r;
     ctype_t ct;
+    uint32_t fbits;
     CType type;
     Sym *s;
     AttributeDef ad;
@@ -6144,18 +6191,22 @@ ST_FUNC void unary(void)
 	break;
     }
     // special qnan , snan and infinity values
+    //
+    // These are binary32 bit patterns, so they need 32 bits to hold and an
+    // int does not have them here. vpush64 takes the value at its own width;
+    // vpushi would have narrowed it on the way in.
     case TOK___NAN__:
-        n = 0x7fc00000;
+        fbits = 0x7fc00000;
 special_math_val:
-	vpushi(n);
+	vpush64(VT_INT, fbits);
 	vtop->type.t = VT_FLOAT;
         next();
         break;
     case TOK___SNAN__:
-	n = 0x7f800001;
+	fbits = 0x7f800001;
 	goto special_math_val;
     case TOK___INF__:
-	n = 0x7f800000;
+	fbits = 0x7f800000;
 	goto special_math_val;
 
     default:
