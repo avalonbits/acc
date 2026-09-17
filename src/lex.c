@@ -262,6 +262,11 @@ static void skip_space(void)
             continue;
         }
         if (p[0] == '/' && p[1] == '*') {
+            /* Where it opened, which is where the mistake is. Reporting the
+             * line the scan gave up on points at the end of the file, which
+             * is the one place the reader already knows is not the problem. */
+            int opened = line;
+
             p += 2;
             while (*p && !(p[0] == '*' && p[1] == '/')) {
                 if (*p == '\n')
@@ -269,7 +274,7 @@ static void skip_space(void)
                 p++;
             }
             if (!*p)
-                acc_error_at(line, "unterminated comment");
+                acc_error_at(opened, "unterminated comment");
             p += 2;
             continue;
         }
