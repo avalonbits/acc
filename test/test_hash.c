@@ -89,8 +89,15 @@ int main(void)
      * into a linear list and every test above still passes -- so what is
      * checked is the work done: probes per lookup over the second, all-hits
      * pass. A table kept under half full averages about 1.5 probes for a hit
-     * when the hash is good; 3 is loose enough not to be brittle and tight
-     * enough that halving the hash's width fails it. */
+     * when the hash is good.
+     *
+     * The bound is 1.8 rather than a round 3. Two independent Pearson lanes
+     * gave 1.54 and the single-lane version that replaced them gives 1.46,
+     * but the first attempt at halving the work -- chaining, where the second
+     * byte is just the previous value of the first -- gave exactly 2.00,
+     * because two bytes one step apart in the same chain are not independent
+     * enough to spread. A bound of 3 accepts that; this one does not, while
+     * still leaving room above both hashes that work. */
     {
         unsigned long before = name_probes, probes;
 
@@ -100,7 +107,7 @@ int main(void)
 
         fprintf(stderr, "  ---  %lu probes for %d lookups (%lu.%02lu each)\n",
                 probes, N, probes / N, probes * 100 / N % 100);
-        is("probes per lookup, times 100", (long) (probes * 100 / N) < 300, 1);
+        is("probes per lookup, times 100", (long) (probes * 100 / N) < 180, 1);
     }
 
     /* Nothing may land on the reserved offset, which is what means "none". */
