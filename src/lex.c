@@ -421,6 +421,7 @@ static void lex_number(int line)
      * compiles, not about the machine acc is running on. */
     uint32_t value = 0;
     int is_hex = 0;
+    int overflowed = 0;
     int suffix_u = 0, suffix_l = 0;
     char *start = cursor;
 
@@ -448,10 +449,17 @@ static void lex_number(int line)
         while (is_digit((unsigned char) *cursor)) {
             int digit = *cursor - '0';
 
+            /* Noted rather than refused, because the digits might still turn
+             * out to be the whole part of a floating literal, where a
+             * hundred of them are ordinary. Only once the terminator says
+             * this was an integer does too many digits become an error. */
             if (value > 429496729UL
-                || (value == 429496729UL && digit > 5))
-                acc_error_at(line, "the constant does not fit in %d bits",
-                             ACC_LONG_SIZE * 8);
+                || (value == 429496729UL && digit > 5)) {
+                overflowed = 1;
+                cursor++;
+
+                continue;
+            }
             value = value * 10 + digit;
             cursor++;
         }
@@ -469,6 +477,10 @@ static void lex_number(int line)
 
         return;
     }
+
+    if (overflowed)
+        acc_error_at(line, "the constant does not fit in %d bits",
+                     ACC_LONG_SIZE * 8);
 
     /* The suffix, which narrows the list before the value is measured
      * against it: u takes the signed types out, l takes int out. Either
