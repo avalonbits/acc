@@ -205,7 +205,7 @@ const char *name_text(NameRef ref)
  * compiler ran out on its symbol table, not on its input. Streaming it is a
  * change to make when there is a reason, not before. */
 static char *src;
-static char *p;
+static char *cursor;
 static const char *src_path;
 static int   line;
 
@@ -234,7 +234,7 @@ void lex_open(const char *path)
     fclose(f);
 
     src_path = path;
-    p = src;
+    cursor = src;
     line = 1;
     next();
 }
@@ -251,31 +251,31 @@ int lex_line(void)         { return line; }
 static void skip_space(void)
 {
     for (;;) {
-        while (is_space(*p)) {
-            if (*p == '\n')
+        while (is_space(*cursor)) {
+            if (*cursor == '\n')
                 line++;
-            p++;
+            cursor++;
         }
-        if (p[0] == '/' && p[1] == '/') {
-            while (*p && *p != '\n')
-                p++;
+        if (cursor[0] == '/' && cursor[1] == '/') {
+            while (*cursor && *cursor != '\n')
+                cursor++;
             continue;
         }
-        if (p[0] == '/' && p[1] == '*') {
+        if (cursor[0] == '/' && cursor[1] == '*') {
             /* Where it opened, which is where the mistake is. Reporting the
              * line the scan gave up on points at the end of the file, which
              * is the one place the reader already knows is not the problem. */
             int opened = line;
 
-            p += 2;
-            while (*p && !(p[0] == '*' && p[1] == '/')) {
-                if (*p == '\n')
+            cursor += 2;
+            while (*cursor && !(cursor[0] == '*' && cursor[1] == '/')) {
+                if (*cursor == '\n')
                     line++;
-                p++;
+                cursor++;
             }
-            if (!*p)
+            if (!*cursor)
                 acc_error_at(opened, "unterminated comment");
-            p += 2;
+            cursor += 2;
             continue;
         }
         return;
@@ -334,7 +334,7 @@ void next(void)
     skip_space();
     tok_prev_line = tok_line;
     tok_line = line;
-    c = (unsigned char) *p;
+    c = (unsigned char) *cursor;
 
     if (c == '\0') {
         tok = TK_EOF;
@@ -344,23 +344,23 @@ void next(void)
     if (is_digit(c)) {
         int v = 0;
 
-        if (c == '0' && (p[1] == 'x' || p[1] == 'X')) {
-            p += 2;
-            if (!is_alnum((unsigned char) *p))
+        if (c == '0' && (cursor[1] == 'x' || cursor[1] == 'X')) {
+            cursor += 2;
+            if (!is_alnum((unsigned char) *cursor))
                 acc_error_at(line, "hex constant with no digits");
-            while (is_alnum((unsigned char) *p)) {
-                int d = *p;
+            while (is_alnum((unsigned char) *cursor)) {
+                int d = *cursor;
 
                 if (is_digit(d))          d -= '0';
                 else if (d >= 'a' && d <= 'f') d -= 'a' - 10;
                 else if (d >= 'A' && d <= 'F') d -= 'A' - 10;
                 else acc_error_at(line, "bad digit '%c' in a hex constant", d);
                 v = v * 16 + d;
-                p++;
+                cursor++;
             }
         } else {
-            while (is_digit((unsigned char) *p))
-                v = v * 10 + (*p++ - '0');
+            while (is_digit((unsigned char) *cursor))
+                v = v * 10 + (*cursor++ - '0');
         }
         /* Narrowed to what the target can hold, so that a literal on the
          * value stack is the number the machine would have. */
@@ -373,16 +373,16 @@ void next(void)
     }
 
     if (is_alpha(c)) {
-        const char *s = p;
+        const char *s = cursor;
 
-        while (is_alnum((unsigned char) *p))
-            p++;
-        tok_name = name_intern(s, (int) (p - s));
+        while (is_alnum((unsigned char) *cursor))
+            cursor++;
+        tok_name = name_intern(s, (int) (cursor - s));
         tok = (tok_name < kw_limit) ? kw_tok[tok_name] : TK_IDENT;
         return;
     }
 
-    p++;
+    cursor++;
     switch (c) {
     case '(': tok = TK_LPAREN;  return;
     case ')': tok = TK_RPAREN;  return;
@@ -391,11 +391,11 @@ void next(void)
     case ';': tok = TK_SEMI;    return;
     case ',': tok = TK_COMMA;   return;
     case '=':
-        if (*p == '=') { p++; tok = TK_EQ; return; }
+        if (*cursor == '=') { cursor++; tok = TK_EQ; return; }
         tok = TK_ASSIGN;
         return;
     case '!':
-        if (*p == '=') { p++; tok = TK_NE; return; }
+        if (*cursor == '=') { cursor++; tok = TK_NE; return; }
         tok = TK_NOT;
         return;
     case '+': tok = TK_PLUS;    return;
@@ -408,13 +408,13 @@ void next(void)
     case '^': tok = TK_CARET;   return;
     case '~': tok = TK_TILDE;   return;
     case '<':
-        if (*p == '<') { p++; tok = TK_SHL; return; }
-        if (*p == '=') { p++; tok = TK_LE;  return; }
+        if (*cursor == '<') { cursor++; tok = TK_SHL; return; }
+        if (*cursor == '=') { cursor++; tok = TK_LE;  return; }
         tok = TK_LT;
         return;
     case '>':
-        if (*p == '>') { p++; tok = TK_SHR; return; }
-        if (*p == '=') { p++; tok = TK_GE;  return; }
+        if (*cursor == '>') { cursor++; tok = TK_SHR; return; }
+        if (*cursor == '=') { cursor++; tok = TK_GE;  return; }
         tok = TK_GT;
         return;
     }

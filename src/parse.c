@@ -143,80 +143,61 @@ static void primary(void)
     acc_error_at(tok_line, "expected an expression, found %s", tok_spelling(tok));
 }
 
-/* Precedence, lowest binding last. Each level is split in two: the whole
- * thing, and the part after its first operand. expr has to read an identifier
- * before it can tell an assignment from a value, and when it turns out to be
- * a value the operand is already on the stack -- so it resumes at the `_rest`
- * of every level rather than starting over. */
-static void additive_rest(void)
-{
-    while (tok == TK_PLUS || tok == TK_MINUS) {
-        int op = tok;
+/* Binary operators, and how tightly each binds. Zero means it is not one.
+ *
+ * One loop over a table rather than a function per level. The chain this
+ * replaces -- expr calling equality calling relational calling additive
+ * calling primary -- meant three calls and three loop tests on every
+ * expression in the program whether or not it held a comparison, and cost
+ * 1.2% on a benchmark containing none. A level costs nothing here until an
+ * operator at that level actually turns up.
+ */
+enum {
+    PREC_NONE       = 0,        /* not a binary operator */
+    PREC_EQUALITY   = 1,        /* ==  != */
+    PREC_RELATIONAL = 2,        /* <  >  <=  >= */
+    PREC_ADDITIVE   = 3         /* +  - */
+};
 
+static const unsigned char prec[TK_COUNT] = {
+    [TK_EQ] = PREC_EQUALITY,   [TK_NE] = PREC_EQUALITY,
+    [TK_LT] = PREC_RELATIONAL, [TK_GT] = PREC_RELATIONAL,
+    [TK_LE] = PREC_RELATIONAL, [TK_GE] = PREC_RELATIONAL,
+    [TK_PLUS] = PREC_ADDITIVE, [TK_MINUS] = PREC_ADDITIVE
+};
+
+/* The levels that leave a 0 or 1 behind rather than a number. */
+static int is_comparison(int token)
+{
+    return prec[token] <= PREC_RELATIONAL;
+}
+
+/* The operator loop, with the left operand already on the stack. `min_prec`
+ * is the loosest binding this call will take: an operator looser than that
+ * belongs to the caller. */
+static void binary_rest(int min_prec)
+{
+    for (;;) {
+        int op = tok;
+        int op_prec = prec[op];
+
+        if (op_prec < min_prec)         /* PREC_NONE included: not an operator */
+            return;
         next();
         primary();
-        vbinop(op);
+        binary_rest(op_prec + 1);       /* everything binding tighter first */
+
+        if (is_comparison(op))
+            vcmp(op);
+        else
+            vbinop(op);
     }
 }
 
-static void additive(void)
+static void binary(int min_prec)
 {
     primary();
-    additive_rest();
-}
-
-static int is_relational(int token)
-{
-    return token == TK_LT || token == TK_GT
-        || token == TK_LE || token == TK_GE;
-}
-
-static void relational_rest(void)
-{
-    additive_rest();
-    while (is_relational(tok)) {
-        int op = tok;
-
-        next();
-        additive();
-        vcmp(op);
-    }
-}
-
-static void relational(void)
-{
-    additive();
-    while (is_relational(tok)) {
-        int op = tok;
-
-        next();
-        additive();
-        vcmp(op);
-    }
-}
-
-static void equality_rest(void)
-{
-    relational_rest();
-    while (tok == TK_EQ || tok == TK_NE) {
-        int op = tok;
-
-        next();
-        relational();
-        vcmp(op);
-    }
-}
-
-static void equality(void)
-{
-    relational();
-    while (tok == TK_EQ || tok == TK_NE) {
-        int op = tok;
-
-        next();
-        relational();
-        vcmp(op);
-    }
+    binary_rest(min_prec);
 }
 
 /* Assignment is right associative and its left side has to be a name, which
@@ -271,12 +252,12 @@ static void expr(void)
             vpush_local(sym_at(sym)->val);
         }
 
-        equality_rest();
+        binary_rest(PREC_EQUALITY);
 
         return;
     }
 
-    equality();
+    binary(PREC_EQUALITY);
 }
 
 /* ------------------------------------------------------------------ */

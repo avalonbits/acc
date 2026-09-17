@@ -70,7 +70,9 @@ enum {
     TK_AMP, TK_PIPE, TK_CARET, TK_TILDE,
     TK_SHL, TK_SHR,
     TK_LT, TK_GT, TK_LE, TK_GE, TK_EQ, TK_NE,
-    TK_NOT
+    TK_NOT,
+
+    TK_COUNT                     /* how many there are, for tables keyed on one */
 };
 
 extern int      tok;        /* the current token */
