@@ -923,9 +923,23 @@ int vnarrow_ready(int op, Type to)
     const Value *lhs = vsp - 2;
     const Value *rhs = vsp - 1;
 
+    /* Bytes only, and deliberately.
+     *
+     * A short is wider than A, so this path would have to become sixteen-bit
+     * arithmetic -- and sixteen bits is the worst width on this chip. ADL mode
+     * has no truncation logic in its 24-bit paths, so every sixteen-bit
+     * operation masks or extends the upper byte, and reaching it means the
+     * .SIS prefix and a mode switch. A short is better done at 24 bits and
+     * truncated when it is stored, which is what the ordinary path already
+     * does: acc emits no size-mode prefix anywhere.
+     *
+     * Measured, for the same six-operation function: 207 bytes of code as
+     * unsigned char, 277 as unsigned int, 406 as unsigned short. The short is
+     * dearer than the int, and all of that difference is the widening on load
+     * and the truncation on store, which C requires for a two-byte object.
+     * None of it is arithmetic this could make cheaper. */
     if (vtop < 2 || type_size(to) != 1)
-        return 0;                       /* bytes only for now; short is wider
-                                         * than A and needs a pair */
+        return 0;
     if (op == TK_SHL || op == TK_SHR) {
         /* Only a constant count, unrolled. A variable one is a loop, which is
          * what the helper already is. */
