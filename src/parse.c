@@ -59,6 +59,45 @@ static void expr(void);
 static Type narrow_dest;
 
 
+/* A call, from just past the '(' to just past the ')'.
+ *
+ * Both places a name can be followed by one -- as an operand, and at the
+ * start of a statement where the name might instead have begun an assignment
+ * -- had the same dozen lines, nested four deep in a function that was
+ * already long. They are here once. Measured on the Agon it is neither
+ * faster nor slower than the two copies were.
+ */
+static void call_rest(NameRef name)
+{
+    int fn = sym_find(name);
+    int nargs = 0;
+
+    /* Not seen yet: assumed to be a function defined further down the file.
+     * gen_finish reports it if it never is. */
+    if (fn == SYM_NONE)
+        fn = sym_push(name, SYM_FUNC, 0);
+    else if (sym_at(fn)->kind != SYM_FUNC)
+        acc_error_at(tok_line, "'%s' is not a function", name_text(name));
+
+    if (tok != TK_RPAREN) {
+        Type outer = narrow_dest;
+
+        /* An argument is not the destination: it is passed at int width
+         * whatever the parameter is declared as. */
+        narrow_dest = 0;
+        for (;;) {
+            expr();
+            nargs++;
+            if (!accept(TK_COMMA))
+                break;
+        }
+        narrow_dest = outer;
+    }
+
+    expect(TK_RPAREN, "')'");
+    gen_call(fn, nargs, sym_params_first(fn), sym_nparams(fn));
+}
+
 /* A name used as a value: a local read, or a call. */
 static void primary(void)
 {
@@ -116,35 +155,8 @@ static void primary(void)
 
         next();
 
-        if (tok == TK_LPAREN) {
-            int nargs = 0;
-
-            next();
-            sym = sym_find(name);
-            if (sym == SYM_NONE) {
-                /* Not seen yet. Assumed to be a function defined further
-                 * down; gen_finish reports it if it never is. */
-                sym = sym_push(name, SYM_FUNC, 0);
-            } else if (sym_at(sym)->kind != SYM_FUNC) {
-                acc_error_at(tok_line, "'%s' is not a function", name_text(name));
-            }
-
-            if (tok != TK_RPAREN) {
-                Type outer = narrow_dest;
-
-                /* An argument is not the destination: it is passed at int
-                 * width whatever the parameter is declared as. */
-                narrow_dest = 0;
-                for (;;) {
-                    expr();
-                    nargs++;
-                    if (!accept(TK_COMMA))
-                        break;
-                }
-                narrow_dest = outer;
-            }
-            expect(TK_RPAREN, "')'");
-            gen_call(sym, nargs, sym_params_first(sym), sym_nparams(sym));
+        if (accept(TK_LPAREN)) {
+            call_rest(name);
 
             return;
         }
@@ -308,31 +320,8 @@ static void expr(void)
 
         /* Not an assignment. Put the name back by handling it here rather
          * than by pushing the token back, which would need a queue. */
-        if (tok == TK_LPAREN) {
-            int nargs = 0;
-            int fn = sym_find(name);
-
-            next();
-            if (fn == SYM_NONE)
-                fn = sym_push(name, SYM_FUNC, 0);
-            else if (sym_at(fn)->kind != SYM_FUNC)
-                acc_error_at(tok_line, "'%s' is not a function", name_text(name));
-            if (tok != TK_RPAREN) {
-                Type outer = narrow_dest;
-
-                /* An argument is not the destination: it is passed at int
-                 * width whatever the parameter is declared as. */
-                narrow_dest = 0;
-                for (;;) {
-                    expr();
-                    nargs++;
-                    if (!accept(TK_COMMA))
-                        break;
-                }
-                narrow_dest = outer;
-            }
-            expect(TK_RPAREN, "')'");
-            gen_call(fn, nargs, sym_params_first(fn), sym_nparams(fn));
+        if (accept(TK_LPAREN)) {
+            call_rest(name);
         } else {
             sym = sym_find(name);
             if (sym == SYM_NONE)
