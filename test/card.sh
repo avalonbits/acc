@@ -91,17 +91,24 @@ What acc can do today
   functions, parameters, locals, calls, recursion
   + - and unary minus, ~
   assignment
+  if, else, else if, while
   /* block */ and // line comments, anywhere a space can go
+
+A condition is a value and is true when it is not zero. With no comparison
+operators yet, "n is zero" is written `n` and "n is three" is written
+`n - 3`.
 
 What it cannot do yet
 ---------------------
 
   * / % & | ^ << >>   -- the eZ80 has no instruction for any of these on a
                          24-bit value, so they need runtime helpers
-  if while for         -- no control flow at all
+  < > <= >= == != ! && || -- no comparisons, so a condition is a bare value
+  for do break continue   -- while is the only loop
   char short long      -- one type
   pointers, arrays, structs
   #include, #define    -- no preprocessor
+  declarations inside a block -- they go at the start of the function
   printf               -- no library, which is why a program prints its
                          result the way it does
 
