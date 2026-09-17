@@ -46,6 +46,15 @@ int arg1(int a, int b, int c, int d, int e, int f) { (void)a;(void)c;(void)d;(vo
 int arg2(int a, int b, int c, int d, int e, int f) { (void)a;(void)b;(void)d;(void)e;(void)f; return c; }
 int arg5(int a, int b, int c, int d, int e, int f) { (void)a;(void)b;(void)c;(void)d;(void)e; return f; }
 
+/* What each type is worth in bytes, so the slot widths below are stated
+ * against something instead of asserted alone: a long is 4 bytes and takes a
+ * 6-byte slot, a char is 1 byte and takes 3. */
+int size_char (void) { return (int) sizeof(char); }
+int size_short(void) { return (int) sizeof(short); }
+int size_int  (void) { return (int) sizeof(int); }
+int size_long (void) { return (int) sizeof(long); }
+int size_ptr  (void) { return (int) sizeof(void *); }
+
 /* How wide a slot each type takes: the offset of the parameter after it. */
 int after_char (char a,  int b) { (void)a; return b; }
 int after_short(short a, int b) { (void)a; return b; }
@@ -130,12 +139,30 @@ for name, want in (('arg0', 6), ('arg1', 9), ('arg2', 12), ('arg5', 21)):
           'argument %s is at (ix + %d)' % (name[-1], want),
           '(ix + %s)' % slot(name), '(ix + %d)' % want)
 
-for name, width in (('after_char', 3), ('after_short', 3), ('after_int', 3),
-                    ('after_ptr', 3), ('after_long', 6)):
+def constant(name):
+    """The immediate a one-load function returns, or None."""
+    for text in body(name):
+        m = re.match(r'^ld\s+hl,\s*(\d+)$', text)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+for name, want in (('size_char', 1), ('size_short', 2), ('size_int', 3),
+                   ('size_long', 4), ('size_ptr', 3)):
+    check('type sizes', constant(name) == want,
+          'sizeof(%s) is %d' % (name[5:], want),
+          'sizeof is %s' % constant(name), '%d' % want)
+
+# A slot is the type's size rounded up to a multiple of 3, which is not the
+# same number: a long is 4 bytes in a 6-byte slot.
+for name, size, width in (('char', 1, 3), ('short', 2, 3), ('int', 3, 3),
+                          ('ptr', 3, 3), ('long', 4, 6)):
     want = 6 + width
-    check('slot widths', slot(name) == want,
-          '%s occupies %d bytes' % (name[6:], width),
-          'next parameter at (ix + %s)' % slot(name),
+    check('slot widths', slot('after_' + name) == want,
+          '%s is %d byte%s and takes a %d-byte argument slot'
+          % (name, size, '' if size == 1 else 's', width),
+          'next parameter at (ix + %s)' % slot('after_' + name),
           'next parameter at (ix + %d)' % want)
 
 check('return values',
