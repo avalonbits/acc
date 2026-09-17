@@ -46,16 +46,26 @@ void sym_init(void)
     nsyms = nglobals = 0;
 }
 
+/* Out of line for the same reason out_grow is: sym_push runs for every name
+ * the program declares, and inlining a realloc and an error string into it
+ * buys a stack frame on every one of them to serve a path taken a handful of
+ * times in a compile. The attribute is load-bearing -- called from one place,
+ * it goes straight back inline without it. */
+__attribute__((noinline))
+static void syms_grow(void)
+{
+    cap *= 2;
+    syms = realloc(syms, cap * sizeof *syms);
+    if (!syms)
+        acc_error("out of memory for symbols");
+}
+
 int sym_push(NameRef name, int kind, int val)
 {
     Sym *s;
 
-    if (nsyms == cap) {
-        cap *= 2;
-        syms = realloc(syms, cap * sizeof *syms);
-        if (!syms)
-            acc_error("out of memory for symbols");
-    }
+    if (nsyms == cap)
+        syms_grow();
     if (kind == SYM_LOCAL) {
         s = &syms[nsyms];
         s->name = name;

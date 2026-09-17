@@ -104,15 +104,23 @@ static unsigned name_hash(const char *s, int len)
     return ((unsigned) a << 8) | b;
 }
 
-static void names_grow(size_t need)
+/* Split so that the test can be inlined into name_intern and the growth
+ * cannot: the test is once per identifier, the growth is a dozen times in a
+ * compile, and inlining both put a realloc's frame on the hot path. */
+__attribute__((noinline))
+static void names_realloc(size_t need)
 {
-    if (names_len + need <= names_cap)
-        return;
     while (names_cap < names_len + need)
         names_cap = names_cap ? names_cap * 2 : 1024;
     names = realloc(names, names_cap);
     if (!names)
         acc_error("out of memory for names");
+}
+
+static void names_grow(size_t need)
+{
+    if (names_len + need > names_cap)
+        names_realloc(need);
 }
 
 static void buckets_rehash(unsigned newn)

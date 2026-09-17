@@ -65,14 +65,26 @@ void out_open(const char *path)
     img[0x44] = 1;        /* ADL, 24-bit addressing */
 }
 
+/* Kept out of out_byte, which is called once per byte of the program being
+ * compiled. Inline, its `cap *= 2` and its error string need a frame slot, so
+ * out_byte opened a three-byte frame on every byte emitted to serve a path
+ * taken a dozen times in a compile. Out of line, the hot path is a compare and
+ * a store. */
+/* The attribute is load-bearing: out_grow is called from one place, so the
+ * compiler puts it straight back inline unless told not to. */
+__attribute__((noinline))
+static void out_grow(void)
+{
+    cap *= 2;
+    img = realloc(img, cap);
+    if (!img)
+        acc_error("out of memory for the output");
+}
+
 void out_byte(int b)
 {
-    if (len == cap) {
-        cap *= 2;
-        img = realloc(img, cap);
-        if (!img)
-            acc_error("out of memory for the output");
-    }
+    if (len == cap)
+        out_grow();
     img[len++] = (unsigned char) b;
 }
 
