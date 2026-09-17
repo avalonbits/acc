@@ -1097,10 +1097,19 @@ _acc_rt_lnot:
 ; The same four bytes agondev uses, which is the point: the two compilers
 ; have to be able to call each other.
 ;
-; What is here covers the numbers a program computes with. Denormals are
-; flushed to zero rather than represented, and nothing generates an infinity
-; or a NaN -- an overflow saturates and an underflow goes to zero. That is
-; short of C99 and is written down as such; it is not a silent divergence.
+; All four kinds of value are here: normals, denormals, infinities and NaNs.
+; Denormals fill the gap between the smallest normal and zero, so a subtraction
+; of two nearby small numbers gives their difference rather than zero; an
+; exponent past the top gives an infinity rather than the largest finite
+; number; and an operation with no answer -- infinity minus infinity, zero
+; times infinity, zero over zero -- gives a NaN rather than something that
+; looks like a number.
+;
+; What is not here is the part of IEEE-754 that is about the machine rather
+; than the numbers: there are no exception flags, no rounding modes other than
+; to nearest with ties to even, and a signalling NaN is treated as a quiet
+; one. C99 makes all of that optional, and <fenv.h> is where a program would
+; ask for it.
 
 	.global _acc_rt_itof
 	.global _acc_rt_uitof
@@ -1323,6 +1332,94 @@ _acc_rt_ftoi:
 ; keys, and `-0.0 < 0.0` would be true.
 
 	.global _acc_rt_fkey
+	.global _acc_rt_fcmp
+
+; Z clear if the float at (hl) is a NaN: every exponent bit set, which an
+; infinity also has, and a mantissa that is not empty, which only a NaN has.
+.fisnan:
+	push	iy
+	push	hl
+	pop	iy
+	ld	a, (iy + 3)
+	and	a, 0x7f
+	cp	a, 0x7f
+	jr	nz, .fisnan_no
+	bit	7, (iy + 2)		; the exponent's low bit
+	jr	z, .fisnan_no
+	ld	a, (iy + 2)		; the mantissa, which an infinity leaves
+	and	a, 0x7f			; empty
+	or	a, (iy + 1)
+	or	a, (iy + 0)
+	pop	iy
+	ret
+
+.fisnan_no:
+	xor	a, a
+	pop	iy
+	ret
+
+; How the float at (hl) stands to the one at (de), in a: 0 below, 1 equal, 2
+; above, 3 unordered. Both are rewritten as keys on the way, which the caller
+; can afford because it passes copies.
+;
+; Three outcomes would do for integers; floats need a fourth. A NaN is not
+; less than, equal to or greater than anything, itself included, so `x < y`
+; and `x >= y` are both false when either is one -- which no ordering can
+; express, and which is why this returns a code rather than leaving flags for
+; the caller's branch to read.
+_acc_rt_fcmp:
+	push	ix
+	push	iy
+	push	de
+	push	hl
+
+	call	.fisnan
+	jr	nz, .fcmp_unordered
+	ex	de, hl
+	call	.fisnan
+	ex	de, hl
+	jr	nz, .fcmp_unordered
+
+	call	_acc_rt_fkey
+	ex	de, hl
+	call	_acc_rt_fkey
+	ex	de, hl
+
+	push	hl
+	pop	iy
+	push	de
+	pop	ix
+	ld	a, (iy + 3)
+	cp	a, (ix + 3)
+	jr	nz, .fcmp_differ
+	ld	a, (iy + 2)
+	cp	a, (ix + 2)
+	jr	nz, .fcmp_differ
+	ld	a, (iy + 1)
+	cp	a, (ix + 1)
+	jr	nz, .fcmp_differ
+	ld	a, (iy + 0)
+	cp	a, (ix + 0)
+	jr	nz, .fcmp_differ
+	ld	a, 1
+	jr	.fcmp_done
+
+.fcmp_differ:
+	jr	c, .fcmp_below
+	ld	a, 2
+	jr	.fcmp_done
+.fcmp_below:
+	xor	a, a
+	jr	.fcmp_done
+.fcmp_unordered:
+	ld	a, 3
+
+.fcmp_done:
+	pop	hl
+	pop	de
+	pop	iy
+	pop	ix
+	ret
 
 _acc_rt_fkey:
 	push	iy
@@ -1420,14 +1517,38 @@ _acc_rt_fkey:
 	dec	hl
 	dec	hl
 
-	ld	a, b			; exponent zero: no leading 1 after all
+	; What the stored exponent means at its two ends.
+	;
+	; Zero means there is no leading 1 to put back, so the one written
+	; above has to come off again. If what is left is nothing the number
+	; is zero; if it is not, the number is a denormal -- a value too small
+	; to have a leading 1 of its own, filling in the gap between the
+	; smallest normal float and zero. A denormal is 0.mantissa x 2^-126,
+	; and a normal at exponent 1 is 1.mantissa x 2^-126, so the two are on
+	; the same scale: calling the denormal's exponent 1 and leaving its
+	; leading bit clear makes every routine after this treat it like any
+	; other number, with no denormal case in the arithmetic at all.
+	;
+	; 255 means an infinity when the mantissa is empty and a NaN when it
+	; is not. The leading 1 comes off there too, so that the caller can
+	; tell the two apart by whether the significand is zero.
+	ld	a, b
+	cp	a, 255
+	jr	z, .funpack_special
 	or	a, a
 	ret	nz
-	ld	(iy + 0), 0
-	ld	(iy + 1), 0
-	ld	(iy + 2), 0
-	ld	(iy + 3), 0
-	ret
+
+	res	7, (iy + 3)		; no leading 1 after all
+	ld	a, (iy + 1)
+	or	a, (iy + 2)
+	or	a, (iy + 3)
+	ret	z			; nothing left: the number is zero
+	inc	b			; a denormal, on the same scale as a
+	ret				; normal at exponent 1
+
+.funpack_special:
+	res	7, (iy + 3)		; zero significand means an infinity,
+	ret				; anything else a NaN
 
 _acc_rt_fsub:
 	push	hl			; the same as adding the right operand
@@ -1473,6 +1594,17 @@ _acc_rt_fadd:
 	ex	de, hl
 	ld	(ix + 9), b
 	ld	(ix + 11), c
+
+	; An infinity or a NaN on either side is answered here rather than put
+	; through the arithmetic, which has no meaning for either. funpack
+	; leaves both with an exponent of 255 and tells them apart by the
+	; significand: empty is an infinity, anything else a NaN.
+	ld	a, (ix + 8)
+	cp	a, 255
+	jp	z, .fadd_left_special
+	ld	a, (ix + 9)
+	cp	a, 255
+	jp	z, .fadd_right_special
 
 	; The larger exponent has to be the left one, so that aligning only
 	; ever shifts the right operand down.
@@ -1559,7 +1691,7 @@ _acc_rt_fadd:
 	set	0, (ix + 0)
 .fadd_carry_exp:
 	inc	(ix + 8)
-	jp	z, .fadd_overflow
+	jp	z, .fadd_infinity
 	jp	.fadd_round
 
 .fadd_subtract:
@@ -1579,19 +1711,54 @@ _acc_rt_fadd:
 .fadd_normalise:
 	ld	a, (ix + 0)		; an exact cancellation is +0, which is
 	or	a, (ix + 1)		; what IEEE asks for in this rounding
-	or	a, (ix + 2)		; mode
+	or	a, (ix + 2)		; mode, whatever the operands' signs
 	or	a, (ix + 3)
-	jp	z, .fadd_zero
+	jr	nz, .fadd_norm_loop
+	ld	(ix + 10), 0
+	jp	.fadd_zero
 .fadd_norm_loop:
 	bit	7, (ix + 3)
 	jr	nz, .fadd_round
+	ld	a, (ix + 8)		; exponent 1 is as low as a number goes.
+	cp	a, 2			; What is left without a leading bit is
+	jr	c, .fadd_round		; a denormal, and packs as one.
 	sla	(ix + 0)
 	rl	(ix + 1)
 	rl	(ix + 2)
 	rl	(ix + 3)
 	dec	(ix + 8)
-	jr	nz, .fadd_norm_loop
-	jp	.fadd_zero		; shifted down past the smallest exponent
+	jr	.fadd_norm_loop
+
+; The exponent in hl is at or below zero, so the result is too small to have
+; a leading bit of its own. Shifting the significand down by as much as the
+; exponent is short brings it to the denormal scale, where the exponent is 1
+; and the leading bit is wherever it falls. The bits pushed out are kept in
+; the lowest one, so that rounding still sees the difference between a value
+; on the halfway mark and one just above it.
+.fadd_subnormal:
+	ld	de, 1
+	ex	de, hl
+	or	a, a
+	sbc	hl, de			; hl = 1 - the exponent
+	ld	de, 26
+	or	a, a
+	sbc	hl, de
+	jp	nc, .fadd_zero		; further down than the field is wide
+	add	hl, de
+	push	hl
+	pop	de
+	ld	b, e
+	ld	(ix + 8), 1
+.fadd_sub_loop:
+	srl	(ix + 3)
+	rr	(ix + 2)
+	rr	(ix + 1)
+	rr	(ix + 0)
+	jr	nc, .fadd_sub_next
+	set	0, (ix + 0)
+.fadd_sub_next:
+	djnz	.fadd_sub_loop
+	; fall through to rounding
 
 .fadd_round:
 	ld	a, (ix + 0)		; the eight bits below the number
@@ -1614,15 +1781,25 @@ _acc_rt_fadd:
 	; rounding carried out of the top, so the number is a power of two
 	ld	(ix + 3), 0x80
 	inc	(ix + 8)
-	jp	z, .fadd_overflow
+	jp	z, .fadd_infinity
 
 .fadd_pack:
 	ld	a, (ix + 8)
-	or	a, a
-	jp	z, .fadd_zero		; no exponent left to write it with
 	cp	a, 255
-	jp	nc, .fadd_overflow
+	jp	nc, .fadd_infinity
 
+	; Which exponent gets written is what says normal from denormal, and
+	; the significand's leading bit is what decides. A normal one has it
+	; set and it is implied rather than stored; a denormal has it clear
+	; and a stored exponent of zero says so. Rounding a denormal up can
+	; set it, which turns the result into the smallest normal -- and that
+	; needs no special case here, because by then the bit is set and the
+	; exponent to write is the 1 it already has.
+	bit	7, (ix + 3)
+	jr	nz, .fadd_pack_write
+	ld	(ix + 8), 0
+
+.fadd_pack_write:
 	ld	hl, (ix + 12)
 	ld	a, (ix + 1)
 	ld	(hl), a
@@ -1645,22 +1822,43 @@ _acc_rt_fadd:
 	ld	(hl), a
 	jp	.fadd_done
 
-.fadd_overflow:
-	; Nothing here makes an infinity, so the largest finite float is the
-	; answer. It is wrong, and it is wrong by less than an infinity would
-	; be for a program that goes on to compute with it.
+; An exponent past the top. IEEE says the answer is an infinity of the right
+; sign, and a program that goes on to compute with one gets an infinity or a
+; NaN out rather than a large number that looks like an ordinary answer.
+.fadd_infinity:
 	ld	hl, (ix + 12)
-	ld	(hl), 0xff
+	xor	a, a
+	ld	(hl), a
 	inc	hl
-	ld	(hl), 0xff
+	ld	(hl), a
 	inc	hl
-	ld	(hl), 0x7f
+	ld	(hl), a
 	inc	hl
 	ld	a, (ix + 10)
 	or	a, 0x7f
 	ld	(hl), a
+	dec	hl
+	ld	(hl), 0x80		; the exponent's low bit, which lives
+	jp	.fadd_done		; above the mantissa
+
+; A quiet NaN, which is what an operation with no answer produces: every
+; exponent bit set, as an infinity has, and a mantissa that is not empty. The
+; top mantissa bit is the one that makes it quiet rather than signalling.
+.fadd_nan:
+	ld	hl, (ix + 12)
+	xor	a, a
+	ld	(hl), a
+	inc	hl
+	ld	(hl), a
+	inc	hl
+	ld	(hl), 0xc0
+	inc	hl
+	ld	(hl), 0x7f
 	jp	.fadd_done
 
+; Zero takes the sign it was given. An exact cancellation clears that sign
+; first, because IEEE makes x - x a positive zero in this rounding mode
+; whatever the operands were.
 .fadd_zero:
 	ld	hl, (ix + 12)
 	xor	a, a
@@ -1670,6 +1868,7 @@ _acc_rt_fadd:
 	inc	hl
 	ld	(hl), a
 	inc	hl
+	ld	a, (ix + 10)
 	ld	(hl), a
 
 .fadd_done:
@@ -1682,6 +1881,39 @@ _acc_rt_fadd:
 	pop	iy
 	pop	ix
 	ret
+
+.fadd_left_special:
+	ld	a, (ix + 0)
+	or	a, (ix + 1)
+	or	a, (ix + 2)
+	or	a, (ix + 3)
+	jp	nz, .fadd_nan		; a NaN takes everything with it
+
+	ld	a, (ix + 9)		; an infinity, and the right side finite:
+	cp	a, 255			; no finite number moves an infinity
+	jp	nz, .fadd_infinity
+
+	ld	a, (ix + 4)
+	or	a, (ix + 5)
+	or	a, (ix + 6)
+	or	a, (ix + 7)
+	jp	nz, .fadd_nan		; a NaN on the right
+
+	ld	a, (ix + 10)		; two infinities: the same sign gives
+	xor	a, (ix + 11)		; that infinity back, and opposite signs
+	jp	nz, .fadd_nan		; have no answer at all
+	jp	.fadd_infinity
+
+.fadd_right_special:
+	ld	a, (ix + 4)
+	or	a, (ix + 5)
+	or	a, (ix + 6)
+	or	a, (ix + 7)
+	jp	nz, .fadd_nan
+
+	ld	a, (ix + 11)		; the sum is the right side's infinity,
+	ld	(ix + 10), a		; sign and all
+	jp	.fadd_infinity
 
 ; The two operands exchanged: the significands, which are four bytes four
 ; apart, and then the exponents and the signs, which are one byte one apart.
@@ -1810,9 +2042,16 @@ _acc_rt_fmul:
 	and	a, 0x80
 	ld	(ix + 10), a
 
+	ld	a, (ix + 8)		; an infinity or a NaN, as in fadd
+	cp	a, 255
+	jp	z, .fmul_left_special
+	ld	a, (ix + 9)
+	cp	a, 255
+	jp	z, .fmul_right_special
+
 	ld	a, (ix + 8)		; either operand zero makes the product
-	or	a, a			; zero, and there is no exponent for it
-	jp	z, .fadd_zero
+	or	a, a			; zero, which keeps the sign the two
+	jp	z, .fadd_zero		; operands gave it
 	ld	a, (ix + 9)
 	or	a, a
 	jp	z, .fadd_zero
@@ -1859,61 +2098,71 @@ _acc_rt_fmul:
 	rl	(ix + 21)
 
 .fmul_exponent:
-	push	hl			; nothing left of the number
-	pop	de
-	ld	a, d
-	or	a, a
-	jp	nz, .fmul_range		; the high byte says out of a byte's range
-	ld	a, e
-	or	a, a
-	jp	z, .fadd_zero
-	cp	a, 255
-	jp	nc, .fadd_overflow
-	ld	(ix + 8), e
-
-	; The significand is the top twenty-four bits; the twenty-four below
-	; are what rounding reads. Half is exactly 0x800000 of them.
-	ld	a, (ix + 19)
-	ld	(ix + 1), a
-	ld	a, (ix + 20)
-	ld	(ix + 2), a
+	; The result goes into the shape everything else rounds and packs: the
+	; significand is the top twenty-four bits of the product, and the guard
+	; byte below it is the next eight, with the rest of the product folded
+	; into its lowest bit so that nothing below the guard is lost.
 	ld	a, (ix + 21)
 	ld	(ix + 3), a
-
-	ld	a, (ix + 18)
-	cp	a, 0x80
-	jp	c, .fadd_pack		; below half
-	jr	nz, .fmul_up		; above half
-	ld	a, (ix + 16)		; exactly half only if nothing is left
-	or	a, (ix + 17)		; below the halfway bit
-	jr	nz, .fmul_up
-	bit	0, (ix + 1)		; a true tie: to the even significand
-	jp	z, .fadd_pack
-
-.fmul_up:
-	ld	a, (ix + 1)
-	add	a, 1
-	ld	(ix + 1), a
-	ld	a, (ix + 2)
-	adc	a, 0
+	ld	a, (ix + 20)
 	ld	(ix + 2), a
-	ld	a, (ix + 3)
-	adc	a, 0
-	ld	(ix + 3), a
-	jp	nc, .fadd_pack
-	ld	(ix + 3), 0x80		; carried out: the next power of two
-	inc	(ix + 8)
-	jp	z, .fadd_overflow
-	jp	.fadd_pack
+	ld	a, (ix + 19)
+	ld	(ix + 1), a
+	ld	a, (ix + 18)
+	ld	(ix + 0), a
+	ld	a, (ix + 16)
+	or	a, (ix + 17)
+	jr	z, .fmul_exp_range
+	set	0, (ix + 0)
 
-.fmul_range:
-	; The high byte is nonzero, so the exponent is either far too large or
-	; has gone negative. Negative is a borrow out of the subtract above,
-	; which leaves 0xff there.
+.fmul_exp_range:
+	push	hl			; the exponent, as a value that may have
+	pop	de			; gone negative or past a byte
 	ld	a, d
-	cp	a, 0xff
-	jp	z, .fadd_zero
-	jp	.fadd_overflow
+	or	a, a
+	jr	nz, .fmul_wide_exponent
+	ld	a, e
+	or	a, a
+	jp	z, .fadd_subnormal	; zero and below is a denormal or nothing
+	cp	a, 255
+	jp	nc, .fadd_infinity
+	ld	(ix + 8), e
+	jp	.fadd_round
+
+.fmul_wide_exponent:
+	cp	a, 0xff			; the high byte says which end it ran off
+	jp	z, .fadd_subnormal
+	jp	.fadd_infinity
+
+.fmul_left_special:
+	ld	a, (ix + 0)
+	or	a, (ix + 1)
+	or	a, (ix + 2)
+	or	a, (ix + 3)
+	jp	nz, .fadd_nan
+
+	ld	a, (ix + 9)		; an infinity times zero is the one
+	or	a, a			; product with no answer: the two pull
+	jp	z, .fadd_nan		; in opposite directions
+	cp	a, 255
+	jp	nz, .fadd_infinity
+	ld	a, (ix + 4)		; the right side special as well
+	or	a, (ix + 5)
+	or	a, (ix + 6)
+	or	a, (ix + 7)
+	jp	nz, .fadd_nan
+	jp	.fadd_infinity		; two infinities multiply to one
+
+.fmul_right_special:
+	ld	a, (ix + 4)
+	or	a, (ix + 5)
+	or	a, (ix + 6)
+	or	a, (ix + 7)
+	jp	nz, .fadd_nan
+	ld	a, (ix + 8)
+	or	a, a
+	jp	z, .fadd_nan		; zero times an infinity
+	jp	.fadd_infinity
 
 ; --------------------------------------------------- float divide
 ; (hl) = (hl) / (de).
@@ -1971,13 +2220,54 @@ _acc_rt_fdiv:
 	and	a, 0x80
 	ld	(ix + 10), a
 
-	ld	a, (ix + 8)		; zero divided by anything is zero
-	or	a, a
-	jp	z, .fadd_zero
-	ld	a, (ix + 9)		; and dividing by zero is undefined, so
-	or	a, a			; the largest finite float will do
-	jp	z, .fadd_overflow
+	ld	a, (ix + 8)		; an infinity or a NaN, as in fadd
+	cp	a, 255
+	jp	z, .fdiv_left_special
+	ld	a, (ix + 9)
+	cp	a, 255
+	jp	z, .fdiv_right_special
 
+	ld	a, (ix + 8)
+	or	a, a
+	jr	nz, .fdiv_nonzero
+	ld	a, (ix + 9)		; zero over zero has no answer; zero
+	or	a, a			; over anything else is zero
+	jp	z, .fadd_nan
+	jp	.fadd_zero
+
+.fdiv_nonzero:
+	ld	a, (ix + 9)		; a finite number over zero is an
+	or	a, a			; infinity, which is what IEEE says and
+	jp	z, .fadd_infinity	; C leaves undefined
+
+	jp	.fdiv_finite
+
+.fdiv_left_special:
+	ld	a, (ix + 0)
+	or	a, (ix + 1)
+	or	a, (ix + 2)
+	or	a, (ix + 3)
+	jp	nz, .fadd_nan
+
+	ld	a, (ix + 9)		; an infinity over an infinity has no
+	cp	a, 255			; answer; over anything else it is an
+	jp	nz, .fadd_infinity	; infinity
+	ld	a, (ix + 4)
+	or	a, (ix + 5)
+	or	a, (ix + 6)
+	or	a, (ix + 7)
+	jp	nz, .fadd_nan
+	jp	.fadd_nan
+
+.fdiv_right_special:
+	ld	a, (ix + 4)
+	or	a, (ix + 5)
+	or	a, (ix + 6)
+	or	a, (ix + 7)
+	jp	nz, .fadd_nan
+	jp	.fadd_zero		; a finite number over an infinity
+
+.fdiv_finite:
 	; Which bias the exponent takes, and how many bits the loop has to
 	; produce: a dividend at least the divisor gives its leading 1 at once,
 	; and one fewer iteration is needed for the same twenty-four bits.
@@ -1989,19 +2279,21 @@ _acc_rt_fdiv:
 
 	add	hl, de			; smaller: the subtract did not happen,
 	ld	(ix + 16), hl		; so the whole dividend is the remainder
-	ld	(ix + 1), 0		; and the whole quotient comes from the
-	ld	(ix + 2), 0		; loop, one exponent lower
+	ld	(ix + 0), 0		; and the whole quotient comes from the
+	ld	(ix + 1), 0		; loop, one exponent lower
+	ld	(ix + 2), 0
 	ld	(ix + 3), 0
-	ld	b, 25			; twenty-four bits and the guard
+	ld	b, 32
 	ld	c, 126
 	jr	.fdiv_exponent
 
 .fdiv_ge:
 	ld	(ix + 16), hl		; what the leading 1 left behind
-	ld	(ix + 1), 1		; and that 1, already in place
+	ld	(ix + 0), 1		; and that 1, already in place
+	ld	(ix + 1), 0
 	ld	(ix + 2), 0
 	ld	(ix + 3), 0
-	ld	b, 24			; twenty-three more and the guard
+	ld	b, 31
 	ld	c, 127
 
 .fdiv_exponent:
@@ -2016,36 +2308,22 @@ _acc_rt_fdiv:
 	ld	e, c
 	add	hl, de			; plus the bias
 
-	push	hl			; the high byte says whether a byte
-	pop	de			; can hold it
-	ld	a, d
-	or	a, a
-	jr	z, .fdiv_exp_byte
-	pop	bc
-	cp	a, 0xff			; negative, so far below the smallest
-	jp	z, .fadd_zero
-	jp	.fadd_overflow
-
-.fdiv_exp_byte:
-	ld	a, e
-	or	a, a
-	jr	nz, .fdiv_exp_high
-	pop	bc
-	jp	.fadd_zero
-.fdiv_exp_high:
-	cp	a, 255
-	jr	c, .fdiv_exp_ok
-	pop	bc
-	jp	.fadd_overflow
-.fdiv_exp_ok:
-	ld	(ix + 8), e
-	pop	bc			; the count back into b
+	ld	(ix + 20), hl		; kept until there is a quotient to go
+	pop	bc			; with it, because whether it is in
+					; range decides nothing until then
 
 	ld	hl, (ix + 16)		; the remainder, in a register for the
 	ld	de, (ix + 5)		; whole loop, as is the divisor
 
+	; The quotient is built across the whole thirty-two bit field rather
+	; than the twenty-four of the significand, so that its leading bit
+	; lands at bit 31 and the eight below the number come out of the
+	; division too. That is the shape everything else rounds and packs,
+	; and it is why the count is 31 or 32 and not 24 or 25: the extra
+	; iterations are the guard byte.
 .fdiv_loop:
-	sla	(ix + 1)		; the quotient makes room for the bit
+	sla	(ix + 0)		; the quotient makes room for the bit
+	rl	(ix + 1)
 	rl	(ix + 2)
 	rl	(ix + 3)
 	add	hl, hl			; and the remainder doubles
@@ -2059,42 +2337,249 @@ _acc_rt_fdiv:
 	or	a, a			; above twenty-four bits, so the divisor
 	sbc	hl, de			; fits however the borrow reads
 .fdiv_fits:
-	inc	(ix + 1)		; the shift left bit 0 clear
+	inc	(ix + 0)		; the shift left bit 0 clear
 .fdiv_next:
 	djnz	.fdiv_loop
 
-	; The last bit produced is the guard; it sits at the bottom of the
-	; quotient and has to come out before the significand is packed.
-	ld	a, (ix + 1)
-	push	af
-	srl	(ix + 3)
-	rr	(ix + 2)
-	rr	(ix + 1)
-	pop	af
-	bit	0, a
-	jp	z, .fadd_pack		; below half
-
-	; The guard is set: a remainder of nothing is a tie, anything else is
-	; above half.
+	; Whatever is left of the remainder goes into the lowest bit, so that a
+	; quotient that stopped exactly on the halfway mark can be told from
+	; one that merely rounds to it.
 	ld	de, 0			; hl == 0 over all three bytes: `ld a, h`
 	or	a, a			; would reach two of them and the third
 	sbc	hl, de			; has no name, but a subtract of zero
-	jr	nz, .fdiv_up		; sets Z from the whole width
-	bit	0, (ix + 1)		; a true tie: to the even significand
-	jp	z, .fadd_pack
+	jr	z, .fdiv_rounded	; sets Z from the whole width
+	set	0, (ix + 0)
 
-.fdiv_up:
-	ld	a, (ix + 1)
-	add	a, 1
+.fdiv_rounded:
+	ld	hl, (ix + 20)		; and now the exponent has to answer for
+	push	hl			; itself
+	pop	de
+	ld	a, d
+	or	a, a
+	jr	nz, .fdiv_wide_exponent
+	ld	a, e
+	or	a, a
+	jp	z, .fadd_subnormal
+	cp	a, 255
+	jp	nc, .fadd_infinity
+	ld	(ix + 8), e
+	jp	.fadd_round
+
+.fdiv_wide_exponent:
+	cp	a, 0xff			; the high byte says which end it ran off
+	jp	z, .fadd_subnormal
+	jp	.fadd_infinity
+
+; --------------------------------------------------- long to float and back
+; A long is thirty-two bits and a float keeps twenty-four of significand, so
+; unlike an int a long does not always land on a float exactly. These are the
+; routines that round it, which is why they are not itof with a wider input.
+;
+; Both work in place: the four bytes at (hl) are read as one type and written
+; back as the other, which is what the caller wants -- a long and a float are
+; the same width and live in the same kind of frame slot.
+;
+; ltof needs no rounding code of its own. Shifting the magnitude up until its
+; leading bit reaches bit 31 leaves the number in bits 31..8 and whatever was
+; below it in bits 7..0, which is exactly the shape fadd rounds and packs.
+
+	.global _acc_rt_ltof
+	.global _acc_rt_ultof
+	.global _acc_rt_ftol
+
+_acc_rt_ltof:
+	push	ix
+	push	iy
+	push	bc
+	push	de
+	push	hl
+
+	ld	ix, -24
+	add	ix, sp
+	ld	sp, ix
+	ld	(ix + 12), hl
+
+	ld	b, 0			; the sign
+	ld	a, (hl)
+	ld	(ix + 0), a
+	inc	hl
+	ld	a, (hl)
 	ld	(ix + 1), a
-	ld	a, (ix + 2)
-	adc	a, 0
+	inc	hl
+	ld	a, (hl)
 	ld	(ix + 2), a
-	ld	a, (ix + 3)
-	adc	a, 0
+	inc	hl
+	ld	a, (hl)
 	ld	(ix + 3), a
-	jp	nc, .fadd_pack
-	ld	(ix + 3), 0x80		; carried out: the next power of two
-	inc	(ix + 8)
-	jp	z, .fadd_overflow
-	jp	.fadd_pack
+
+	bit	7, a
+	jr	z, .ltof_magnitude
+	ld	b, 0x80
+	ld	a, 0
+	sub	a, (ix + 0)
+	ld	(ix + 0), a
+	ld	a, 0			; ld leaves the borrow alone
+	sbc	a, (ix + 1)
+	ld	(ix + 1), a
+	ld	a, 0
+	sbc	a, (ix + 2)
+	ld	(ix + 2), a
+	ld	a, 0
+	sbc	a, (ix + 3)
+	ld	(ix + 3), a
+	jr	.ltof_magnitude
+
+_acc_rt_ultof:
+	push	ix
+	push	iy
+	push	bc
+	push	de
+	push	hl
+
+	ld	ix, -24
+	add	ix, sp
+	ld	sp, ix
+	ld	(ix + 12), hl
+
+	ld	b, 0			; never negative, so no magnitude to take
+	ld	a, (hl)
+	ld	(ix + 0), a
+	inc	hl
+	ld	a, (hl)
+	ld	(ix + 1), a
+	inc	hl
+	ld	a, (hl)
+	ld	(ix + 2), a
+	inc	hl
+	ld	a, (hl)
+	ld	(ix + 3), a
+
+.ltof_magnitude:
+	ld	(ix + 10), b		; the sign, in the place pack reads it
+	ld	a, (ix + 0)
+	or	a, (ix + 1)
+	or	a, (ix + 2)
+	or	a, (ix + 3)
+	jp	z, .fadd_zero
+
+	ld	c, 158			; 127 + 31: the exponent when the top
+					; bit is already bit 31
+.ltof_shift:
+	bit	7, (ix + 3)
+	jr	nz, .ltof_done
+	sla	(ix + 0)
+	rl	(ix + 1)
+	rl	(ix + 2)
+	rl	(ix + 3)
+	dec	c
+	jr	.ltof_shift
+
+.ltof_done:
+	ld	(ix + 8), c
+	jp	.fadd_round		; the eight bits below the number are
+					; already where rounding looks for them
+
+; hl -> the float, overwritten by the long. Truncated towards zero, as C says;
+; a value too large for a long is undefined and is left to wrap.
+_acc_rt_ftol:
+	push	ix
+	push	iy
+	push	bc
+	push	de
+	push	hl
+
+	ld	ix, -12
+	add	ix, sp
+	ld	sp, ix
+	ld	(ix + 8), hl
+
+	push	hl
+	pop	iy
+
+	ld	a, (iy + 3)		; the exponent, split across two bytes
+	and	a, 0x7f
+	add	a, a
+	ld	b, a
+	ld	a, (iy + 2)
+	rlca
+	and	a, 1
+	add	a, b
+	ld	b, a			; b = the biased exponent
+
+	ld	c, 0			; c = the sign
+	bit	7, (iy + 3)
+	jr	z, .ftol_significand
+	ld	c, 1
+
+.ftol_significand:
+	ld	(ix + 0), 0		; the significand in bits 31..8, which
+	ld	a, (iy + 0)		; makes the value (ix+0..3) / 2^(158-e)
+	ld	(ix + 1), a
+	ld	a, (iy + 1)
+	ld	(ix + 2), a
+	ld	a, (iy + 2)
+	and	a, 0x7f
+	or	a, 0x80
+	ld	(ix + 3), a
+
+	ld	a, 158			; how far down the point has to come
+	sub	a, b
+	jr	c, .ftol_store		; past the top: undefined, so as it is
+	cp	a, 32
+	jr	nc, .ftol_zero		; everything shifts out
+	or	a, a
+	jr	z, .ftol_store
+	ld	b, a
+.ftol_shift:
+	srl	(ix + 3)
+	rr	(ix + 2)
+	rr	(ix + 1)
+	rr	(ix + 0)
+	djnz	.ftol_shift
+	jr	.ftol_store
+
+.ftol_zero:
+	ld	(ix + 0), 0
+	ld	(ix + 1), 0
+	ld	(ix + 2), 0
+	ld	(ix + 3), 0
+
+.ftol_store:
+	bit	0, c
+	jr	z, .ftol_out
+	ld	a, 0
+	sub	a, (ix + 0)
+	ld	(ix + 0), a
+	ld	a, 0
+	sbc	a, (ix + 1)
+	ld	(ix + 1), a
+	ld	a, 0
+	sbc	a, (ix + 2)
+	ld	(ix + 2), a
+	ld	a, 0
+	sbc	a, (ix + 3)
+	ld	(ix + 3), a
+
+.ftol_out:
+	ld	hl, (ix + 8)
+	ld	a, (ix + 0)
+	ld	(hl), a
+	inc	hl
+	ld	a, (ix + 1)
+	ld	(hl), a
+	inc	hl
+	ld	a, (ix + 2)
+	ld	(hl), a
+	inc	hl
+	ld	a, (ix + 3)
+	ld	(hl), a
+
+	ld	hl, 12
+	add	hl, sp
+	ld	sp, hl
+	pop	hl
+	pop	de
+	pop	bc
+	pop	iy
+	pop	ix
+	ret

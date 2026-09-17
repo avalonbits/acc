@@ -336,9 +336,6 @@ void vconvert(Type to)
     if (type_float(to) != type_float(top->type)
         && !(top->kind == VAL_CONST && top->val == 0)) {
         if (type_float(to)) {
-            if (type_wide(top->type))
-                acc_error_at(tok_line, "converting a long to a floating-point "
-                                       "type is not implemented yet");
             convert_int_to_float();
             if (to != TY_FLOAT)
                 (vsp - 1)->type = to;
@@ -346,9 +343,6 @@ void vconvert(Type to)
             return;
         }
 
-        if (type_wide(to))
-            acc_error_at(tok_line, "converting a floating-point type to a long "
-                                   "is not implemented yet");
         convert_float_to_int(to);
 
         return;
@@ -1348,6 +1342,24 @@ static void convert_int_to_float(void)
     int slot;
 
     save_regs_below(1);
+
+    /* A long is already four bytes in the frame and the routine rewrites it
+     * where it lies, which is what the caller wants: a long and a float are
+     * the same width and want the same kind of slot. */
+    if (type_wide(top->type)) {
+        slot = long_scratch();
+        materialise_long(slot, top->type);
+        vdrop();
+
+        need_disp(slot);
+        need_disp(slot + ACC_LONG_SIZE - 1);
+        lea_rr_ix(R_HL, slot);
+        rt_call(unsign ? RT_ULTOF : RT_LTOF);
+        vpush(VAL_LOCAL, TY_FLOAT, slot);
+
+        return;
+    }
+
     force_into(top, R_HL);
 
     slot = long_scratch();
@@ -1361,7 +1373,6 @@ static void convert_int_to_float(void)
 
 static void convert_float_to_int(Type to)
 {
-    Value *top = vsp - 1;
     int slot;
 
     save_regs_below(1);
@@ -1376,6 +1387,15 @@ static void convert_float_to_int(Type to)
     need_disp(slot);
     need_disp(slot + ACC_LONG_SIZE - 1);
     lea_rr_ix(R_HL, slot);
+
+    /* A long stays in the frame, where the routine rewrites it in place. */
+    if (type_wide(to)) {
+        rt_call(RT_FTOL);
+        vpush(VAL_LOCAL, to, slot);
+
+        return;
+    }
+
     rt_call(RT_FTOI);
     vpush_reg(R_HL);
     (vsp - 1)->type = TY_INT;
@@ -1386,7 +1406,6 @@ static void convert_float_to_int(Type to)
         vconvert(to);
     else
         (vsp - 1)->type = to;
-    (void) top;
 }
 
 /* The bytes of a float and of an integer mean different things, so moving a
@@ -1581,6 +1600,58 @@ static void vbinop_long(int op, Type result)
     vpush(VAL_LOCAL, result, left);
 }
 
+/* A float comparison comes back as a code in A -- 0 below, 1 equal, 2 above,
+ * 3 unordered -- and this turns it into the 0 or 1 the language wants.
+ *
+ * Four outcomes rather than three is what NaN costs. A NaN is not below,
+ * equal to or above anything, itself included, so `x < y` and `x >= y` are
+ * both false when either operand is one. No ordering of three can say that,
+ * which is why the routine hands back a code instead of leaving the flags for
+ * a branch to read the way the integer comparisons do.
+ *
+ * Each test below leaves the answer in a flag that cmp_equal or cmp_unsigned
+ * can already turn into a value. `>=` is the only one that needs two
+ * instructions: it is true for the codes 1 and 2, which is the pair a `dec`
+ * brings to 0 and 1 and an unsigned compare against 2 then catches. */
+static void cmp_from_code(int op)
+{
+    switch (op) {
+    case TK_LT:
+        out_byte(0xfe); out_byte(0);            /* cp a, 0 */
+        cmp_equal(1);
+
+        return;
+    case TK_EQ:
+        out_byte(0xfe); out_byte(1);
+        cmp_equal(1);
+
+        return;
+    case TK_GT:
+        out_byte(0xfe); out_byte(2);
+        cmp_equal(1);
+
+        return;
+    case TK_NE:
+        out_byte(0xfe); out_byte(1);
+        cmp_equal(0);
+
+        return;
+    case TK_LE:
+        out_byte(0xfe); out_byte(2);            /* below or equal: 0 or 1 */
+        cmp_unsigned(1);
+
+        return;
+    case TK_GE:
+        out_byte(0x3d);                         /* dec a */
+        out_byte(0xfe); out_byte(2);
+        cmp_unsigned(1);
+
+        return;
+    }
+
+    acc_error("internal: %s is not a comparison", tok_spelling(op));
+}
+
 /* Comparing two four-byte values, whether they are longs or floats.
  *
  * A float goes through fkey first, which rewrites it as the unsigned integer
@@ -1613,11 +1684,16 @@ static void vcmp_wide(int op, Type operand)
     need_disp(left);
     need_disp(right);
 
+    /* A float comparison answers in four ways and not three, so it does not
+     * go through the same tail as the integer ones. */
     if (floating) {
         lea_rr_ix(R_HL, left);
-        rt_call(RT_FKEY);
-        lea_rr_ix(R_HL, right);
-        rt_call(RT_FKEY);
+        lea_rr_ix(R_DE, right);
+        rt_call(RT_FCMP);
+        cmp_from_code(op);
+        vpush_reg(R_HL);
+
+        return;
     }
 
     /* `a > b` is `b < a` and `a <= b` is `b >= a`, done by which address goes
