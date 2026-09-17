@@ -59,6 +59,16 @@ typedef unsigned char Type;
 #define TY_UINT     ((Type) (ACC_INT_SIZE | TY_UNSIGNED))
 #define TY_LONG     ((Type) ACC_LONG_SIZE)
 #define TY_ULONG    ((Type) (ACC_LONG_SIZE | TY_UNSIGNED))
+
+/* float and double are one type here: agondev makes both four-byte IEEE 754
+ * single precision, and compiles double arithmetic to the same routines. So
+ * there is one floating type, four bytes wide, and the flag that marks it has
+ * to live outside the width field -- which is why it is 0x10 rather than a
+ * size the width could be confused with. */
+#define TY_FLOATING 0x10
+#define TY_FLOAT    ((Type) (ACC_LONG_SIZE | TY_FLOATING))
+
+#define type_float(ty)    ((ty) & TY_FLOATING)
 #define TY_VOID     ((Type) 0)
 
 /* A long is wider than any register, so it never lives in one: it stays in
@@ -113,6 +123,9 @@ enum {
     TK_KW_LONG,
     TK_KW_SIGNED,
     TK_KW_UNSIGNED,
+    TK_KW_FLOAT,
+    TK_KW_DOUBLE,
+    TK_FLOAT,        /* a floating literal; tok_fval holds it */
 
     /* punctuation, one per spelling so the parser never re-reads text */
     TK_LPAREN, TK_RPAREN, TK_LBRACE, TK_RBRACE,
@@ -132,6 +145,7 @@ extern int      tok;        /* the current token */
  * long arithmetic that costs on this target is not on a path that matters. */
 extern long     tok_val;    /* its value, when TK_INT */
 extern Type     tok_type;   /* and its type, which C99 fixes by its size */
+extern float    tok_fval;   /* its value, when TK_FLOAT */
 extern NameRef  tok_name;   /* its name, when TK_IDENT */
 extern int      tok_line;   /* the line it started on */
 extern int      tok_prev_line; /* where the token before it ended */
@@ -227,6 +241,7 @@ int  gen_local(int size);             /* reserve a slot; returns its offset */
 
 void vpush_const(int val, Type type);
 void vpush_const_long(long val, Type type);  /* four bytes, so it goes to the frame */
+void vpush_const_float(float val);
 void vconvert(Type to);               /* narrow the top, then widen it back */
 Type vtype(void);                     /* the type of the top */
 Type vtype_at(int depth);             /* 0 is the top, 1 the one below */

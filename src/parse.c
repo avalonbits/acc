@@ -62,6 +62,13 @@ static Type narrow_dest;
 /* A name used as a value: a local read, or a call. */
 static void primary(void)
 {
+    if (tok == TK_FLOAT) {
+        vpush_const_float(tok_fval);
+        next();
+
+        return;
+    }
+
     if (tok == TK_INT) {
         if (type_wide(tok_type))
             vpush_const_long(tok_val, tok_type);
@@ -268,8 +275,16 @@ static void binary_rest(int min_prec)
             /* C converts both sides to long when either is one, and the
              * result is a long -- or, for a comparison, an int taken from a
              * long-wide comparison. */
-            Type wide = (type_unsigned(vtype_at(1)) || type_unsigned(vtype_at(0)))
-                        ? TY_ULONG : TY_LONG;
+            /* C's conversions: floating wins over integer, and among the
+             * integers unsigned wins. */
+            Type wide;
+
+            if (type_float(vtype_at(1)) || type_float(vtype_at(0)))
+                wide = TY_FLOAT;
+            else if (type_unsigned(vtype_at(1)) || type_unsigned(vtype_at(0)))
+                wide = TY_ULONG;
+            else
+                wide = TY_LONG;
 
             if (is_comparison(op))
                 vcmp_long(op, wide);
@@ -393,7 +408,9 @@ static const unsigned char spec_alone[TK_COUNT] = {
     [TK_KW_INT]      = TY_INT + 1,
     [TK_KW_SIGNED]   = TY_INT + 1,
     [TK_KW_UNSIGNED] = TY_UINT + 1,
-    [TK_KW_LONG]     = TY_LONG + 1
+    [TK_KW_LONG]     = TY_LONG + 1,
+    [TK_KW_FLOAT]    = TY_FLOAT + 1,
+    [TK_KW_DOUBLE]   = TY_FLOAT + 1
 };
 
 static int starts_type(int token)
@@ -406,7 +423,7 @@ static int starts_type(int token)
 static Type type_specifier_slow(int first, int line)
 {
     int is_void = 0, is_char = 0, is_short = 0, is_int = 0;
-    int is_long = 0, is_signed = 0, is_unsigned = 0;
+    int is_long = 0, is_signed = 0, is_unsigned = 0, is_float = 0;
     int token = first;
 
     for (;;) {
@@ -418,6 +435,8 @@ static Type type_specifier_slow(int first, int line)
         case TK_KW_LONG:     is_long++;     break;
         case TK_KW_SIGNED:   is_signed++;   break;
         case TK_KW_UNSIGNED: is_unsigned++; break;
+        case TK_KW_FLOAT:    is_float++;    break;
+        case TK_KW_DOUBLE:   is_float++;    break;
         }
         if (!starts_type(tok))
             break;
@@ -425,7 +444,7 @@ static Type type_specifier_slow(int first, int line)
         next();
     }
 
-    if (is_long > 1)
+    if (is_long > 1 && !is_float)
         acc_error_at(line, "'long long' is not supported yet");
     if (is_signed && is_unsigned)
         acc_error_at(line, "'signed' and 'unsigned' together");
@@ -436,6 +455,15 @@ static Type type_specifier_slow(int first, int line)
     if (is_short && is_long)
         acc_error_at(line, "'short' and 'long' together");
 
+    if (is_float) {
+        if (is_char || is_short || is_int || is_signed || is_unsigned)
+            acc_error_at(line, "a floating type with an integer one");
+        if (is_long)
+            acc_error_at(line, "'long double' is not supported: it is eight "
+                               "bytes and agondev has no arithmetic for it");
+
+        return TY_FLOAT;
+    }
     if (is_void)
         return TY_VOID;
     if (is_char)

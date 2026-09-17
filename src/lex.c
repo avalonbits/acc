@@ -223,6 +223,7 @@ static int   line;
 
 int      tok;
 long     tok_val;
+float    tok_fval;
 NameRef  tok_name;
 int      tok_line;
 Type     tok_type;
@@ -343,6 +344,8 @@ static void keywords_init(void)
     keyword("long", 4, TK_KW_LONG);
     keyword("signed", 6, TK_KW_SIGNED);
     keyword("unsigned", 8, TK_KW_UNSIGNED);
+    keyword("float", 5, TK_KW_FLOAT);
+    keyword("double", 6, TK_KW_DOUBLE);
 }
 
 /* Punctuation, by the character that begins it. TK_EOF means the character
@@ -375,6 +378,52 @@ void next(void)
     if (c == '\0') {
         tok = TK_EOF;
         return;
+    }
+
+    /* A floating literal is a run of digits with a `.`, an exponent, or an
+     * `f` suffix somewhere in it. Which it is cannot be told from the first
+     * character, so the run is looked over before it is read: everything up
+     * to the first character that can be in neither kind. */
+    if (is_digit(c) || (c == '.' && is_digit((unsigned char) cursor[1]))) {
+        const char *scan = cursor;
+        int floating = (c == '.');
+
+        while (is_digit((unsigned char) *scan))
+            scan++;
+        if (*scan == '.') {
+            floating = 1;
+            scan++;
+            while (is_digit((unsigned char) *scan))
+                scan++;
+        }
+        if (*scan == 'e' || *scan == 'E') {
+            const char *exp = scan + 1;
+
+            if (*exp == '+' || *exp == '-')
+                exp++;
+            if (is_digit((unsigned char) *exp))
+                floating = 1;
+        }
+        if (*scan == 'f' || *scan == 'F')
+            floating = 1;
+
+        if (floating) {
+            /* Converted by the host's own strtod, whose float is the same
+             * four-byte IEEE 754 single this target uses -- so the bits acc
+             * emits are the bits the machine would have computed. */
+            char *end;
+
+            tok_fval = (float) strtod(cursor, &end);
+            if (end == cursor)
+                acc_error_at(line, "a floating-point number with no digits");
+            cursor = end;
+            if (*cursor == 'f' || *cursor == 'F')
+                cursor++;
+            tok = TK_FLOAT;
+            tok_type = TY_FLOAT;
+
+            return;
+        }
     }
 
     if (is_digit(c)) {
@@ -500,6 +549,9 @@ const char *tok_spelling(int token)
     case TK_KW_LONG:   return "'long'";
     case TK_KW_SIGNED: return "'signed'";
     case TK_KW_UNSIGNED: return "'unsigned'";
+    case TK_KW_FLOAT:  return "'float'";
+    case TK_KW_DOUBLE: return "'double'";
+    case TK_FLOAT:     return "a floating-point number";
     case TK_LPAREN:    return "'('";
     case TK_RPAREN:    return "')'";
     case TK_LBRACE:    return "'{'";

@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "acc.h"
 #include "rt_helpers.h"
@@ -74,6 +75,7 @@ static void need_disp(int d)
 static int  spill_slot(void);
 static int  force_reg_at(int depth);
 static int  long_scratch(void);
+static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
 static void force_into(Value *target, int want);
@@ -318,6 +320,7 @@ void vconvert(Type to)
 
     if (vtop <= 0)
         acc_error("internal: nothing to convert");
+    check_no_float_mix(to, top);
 
     if (type_wide(to)) {
         int slot;
@@ -501,6 +504,12 @@ static int force_reg_at(int depth)
 {
     Value *val = vsp - 1 - depth;
     int reg;
+
+    /* Forcing a value into a register is asking for it as an integer. For a
+     * float that is a conversion, not a load of its low three bytes. */
+    if (type_float(val->type))
+        acc_error_at(tok_line, "converting a floating-point value to an "
+                               "integer is not implemented yet");
 
     if (val->kind == VAL_REG)
         return val->val;
@@ -797,6 +806,8 @@ void vbinop(int op)
 void vstore_local(int offset, Type type)
 {
     int reg;
+
+    check_no_float_mix(type, vsp - 1);
 
     if (type_wide(type)) {
         need_disp(offset);
@@ -1238,10 +1249,27 @@ static void store_int_as_long(int disp, int is_unsigned)
     ld_ix_a(disp + ACC_INT_SIZE);
 }
 
+/* The bytes of a float and of an integer mean different things, so moving a
+ * value between them is arithmetic and not a copy. Every path that widens or
+ * stores four bytes comes through here, which is why the check lives here
+ * rather than at each of them. */
+static void check_no_float_mix(Type to, const Value *from)
+{
+    if (type_float(to) == type_float(from->type))
+        return;
+    if (from->kind == VAL_CONST && from->val == 0)
+        return;                 /* zero is all zero bits either way */
+
+    acc_error_at(tok_line, "converting between floating-point and integer is "
+                           "not implemented yet");
+}
+
 /* Put the top of the stack into a long slot, whatever width it arrived as. */
 static void materialise_long(int disp, Type type)
 {
     Value *top = vsp - 1;
+
+    check_no_float_mix(type, top);
 
     if (top->kind == VAL_LOCAL && type_wide(top->type)) {
         copy_long(disp, top->val);
@@ -1250,6 +1278,27 @@ static void materialise_long(int disp, Type type)
     }
     force_into(top, R_HL);
     store_int_as_long(disp, type_unsigned(top->type));
+}
+
+/* A floating constant, laid down as the four bytes the machine reads. The
+ * host's float is the same IEEE 754 single this target uses, so the bits are
+ * taken from it rather than assembled: anything else would be a second
+ * implementation of the format, to be got wrong separately. */
+void vpush_const_float(float val)
+{
+    int slot = spill_slot_of(ACC_LONG_SIZE);
+    unsigned char bytes[ACC_LONG_SIZE];
+    int i;
+
+    memcpy(bytes, &val, ACC_LONG_SIZE);
+    need_disp(slot);
+    need_disp(slot + ACC_LONG_SIZE - 1);
+    for (i = 0; i < ACC_LONG_SIZE; i++) {
+        out_byte(0x3e);                         /* ld a, n */
+        out_byte(bytes[i]);
+        ld_ix_a(slot + i);
+    }
+    vpush(VAL_LOCAL, TY_FLOAT, slot);
 }
 
 /* A constant too wide for a register goes straight to a frame slot, which is
@@ -1302,9 +1351,17 @@ int vlong_pair(void)
 
 void vbinop_long(int op, Type result)
 {
-    int which = long_helper(op, result);
+    int which;
     int left, right;
 
+    /* The four-byte routines are integer ones: they walk the bytes with a
+     * carry, which is not what the exponent and mantissa of a float want. A
+     * float would come out of them as arithmetic on its bit pattern, which is
+     * silently wrong, so it is refused until there is a routine for it. */
+    if (type_float(result))
+        acc_error_at(tok_line, "floating-point arithmetic is not implemented yet");
+
+    which = long_helper(op, result);
     if (which < 0)
         acc_error("the operator %s is not implemented for long yet",
                   tok_spelling(op));
@@ -1331,6 +1388,9 @@ void vbinop_long(int op, Type result)
 void vcmp_long(int op, Type operand)
 {
     int left, right;
+
+    if (type_float(operand))
+        acc_error_at(tok_line, "comparing floating-point values is not implemented yet");
 
     right = long_scratch();
     materialise_long(right, operand);
