@@ -29,6 +29,39 @@
 #define ACC_PTR_SIZE   3
 
 /* ------------------------------------------------------------------ */
+/* types                                                               */
+
+/* An integer type is its width in bytes and whether it is signed, and that is
+ * everything the code generator needs: the width says how many bytes a load
+ * or a store touches, and the sign says how a narrow value is widened and how
+ * two values compare.
+ *
+ * The widths are agondev's, so that a program compiled by both comes out the
+ * same: char 1, short 2, int and pointers 3. long is 4 and long long 8, and
+ * neither is here yet -- both need a value to live in more than one register,
+ * which is a different piece of work from this one. */
+typedef unsigned char Type;
+
+#define TY_SIZE_MASK  0x07              /* the width, in bytes */
+#define TY_UNSIGNED   0x08
+
+#define TY_CHAR     ((Type) 1)
+#define TY_UCHAR    ((Type) (1 | TY_UNSIGNED))
+#define TY_SHORT    ((Type) 2)
+#define TY_USHORT   ((Type) (2 | TY_UNSIGNED))
+#define TY_INT      ((Type) ACC_INT_SIZE)
+#define TY_UINT     ((Type) (ACC_INT_SIZE | TY_UNSIGNED))
+#define TY_VOID     ((Type) 0)
+
+#define type_size(ty)     ((int) ((ty) & TY_SIZE_MASK))
+#define type_unsigned(ty) ((ty) & TY_UNSIGNED)
+
+/* C promotes anything narrower than int to int before doing arithmetic on it,
+ * so a value in a register is always int-wide. Only loads, stores and casts
+ * deal in the narrow widths. */
+#define type_promote(ty)  ((Type) (type_size(ty) < ACC_INT_SIZE ? TY_INT : (ty)))
+
+/* ------------------------------------------------------------------ */
 /* diagnostics                                                         */
 
 void acc_error(const char *fmt, ...);   /* reports and does not return */
@@ -62,6 +95,11 @@ enum {
     TK_KW_IF,
     TK_KW_ELSE,
     TK_KW_WHILE,
+    TK_KW_CHAR,
+    TK_KW_SHORT,
+    TK_KW_LONG,
+    TK_KW_SIGNED,
+    TK_KW_UNSIGNED,
 
     /* punctuation, one per spelling so the parser never re-reads text */
     TK_LPAREN, TK_RPAREN, TK_LBRACE, TK_RBRACE,
@@ -111,7 +149,7 @@ typedef struct {
     NameRef       name;
     unsigned char kind;
     int           val;
-    unsigned char pad;
+    Type          type;         /* fits in what was the pad byte */
 } Sym;
 
 void sym_init(void);
@@ -141,7 +179,9 @@ enum {
  * constant, the offset or the register number, according to `kind`. */
 typedef struct {
     unsigned char kind;
+    Type          type;
     int           val;
+    unsigned char pad[3];       /* eight bytes: see the note on Sym */
 } Value;
 
 /* ------------------------------------------------------------------ */
@@ -153,14 +193,16 @@ typedef struct {
 enum { R_HL = 0, R_DE, R_BC, NREGS };
 
 void gen_init(void);
-void gen_func_begin(int fn, int nparams);
+void gen_func_begin(int fn, int nparams, Type returns);
 void gen_func_end(void);
-int  gen_local(void);                 /* reserve a slot; returns its offset */
+int  gen_local(int size);             /* reserve a slot; returns its offset */
 
-void vpush_const(int v);
-void vpush_local(int offset);
+void vpush_const(int val);
+void vconvert(Type to);               /* narrow the top, then widen it back */
+Type vtype(void);                     /* the type of the top */
+void vpush_local(int offset, Type type);
 void vpush_reg(int reg);
-void vstore_local(int offset);        /* pop the top into a local */
+void vstore_local(int offset, Type type); /* pop the top into a local */
 void vbinop(int t);                   /* combine the top two with token t */
 void vcmp(int op);                    /* compare the top two; leaves 0 or 1 */
 void vneg(void);

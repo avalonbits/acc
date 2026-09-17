@@ -128,7 +128,7 @@ static void primary(void)
             acc_error_at(tok_line, "'%s' is not declared", name_text(name));
         if (sym_at(sym)->kind != SYM_LOCAL)
             acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
-        vpush_local(sym_at(sym)->val);
+        vpush_local(sym_at(sym)->val, sym_at(sym)->type);
 
         return;
     }
@@ -217,7 +217,7 @@ static void expr(void)
             sym = sym_find(name);
             if (sym == SYM_NONE || sym_at(sym)->kind != SYM_LOCAL)
                 acc_error_at(tok_line, "'%s' cannot be assigned to", name_text(name));
-            vstore_local(sym_at(sym)->val);
+            vstore_local(sym_at(sym)->val, sym_at(sym)->type);
 
             return;
         }
@@ -249,7 +249,7 @@ static void expr(void)
                 acc_error_at(tok_line, "'%s' is not declared", name_text(name));
             if (sym_at(sym)->kind != SYM_LOCAL)
                 acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
-            vpush_local(sym_at(sym)->val);
+            vpush_local(sym_at(sym)->val, sym_at(sym)->type);
         }
 
         binary_rest(PREC_EQUALITY);
@@ -261,28 +261,136 @@ static void expr(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* types                                                               */
+
+/* A declaration begins with one or more specifier keywords in any order:
+ * `unsigned short int` and `int short unsigned` are the same type. They are
+ * counted rather than matched against a list of spellings, which is what
+ * keeps the combinations from turning into a table. */
+/* Which keywords can begin a type, and what each means on its own.
+ *
+ * A table rather than a switch because block() asks "does a type start here"
+ * before every statement in the program, and type_specifier runs for every
+ * declaration, every parameter and every function. Written as a switch, those
+ * were seven comparisons each and cost 4.7% of a compile.
+ *
+ * The entry is the type biased by one, so that void -- which is zero -- is
+ * still distinguishable from "not a specifier". `long` is a specifier acc
+ * recognises and refuses, so it has an entry that is not a type.
+ */
+#define SPEC_LONG 0xff
+
+static const unsigned char spec_alone[TK_COUNT] = {
+    [TK_KW_VOID]     = TY_VOID + 1,
+    [TK_KW_CHAR]     = TY_CHAR + 1,
+    [TK_KW_SHORT]    = TY_SHORT + 1,
+    [TK_KW_INT]      = TY_INT + 1,
+    [TK_KW_SIGNED]   = TY_INT + 1,
+    [TK_KW_UNSIGNED] = TY_UINT + 1,
+    [TK_KW_LONG]     = SPEC_LONG
+};
+
+static int starts_type(int token)
+{
+    return spec_alone[token] != 0;
+}
+
+/* The several-keyword case: `unsigned short int` and `int short unsigned` are
+ * the same type, so they are counted rather than matched against a list. */
+static Type type_specifier_slow(int first, int line)
+{
+    int is_void = 0, is_char = 0, is_short = 0, is_int = 0;
+    int is_long = 0, is_signed = 0, is_unsigned = 0;
+    int token = first;
+
+    for (;;) {
+        switch (token) {
+        case TK_KW_VOID:     is_void++;     break;
+        case TK_KW_CHAR:     is_char++;     break;
+        case TK_KW_SHORT:    is_short++;    break;
+        case TK_KW_INT:      is_int++;      break;
+        case TK_KW_LONG:     is_long++;     break;
+        case TK_KW_SIGNED:   is_signed++;   break;
+        case TK_KW_UNSIGNED: is_unsigned++; break;
+        }
+        if (!starts_type(tok))
+            break;
+        token = tok;
+        next();
+    }
+
+    if (is_long)
+        acc_error_at(line, "'long' is not supported yet");
+    if (is_signed && is_unsigned)
+        acc_error_at(line, "'signed' and 'unsigned' together");
+    if (is_void && (is_char || is_short || is_int || is_signed || is_unsigned))
+        acc_error_at(line, "'void' with another type");
+    if (is_char && is_short)
+        acc_error_at(line, "'char' and 'short' together");
+
+    if (is_void)
+        return TY_VOID;
+    if (is_char)
+        return is_unsigned ? TY_UCHAR : TY_CHAR;
+    if (is_short)
+        return is_unsigned ? TY_USHORT : TY_SHORT;
+
+    return is_unsigned ? TY_UINT : TY_INT;
+}
+
+static Type type_specifier(void)
+{
+    int line = tok_line;
+    int first = tok;
+    unsigned char alone = spec_alone[first];
+
+    next();
+    if (alone != SPEC_LONG && !starts_type(tok))
+        return (Type) (alone - 1);      /* one keyword, which is most of them */
+
+    return type_specifier_slow(first, line);
+}
+
+/* A type in a place that has to hold a value. */
+static Type object_type(const char *what)
+{
+    int line = tok_line;
+    Type type;
+
+    if (!starts_type(tok))
+        acc_error_at(line, "expected a type, found %s", tok_spelling(tok));
+    type = type_specifier();
+    if (type == TY_VOID)
+        acc_error_at(line, "'void' is not a type %s can have", what);
+
+    return type;
+}
+
+/* ------------------------------------------------------------------ */
 /* statements and declarations                                         */
 
 static void declaration(void)
 {
-    expect(TK_KW_INT, "'int'");
+    Type type = object_type("a variable");
+
     for (;;) {
         NameRef name;
-        int off;
+        int off, sym;
 
         if (tok != TK_IDENT)
             acc_error_at(tok_line, "expected a name, found %s", tok_spelling(tok));
         name = tok_name;
         next();
 
-        off = gen_local();
+        off = gen_local(type_size(type));
         if (accept(TK_ASSIGN)) {
             expr();
-            vstore_local(off);
+            vstore_local(off, type);
             vdrop();            /* a declaration is not an expression */
         }
         /* Pushed after the initialiser, so `int x = x;` does not see itself. */
-        sym_push(name, SYM_LOCAL, off);
+        sym = sym_push(name, SYM_LOCAL, off);
+        sym_at(sym)->type = type;
 
         if (!accept(TK_COMMA))
             break;
@@ -300,7 +408,7 @@ static void statement(void);
 static void block(void)
 {
     while (tok != TK_RBRACE && tok != TK_EOF) {
-        if (tok == TK_KW_INT)
+        if (starts_type(tok))
             acc_error_at(tok_line,
                          "a declaration has to be at the start of the function");
         statement();
@@ -398,8 +506,9 @@ static void function(void)
     NameRef name;
     int fn;
     int nparams = 0, argoff;
+    Type ret_type;
 
-    expect(TK_KW_INT, "'int'");
+    ret_type = object_type("a function");
     if (tok != TK_IDENT)
         acc_error_at(tok_line, "expected a function name, found %s", tok_spelling(tok));
     name = tok_name;
@@ -411,6 +520,7 @@ static void function(void)
         acc_error_at(tok_line, "'%s' is defined twice", name_text(name));
     if (fn == SYM_NONE)
         fn = sym_push(name, SYM_FUNC, 0);
+    sym_at(fn)->type = ret_type;
 
     /* The first argument sits above the saved ix and the return address. */
     argoff = 2 * ACC_PTR_SIZE;
@@ -418,11 +528,19 @@ static void function(void)
         next();
     } else if (tok != TK_RPAREN) {
         for (;;) {
-            expect(TK_KW_INT, "'int'");
+            Type ptype = object_type("a parameter");
+            int psym;
+
             if (tok != TK_IDENT)
                 acc_error_at(tok_line, "expected a parameter name, found %s",
                              tok_spelling(tok));
-            sym_push(tok_name, SYM_LOCAL, argoff);
+            psym = sym_push(tok_name, SYM_LOCAL, argoff);
+            sym_at(psym)->type = ptype;
+
+            /* Every argument occupies a full slot however narrow it is, which
+             * is what agondev does and what keeps the stack aligned with the
+             * order they were pushed in. The narrow ones are read from the
+             * low bytes of their slot. */
             argoff += ACC_INT_SIZE;
             nparams++;
             next();
@@ -433,8 +551,8 @@ static void function(void)
     expect(TK_RPAREN, "')'");
     expect(TK_LBRACE, "'{'");
 
-    gen_func_begin(fn, nparams);
-    while (tok == TK_KW_INT)
+    gen_func_begin(fn, nparams, ret_type);
+    while (starts_type(tok))
         declaration();
     block();
     gen_func_end();

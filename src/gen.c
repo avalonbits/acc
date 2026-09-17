@@ -70,6 +70,143 @@ static void need_disp(int d)
                   "of reach of (ix+d), which spans -128 to 127", d);
 }
 
+static void evict_reg(int reg);
+static void force_into(int depth, int want);
+
+/* ------------------------------------------------------------------ */
+/* narrow widths                                                       */
+
+/* `sbc hl, hl` is the whole trick. It leaves HL as 0 or -1 depending on the
+ * carry, and it is the only way to set all three bytes at once: the upper
+ * byte of HL has no name, so `ld h, a` reaches two thirds of the register and
+ * there is no `ld hlu, a` to reach the rest.
+ *
+ * So widening a byte is: get the sign into the carry, `sbc hl, hl` to fill
+ * the register with it, then drop the byte back into L. It is what agondev
+ * emits, arrived at the same way -- there is not another one.
+ */
+
+static void ld_a_ix(int disp)   { out_byte(0xdd); out_byte(0x7e); out_byte(disp); }
+static void ld_e_ix(int disp)   { out_byte(0xdd); out_byte(0x5e); out_byte(disp); }
+static void ld_l_ix(int disp)   { out_byte(0xdd); out_byte(0x6e); out_byte(disp); }
+static void ld_h_ix(int disp)   { out_byte(0xdd); out_byte(0x66); out_byte(disp); }
+static void ld_ix_a(int disp)   { out_byte(0xdd); out_byte(0x77); out_byte(disp); }
+static void ld_ix_l(int disp)   { out_byte(0xdd); out_byte(0x75); out_byte(disp); }
+static void ld_ix_h(int disp)   { out_byte(0xdd); out_byte(0x74); out_byte(disp); }
+static void ld_l_a(void)        { out_byte(0x6f); }
+static void ld_h_a(void)        { out_byte(0x67); }
+static void ld_a_l(void)        { out_byte(0x7d); }
+static void ld_a_h(void)        { out_byte(0x7c); }
+static void ld_e_l(void)        { out_byte(0x5d); }
+static void ld_l_e(void)        { out_byte(0x6b); }
+static void rlc_l(void)         { out_byte(0xcb); out_byte(0x05); }
+static void sbc_hl_hl(void)     { out_byte(0xed); out_byte(0x62); }
+
+/* HL = the sign of A, in all three bytes. Clobbers L on the way. */
+static void fill_hl_with_sign_of_a(void)
+{
+    ld_l_a();
+    rlc_l();                    /* bit 7 into the carry */
+    sbc_hl_hl();                /* 0 or -1, upper byte included */
+}
+
+static void fill_hl_with_zero(void)
+{
+    or_a_a();                   /* clear the carry */
+    sbc_hl_hl();
+}
+
+/* Load a local of the given type into HL, widened to int. */
+static void load_narrow(int disp, Type type)
+{
+    if (type_unsigned(type)) {
+        fill_hl_with_zero();
+        ld_l_ix(disp);
+        if (type_size(type) == 2)
+            ld_h_ix(disp + 1);
+
+        return;
+    }
+
+    if (type_size(type) == 1) {
+        ld_a_ix(disp);
+        fill_hl_with_sign_of_a();
+        ld_l_a();
+
+        return;
+    }
+
+    ld_e_ix(disp);              /* low byte kept aside */
+    ld_a_ix(disp + 1);          /* high byte decides the sign */
+    fill_hl_with_sign_of_a();
+    ld_h_a();
+    ld_l_e();
+}
+
+/* The narrow loads work in HL, because that is the only register `sbc hl, hl`
+ * can fill. Getting the result somewhere else goes through the stack rather
+ * than through the allocator: evicting HL would move whatever the caller had
+ * put there, and vbinop has just put its left operand in it. Four bytes to
+ * leave the allocator's arrangement exactly as it was. */
+static void load_narrow_into(int reg, int disp, Type type)
+{
+    if (reg == R_HL) {
+        load_narrow(disp, type);
+
+        return;
+    }
+    push_rr(R_HL);
+    load_narrow(disp, type);
+    push_rr(R_HL);
+    pop_rr(reg);
+    pop_rr(R_HL);
+}
+
+/* Store the low bytes of HL into a local of the given type. */
+static void store_narrow(int disp, Type type)
+{
+    if (type_size(type) == 1) {
+        ld_a_l();
+        ld_ix_a(disp);
+
+        return;
+    }
+    ld_ix_l(disp);
+    ld_ix_h(disp + 1);
+}
+
+/* Narrow what is in HL to `to`, then widen it back, which is what a C
+ * conversion to a narrow type leaves behind. */
+static void convert_in_hl(Type to)
+{
+    if (type_size(to) >= ACC_INT_SIZE)
+        return;
+
+    if (type_size(to) == 1) {
+        ld_a_l();
+        if (type_unsigned(to))
+            fill_hl_with_zero();
+        else
+            fill_hl_with_sign_of_a();
+        ld_l_a();
+
+        return;
+    }
+
+    ld_a_h();
+    ld_e_l();
+    if (type_unsigned(to))
+        fill_hl_with_zero();
+    else
+        fill_hl_with_sign_of_a();
+    ld_h_a();
+    ld_l_e();
+}
+
+/* The type this function was declared to return, so that `char f()` giving
+ * back 300 gives back 44 as C says it must. */
+static Type return_type = TY_INT;
+
 /* ------------------------------------------------------------------ */
 /* the value stack                                                     */
 
@@ -111,10 +248,11 @@ static void vcheck(void)
 
 /* The one place that writes an entry and moves the top, so that the pointer
  * and the count cannot get out of step anywhere else. */
-static void vpush(int kind, int val)
+static void vpush(int kind, Type type, int val)
 {
     vcheck();
     vsp->kind = (unsigned char) kind;
+    vsp->type = type;
     vsp->val = val;
     vsp++;
     vtop++;
@@ -122,17 +260,56 @@ static void vpush(int kind, int val)
 
 void vpush_const(int val)
 {
-    vpush(VAL_CONST, val);
+    vpush(VAL_CONST, TY_INT, val);
 }
 
-void vpush_local(int offset)
+void vpush_local(int offset, Type type)
 {
-    vpush(VAL_LOCAL, offset);
+    vpush(VAL_LOCAL, type, offset);
 }
 
 void vpush_reg(int reg)
 {
-    vpush(VAL_REG, reg);
+    vpush(VAL_REG, TY_INT, reg);
+}
+
+/* Convert the top of the stack to `to`: narrow it and widen it back, which
+ * is what C leaves behind after an assignment to a narrow object or a cast. */
+void vconvert(Type to)
+{
+    Value *top = vsp - 1;
+
+    if (vtop <= 0)
+        acc_error("internal: nothing to convert");
+    if (type_size(to) >= ACC_INT_SIZE) {
+        top->type = to;
+
+        return;
+    }
+
+    if (top->kind == VAL_CONST) {
+        int bits = type_size(to) * 8;
+        int mask = (1 << bits) - 1;
+
+        top->val &= mask;
+        if (!type_unsigned(to) && (top->val & (1 << (bits - 1))))
+            top->val -= mask + 1;
+        top->type = type_promote(to);
+
+        return;
+    }
+
+    force_into(0, R_HL);
+    convert_in_hl(to);
+    top->type = type_promote(to);
+}
+
+Type vtype(void)
+{
+    if (vtop <= 0)
+        acc_error("internal: asked the type of nothing");
+
+    return (vsp - 1)->type;
 }
 
 void vdrop(void)
@@ -166,7 +343,7 @@ static void spill_one(void)
 
     for (i = 0; i < vtop; i++) {
         if (vstack[i].kind == VAL_REG) {
-            int off = gen_local();
+            int off = gen_local(ACC_INT_SIZE);
 
             need_disp(off);
             ld_ix_rr(off, vstack[i].val);
@@ -187,7 +364,7 @@ static void save_regs_below(int n)
 
     for (i = 0; i < vtop - n; i++) {
         if (vstack[i].kind == VAL_REG) {
-            int off = gen_local();
+            int off = gen_local(ACC_INT_SIZE);
 
             need_disp(off);
             ld_ix_rr(off, vstack[i].val);
@@ -246,9 +423,13 @@ static int force_reg_at(int depth)
         ld_rr_imm(reg, val->val);
     } else {
         need_disp(val->val);
-        ld_rr_ix(reg, val->val);
+        if (type_size(val->type) < ACC_INT_SIZE)
+            load_narrow_into(reg, val->val, val->type);
+        else
+            ld_rr_ix(reg, val->val);
     }
     val->kind = VAL_REG;
+    val->type = type_promote(val->type);
     val->val = reg;
 
     return reg;
@@ -296,9 +477,13 @@ static void force_into(int depth, int want)
         ld_rr_imm(want, vstack[idx].val);
     } else {
         need_disp(vstack[idx].val);
-        ld_rr_ix(want, vstack[idx].val);
+        if (type_size(vstack[idx].type) < ACC_INT_SIZE)
+            load_narrow_into(want, vstack[idx].val, vstack[idx].type);
+        else
+            ld_rr_ix(want, vstack[idx].val);
     }
     vstack[idx].kind = VAL_REG;
+    vstack[idx].type = type_promote(vstack[idx].type);
     vstack[idx].val = want;
 }
 
@@ -348,11 +533,20 @@ static int const_fold(int op, int left, int right, int *out)
     return 0;
 }
 
+/* C's usual arithmetic conversions, as far as this compiler's types go: both
+ * sides are already int-wide by the time they are in registers, and if either
+ * is unsigned the result and any comparison are unsigned too. */
+static int either_unsigned(const Value *lhs, const Value *rhs)
+{
+    return type_unsigned(lhs->type) || type_unsigned(rhs->type);
+}
+
 void vbinop(int op)
 {
     Value *lhs = vsp - 2;
     Value *rhs = vsp - 1;
     int folded, right;
+    Type result;
 
     if (vtop < 2)
         acc_error("internal: binary operator with nothing to work on");
@@ -384,6 +578,8 @@ void vbinop(int op)
     force_into(1, R_HL);
     right = force_reg_at(0);
 
+    result = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
+
     switch (op) {
     case TK_PLUS:
         add_hl_rr(right);
@@ -401,17 +597,29 @@ void vbinop(int op)
     vdrop();
     vdrop();
     vpush_reg(R_HL);
+    (vsp - 1)->type = result;
 }
 
 /* Assignment in C has a value, so the stored value stays on the stack. The
  * caller drops it when it is a statement and keeps it when it is not, which
  * is what makes `a = b = 0` work without a special case. */
-void vstore_local(int offset)
+void vstore_local(int offset, Type type)
 {
-    int right = force_reg_at(0);
+    int reg;
 
+    if (type_size(type) < ACC_INT_SIZE) {
+        /* The narrow stores write out of HL, so the value goes there. */
+        force_into(0, R_HL);
+        vconvert(type);
+        need_disp(offset);
+        store_narrow(offset, type);
+
+        return;
+    }
+
+    reg = force_reg_at(0);
     need_disp(offset);
-    ld_ix_rr(offset, right);
+    ld_ix_rr(offset, reg);
 }
 
 void vneg(void)
@@ -502,6 +710,7 @@ static void fixup_add(int fn, int at)
 #define JP_PE   0xea            /* overflow */
 #define JP_P    0xf2            /* sign clear */
 #define JP_M    0xfa            /* sign set */
+#define JP_C    0xda            /* carry set: a borrow, so unsigned less */
 
 static int jump_op(int op);
 static void patch_to_here(int hole);
@@ -518,7 +727,20 @@ static void cmp_equal(int when_equal)
     patch_to_here(to_done);
 }
 
-/* The ordering half. `when_negative` is what a truly negative difference
+/* The unsigned ordering half, which needs none of the repair below: after
+ * a - b the carry is set exactly when a was the smaller, whatever the two
+ * were. `when_borrow` is 1 for `<` and 0 for `>=`. */
+static void cmp_unsigned(int when_borrow)
+{
+    int to_done;
+
+    ld_rr_imm(R_HL, when_borrow);
+    to_done = jump_op(JP_C);
+    ld_rr_imm(R_HL, 1 - when_borrow);
+    patch_to_here(to_done);
+}
+
+/* The signed ordering half. `when_negative` is what a truly negative difference
  * means: 1 for `<` and 0 for `>=`.
  *
  *      ld hl, when_negative
@@ -554,12 +776,15 @@ void vcmp(int op)
 {
     Value *lhs = vsp - 2;
     Value *rhs = vsp - 1;
-    int folded, right;
+    int folded, right, is_unsigned;
 
     if (vtop < 2)
         acc_error("internal: a comparison with nothing to compare");
 
+    is_unsigned = either_unsigned(lhs, rhs);
+
     if (lhs->kind == VAL_CONST && rhs->kind == VAL_CONST
+        && !is_unsigned
         && const_fold(op, lhs->val, rhs->val, &folded)) {
         vdrop();
         vdrop();
@@ -590,8 +815,8 @@ void vcmp(int op)
     switch (op) {
     case TK_EQ: cmp_equal(1); break;
     case TK_NE: cmp_equal(0); break;
-    case TK_LT: cmp_signed(1); break;
-    case TK_GE: cmp_signed(0); break;
+    case TK_LT: if (is_unsigned) cmp_unsigned(1); else cmp_signed(1); break;
+    case TK_GE: if (is_unsigned) cmp_unsigned(0); else cmp_signed(0); break;
     default:
         acc_error("internal: %s is not a comparison", tok_spelling(op));
     }
@@ -748,15 +973,17 @@ void gen_startup(int report_by_exit)
             out_patch24(base + print_calls[i].at, base + print_calls[i].to);
 }
 
-int gen_local(void)
+int gen_local(int size)
 {
-    frame_size += ACC_INT_SIZE;
+    frame_size += size;
 
     return -frame_size;
 }
 
-void gen_func_begin(int fn, int nparams)
+void gen_func_begin(int fn, int nparams, Type returns)
 {
+    return_type = returns;
+
     (void) nparams;
 
     sym_at(fn)->val = out_here();
@@ -799,8 +1026,10 @@ void gen_return(void)
      * worth matching even with nothing to link against, because it is what
      * lets the two be mixed later. */
     if (vtop > 0) {
-        int reg = vpop_reg();
+        int reg;
 
+        vconvert(return_type);
+        reg = vpop_reg();
         if (reg != R_HL)
             mov_rr(R_HL, reg);
     }

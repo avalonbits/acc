@@ -299,7 +299,7 @@ static void skip_space(void)
  * the ones a name actually starts at are ever read. The rest say TK_IDENT so
  * that a bug reads as "not a keyword" rather than as whatever was there. */
 static NameRef kw_limit;
-static unsigned char kw_tok[64];
+static unsigned char kw_tok[128];
 
 static void keyword(const char *text, int len, int token)
 {
@@ -325,6 +325,11 @@ static void keywords_init(void)
     keyword("if", 2, TK_KW_IF);
     keyword("else", 4, TK_KW_ELSE);
     keyword("while", 5, TK_KW_WHILE);
+    keyword("char", 4, TK_KW_CHAR);
+    keyword("short", 5, TK_KW_SHORT);
+    keyword("long", 4, TK_KW_LONG);
+    keyword("signed", 6, TK_KW_SIGNED);
+    keyword("unsigned", 8, TK_KW_UNSIGNED);
 }
 
 void next(void)
@@ -434,6 +439,11 @@ const char *tok_spelling(int token)
     case TK_KW_IF:     return "'if'";
     case TK_KW_ELSE:   return "'else'";
     case TK_KW_WHILE:  return "'while'";
+    case TK_KW_CHAR:   return "'char'";
+    case TK_KW_SHORT:  return "'short'";
+    case TK_KW_LONG:   return "'long'";
+    case TK_KW_SIGNED: return "'signed'";
+    case TK_KW_UNSIGNED: return "'unsigned'";
     case TK_LPAREN:    return "'('";
     case TK_RPAREN:    return "')'";
     case TK_LBRACE:    return "'{'";
