@@ -167,6 +167,7 @@ int sym_push(NameRef name, int kind, int val)
         sym->name = name;
         sym->kind = (unsigned char) kind;
         sym->val = val;
+        sym->type = TY_INT;     /* until the declaration says otherwise */
 
         return nsyms++;
     }
@@ -182,6 +183,8 @@ int sym_push(NameRef name, int kind, int val)
     sym->name = name;
     sym->kind = (unsigned char) kind;
     sym->val = val;
+    sym->type = TY_INT;         /* a function called before it is defined is
+                                 * assumed to return int, as C says */
     nsyms++;
     index_add(name, nglobals);
 

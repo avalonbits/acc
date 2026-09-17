@@ -207,6 +207,14 @@ static void convert_in_hl(Type to)
  * back 300 gives back 44 as C says it must. */
 static Type return_type = TY_INT;
 
+/* agondev hands a one-byte result back in A and everything else in HL, and
+ * acc matches it -- not as a courtesy but because acc exists so that code can
+ * be compiled on the machine, and a library built with agondev has to keep
+ * working. test/abi.sh pins the convention; there is no document that states
+ * it. A is genuinely a different register rather than a narrower read of HL,
+ * which makes this the one place the two sides could quietly disagree. */
+#define RETURNS_IN_A(ty) (type_size(ty) == 1)
+
 /* ------------------------------------------------------------------ */
 /* the value stack                                                     */
 
@@ -666,7 +674,8 @@ void vnot(void)
  * the whole program in memory to make two passes over it. */
 typedef struct {
     int fn;                 /* index, not a pointer: see sym.c */
-    int  at;
+    int at;
+    int line;               /* where the call was, for the diagnostic below */
 } Fixup;
 
 static Fixup *fixups;
@@ -682,6 +691,7 @@ static void fixup_add(int fn, int at)
     }
     fixups[nfixups].fn = fn;
     fixups[nfixups].at = at;
+    fixups[nfixups].line = tok_line;
     nfixups++;
 }
 
@@ -909,6 +919,17 @@ void gen_finish(void)
 
         if (!fn->val)
             acc_error("'%s' is called but never defined", name_text(fn->name));
+
+        /* The call was emitted before the definition was read, so it took C's
+         * word that an undeclared function returns int -- and read its answer
+         * from HL. A one-byte return comes back in A instead, which that call
+         * cannot know. There are no prototypes yet, so the only honest thing
+         * is to say so. */
+        if (RETURNS_IN_A(fn->type))
+            acc_error_at(fixups[i].line,
+                         "'%s' returns a one-byte type and is called before it "
+                         "is defined; move its definition above the call",
+                         name_text(fn->name));
         out_patch24(fixups[i].at, fn->val);
     }
 }
@@ -1032,6 +1053,13 @@ void gen_return(void)
         reg = vpop_reg();
         if (reg != R_HL)
             mov_rr(R_HL, reg);
+
+        /* A one-byte result goes in A. HL keeps the widened value as well,
+         * which costs one byte and is what lets a call to a function defined
+         * further down the file -- where the return type is not known yet --
+         * still read its answer. */
+        if (RETURNS_IN_A(return_type))
+            ld_a_l();
     }
     out_byte(0xdd); out_byte(0xf9);              /* ld sp, ix */
     out_byte(0xdd); out_byte(0xe1);              /* pop ix */
@@ -1071,5 +1099,16 @@ void gen_call(int fn, int nargs)
     for (i = 0; i < nargs; i++)
         pop_rr(R_DE);                            /* discard, cheapest form */
 
+    /* Read the answer from where the callee's type says it is. */
+    if (RETURNS_IN_A(sym_at(fn)->type)) {
+        Type returns = sym_at(fn)->type;
+
+        if (type_unsigned(returns))
+            fill_hl_with_zero();
+        else
+            fill_hl_with_sign_of_a();
+        ld_l_a();
+    }
     vpush_reg(R_HL);
+    (vsp - 1)->type = type_promote(sym_at(fn)->type);
 }
