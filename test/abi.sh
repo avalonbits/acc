@@ -62,7 +62,15 @@ int after_int  (int a,   int b) { (void)a; return b; }
 int after_ptr  (void *a, int b) { (void)a; return b; }
 int after_long (long a,  int b) { (void)a; return b; }
 
-/* Where a result comes back. */
+/* Where a result comes back.
+ *
+ * These return constants, and that is load-bearing rather than incidental.
+ * A function returning a *variable* narrower than the word converts it on the
+ * way out, and the conversion leaves the byte in A as a side effect -- so such
+ * a probe passes even against a compiler that never meant to put it there.
+ * Only a constant return emits no conversion, which makes the store to A the
+ * ABI's doing and nothing else's. Found the hard way in acc, whose own version
+ * of this test passed with the deliberate `ld a, l` deleted. */
 char  ret_char (void) { return (char)  0x5a; }
 short ret_short(void) { return (short) 0x1234; }
 int   ret_int  (void) { return 0x123456; }
