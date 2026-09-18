@@ -32,23 +32,19 @@ static void ld_rr_imm(int reg, int imm)    /* ld rr, nn */
 
 static void ld_rr_ix(int reg, int disp)    /* ld rr, (ix+d) */
 {
-    out_byte(0xdd);
-    out_byte(0x07 + reg_code[reg] * 0x10);
-    out_byte(disp);
+    out_byte3(0xdd, 0x07 + reg_code[reg] * 0x10, disp);
 }
 
 static void ld_ix_rr(int disp, int reg)    /* ld (ix+d), rr */
 {
-    out_byte(0xdd);
-    out_byte(0x0f + reg_code[reg] * 0x10);
-    out_byte(disp);
+    out_byte3(0xdd, 0x0f + reg_code[reg] * 0x10, disp);
 }
 
 static void push_rr(int reg) { out_byte(0xc5 + reg_code[reg] * 0x10); }
 static void pop_rr(int reg)  { out_byte(0xc1 + reg_code[reg] * 0x10); }
 
 static void add_hl_rr(int reg) { out_byte(0x09 + reg_code[reg] * 0x10); }
-static void sbc_hl_rr(int reg) { out_byte(0xed); out_byte(0x42 + reg_code[reg] * 0x10); }
+static void sbc_hl_rr(int reg) { out_byte2(0xed, 0x42 + reg_code[reg] * 0x10); }
 static void or_a_a(void)     { out_byte(0xb7); }
 
 /* There is no ld rr, rr' on this chip. Always through the stack and never
@@ -98,21 +94,21 @@ static void rt_call(int which);
  * emits, arrived at the same way -- there is not another one.
  */
 
-static void ld_a_ix(int disp)   { out_byte(0xdd); out_byte(0x7e); out_byte(disp); }
-static void ld_e_ix(int disp)   { out_byte(0xdd); out_byte(0x5e); out_byte(disp); }
-static void ld_l_ix(int disp)   { out_byte(0xdd); out_byte(0x6e); out_byte(disp); }
-static void ld_h_ix(int disp)   { out_byte(0xdd); out_byte(0x66); out_byte(disp); }
-static void ld_ix_a(int disp)   { out_byte(0xdd); out_byte(0x77); out_byte(disp); }
-static void ld_ix_l(int disp)   { out_byte(0xdd); out_byte(0x75); out_byte(disp); }
-static void ld_ix_h(int disp)   { out_byte(0xdd); out_byte(0x74); out_byte(disp); }
+static void ld_a_ix(int disp)   { out_byte3(0xdd, 0x7e, disp); }
+static void ld_e_ix(int disp)   { out_byte3(0xdd, 0x5e, disp); }
+static void ld_l_ix(int disp)   { out_byte3(0xdd, 0x6e, disp); }
+static void ld_h_ix(int disp)   { out_byte3(0xdd, 0x66, disp); }
+static void ld_ix_a(int disp)   { out_byte3(0xdd, 0x77, disp); }
+static void ld_ix_l(int disp)   { out_byte3(0xdd, 0x75, disp); }
+static void ld_ix_h(int disp)   { out_byte3(0xdd, 0x74, disp); }
 static void ld_l_a(void)        { out_byte(0x6f); }
 static void ld_h_a(void)        { out_byte(0x67); }
 static void ld_a_l(void)        { out_byte(0x7d); }
 static void ld_a_h(void)        { out_byte(0x7c); }
 static void ld_e_l(void)        { out_byte(0x5d); }
 static void ld_l_e(void)        { out_byte(0x6b); }
-static void rlc_l(void)         { out_byte(0xcb); out_byte(0x05); }
-static void sbc_hl_hl(void)     { out_byte(0xed); out_byte(0x62); }
+static void rlc_l(void)         { out_byte2(0xcb, 0x05); }
+static void sbc_hl_hl(void)     { out_byte2(0xed, 0x62); }
 
 /* HL = the sign of A, in all three bytes. Clobbers L on the way. */
 static void fill_hl_with_sign_of_a(void)
@@ -893,8 +889,7 @@ void vneg(void)
 
         need_disp(slot + ACC_LONG_SIZE - 1);
         ld_a_ix(slot + ACC_LONG_SIZE - 1);
-        out_byte(0xee);                 /* xor a, 0x80 */
-        out_byte(0x80);
+        out_byte2(0xee, 0x80);          /* xor a, 0x80 */
         ld_ix_a(slot + ACC_LONG_SIZE - 1);
         vpush(VAL_LOCAL, top->type, slot);
 
@@ -1009,8 +1004,8 @@ static void fixup_add(int fn, int at)
  * downstream sees the wider value. The parser decides that; this only emits.
  */
 
-static void ld_a_imm(int value)  { out_byte(0x3e); out_byte(value & 0xff); }
-static void ld_a_ix_b(int disp)  { out_byte(0xdd); out_byte(0x7e); out_byte(disp); }
+static void ld_a_imm(int value)  { out_byte2(0x3e, value & 0xff); }
+static void ld_a_ix_b(int disp)  { out_byte3(0xdd, 0x7e, disp); }
 
 /* The A-with-memory and A-with-immediate forms, by token. */
 static int alu_ix_op(int op)
@@ -1289,9 +1284,7 @@ static void lea_rr_ix(int reg, int disp)
 {
     static const unsigned char lea_code[NREGS] = { 0x22, 0x12, 0x02 };
 
-    out_byte(0xed);
-    out_byte(lea_code[reg]);
-    out_byte(disp);
+    out_byte3(0xed, lea_code[reg], disp);
 }
 
 /* Copy four bytes from one frame slot to another. */
@@ -1453,8 +1446,7 @@ void vpush_const_float(float val)
     need_disp(slot);
     need_disp(slot + ACC_LONG_SIZE - 1);
     for (i = 0; i < ACC_LONG_SIZE; i++) {
-        out_byte(0x3e);                         /* ld a, n */
-        out_byte(bytes[i]);
+        out_byte2(0x3e, bytes[i]);              /* ld a, n */
         ld_ix_a(slot + i);
     }
     vpush(VAL_LOCAL, TY_FLOAT, slot);
@@ -1617,33 +1609,33 @@ static void cmp_from_code(int op)
 {
     switch (op) {
     case TK_LT:
-        out_byte(0xfe); out_byte(0);            /* cp a, 0 */
+        out_byte2(0xfe, 0);            /* cp a, 0 */
         cmp_equal(1);
 
         return;
     case TK_EQ:
-        out_byte(0xfe); out_byte(1);
+        out_byte2(0xfe, 1);
         cmp_equal(1);
 
         return;
     case TK_GT:
-        out_byte(0xfe); out_byte(2);
+        out_byte2(0xfe, 2);
         cmp_equal(1);
 
         return;
     case TK_NE:
-        out_byte(0xfe); out_byte(1);
+        out_byte2(0xfe, 1);
         cmp_equal(0);
 
         return;
     case TK_LE:
-        out_byte(0xfe); out_byte(2);            /* below or equal: 0 or 1 */
+        out_byte2(0xfe, 2);            /* below or equal: 0 or 1 */
         cmp_unsigned(1);
 
         return;
     case TK_GE:
         out_byte(0x3d);                         /* dec a */
-        out_byte(0xfe); out_byte(2);
+        out_byte2(0xfe, 2);
         cmp_unsigned(1);
 
         return;
@@ -2015,26 +2007,25 @@ void gen_func_begin(int fn, int nparams, Type returns)
      * builds, written out rather than called, because there is nothing to
      * link against yet. ix then points at the saved ix, so the first argument
      * is at ix+6: three bytes of saved ix and three of return address. */
-    out_byte(0xdd); out_byte(0xe5);              /* push ix */
-    out_byte(0xdd); out_byte(0x21);              /* ld ix, 0 */
+    out_byte2(0xdd, 0xe5);              /* push ix */
+    out_byte2(0xdd, 0x21);              /* ld ix, 0 */
     out_word24(0);
-    out_byte(0xdd); out_byte(0x39);              /* add ix, sp */
+    out_byte2(0xdd, 0x39);              /* add ix, sp */
 
     /* ld hl, -frame / add hl, sp / ld sp, hl. The size is not known until the
      * body has been read, so the space is reserved and filled in at the end. */
     out_byte(0x21);                              /* ld hl, nn */
     frame_patch = out_here();
     out_word24(0);
-    out_byte(0x39);                              /* add hl, sp */
-    out_byte(0xf9);                              /* ld sp, hl */
+    out_byte2(0x39, 0xf9);                       /* add hl, sp; ld sp, hl */                              /* ld sp, hl */
 }
 
 void gen_func_end(void)
 {
     /* Restoring sp from ix unconditionally costs two bytes in a function with
      * no locals and saves the epilogue having to know the frame size. */
-    out_byte(0xdd); out_byte(0xf9);              /* ld sp, ix */
-    out_byte(0xdd); out_byte(0xe1);              /* pop ix */
+    out_byte2(0xdd, 0xf9);              /* ld sp, ix */
+    out_byte2(0xdd, 0xe1);              /* pop ix */
     out_byte(0xc9);                              /* ret */
 
     out_patch24(frame_patch, -frame_size());
@@ -2058,8 +2049,8 @@ void gen_return(void)
             ld_rr_ix(R_HL, (vsp - 1)->val);
             ld_e_ix((vsp - 1)->val + ACC_INT_SIZE);
             vdrop();
-            out_byte(0xdd); out_byte(0xf9);      /* ld sp, ix */
-            out_byte(0xdd); out_byte(0xe1);      /* pop ix */
+            out_byte2(0xdd, 0xf9);      /* ld sp, ix */
+            out_byte2(0xdd, 0xe1);      /* pop ix */
             out_byte(0xc9);                      /* ret */
 
             return;
@@ -2077,8 +2068,8 @@ void gen_return(void)
         if (RETURNS_IN_A(return_type))
             ld_a_l();
     }
-    out_byte(0xdd); out_byte(0xf9);              /* ld sp, ix */
-    out_byte(0xdd); out_byte(0xe1);              /* pop ix */
+    out_byte2(0xdd, 0xf9);              /* ld sp, ix */
+    out_byte2(0xdd, 0xe1);              /* pop ix */
     out_byte(0xc9);                              /* ret */
 }
 

@@ -49,6 +49,8 @@ void acc_error_at(int line, const char *fmt, ...)
 }
 
 #define WORDS 20000      /* 60 KB: past cap 4096 doubling four times over */
+#define PAIRS 5000       /* 25 KB more, so the growth happens again */
+#define TRIPLES 40000    /* 120 KB of three-byte writes alone */
 
 int main(void)
 {
@@ -72,7 +74,34 @@ int main(void)
     for (i = 0; i < 300; i++)
         out_byte(i);
 
-    is("out_here tracks what was written", out_here() - base, WORDS * 3 + 300);
+    /* And the two- and three-byte forms, which make the same trade as
+     * out_word24 -- one bounds check for the whole instruction instead of one
+     * per byte -- and so have the same boundary to get wrong.
+     *
+     * Three passes with a single byte between them, because one pass is not
+     * enough. The buffer doubles from 4096, so where a growth falls relative
+     * to a three-byte write depends on how many bytes came before it, and one
+     * pass only ever tries one of the three alignments. A check of `< 1`
+     * where `< 3` was meant writes two bytes past the end -- and passed,
+     * because the one alignment that pass happened to use never left exactly
+     * two bytes free. The odd byte between passes shifts it. */
+    for (i = 0; i < PAIRS; i++) {
+        out_byte2(i, i + 1);
+        out_byte3(i + 2, i + 3, i + 4);
+    }
+
+    /* Then a long run of nothing but the three-byte form. Mixing widths is
+     * not enough on its own: two and three alternating move the buffer on by
+     * five at a time, so however many are written the gap left before a
+     * growth only ever takes one value, and a check of `< 1` where `< 3` was
+     * meant can sit behind that one value writing past the end. Advancing by
+     * three alone walks the gap through 2, 1 and 0 over successive doublings,
+     * and it is the 2 that catches it. */
+    for (i = 0; i < TRIPLES; i++)
+        out_byte3(i, i + 1, i + 2);
+
+    is("out_here tracks what was written", out_here() - base,
+       WORDS * 3 + 300 + PAIRS * 5 + TRIPLES * 3);
 
     /* A patch into the middle, which reads len and must still see all of it. */
     out_patch24(base + 3 * (WORDS / 2), 0xabcdef);
@@ -88,7 +117,8 @@ int main(void)
     fclose(f);
     remove(path);
 
-    is("file length", n, (base - 0x040000) + WORDS * 3 + 300);
+    is("file length", n, (base - 0x040000)
+       + WORDS * 3 + 300 + PAIRS * 5 + TRIPLES * 3);
 
     want = malloc((size_t) n);
     memcpy(want, got, (size_t) n);
@@ -102,6 +132,22 @@ int main(void)
     }
     for (i = 0; i < 300; i++)
         want[(base - 0x040000) + WORDS * 3 + i] = (unsigned char) i;
+    for (i = 0; i < PAIRS; i++) {
+        int at = (base - 0x040000) + WORDS * 3 + 300 + i * 5;
+
+        want[at]     = (unsigned char) i;
+        want[at + 1] = (unsigned char) (i + 1);
+        want[at + 2] = (unsigned char) (i + 2);
+        want[at + 3] = (unsigned char) (i + 3);
+        want[at + 4] = (unsigned char) (i + 4);
+    }
+    for (i = 0; i < TRIPLES; i++) {
+        int at = (base - 0x040000) + WORDS * 3 + 300 + PAIRS * 5 + i * 3;
+
+        want[at]     = (unsigned char) i;
+        want[at + 1] = (unsigned char) (i + 1);
+        want[at + 2] = (unsigned char) (i + 2);
+    }
 
     for (i = base - 0x040000; i < n; i++)
         if (got[i] != want[i]) {

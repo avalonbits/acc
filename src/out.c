@@ -104,6 +104,32 @@ void out_byte(int byte)
     *put++ = (unsigned char) byte;
 }
 
+/* Two bytes and three bytes, which is what nearly every instruction acc emits
+ * is made of: a prefix and an opcode, or those and a displacement.
+ *
+ * Written as repeated out_byte calls they cost a call and a bounds check
+ * each. The check is the same one either way -- the buffer either has room
+ * for the whole instruction or it does not -- and the call is pure overhead
+ * on the path that runs once per byte of every program compiled. */
+void out_byte2(int first, int second)
+{
+    if (limit - put < 2)
+        out_grow();
+    put[0] = (unsigned char) first;
+    put[1] = (unsigned char) second;
+    put += 2;
+}
+
+void out_byte3(int first, int second, int third)
+{
+    if (limit - put < 3)
+        out_grow();
+    put[0] = (unsigned char) first;
+    put[1] = (unsigned char) second;
+    put[2] = (unsigned char) third;
+    put += 3;
+}
+
 void out_word24(int value)
 {
     /* One bounds check and three stores, rather than three calls that each
