@@ -528,13 +528,17 @@ int reg_busy(int reg)
 
 /* Frees a register by moving whatever is in it to a fresh frame slot. The
  * oldest is chosen because it is the one least likely to be wanted next: the
- * expression being compiled is working at the top of the stack. */
-static void spill_one(void)
+ * expression being compiled is working at the top of the stack.
+ *
+ * Never `avoid`, which is the register the caller is about to refuse:
+ * freeing that one frees nothing it can use, and with every other register
+ * busy the compiler then stopped with "no register after spilling". */
+static void spill_one_other(int avoid)
 {
     int i;
 
     for (i = 0; i < vtop; i++) {
-        if (vstack[i].kind == VAL_REG) {
+        if (vstack[i].kind == VAL_REG && vstack[i].val != avoid) {
             int off = spill_slot();
 
             need_disp(off);
@@ -566,6 +570,11 @@ static void save_regs_below(int n)
     }
 }
 
+static void spill_one(void)
+{
+    spill_one_other(-1);
+}
+
 static int reg_alloc(void)
 {
     int reg;
@@ -591,7 +600,7 @@ static int reg_alloc_other(int avoid)
     for (reg = 0; reg < NREGS; reg++)
         if (reg != avoid && !reg_busy(reg))
             return reg;
-    spill_one();
+    spill_one_other(avoid);
     for (reg = 0; reg < NREGS; reg++)
         if (reg != avoid && !reg_busy(reg))
             return reg;
@@ -658,20 +667,54 @@ static int force_reg(Value *val)
     return reg;
 }
 
+/* A register that is free and is not `avoid`, or -1: nothing is spilled to
+ * find one. */
+static int free_reg_other(int avoid)
+{
+    int reg;
+
+    for (reg = 0; reg < NREGS; reg++)
+        if (reg != avoid && !reg_busy(reg))
+            return reg;
+
+    return -1;
+}
+
+/* `entry`, which is in a register someone else needs, out of it: to another
+ * register if one is free, and otherwise to the frame.
+ *
+ * Only this entry moves. Making room by spilling whichever value is oldest,
+ * as this once did, could spill a value the caller had just put in place --
+ * the left operand of the operator being applied, forced into HL a moment
+ * before the right was forced into BC -- and the operator then read what had
+ * been moved into HL instead. */
+static void move_out(Value *entry)
+{
+    int to = free_reg_other(entry->val);
+
+    if (to >= 0) {
+        mov_rr(to, entry->val);
+        entry->val = to;
+
+        return;
+    }
+
+    to = spill_slot();
+    need_disp(to);
+    ld_ix_rr(to, entry->val);
+    entry->kind = VAL_LOCAL;
+    entry->val = to;
+}
+
 /* Moves every value out of `reg`, so that it can be written without losing
  * anything the expression still needs. */
 static void evict_reg(int reg)
 {
     int i;
 
-    for (i = 0; i < vtop; i++) {
-        if (vstack[i].kind == VAL_REG && vstack[i].val == reg) {
-            int to = reg_alloc_other(reg);
-
-            mov_rr(to, reg);
-            vstack[i].val = to;
-        }
-    }
+    for (i = 0; i < vtop; i++)
+        if (vstack[i].kind == VAL_REG && vstack[i].val == reg)
+            move_out(&vstack[i]);
 }
 
 /* Materialises the entry at `depth` into one particular register, moving
@@ -686,12 +729,8 @@ static void force_into(Value *target, int want)
     for (entry = vstack; entry < vsp; entry++) {
         if (entry == target)
             continue;
-        if (entry->kind == VAL_REG && entry->val == want) {
-            int reg = reg_alloc_other(want);
-
-            mov_rr(reg, want);
-            entry->val = reg;
-        }
+        if (entry->kind == VAL_REG && entry->val == want)
+            move_out(entry);
     }
 
     if (target->kind == VAL_ACC) {
