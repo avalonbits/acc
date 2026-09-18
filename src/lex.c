@@ -512,7 +512,8 @@ static void lex_number(int line)
      * width the answer has to fit in is a fact about the language acc
      * compiles, not about the machine acc is running on. */
     uint32_t value = 0;
-    int is_hex = 0;
+    int not_decimal = 0;        /* hex or octal: may be typed unsigned */
+    int bad_digit = 0;
     int overflowed = 0;
     int suffix_u = 0, suffix_l = 0;
     char *start = cursor;
@@ -520,7 +521,7 @@ static void lex_number(int line)
     tok_type = TY_VOID;         /* no type chosen yet; the ladder picks one */
 
     if (*cursor == '0' && (cursor[1] == 'x' || cursor[1] == 'X')) {
-        is_hex = 1;
+        not_decimal = 1;
         cursor += 2;
         if (!is_alnum((unsigned char) *cursor))
             acc_error_at(line, "hex constant with no digits");
@@ -538,6 +539,15 @@ static void lex_number(int line)
             cursor++;
         }
     } else {
+        /* A leading 0 followed by more digits is octal, which C has always
+         * said and acc did not: `010` was ten. An 8 or a 9 in one is noted
+         * rather than refused, for the same reason the overflow below is --
+         * `09.5` is an ordinary decimal float, and which this is shows only
+         * at the character the digits stop at. */
+        int octal = (*cursor == '0' && is_digit((unsigned char) cursor[1]));
+        int bad_octal = 0;
+
+        not_decimal = octal;
         while (is_digit((unsigned char) *cursor)) {
             int digit = *cursor - '0';
 
@@ -545,6 +555,17 @@ static void lex_number(int line)
              * out to be the whole part of a floating literal, where a
              * hundred of them are ordinary. Only once the terminator says
              * this was an integer does too many digits become an error. */
+            if (octal) {
+                if (digit > 7 && !bad_octal)
+                    bad_octal = *cursor;
+                if (value > 0x1fffffffUL)
+                    overflowed = 1;
+                else
+                    value = value * 8 + digit;
+                cursor++;
+
+                continue;
+            }
             if (value > 429496729UL
                 || (value == 429496729UL && digit > 5)) {
                 overflowed = 1;
@@ -555,6 +576,7 @@ static void lex_number(int line)
             value = value * 10 + digit;
             cursor++;
         }
+        bad_digit = bad_octal;
     }
 
     /* C99 types a constant by the first type that can hold it. A decimal
@@ -570,6 +592,9 @@ static void lex_number(int line)
         return;
     }
 
+    if (bad_digit)
+        acc_error_at(line, "'%c' is not an octal digit, and a constant that "
+                           "starts with 0 is octal", bad_digit);
     if (overflowed)
         acc_error_at(line, "the constant does not fit in %d bits",
                      ACC_LONG_SIZE * 8);
@@ -614,15 +639,15 @@ static void lex_number(int line)
     } else if (suffix_l) {
         if (value <= 0x7fffffffUL)
             tok_type = TY_LONG;
-        else if (is_hex)
+        else if (not_decimal)
             tok_type = TY_ULONG;
     } else if (value <= 0x7fffffUL) {
         tok_type = TY_INT;
-    } else if (is_hex && value <= 0xffffffUL) {
+    } else if (not_decimal && value <= 0xffffffUL) {
         tok_type = TY_UINT;
     } else if (value <= 0x7fffffffUL) {
         tok_type = TY_LONG;
-    } else if (is_hex) {
+    } else if (not_decimal) {
         tok_type = TY_ULONG;
     }
 
