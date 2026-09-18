@@ -96,6 +96,7 @@ What acc can do today
   assignment, and += -= *= /= %= &= |= ^= <<= >>=
   < > <= >= == !=, signed or unsigned according to the operands
   ! && ||, stopping as soon as the answer is known
+  ++ -- before and after, ?:
   if, else, else if, while
   decimal and hex constants, with the u and l suffixes
   floating constants, with or without an exponent
@@ -125,12 +126,10 @@ What it cannot do yet
 The language acc is being written towards is C99. Everything below is
 missing rather than excluded.
 
-  ?:                   -- no conditional operator
   for do break continue switch -- while is the only loop and the only
                           branch besides if
   (int) x              -- no casts; a conversion happens where a value is
                           assigned or passed, and nowhere else
-  ++ --                -- no increment or decrement; `x += 1` does it
   arrays, structs, unions, enums
   'c' and "text"       -- no character or string constants
   variables at file scope -- everything lives in a function
