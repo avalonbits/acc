@@ -98,7 +98,11 @@ static const unsigned char pearson[256] = {
 };
 
 /* Returns 16 bits. The caller masks it down to the table size. */
-static unsigned name_hash(const char *text, int len)
+/* Always inlined. It has two callers and so is not inlined of its own
+ * accord, and then every identifier paid for a call that opened a second
+ * frame inside name_intern's, which already has one the hash can use. */
+static inline __attribute__((always_inline))
+unsigned name_hash(const char *text, int len)
 {
     /* Sixteen bits from one table lookup per character rather than two.
      *
