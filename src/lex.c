@@ -460,6 +460,41 @@ static void lex_floating(int line)
 __attribute__((noinline))
 static void lex_number(int line)
 {
+    /* One or two decimal digits, with nothing after them that could make the
+     * constant anything but a small int -- no suffix, no point, no exponent,
+     * and no leading 0 that would make it octal or hex. That is most of the
+     * constants in a program, and the answer is at most 99, so the multiply
+     * is a byte one: this target does it with MLT and no call into the
+     * runtime, where the general path below makes four such calls for every
+     * digit and then climbs a ladder of four-byte compares. A wider fast path
+     * in an int was tried and was slower -- a 24-bit multiply is itself a
+     * call, and the accumulator lived in the frame. */
+    {
+        unsigned char first = (unsigned char) cursor[0];
+        unsigned char second = (unsigned char) cursor[1];
+
+        if (!is_alnum(second) && second != '.') {
+            cursor++;
+            tok = TK_INT;
+            tok_type = TY_INT;
+            tok_val = first - '0';
+
+            return;
+        }
+        if (first != '0' && is_digit(second)) {
+            unsigned char third = (unsigned char) cursor[2];
+
+            if (!is_alnum(third) && third != '.') {
+                cursor += 2;
+                tok = TK_INT;
+                tok_type = TY_INT;
+                tok_val = (unsigned char) ((first - '0') * 10 + (second - '0'));
+
+                return;
+            }
+        }
+    }
+
     /* Accumulated with the bound checked before each step rather than
      * after, so the accumulator never overflows and there is nothing to
      * detect after the fact. Everything here stays in an int, which on
