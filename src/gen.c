@@ -75,6 +75,7 @@ static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
 static void vunary_long(int which, Type type);
 static void vswap(void);
+static Type common_wide(Type left, Type right);
 static int  is_comparison(int op);
 static void vcmp_pointer_check(Type left, Type right);
 static void convert_int_to_float(void);
@@ -2302,6 +2303,26 @@ static void vbinop_pointer(int op, Type left, Type right)
     (vsp - 1)->type = ptr;
 }
 
+/* The type two operands meet at when either is four bytes wide: C's usual
+ * arithmetic conversions, for the widths this machine has.
+ *
+ * Floating wins over any integer. Between integers the long wins, and it is
+ * unsigned only if one of the operands was itself an unsigned long -- not, as
+ * acc had it, if either operand was unsigned at all. An unsigned int here is
+ * twenty-four bits, and a signed long of thirty-two holds every one of them,
+ * so C converts the pair to long: `(unsigned) 1 + -2L` is -1, and is less
+ * than zero. Making it unsigned long made it 4294967295. */
+static Type common_wide(Type left, Type right)
+{
+    if (type_float(left) || type_float(right))
+        return TY_FLOAT;
+    if ((type_wide(left) && type_unsigned(left))
+        || (type_wide(right) && type_unsigned(right)))
+        return TY_ULONG;
+
+    return TY_LONG;
+}
+
 /* The top two values exchanged. Nothing is emitted: a Value says where a
  * value is, not where it is on this stack, so swapping two of them is a
  * swap of two descriptors. */
@@ -2379,19 +2400,26 @@ void vapply(int op, Type narrow)
         }
     }
 
-    /* Either side a long makes both of them one, and the result is a long --
-     * or, for a comparison, an int taken from a comparison at long width.
-     * C's conversions: floating wins over integer, and among the integers
-     * unsigned wins. */
+    /* Either side a long or a float makes both of them one, and the result
+     * is that -- or, for a comparison, an int taken from a comparison at that
+     * width. */
     if (type_wide(left) || type_wide(right)) {
-        Type wide;
+        Type wide = common_wide(left, right);
 
-        if (type_float(left) || type_float(right))
-            wide = TY_FLOAT;
-        else if (type_unsigned(left) || type_unsigned(right))
-            wide = TY_ULONG;
-        else
-            wide = TY_LONG;
+        /* An integer operand of a floating operator is converted to float
+         * first, which is arithmetic and not a relabelling. Without it, a
+         * float and an int could not meet at all: `f + 1` was refused as a
+         * conversion between the two that was not implemented. Both sides are
+         * reached by swapping, since only the top of the stack converts. */
+        if (type_float(wide)) {
+            if (!type_float(right))
+                vconvert(TY_FLOAT);
+            if (!type_float(left)) {
+                vswap();
+                vconvert(TY_FLOAT);
+                vswap();
+            }
+        }
 
         if (is_comparison(op))
             vcmp_wide(op, wide);
