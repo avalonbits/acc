@@ -18,16 +18,6 @@ cd "$(dirname "$0")/.."
 
 ACC=${1:-bin/acc.bin}
 
-# Cases the two builds are known to disagree on, and why. A float literal is
-# converted with the C library's strtod, and agondev's is not correctly
-# rounded -- a double there is 32 bits -- so a literal that needs the last bit,
-# `1.00000011920928955` for one, comes out a few units off on the Agon. That is
-# a defect in the Agon build, not in these cases; it is listed so that it is
-# reported without hiding any other disagreement.
-KNOWN="470_float_conversion 480_float_add 490_long_float_literal
-500_float_multiply 510_float_divide 530_float_denormal 540_float_infinity
-550_float_nan"
-
 emu_available || exit 77
 [ -f "$ACC" ] || { echo "no $ACC -- run make -f Makefile.agon" >&2; exit 2; }
 [ -x bin/acc ] || { echo "bin/acc missing -- run make" >&2; exit 2; }
@@ -61,7 +51,7 @@ printf 'stop\r\n' >> "$sd/autoexec.txt"
 
 ACC_EMU_TIMEOUT=${ACC_TARGET_TIMEOUT:-900} emu_run "$sd" -z -u > "$host/console.txt"
 
-pass=0; fail=0; known=0
+pass=0; fail=0
 for c in "$host"/t*.c; do
     id=$(basename "$c" .c)
     src=$(cat "$host/$id.src")
@@ -69,18 +59,11 @@ for c in "$host"/t*.c; do
     if [ ! -f "$sd/$id.bin" ]; then
         printf '  FAIL %-34s the Agon made no image\n' "$src"; fail=$((fail + 1))
     elif ! cmp -s "$sd/$id.bin" "$host/$id.bin"; then
-        case " $(echo $KNOWN) " in
-          *" $(basename "$src" .c) "*)
-            printf '  KNOWN %-33s the two builds disagree: strtod\n' "$src"
-            known=$((known + 1)) ;;
-          *)
-            printf '  FAIL %-34s the two builds disagree\n' "$src"
-            fail=$((fail + 1)) ;;
-        esac
+        printf '  FAIL %-34s the two builds disagree\n' "$src"; fail=$((fail + 1))
     else
         pass=$((pass + 1))
     fi
 done
 
-echo "  $pass passed, $fail failed, $known known"
+echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

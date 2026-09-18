@@ -297,6 +297,7 @@ static int   line;
 int      tok;
 long     tok_val;
 float    tok_fval;
+typedef char float_is_four_bytes[sizeof(float) == 4 ? 1 : -1];
 NameRef  tok_name;
 int      tok_line;
 Type     tok_type;
@@ -476,22 +477,21 @@ static const unsigned char punct[256] = {
 
 /* Read a floating literal from the cursor, which is at its first character.
  *
- * Converted by the host's own strtod, whose float is the same four-byte IEEE
- * 754 single this target uses -- so the bits acc emits are the bits the
- * machine would have computed, rather than a second implementation of the
- * format to get wrong separately.
+ * Converted by float_literal rather than the C library's strtod, which on the
+ * Agon does not round correctly and on the host rounds twice: see float.c.
  *
  * Out of line because next() is the hottest function in the compiler and most
  * programs have no floating literals at all. */
 __attribute__((noinline))
 static void lex_floating(void)
 {
-    char *end;
+    uint32_t bits;
+    const char *end = float_literal(cursor, &bits);
 
-    tok_fval = (float) strtod(cursor, &end);
     if (end == cursor)
         acc_error_at(tok_line, "a floating-point number with no digits");
-    cursor = end;
+    memcpy(&tok_fval, &bits, sizeof tok_fval);
+    cursor = (char *) end;
     if (*cursor == 'f' || *cursor == 'F')
         cursor++;
     tok = TK_FLOAT;

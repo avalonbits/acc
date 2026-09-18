@@ -31,7 +31,7 @@ LDFLAGS = -defsym=RAM_START=0x40000 -defsym=RAM_SIZE=0x70000 \
           -defsym=_getchar=_getchar_arg_processing \
           -T $(AGONDEV)/config/linker.conf --oformat binary
 
-SRCS = src/lex.c src/sym.c src/gen.c src/out.c src/parse.c
+SRCS = src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c
 OBJS = $(patsubst src/%.c,$(OBJ)/%.o,$(SRCS))
 
 .PHONY: all clean size
