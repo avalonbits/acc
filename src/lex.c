@@ -586,6 +586,22 @@ static void lex_number(int line)
         int bad_octal = 0;
 
         not_decimal = octal;
+
+        /* The first digits in an unsigned, for as long as another digit
+         * cannot carry it past 24 bits: that covers every decimal constant
+         * below ten million, and the steps are a 24-bit multiply and an add
+         * where the loop below makes a four-byte multiply, add and compare
+         * of each digit. Octal is left to the loop: it is rare, and
+         * its digits are fewer. */
+        if (!octal) {
+            unsigned small = 0;
+
+            while (is_digit((unsigned char) *cursor) && small < 1677721u) {
+                small = small * 10 + (unsigned) (*cursor - '0');
+                cursor++;
+            }
+            value = small;
+        }
         while (is_digit((unsigned char) *cursor)) {
             int digit = *cursor - '0';
 
