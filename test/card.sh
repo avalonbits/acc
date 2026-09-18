@@ -89,6 +89,7 @@ What acc can do today
 
   char, short, int, long, and the unsigned form of each
   float and double
+  pointers to any of them, and to pointers, seven deep
   functions, parameters, locals, calls, recursion
   + - * / % and unary minus, ~
   & | ^ << >>
@@ -99,8 +100,8 @@ What acc can do today
   floating constants, with or without an exponent
   /* block */ and // line comments, anywhere a space can go
 
-char is one byte, short two, int three, long four -- agondev's widths, so a
-program compiled by either comes out the same. Arithmetic happens at int
+char is one byte, short two, int three, long four, and a pointer three --
+agondev's widths, so a program compiled by either comes out the same. Arithmetic happens at int
 width and only a store narrows, which is what C says; a long or a float
 drags the other operand up to its own width instead.
 
@@ -130,7 +131,7 @@ missing rather than excluded.
   (int) x              -- no casts; a conversion happens where a value is
                           assigned or passed, and nowhere else
   ++ -- += -= etc.     -- no increment, decrement or compound assignment
-  pointers, arrays, structs, unions, enums
+  arrays, structs, unions, enums
   'c' and "text"       -- no character or string constants
   variables at file scope -- everything lives in a function
   void f(void)         -- a function has to return something
@@ -150,6 +151,11 @@ Anything acc cannot do it should name and point at, rather than emit
 something that misbehaves. broken.c is there to be refused.
 
 zap is here too, for assembling by hand what acc cannot generate yet.
+
+`p + 1` is the next object and not the next byte, so `&a + 1` moves by
+three for an int and by one for a char. `q - p` is the same backwards, a
+count of objects rather than of bytes, and two pointers can only be
+subtracted or compared when they agree about what they point at.
 
 The test suite
 --------------
