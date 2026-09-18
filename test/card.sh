@@ -93,8 +93,9 @@ What acc can do today
   functions, parameters, locals, calls, recursion
   + - * / % and unary minus, ~
   & | ^ << >>
-  assignment
+  assignment, and += -= *= /= %= &= |= ^= <<= >>=
   < > <= >= == !=, signed or unsigned according to the operands
+  ! && ||, stopping as soon as the answer is known
   if, else, else if, while
   decimal and hex constants, with the u and l suffixes
   floating constants, with or without an exponent
@@ -124,13 +125,12 @@ What it cannot do yet
 The language acc is being written towards is C99. Everything below is
 missing rather than excluded.
 
-  ! && || ?:           -- no logical or conditional operators; a condition
-                          is a value, or a comparison
+  ?:                   -- no conditional operator
   for do break continue switch -- while is the only loop and the only
                           branch besides if
   (int) x              -- no casts; a conversion happens where a value is
                           assigned or passed, and nowhere else
-  ++ -- += -= etc.     -- no increment, decrement or compound assignment
+  ++ --                -- no increment or decrement; `x += 1` does it
   arrays, structs, unions, enums
   'c' and "text"       -- no character or string constants
   variables at file scope -- everything lives in a function
@@ -151,6 +151,11 @@ Anything acc cannot do it should name and point at, rather than emit
 something that misbehaves. broken.c is there to be refused.
 
 zap is here too, for assembling by hand what acc cannot generate yet.
+
+A value is true when it compares unequal to zero at its own type, which is
+not always what its bytes say: a float is false at -0.0, and 0.5 is true
+although it would convert to the integer 0. `&&=` and `||=` are not
+operators in C, and acc says so.
 
 `p + 1` is the next object and not the next byte, so `&a + 1` moves by
 three for an int and by one for a char. `q - p` is the same backwards, a
