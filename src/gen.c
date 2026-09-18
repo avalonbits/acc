@@ -309,7 +309,10 @@ static void vcheck(void)
 
 /* The one place that writes an entry and moves the top, so that the pointer
  * and the count cannot get out of step anywhere else. */
-static void vpush(int kind, Type type, int val)
+/* Always inlined: every value the compiler handles is pushed through here,
+ * and as a call it opened a frame on this target to store three fields. */
+static inline __attribute__((always_inline))
+void vpush(int kind, Type type, int val)
 {
     vcheck();
     vsp->kind = (unsigned char) kind;
@@ -457,7 +460,10 @@ void gen_stmt_end(void)
     spill_used = 0;
 }
 
-static int reg_busy(int reg)
+/* Always inlined, for the same reason: the allocator asks it about every
+ * register it considers, and the frame cost more than the loop. */
+static inline __attribute__((always_inline))
+int reg_busy(int reg)
 {
     /* Unsigned for the same reason as everywhere else here: a signed `<` is
      * a helper call to repair the flags, and this runs for every register
