@@ -26,8 +26,7 @@ static const unsigned char reg_code[NREGS] = { 2, 1, 0 };
 
 static void ld_rr_imm(int reg, int imm)    /* ld rr, nn */
 {
-    out_byte(0x01 + reg_code[reg] * 0x10);
-    out_word24(imm);
+    out_opcode24(0x01 + reg_code[reg] * 0x10, imm);
 }
 
 static void ld_rr_ix(int reg, int disp)    /* ld rr, (ix+d) */
@@ -1745,9 +1744,8 @@ static int jump_op(int op)
 {
     int hole;
 
-    out_byte(op);
-    hole = out_here();
-    out_word24(0);
+    out_opcode24(op, 0);
+    hole = out_here() - ACC_INT_SIZE;
 
     return hole;
 }
@@ -1764,8 +1762,7 @@ int gen_jump(void)
 
 void gen_jump_to(int target)
 {
-    out_byte(JP_ANY);
-    out_word24(target);
+    out_opcode24(JP_ANY, target);
 }
 
 int gen_jump_if_false(void)
@@ -1847,11 +1844,10 @@ static void rt_call(int which)
     }
     rt_any_used = 1;
 
-    out_byte(0xcd);                              /* call nn */
+    out_opcode24(0xcd, 0);                       /* call nn */
     rt_fixups[nrt_fixups].which = (unsigned char) which;
-    rt_fixups[nrt_fixups].at = out_here();
+    rt_fixups[nrt_fixups].at = out_here() - ACC_INT_SIZE;
     nrt_fixups++;
-    out_word24(0);
 }
 
 static void rt_emit_used(void)
@@ -2119,15 +2115,14 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
         }
     }
 
-    out_byte(0xcd);                              /* call nn */
     if (sym_at(fn)->val) {
-        out_word24(sym_at(fn)->val);
+        out_opcode24(0xcd, sym_at(fn)->val);     /* call nn */
     } else {
         /* Defined further down the file, or not at all. The site is recorded
          * and filled in once the whole file has been read; gen_finish says so
          * if it never was. */
-        fixup_add(fn, out_here());
-        out_word24(0);
+        out_opcode24(0xcd, 0);
+        fixup_add(fn, out_here() - ACC_INT_SIZE);
     }
 
     for (i = 0; i < argslots; i++)

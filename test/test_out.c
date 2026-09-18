@@ -51,6 +51,7 @@ void acc_error_at(int line, const char *fmt, ...)
 #define WORDS 20000      /* 60 KB: past cap 4096 doubling four times over */
 #define PAIRS 5000       /* 25 KB more, so the growth happens again */
 #define TRIPLES 40000    /* 120 KB of three-byte writes alone */
+#define QUADS 40000      /* and 160 KB of four-byte ones */
 
 int main(void)
 {
@@ -100,8 +101,13 @@ int main(void)
     for (i = 0; i < TRIPLES; i++)
         out_byte3(i, i + 1, i + 2);
 
+    /* And the four-byte form the same way, on its own, so that the gap in
+     * front of a growth walks 3, 2, 1 and 0 instead of sitting at one value. */
+    for (i = 0; i < QUADS; i++)
+        out_opcode24(i, i * 7 + (i << 12));
+
     is("out_here tracks what was written", out_here() - base,
-       WORDS * 3 + 300 + PAIRS * 5 + TRIPLES * 3);
+       WORDS * 3 + 300 + PAIRS * 5 + TRIPLES * 3 + QUADS * 4);
 
     /* A patch into the middle, which reads len and must still see all of it. */
     out_patch24(base + 3 * (WORDS / 2), 0xabcdef);
@@ -118,7 +124,7 @@ int main(void)
     remove(path);
 
     is("file length", n, (base - 0x040000)
-       + WORDS * 3 + 300 + PAIRS * 5 + TRIPLES * 3);
+       + WORDS * 3 + 300 + PAIRS * 5 + TRIPLES * 3 + QUADS * 4);
 
     want = malloc((size_t) n);
     memcpy(want, got, (size_t) n);
@@ -147,6 +153,16 @@ int main(void)
         want[at]     = (unsigned char) i;
         want[at + 1] = (unsigned char) (i + 1);
         want[at + 2] = (unsigned char) (i + 2);
+    }
+    for (i = 0; i < QUADS; i++) {
+        int at = (base - 0x040000)
+               + WORDS * 3 + 300 + PAIRS * 5 + TRIPLES * 3 + i * 4;
+        int v = i * 7 + (i << 12);
+
+        want[at]     = (unsigned char) i;
+        want[at + 1] = (unsigned char) v;
+        want[at + 2] = (unsigned char) (v >> 8);
+        want[at + 3] = (unsigned char) (v >> 16);
     }
 
     for (i = base - 0x040000; i < n; i++)

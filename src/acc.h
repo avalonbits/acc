@@ -288,6 +288,7 @@ void out_close(void);
 void out_byte(int b);
 void out_byte2(int first, int second);
 void out_byte3(int first, int second, int third);
+void out_opcode24(int opcode, int value);
 void out_word24(int v);
 int  out_here(void);                  /* the address the next byte will have */
 void out_patch24(int at, int v);

@@ -88,7 +88,7 @@ static void out_grow(void)
     int used = OUT_LEN;
 
     /* One doubling is always enough: cap starts at 4096 and the largest
-     * single write is the three bytes of out_word24. */
+     * single write is the four bytes of out_opcode24. */
     cap *= 2;
     img = realloc(img, cap);
     if (!img)
@@ -141,6 +141,19 @@ void out_word24(int value)
     put[1] = (unsigned char) (value >> 8);
     put[2] = (unsigned char) (value >> 16);
     put += 3;
+}
+
+/* An opcode and the 24-bit operand that follows it, which is the shape of a
+ * call, a jump and every load of a constant. Four bytes, one bounds check. */
+void out_opcode24(int opcode, int value)
+{
+    if (limit - put < 4)
+        out_grow();
+    put[0] = (unsigned char) opcode;
+    put[1] = (unsigned char) value;
+    put[2] = (unsigned char) (value >> 8);
+    put[3] = (unsigned char) (value >> 16);
+    put += 4;
 }
 
 int out_here(void)
