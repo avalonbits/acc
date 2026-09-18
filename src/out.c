@@ -28,12 +28,12 @@
  * pointer that walks is a store and an increment. The bound is the same
  * either way: one compare, against the end instead of against the size. */
 static unsigned char *img;
-static unsigned char *put;              /* where the next byte goes */
-static unsigned char *limit;            /* one past the last it may use */
+unsigned char        *out_put;          /* where the next byte goes */
+unsigned char        *out_limit;        /* one past the last it may use */
 static int            cap;
 static const char    *out_path;
 
-#define OUT_LEN ((int) (put - img))
+#define OUT_LEN ((int) (out_put - img))
 
 void out_open(const char *path)
 {
@@ -44,16 +44,16 @@ void out_open(const char *path)
     img = malloc(cap);
     if (!img)
         acc_error("out of memory for the output");
-    put = img;
-    limit = img + cap;
+    out_put = img;
+    out_limit = img + cap;
     out_path = path;
 
     /* jp 0x040045, over the header */
     out_byte(0xc3);
     out_word24(LOAD_ADDR + HEADER_SIZE);
 
-    memcpy(put, hdr, sizeof hdr);
-    put += sizeof hdr;
+    memcpy(out_put, hdr, sizeof hdr);
+    out_put += sizeof hdr;
 
     /* The name MOS lists the program under, which is the file it is written
      * to. agondev has a separate step for this; there is no reason for one. */
@@ -75,15 +75,16 @@ void out_open(const char *path)
     img[0x44] = 1;        /* ADL, 24-bit addressing */
 }
 
-/* Kept out of out_byte, which is called once per byte of the program being
- * compiled. Inline, its `cap *= 2` and its error string need a frame slot, so
- * out_byte opened a three-byte frame on every byte emitted to serve a path
- * taken a dozen times in a compile. Out of line, the hot path is a compare and
- * a store. */
-/* The attribute is load-bearing: out_grow is called from one place, so the
- * compiler puts it straight back inline unless told not to. */
-__attribute__((noinline))
-static void out_grow(void)
+/* Kept out of the emitters in acc.h, which are inlined wherever an
+ * instruction is written. Inline, its `cap *= 2` and its error string would
+ * give every one of those places a frame slot to serve a path taken a dozen
+ * times in a compile. Out of line, what is inlined is a compare and a store.
+ *
+ * The emitters used to be functions here, and an earlier note said inlining
+ * them was slower. That was before the output became a walking pointer, and
+ * it is no longer true: each call opened a frame to do a compare and a store,
+ * and doing without the calls took big.c from 871 to 848 cycles a byte. */
+void out_grow(void)
 {
     int used = OUT_LEN;
 
@@ -93,8 +94,8 @@ static void out_grow(void)
     img = realloc(img, cap);
     if (!img)
         acc_error("out of memory for the output");
-    put = img + used;
-    limit = img + cap;
+    out_put = img + used;
+    out_limit = img + cap;
 }
 
 /* The three bytes of a 24-bit value, lowest first, at `at`.
@@ -117,12 +118,6 @@ static void put24(unsigned char *at, int value)
 #endif
 }
 
-void out_byte(int byte)
-{
-    if (put == limit)
-        out_grow();
-    *put++ = (unsigned char) byte;
-}
 
 /* Two bytes and three bytes, which is what nearly every instruction acc emits
  * is made of: a prefix and an opcode, or those and a displacement.
@@ -131,45 +126,28 @@ void out_byte(int byte)
  * each. The check is the same one either way -- the buffer either has room
  * for the whole instruction or it does not -- and the call is pure overhead
  * on the path that runs once per byte of every program compiled. */
-void out_byte2(int first, int second)
-{
-    if (limit - put < 2)
-        out_grow();
-    put[0] = (unsigned char) first;
-    put[1] = (unsigned char) second;
-    put += 2;
-}
 
-void out_byte3(int first, int second, int third)
-{
-    if (limit - put < 3)
-        out_grow();
-    put[0] = (unsigned char) first;
-    put[1] = (unsigned char) second;
-    put[2] = (unsigned char) third;
-    put += 3;
-}
 
 void out_word24(int value)
 {
     /* One bounds check and three stores, rather than three calls that each
      * check. Every call instruction and every loaded constant emits one of
      * these, so it is a third of the output path. */
-    if (limit - put < 3)
+    if (out_limit - out_put < 3)
         out_grow();
-    put24(put, value);
-    put += 3;
+    put24(out_put, value);
+    out_put += 3;
 }
 
 /* An opcode and the 24-bit operand that follows it, which is the shape of a
  * call, a jump and every load of a constant. Four bytes, one bounds check. */
 void out_opcode24(int opcode, int value)
 {
-    if (limit - put < 4)
+    if (out_limit - out_put < 4)
         out_grow();
-    put[0] = (unsigned char) opcode;
-    put24(put + 1, value);
-    put += 4;
+    out_put[0] = (unsigned char) opcode;
+    put24(out_put + 1, value);
+    out_put += 4;
 }
 
 int out_here(void)

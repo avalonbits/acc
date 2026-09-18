@@ -387,9 +387,38 @@ void gen_startup(int report_by_exit);  /* the entry stub MOS lands on */
 
 void out_open(const char *path);
 void out_close(void);
-void out_byte(int b);
-void out_byte2(int first, int second);
-void out_byte3(int first, int second, int third);
+/* The output's write position and its end, and the growth that happens a
+ * dozen times a compile. Visible so that the three emitters below can be
+ * inlined: every byte the compiler emits goes through one of them, and as
+ * calls each opened a frame on this target to do a compare and a store. */
+extern unsigned char *out_put, *out_limit;
+void out_grow(void);
+
+static inline __attribute__((always_inline)) void out_byte(int byte)
+{
+    if (out_put == out_limit)
+        out_grow();
+    *out_put++ = (unsigned char) byte;
+}
+
+static inline __attribute__((always_inline)) void out_byte2(int first, int second)
+{
+    if (out_limit - out_put < 2)
+        out_grow();
+    out_put[0] = (unsigned char) first;
+    out_put[1] = (unsigned char) second;
+    out_put += 2;
+}
+
+static inline __attribute__((always_inline)) void out_byte3(int first, int second, int third)
+{
+    if (out_limit - out_put < 3)
+        out_grow();
+    out_put[0] = (unsigned char) first;
+    out_put[1] = (unsigned char) second;
+    out_put[2] = (unsigned char) third;
+    out_put += 3;
+}
 void out_opcode24(int opcode, int value);
 void out_word24(int v);
 int  out_here(void);                  /* the address the next byte will have */
