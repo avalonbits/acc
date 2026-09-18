@@ -325,39 +325,6 @@ static void binary(int min_prec)
  * is the whole of what a milestone with no pointers can assign to. */
 static void expr(void)
 {
-    /* A dereference, which may be what is being assigned to. The stars are
-     * counted here rather than left to primary() because the address has to
-     * reach the stack before the value does: `*p = v` evaluates p, then v,
-     * then stores. All but the last star is a read; the last one is either
-     * the store or, if no `=` follows, a read like the others. */
-    if (tok == TK_STAR) {
-        int stars = 0;
-
-        while (accept(TK_STAR))
-            stars++;
-        primary();
-        while (--stars > 0)
-            vderef();
-
-        if (accept(TK_ASSIGN)) {
-            Type outer = narrow_dest;
-            Type target = type_pointer(vtype()) ? type_deref(vtype()) : 0;
-
-            narrow_dest = (target && type_size(target) < ACC_INT_SIZE)
-                          ? target : 0;
-            expr();
-            narrow_dest = outer;
-            vstore_indirect();
-
-            return;
-        }
-
-        vderef();
-        binary_rest(PREC_BIT_OR);
-
-        return;
-    }
-
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
         int sym;
@@ -401,6 +368,39 @@ static void expr(void)
             vpush_local(sym_at(sym)->val, sym_at(sym)->type);
         }
 
+        binary_rest(PREC_BIT_OR);
+
+        return;
+    }
+
+    /* A dereference, which may be what is being assigned to. The stars are
+     * counted here rather than left to primary() because the address has to
+     * reach the stack before the value does: `*p = v` evaluates p, then v,
+     * then stores. All but the last star is a read; the last one is either
+     * the store or, if no `=` follows, a read like the others. */
+    if (tok == TK_STAR) {
+        int stars = 0;
+
+        while (accept(TK_STAR))
+            stars++;
+        primary();
+        while (--stars > 0)
+            vderef();
+
+        if (accept(TK_ASSIGN)) {
+            Type outer = narrow_dest;
+            Type target = type_pointer(vtype()) ? type_deref(vtype()) : 0;
+
+            narrow_dest = (target && type_size(target) < ACC_INT_SIZE)
+                          ? target : 0;
+            expr();
+            narrow_dest = outer;
+            vstore_indirect();
+
+            return;
+        }
+
+        vderef();
         binary_rest(PREC_BIT_OR);
 
         return;

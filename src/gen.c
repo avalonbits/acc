@@ -76,6 +76,7 @@ static void evict_reg(int reg);
 static void vunary_long(int which, Type type);
 static void vswap(void);
 static int  is_comparison(int op);
+static void vcmp_pointer_check(Type left, Type right);
 static void convert_int_to_float(void);
 static void convert_float_to_int(Type to);
 static void force_into(Value *target, int want);
@@ -2175,6 +2176,17 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
  * of objects. A pointer to a one-byte type needs neither, which is most of
  * why char is the type people reach for when they want the bytes.
  */
+/* Whether two pointers may be compared, which is the one thing about the
+ * pointer cases that vapply can finish for itself: an address compares as the
+ * unsigned int it is. Kept out of vbinop_pointer so that vcmp still has the
+ * single caller that lets it stay inlined there -- giving it a second one
+ * turned every comparison in every program into a call. */
+static void vcmp_pointer_check(Type left, Type right)
+{
+    if (type_pointer(left) && type_pointer(right) && left != right)
+        acc_error_at(tok_line, "these are pointers to different types");
+}
+
 static void vbinop_pointer(int op, Type left, Type right)
 {
     int both = type_pointer(left) && type_pointer(right);
@@ -2185,14 +2197,6 @@ static void vbinop_pointer(int op, Type left, Type right)
         acc_error_at(tok_line, "a 'void *' does not say what it points at, so "
                                "arithmetic on it has no step to take");
     step = type_step(ptr);
-
-    if (is_comparison(op)) {
-        if (both && left != right)
-            acc_error_at(tok_line, "these are pointers to different types");
-        vcmp(op);
-
-        return;
-    }
 
     if (both) {
         if (op != TK_MINUS)
@@ -2276,9 +2280,12 @@ void vapply(int op, Type narrow)
     right = (vsp - 1)->type;
 
     if (type_pointer(left) || type_pointer(right)) {
-        vbinop_pointer(op, left, right);
+        if (!is_comparison(op)) {
+            vbinop_pointer(op, left, right);
 
-        return;
+            return;
+        }
+        vcmp_pointer_check(left, right);
     }
 
     /* A shift is not one of the operators the usual arithmetic conversions

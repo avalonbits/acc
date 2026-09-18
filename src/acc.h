@@ -68,7 +68,14 @@ typedef unsigned char Type;
 #define TY_FLOATING 0x10
 #define TY_FLOAT    ((Type) (ACC_LONG_SIZE | TY_FLOATING))
 
-#define type_float(ty)    (!type_pointer(ty) && ((ty) & TY_FLOATING))
+/* A pointer is never a floating type, however floating the thing it points
+ * at. Written as one mask and one compare rather than as "not a pointer and
+ * floating", because the two-part form makes the compiler normalise both
+ * sides of every `type_float(a) != type_float(b)` to 0 or 1, and on this
+ * target that is a shift, and a shift is a call. The depth bits sit directly
+ * above the floating bit, so the two together are equal to TY_FLOATING alone
+ * exactly when the depth is zero and the bit is set. */
+#define type_float(ty)    (((ty) & (TY_PTR_MASK | TY_FLOATING)) == TY_FLOATING)
 #define TY_VOID     ((Type) 0)
 
 /* How many times a type is a pointer, in the top three bits.
@@ -101,7 +108,9 @@ typedef unsigned char Type;
 
 #define type_size(ty)     (type_pointer(ty) ? ACC_INT_SIZE \
                                             : (int) ((ty) & TY_SIZE_MASK))
-#define type_unsigned(ty) (type_pointer(ty) || ((ty) & TY_UNSIGNED))
+/* An address has no sign, so a pointer is unsigned -- which is one mask,
+ * for the same reason. */
+#define type_unsigned(ty) ((ty) & (TY_PTR_MASK | TY_UNSIGNED))
 
 /* What `p + 1` moves by, which is the width of what p points at. */
 #define type_step(ty)     type_size(type_deref(ty))
