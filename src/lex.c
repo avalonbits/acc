@@ -17,13 +17,15 @@
 
 /* One block of characters holding every identifier in the program, each one
  * exactly once, NUL terminated. Identifiers are referred to by their offset
- * into it, so a name costs three bytes wherever it is mentioned.
+ * into it, so a name costs three bytes wherever it is mentioned. The three
+ * bytes in front of each name's text hold the file-scope symbol it stands
+ * for: see name_global.
  *
  * Nothing is ever freed. A compiler runs once and exits; a free list would be
  * bytes spent to give memory back to a process that is about to end.
  *
  * Offset zero is never a name, so it can mean "none". */
-static char  *names;
+char         *name_arena;       /* name_global reads it directly */
 static size_t names_len, names_cap;
 
 /* Open addressing over the arena: each slot is an offset, and a collision
@@ -175,8 +177,8 @@ static void names_realloc(size_t need)
 {
     while (names_cap < names_len + need)
         names_cap = names_cap ? names_cap * 2 : 1024;
-    names = realloc(names, names_cap);
-    if (!names)
+    name_arena = realloc(name_arena, names_cap);
+    if (!name_arena)
         acc_error("out of memory for names");
 }
 
@@ -207,7 +209,7 @@ static void buckets_rehash(unsigned newn)
 
         if (ref == NAME_NONE)
             continue;
-        b = name_home(names + ref, (unsigned) strlen(names + ref));
+        b = name_home(name_arena + ref, (unsigned) strlen(name_arena + ref));
         while (b->ref != NAME_NONE)
             if (++b == buckets_end)
                 b = buckets;
@@ -219,10 +221,10 @@ static void buckets_rehash(unsigned newn)
 void name_init(void)
 {
     names_cap = 1024;
-    names = malloc(names_cap);
-    if (!names)
+    name_arena = malloc(names_cap);
+    if (!name_arena)
         acc_error("out of memory for names");
-    names[0] = '\0';      /* so offset 0 is never a real name */
+    name_arena[0] = '\0';     /* so offset 0 is never a real name */
     names_len = 1;
     buckets_rehash(256);
 }
@@ -244,7 +246,8 @@ NameRef name_intern(const char *text, int len)
          * name whether or not it ends first -- off the end of the arena when
          * it is the last name there. strncmp stops at its terminator, so the
          * check after it only runs on a name at least len long. */
-        if (strncmp(names + ref, text, len) == 0 && names[ref + len] == '\0')
+        if (strncmp(name_arena + ref, text, len) == 0
+            && name_arena[ref + len] == '\0')
             return ref;
         if (++b == buckets_end)
             b = buckets;
@@ -260,11 +263,13 @@ NameRef name_intern(const char *text, int len)
         return name_intern(text, len);
     }
 
-    names_grow(len + 1);
-    ref = (NameRef) names_len;
-    memcpy(names + names_len, text, len);
-    names[names_len + len] = '\0';
-    names_len += len + 1;
+    /* No file-scope symbol yet, then the text. */
+    names_grow(3 + len + 1);
+    name_arena[names_len] = name_arena[names_len + 1] = name_arena[names_len + 2] = 0;
+    ref = (NameRef) names_len + 3;
+    memcpy(name_arena + ref, text, len);
+    name_arena[ref + len] = '\0';
+    names_len = ref + len + 1;
     b->ref = ref;
     nnames++;
     names_room--;
@@ -274,7 +279,7 @@ NameRef name_intern(const char *text, int len)
 
 const char *name_text(NameRef ref)
 {
-    return names + ref;
+    return name_arena + ref;
 }
 
 /* ------------------------------------------------------------------ */
@@ -377,36 +382,22 @@ static void skip_space(void)
  * the compiler does most, and adding a keyword made it slower for everyone.
  * Adding one here costs nothing.
  *
- * The table has an entry per byte of arena the keywords occupy, of which only
- * the ones a name actually starts at are ever read. The rest say TK_IDENT so
- * that a bug reads as "not a keyword" rather than as whatever was there.
- *
- * Which is why it is this size: the keywords are interned first, end to end
- * and each with its terminator, so the table has to reach as far as the last
- * of them starts. C99 reserves thirty-seven words and they take a little
- * under three hundred bytes between them. */
+ * Each keyword's token is kept where any other name keeps its file-scope
+ * symbol, in the bytes in front of its text: a keyword can never name one,
+ * so the field is free, and the lexer reads the token from the name it has
+ * just interned. */
 static NameRef kw_limit;
-static unsigned char kw_tok[320];
 
 static void keyword(const char *text, int len, int token)
 {
     NameRef ref = name_intern(text, len);
 
-    if (ref >= (NameRef) sizeof kw_tok)
-        acc_error("internal: the keyword table needs %d entries, not %d",
-                  (int) ref + 1, (int) sizeof kw_tok);
-    kw_tok[ref] = (unsigned char) token;
-    if (ref + 1 > kw_limit)
-        kw_limit = ref + 1;
+    name_arena[ref - 3] = (char) token;
+    kw_limit = ref + 1;
 }
 
 static void keywords_init(void)
 {
-    unsigned i;
-
-    for (i = 0; i < sizeof kw_tok; i++)
-        kw_tok[i] = TK_IDENT;
-
     keyword("int", 3, TK_KW_INT);
     keyword("void", 4, TK_KW_VOID);
     keyword("return", 6, TK_KW_RETURN);
@@ -750,7 +741,8 @@ void next(void)
         while (is_alnum((unsigned char) *cursor))
             cursor++;
         tok_name = name_intern(s, (int) (cursor - s));
-        tok = (tok_name < kw_limit) ? kw_tok[tok_name] : TK_IDENT;
+        tok = (tok_name < kw_limit) ? (unsigned char) name_arena[tok_name - 3]
+                                    : TK_IDENT;
         return;
     }
 

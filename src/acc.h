@@ -145,6 +145,8 @@ NameRef     name_intern(const char *text, int len);
 const char *name_text(NameRef ref);
 void        name_init(void);
 
+extern char *name_arena;    /* for name_global, further down */
+
 /* ------------------------------------------------------------------ */
 /* tokens                                                              */
 
@@ -422,6 +424,44 @@ void put24(unsigned char *at, int value)
 #else
     memcpy(at, &value, 3);
 #endif
+}
+
+/* The 24-bit value put24 stored at `at`, for the same reason and in the same
+ * way: one load, where assembling it from bytes would be shifts. Values are
+ * non-negative. */
+static inline __attribute__((always_inline))
+int get24(const unsigned char *at)
+{
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return at[0] | (at[1] << 8) | (at[2] << 16);
+#else
+    int value = 0;
+
+    memcpy(&value, at, 3);
+
+    return value;
+#endif
+}
+
+/* A name's file-scope symbol lives in the three bytes in front of its text in
+ * the arena, stored plus one so that the zero a new name starts with means
+ * none. Finding a function is then one load, where it used to be a hash
+ * table keyed on the NameRef: a mask and a shift to find the slot, and a
+ * probe, for every name the program mentions that is not a local. A NameRef
+ * is already unique per name, which is what a hash would have been for.
+ *
+ * A name has at most one file-scope symbol -- every push of one goes through
+ * a sym_find that came back empty -- which is what lets one field hold it. */
+static inline __attribute__((always_inline))
+int name_global(NameRef ref)
+{
+    return get24((const unsigned char *) name_arena + ref - 3) - 1;
+}
+
+static inline __attribute__((always_inline))
+void name_set_global(NameRef ref, int sym)
+{
+    put24((unsigned char *) name_arena + ref - 3, sym + 1);
 }
 
 /* An opcode and the 24-bit operand that follows it, which is the shape of a

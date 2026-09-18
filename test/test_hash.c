@@ -71,8 +71,9 @@ int main(void)
     /* A lookup compares against every name its probe passes, and those can be
      * shorter than the name looked up. The comparison has to stop at the
      * stored name's end: reading on for the full length of the other runs
-     * off the arena when the shorter one is the last thing in it. So: 127
-     * names of eight bytes and one of seven fill the first 1024 bytes of the
+     * off the arena when the shorter one is the last thing in it. So: 93
+     * names of seven characters -- eleven bytes each, with the terminator and
+     * the three that hold a name's symbol -- fill the first 1024 bytes of the
      * arena exactly, which is its first allocation, and the long name after
      * them is one whose probe passes through the end -- found by search, and
      * the probe count below says whether it still does. Under the address
@@ -81,15 +82,15 @@ int main(void)
         char fill[16];
         unsigned long before;
 
-        for (i = 0; i < 127; i++) {
+        for (i = 0; i < 92; i++) {
             sprintf(fill, "f%06d", i);
             name_intern(fill, 7);
         }
-        is("the short name ends the arena", (long) name_intern("s00000", 6) + 7, 1024);
+        is("the short name ends the arena", (long) name_intern("s000000", 7) + 8, 1024);
         before = name_probes;
-        name_intern("a_longer_name_73", 16);
+        name_intern("a_longer_name_30", 16);
         is("and a longer one's probe passes it", name_probes - before >= 2, 1);
-        interned = 129;
+        interned = 94;
     }
 
     /* Names of the shape a program actually has: a short prefix and a number,

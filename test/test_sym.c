@@ -10,13 +10,13 @@
  * Nothing a differential test can see. What can be seen is the work: how many
  * table slots a lookup touches, and whether that number grows with the table.
  *
- * The keys are the shape the real ones are: a NameRef is an offset into the
- * name arena, so they climb by the length of each name plus its terminator,
- * not at random and not by one.
+ * The names are real ones, interned: a file-scope symbol is found through
+ * the name arena, so a NameRef made up without one would find nothing.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "acc.h"
 
@@ -74,17 +74,14 @@ int main(void)
     long small, large;
     int i, wrong = 0;
 
+    name_init();
     sym_init();
 
-    /* Offsets as the arena hands them out: past a name and its NUL. Offset 0
-     * is NAME_NONE and is never a name. */
-    {
-        NameRef at = 1;
+    for (i = 0; i < N; i++) {
+        char text[16];
 
-        for (i = 0; i < N; i++) {
-            names[i] = at;
-            at += 3 + (unsigned) (i % 9);
-        }
+        sprintf(text, "fn%d", i);
+        names[i] = name_intern(text, (int) strlen(text));
     }
 
     for (i = 0; i < 20; i++)
@@ -112,7 +109,8 @@ int main(void)
             wrong++;
     }
     is("every name finds its own symbol", wrong, 0);
-    is("a name never pushed is not found", sym_find(999999), SYM_NONE);
+    is("a name never pushed is not found",
+       sym_find(name_intern("never_pushed", 12)), SYM_NONE);
 
     /* A local shadows a file-scope name of the same spelling, and stops doing
      * so when the function ends. */

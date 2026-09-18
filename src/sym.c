@@ -22,13 +22,15 @@
  * local would drop it at that function's closing brace and leave the call
  * pointing at nothing.
  *
- * The locals are walked backwards and the file-scope names are indexed, which
- * is the split the shape of the problem asks for. A function has a handful of
- * locals and the walk stops at the first match, so a table would cost more
- * than it saved. File scope is the other way round: it only grows, every call
- * searches all of it, and the search is as long as the program has functions.
+ * The locals are walked backwards and the file-scope names are looked up
+ * directly, which is the split the shape of the problem asks for. A function
+ * has a handful of locals and the walk stops at the first match, so a table
+ * would cost more than it saved. File scope is the other way round: it only
+ * grows, and a walk of it is as long as the program has functions. Each name
+ * carries its file-scope symbol with it in the name arena (name_global), so
+ * finding one is a load.
  *
- * Measured, before the index existed: two inputs identical byte for byte
+ * Measured, when file scope was walked too: two inputs identical byte for byte
  * except which of two hundred functions main called -- the last one declared
  * or the first -- took 7.80 s and 8.76 s for ten compiles. Forty-four cycles
  * a symbol walked, on a walk whose length is the program's, done once per
@@ -44,103 +46,12 @@
 Sym           *sym_table;     /* sym_at reads it directly */
 static int     nsyms, nglobals, cap;
 
-/* Name to file-scope symbol, open addressed, so that finding a function is a
- * hash and a compare rather than a walk. A name has at most one file-scope
- * symbol -- every push of one goes through a sym_find that came back empty --
- * which is what lets a plain map stand in for a search.
- *
- * Keyed on the NameRef, which is an offset into the name arena and so already
- * distinct per name; the low bits spread well enough because names are laid
- * down end to end and their lengths vary. No hashing of the text: the text
- * was hashed once when the name was interned, and this is the cheaper thing
- * to do with the result.
- *
- * Entries are never removed. File scope does not end. */
-/* One entry per slot, eight bytes wide. Two things about that.
- *
- * It is one array rather than two columns because a probe reads both halves
- * of an entry, and two arrays mean two addresses to work out where one does.
- *
- * It is eight bytes rather than six because turning a slot number into an
- * address costs a helper call either way on this target, and the only choice
- * is which: six bytes is `call __imulu` and eight is `call __ishl`, which is
- * cheaper. The two spare bytes are per slot in a table that is twice the
- * number of functions in the program.
- *
- * An empty slot has NAME_NONE in name. */
-typedef struct {
-    NameRef       name;
-    int           sym;
-    unsigned char pad[2];
-} SymSlot;
-
-static SymSlot *index_table;
-static unsigned index_cap, index_count;
-
 #ifdef ACC_HASH_STATS
 unsigned long sym_probes;
 #define COUNT_PROBE() (sym_probes++)
 #else
 #define COUNT_PROBE() ((void) 0)
 #endif
-
-static void index_alloc(unsigned n)
-{
-    index_table = calloc(n, sizeof *index_table);
-    if (!index_table)
-        acc_error("out of memory for the symbol index");
-    index_cap = n;
-}
-
-static void index_grow(void)
-{
-    SymSlot *old_table = index_table;
-    unsigned old_cap = index_cap, i;
-
-    index_alloc(old_cap * 2);
-    for (i = 0; i < old_cap; i++) {
-        unsigned slot;
-
-        if (old_table[i].name == NAME_NONE)
-            continue;
-        slot = old_table[i].name & (index_cap - 1);
-        while (index_table[slot].name != NAME_NONE)
-            slot = (slot + 1) & (index_cap - 1);
-        index_table[slot] = old_table[i];
-    }
-    free(old_table);
-}
-
-static void index_add(NameRef name, int sym)
-{
-    unsigned slot;
-
-    /* Kept under half full. Past that a linear probe starts walking. */
-    if ((index_count + 1) * 2 >= index_cap)
-        index_grow();
-
-    slot = name & (index_cap - 1);
-    while (index_table[slot].name != NAME_NONE)
-        slot = (slot + 1) & (index_cap - 1);
-    index_table[slot].name = name;
-    index_table[slot].sym = sym;
-    index_count++;
-}
-
-static int index_find(NameRef name)
-{
-    unsigned slot = name & (index_cap - 1);
-
-    COUNT_PROBE();
-    while (index_table[slot].name != NAME_NONE) {
-        if (index_table[slot].name == name)
-            return index_table[slot].sym;
-        slot = (slot + 1) & (index_cap - 1);
-        COUNT_PROBE();
-    }
-
-    return SYM_NONE;
-}
 
 void sym_init(void)
 {
@@ -149,8 +60,6 @@ void sym_init(void)
     if (!sym_table)
         acc_error("out of memory for symbols");
     nsyms = nglobals = 0;
-    index_alloc(128);
-    index_count = 0;
 }
 
 /* Out of line for the same reason out_grow is: sym_push runs for every name
@@ -198,7 +107,7 @@ int sym_push(NameRef name, int kind, int val)
                                  * assumed to return int, as C says */
     sym_set_params(nglobals, 0, 0);     /* and to take nothing known */
     nsyms++;
-    index_add(name, nglobals);
+    name_set_global(name, nglobals);
 
     return nglobals++;
 }
@@ -217,7 +126,9 @@ int sym_find(NameRef name)
             return (int) i;
     }
 
-    return index_find(name);
+    COUNT_PROBE();
+
+    return name_global(name);
 }
 
 
