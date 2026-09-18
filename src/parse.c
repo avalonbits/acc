@@ -121,21 +121,27 @@ static void reserved_word(void)
 static void local_value(NameRef name)
 {
     int sym = sym_find(name);
+    const Sym *local;
 
     if (sym == SYM_NONE)
         acc_error_at(tok_line, "'%s' is not declared", name_text(name));
-    if (sym_at(sym)->kind != SYM_LOCAL)
+
+    /* Fetched once. Each sym_at is a call and a multiply by the size of a
+     * Sym, and this is every read of every variable; nothing below pushes a
+     * symbol, so the pointer stays good. */
+    local = sym_at(sym);
+    if (local->kind != SYM_LOCAL)
         acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
 
     if (tok == TK_INC || tok == TK_DEC) {
-        vpostfix_local(sym_at(sym)->val, sym_at(sym)->type,
+        vpostfix_local(local->val, local->type,
                        tok == TK_INC ? TK_PLUS : TK_MINUS);
         next();
 
         return;
     }
 
-    vpush_local(sym_at(sym)->val, sym_at(sym)->type);
+    vpush_local(local->val, local->type);
 }
 
 /* `++x`, `--x`, `++*p`, `--*p`: the operand changed, and the answer is its
@@ -151,14 +157,16 @@ static void prefix_step(void)
 
     if (tok == TK_IDENT) {
         int sym = sym_find(tok_name);
+        const Sym *local;
 
         if (sym == SYM_NONE)
             acc_error_at(tok_line, "'%s' is not declared", name_text(tok_name));
-        if (sym_at(sym)->kind != SYM_LOCAL)
+        local = sym_at(sym);
+        if (local->kind != SYM_LOCAL)
             acc_error_at(tok_line, "'%s' cannot be changed by %s",
                          name_text(tok_name), spelling);
         next();
-        vprefix_local(sym_at(sym)->val, sym_at(sym)->type, op);
+        vprefix_local(local->val, local->type, op);
 
         return;
     }
@@ -313,10 +321,14 @@ static void primary(void)
         sym = sym_find(tok_name);
         if (sym == SYM_NONE)
             acc_error_at(tok_line, "'%s' is not declared", name_text(tok_name));
-        if (sym_at(sym)->kind != SYM_LOCAL)
-            acc_error_at(tok_line, "'%s' is not a variable, so it has no "
-                                   "address to take", name_text(tok_name));
-        vaddr_local(sym_at(sym)->val, sym_at(sym)->type);
+        {
+            const Sym *local = sym_at(sym);
+
+            if (local->kind != SYM_LOCAL)
+                acc_error_at(tok_line, "'%s' is not a variable, so it has no "
+                                       "address to take", name_text(tok_name));
+            vaddr_local(local->val, local->type);
+        }
         next();
 
         return;
@@ -417,7 +429,7 @@ static int transparent_op(int token)
  * the one-operator statements that byte code is mostly made of. */
 static int expression_ends_here(void)
 {
-    return tok == TK_SEMI || tok == TK_COMMA || tok == TK_RPAREN;
+    return tok_pair(tok, TK_SEMI) || tok == TK_RPAREN;
 }
 
 /* The right-hand side of `&&` or `||`, with the left already on the stack.
@@ -460,7 +472,7 @@ static void binary_rest(int min_prec)
             return;
         next();
 
-        if (op == TK_ANDAND || op == TK_OROR) {
+        if (tok_pair(op, TK_ANDAND)) {
             logical_rest(op, op_prec);
 
             continue;
@@ -527,8 +539,12 @@ static void compound_local(NameRef name)
     /* Taken now rather than looked up again after the right side: a call in
      * it to a function not yet seen pushes a symbol and moves the locals
      * along, so the index would be stale. The frame offset is not. */
-    type = sym_at(sym)->type;
-    off = sym_at(sym)->val;
+    {
+        const Sym *local = sym_at(sym);
+
+        type = local->type;
+        off = local->val;
+    }
     next();
 
     vpush_local(off, type);
@@ -574,15 +590,27 @@ static void assignment(void)
              * it; the check that it is assignable stays below, where the
              * diagnostic belongs. */
             narrow_dest = 0;
-            if (dest != SYM_NONE && sym_at(dest)->kind == SYM_LOCAL
-                && type_size(sym_at(dest)->type) < ACC_INT_SIZE)
-                narrow_dest = sym_at(dest)->type;
+            if (dest != SYM_NONE) {
+                const Sym *local = sym_at(dest);
+
+                if (local->kind == SYM_LOCAL
+                    && type_size(local->type) < ACC_INT_SIZE)
+                    narrow_dest = local->type;
+            }
             expr();
             narrow_dest = outer;
+
+            /* Looked up again, since the right side may have pushed a symbol
+             * and moved this one -- but only once. */
             sym = sym_find(name);
-            if (sym == SYM_NONE || sym_at(sym)->kind != SYM_LOCAL)
-                acc_error_at(tok_line, "'%s' cannot be assigned to", name_text(name));
-            vstore_local(sym_at(sym)->val, sym_at(sym)->type);
+            {
+                const Sym *local = (sym == SYM_NONE) ? NULL : sym_at(sym);
+
+                if (!local || local->kind != SYM_LOCAL)
+                    acc_error_at(tok_line, "'%s' cannot be assigned to",
+                                 name_text(name));
+                vstore_local(local->val, local->type);
+            }
 
             return;
         }

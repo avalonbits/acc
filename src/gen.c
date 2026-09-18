@@ -788,7 +788,7 @@ static void vbinop(int op)
     /* A shift's result takes its type from the left operand alone: `1u >> x`
      * is unsigned and `1 >> u` is not, which is C's rule and not the usual
      * arithmetic conversions. */
-    if (op == TK_SHL || op == TK_SHR)
+    if (tok_pair(op, TK_SHL))
         result = type_unsigned(lhs_type) ? TY_UINT : TY_INT;
 
     switch (op) {
@@ -1091,7 +1091,7 @@ static int vnarrow_ready(int op, Type to)
      * None of it is arithmetic this could make cheaper. */
     if (vtop < 2 || type_size(to) != 1)
         return 0;
-    if (op == TK_SHL || op == TK_SHR) {
+    if (tok_pair(op, TK_SHL)) {
         /* Only a constant count, unrolled. A variable one is a loop, which is
          * what the helper already is. */
         if (rhs->kind != VAL_CONST || rhs->val < 0 || rhs->val > 8)
@@ -1115,7 +1115,7 @@ static void vbinop_narrow(int op, Type to)
     else if (lhs->kind == VAL_LOCAL)
         ld_a_ix_b(lhs->val);
 
-    if (op == TK_SHL || op == TK_SHR) {
+    if (tok_pair(op, TK_SHL)) {
         int count = rhs->val;
 
         while (count-- > 0)
@@ -1244,7 +1244,7 @@ static void vcmp(int op)
 
     /* `a > b` is `b < a`, and `a <= b` is `b >= a`. Swapping costs nothing
      * here: both sides are still descriptions on a stack, not registers. */
-    if (op == TK_GT || op == TK_LE) {
+    if (tok_pair(op, TK_GT)) {
         Value swapped = *lhs;
 
         *lhs = *rhs;
@@ -1702,7 +1702,7 @@ static void vcmp_wide(int op, Type operand)
 
     /* `a > b` is `b < a` and `a <= b` is `b >= a`, done by which address goes
      * in which register rather than by a second routine. */
-    if (op == TK_GT || op == TK_LE) {
+    if (tok_pair(op, TK_GT)) {
         int swap = left;
 
         left = right;
@@ -1712,7 +1712,7 @@ static void vcmp_wide(int op, Type operand)
     lea_rr_ix(R_HL, left);
     lea_rr_ix(R_DE, right);
 
-    if (op == TK_EQ || op == TK_NE) {
+    if (tok_pair(op, TK_EQ)) {
         rt_call(RT_LCMPEQ);
         cmp_equal(op == TK_EQ);
     } else {
@@ -2153,6 +2153,7 @@ void gen_return(void)
  * the caller takes them off again -- which is agondev's convention. */
 void gen_call(int fn, int nargs, int params_first, int nparams)
 {
+    const Sym *callee;
     int i, argslots = 0;
 
     /* Anything still live in a register has to come out before the call.
@@ -2195,8 +2196,13 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
         }
     }
 
-    if (sym_at(fn)->val) {
-        out_opcode24(0xcd, sym_at(fn)->val);     /* call nn */
+    /* The callee fetched once rather than at each of the six places below
+     * that want something from it: sym_at is a call and a multiply by the
+     * size of a Sym, and nothing between here and the end pushes a symbol. */
+    callee = sym_at(fn);
+
+    if (callee->val) {
+        out_opcode24(0xcd, callee->val);         /* call nn */
     } else {
         /* Defined further down the file, or not at all. The site is recorded
          * and filled in once the whole file has been read; gen_finish says so
@@ -2208,7 +2214,7 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
     for (i = 0; i < argslots; i++)
         pop_rr(R_DE);                            /* discard, cheapest form */
 
-    if (type_wide(sym_at(fn)->type)) {
+    if (type_wide(callee->type)) {
         /* HL with the high byte in E; put it where every long lives. */
         int slot = spill_slot_of(ACC_LONG_SIZE);
 
@@ -2217,14 +2223,14 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
         ld_ix_rr(slot, R_HL);
         out_byte(0x7b);                          /* ld a, e */
         ld_ix_a(slot + ACC_INT_SIZE);
-        vpush(VAL_LOCAL, sym_at(fn)->type, slot);
+        vpush(VAL_LOCAL, callee->type, slot);
 
         return;
     }
 
     /* Read the answer from where the callee's type says it is. */
-    if (RETURNS_IN_A(sym_at(fn)->type)) {
-        Type returns = sym_at(fn)->type;
+    if (RETURNS_IN_A(callee->type)) {
+        Type returns = callee->type;
 
         if (type_unsigned(returns))
             fill_hl_with_zero();
@@ -2233,7 +2239,7 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
         ld_l_a();
     }
     vpush_reg(R_HL);
-    (vsp - 1)->type = type_promote(sym_at(fn)->type);
+    (vsp - 1)->type = type_promote(callee->type);
 }
 
 /* What an operator means when a pointer is one of its operands.
@@ -2385,7 +2391,7 @@ void vapply(int op, Type narrow)
      *
      * Which also settles what the runtime should fill with on a right
      * shift -- the sign of the left operand, never the count's. */
-    if (op == TK_SHL || op == TK_SHR) {
+    if (tok_pair(op, TK_SHL)) {
         if (type_wide(left)) {
             vbinop_long(op, left);
 

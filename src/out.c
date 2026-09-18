@@ -97,6 +97,26 @@ static void out_grow(void)
     limit = img + cap;
 }
 
+/* The three bytes of a 24-bit value, lowest first, at `at`.
+ *
+ * Copied rather than shifted out. `value >> 8` and `value >> 16` are each a
+ * call into the runtime on this target -- there is no instruction that shifts
+ * a 24-bit register by more than one place -- and this runs for every call,
+ * jump and constant the compiler emits. The value is already those three
+ * bytes, lowest first, in memory, so copying them is the whole job. On a host
+ * that keeps its bytes the other way round it is not, and the shifts are used
+ * there instead. */
+static void put24(unsigned char *at, int value)
+{
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    at[0] = (unsigned char) value;
+    at[1] = (unsigned char) (value >> 8);
+    at[2] = (unsigned char) (value >> 16);
+#else
+    memcpy(at, &value, 3);
+#endif
+}
+
 void out_byte(int byte)
 {
     if (put == limit)
@@ -137,9 +157,7 @@ void out_word24(int value)
      * these, so it is a third of the output path. */
     if (limit - put < 3)
         out_grow();
-    put[0] = (unsigned char) value;
-    put[1] = (unsigned char) (value >> 8);
-    put[2] = (unsigned char) (value >> 16);
+    put24(put, value);
     put += 3;
 }
 
@@ -150,9 +168,7 @@ void out_opcode24(int opcode, int value)
     if (limit - put < 4)
         out_grow();
     put[0] = (unsigned char) opcode;
-    put[1] = (unsigned char) value;
-    put[2] = (unsigned char) (value >> 8);
-    put[3] = (unsigned char) (value >> 16);
+    put24(put + 1, value);
     put += 4;
 }
 
@@ -167,9 +183,7 @@ void out_patch24(int at, int value)
 
     if (off < 0 || off + 3 > OUT_LEN)
         acc_error("internal: patch at %06x is outside the image", at);
-    img[off]     = (unsigned char) value;
-    img[off + 1] = (unsigned char) (value >> 8);
-    img[off + 2] = (unsigned char) (value >> 16);
+    put24(img + off, value);
 }
 
 void out_close(void)

@@ -199,6 +199,27 @@ extern int      tok;        /* the current token */
 /* Wide enough for a long, because C99 types a constant by the first type that
  * can hold it and acc now has one. It is read once per numeric token, so the
  * long arithmetic that costs on this target is not on a path that matters. */
+/* Whether a token is `first` or the one after it in the enum.
+ *
+ * The obvious `t == A || t == A + 1` is what this means, and the compiler
+ * merges it into `(t & ~1) == A` whenever A is even -- which is a sensible
+ * thing to do on most machines, and on this one an AND of two 24-bit values
+ * is a call into the runtime. Several of these sat on the path of every
+ * operator in every program. Narrowing to a byte first and then subtracting
+ * and comparing is three instructions and no call -- and the narrowing has to
+ * come first: `(unsigned char) (t - first) < 2` is the same arithmetic, and
+ * the compiler turned it back into the 24-bit AND it was meant to avoid. */
+#define tok_pair(t, first)  ((unsigned char) (t) - (unsigned) (first) < 2u)
+
+/* The pairs it is used on, which have to stay next to each other in the enum
+ * or it quietly tests the wrong thing. An array of negative size will not
+ * compile, which is C99's way of asserting at build time. */
+typedef char tok_pairs_are_adjacent[(TK_SHR == TK_SHL + 1
+                                     && TK_LE == TK_GT + 1
+                                     && TK_NE == TK_EQ + 1
+                                     && TK_COMMA == TK_SEMI + 1
+                                     && TK_OROR == TK_ANDAND + 1) ? 1 : -1];
+
 extern long     tok_val;    /* its value, when TK_INT */
 extern Type     tok_type;   /* and its type, which C99 fixes by its size */
 extern float    tok_fval;   /* its value, when TK_FLOAT */
