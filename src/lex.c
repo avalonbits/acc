@@ -802,10 +802,8 @@ const char *tok_spelling(int token)
  * parser can name the missing feature rather than complain about a ';'. The
  * eZ80 has no instruction for any of them; they are the next milestone. */
 
-int accept(int token)
+int accept_next(void)
 {
-    if (tok != token)
-        return 0;
     next();
 
     return 1;

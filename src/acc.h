@@ -231,7 +231,14 @@ void lex_init(void);
 void lex_open(const char *path);
 void lex_close(void);
 void next(void);                 /* advance to the following token */
-int  accept(int token);          /* consume it if present; say whether it was */
+int         accept_next(void);          /* next(), returning 1, for accept */
+
+/* The current token if it is `token`, stepping past it; 0 and nothing done if
+ * not. A macro because most of the time the answer is no -- the parser tries
+ * `,` or `=` or `(` after something that is followed by none of them -- and a
+ * call to find that out opened a frame on this target before comparing two
+ * bytes. `token` is evaluated once. */
+#define accept(token)  (tok == (token) ? accept_next() : 0)
 void expect(int token, const char *what);
 const char *tok_spelling(int token);
 
@@ -276,7 +283,12 @@ void sym_init(void);
 
 int  sym_find(NameRef name);             /* innermost first; SYM_NONE if unknown */
 int  sym_push(NameRef name, int kind, int val);
-Sym *sym_at(int i);                      /* valid until the next sym_push */
+/* Symbol i. Good until the next sym_push, which may move the table; nothing
+ * holds one across a push. A macro over the table itself rather than a call,
+ * because it is used on every name the program mentions and the call opened a
+ * frame to do one add. */
+extern Sym *sym_table;
+#define sym_at(i)  (&sym_table[i])
 void sym_drop_locals(void);              /* at the end of a function */
 
 /* ------------------------------------------------------------------ */

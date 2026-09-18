@@ -41,7 +41,7 @@
  * its callee's address, and a function definition waiting to record its own --
  * are both separated from their push by an arbitrary amount of parsing. Handing
  * out indices makes that safe by construction rather than by remembering. */
-static Sym    *syms;
+Sym           *sym_table;     /* sym_at reads it directly */
 static int     nsyms, nglobals, cap;
 
 /* Name to file-scope symbol, open addressed, so that finding a function is a
@@ -145,8 +145,8 @@ static int index_find(NameRef name)
 void sym_init(void)
 {
     cap = 64;
-    syms = malloc(cap * sizeof *syms);
-    if (!syms)
+    sym_table = malloc(cap * sizeof *sym_table);
+    if (!sym_table)
         acc_error("out of memory for symbols");
     nsyms = nglobals = 0;
     index_alloc(128);
@@ -162,8 +162,8 @@ __attribute__((noinline))
 static void syms_grow(void)
 {
     cap *= 2;
-    syms = realloc(syms, cap * sizeof *syms);
-    if (!syms)
+    sym_table = realloc(sym_table, cap * sizeof *sym_table);
+    if (!sym_table)
         acc_error("out of memory for symbols");
 }
 
@@ -174,7 +174,7 @@ int sym_push(NameRef name, int kind, int val)
     if (nsyms == cap)
         syms_grow();
     if (kind == SYM_LOCAL) {
-        sym = &syms[nsyms];
+        sym = &sym_table[nsyms];
         sym->name = name;
         sym->kind = (unsigned char) kind;
         sym->val = val;
@@ -188,9 +188,9 @@ int sym_push(NameRef name, int kind, int val)
      * generator is holding in its fixups -- pointing at the same symbol.
      * Only the locals move, and nothing holds a local's index across a push.
      * A function has a handful of them, so the move is a few dozen bytes. */
-    memmove(&syms[nglobals + 1], &syms[nglobals],
-            (size_t) (nsyms - nglobals) * sizeof *syms);
-    sym = &syms[nglobals];
+    memmove(&sym_table[nglobals + 1], &sym_table[nglobals],
+            (size_t) (nsyms - nglobals) * sizeof *sym_table);
+    sym = &sym_table[nglobals];
     sym->name = name;
     sym->kind = (unsigned char) kind;
     sym->val = val;
@@ -213,19 +213,13 @@ int sym_find(NameRef name)
 
     while (i-- > (unsigned) nglobals) {
         COUNT_PROBE();
-        if (syms[i].name == name)
+        if (sym_table[i].name == name)
             return (int) i;
     }
 
     return index_find(name);
 }
 
-/* Good until the next sym_push and no longer. Callers fetch it where they use
- * it; nothing keeps one across a push. */
-Sym *sym_at(int i)
-{
-    return &syms[i];
-}
 
 /* The end of a function. Functions do not nest, so there is exactly one
  * scope to drop and no mark to remember: everything above the file-scope

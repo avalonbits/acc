@@ -60,12 +60,23 @@ static void mov_rr(int dst, int src)
 /* (ix+d) carries one signed byte of displacement. A frame that outgrows it
  * needs the address computed instead, which is a real cost on every access;
  * for now it is refused rather than paid for silently. */
-static void need_disp(int d)
+/* Blamed on the line being compiled, which is where the local that went too
+ * far was declared or first touched -- the message used to carry no line at
+ * all, and a program with several functions gave no hint which one it
+ * meant. */
+__attribute__((noinline))
+static void disp_too_far(int d)
 {
-    if (d < -128 || d > 127)
-        acc_error("this function's frame is too large: a local at %d is out "
-                  "of reach of (ix+d), which spans -128 to 127", d);
+    acc_error_at(tok_line, "this function's frame is too large: a local at "
+                           "%d is out of reach of (ix+d), which spans -128 "
+                           "to 127", d);
 }
+
+/* That a frame offset fits the signed byte of (ix+d). Tested inline, because
+ * it runs for every local touched and the call to test it opened a frame;
+ * as one unsigned compare rather than two signed ones, because a signed
+ * compare on this target is a call to repair the flags. */
+#define need_disp(d)  do { if ((unsigned) ((d) + 128) > 255u) disp_too_far(d); } while (0)
 
 static int  spill_slot(void);
 static int  force_reg_at(int depth);
