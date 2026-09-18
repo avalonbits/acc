@@ -36,7 +36,7 @@ static void is(const char *name, long got, long want)
  * acc_error: the name that does not fit. */
 static int  at_limit, interned;
 
-static void finish(void);
+__attribute__((noreturn)) static void finish(void);
 
 /* lex.c reports through these; nothing here should reach one but that. */
 void acc_error(const char *fmt, ...)
