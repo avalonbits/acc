@@ -241,6 +241,20 @@ Type sym_param_type(int first, int index)
     return param_type[first + index];
 }
 
+/* The mark is a count of bytes above the file-scope symbols rather than a
+ * position in the table, because a file-scope symbol pushed inside the scope
+ * -- a call to a function not seen yet -- goes in underneath the locals and
+ * moves them all along by one. */
+int sym_scope_begin(void)
+{
+    return nsyms - nglobals;
+}
+
+void sym_scope_end(int mark)
+{
+    nsyms = nglobals + mark;
+}
+
 void sym_drop_locals(void)
 {
     nsyms = nglobals;

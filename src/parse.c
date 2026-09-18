@@ -929,6 +929,74 @@ static void declaration(void)
 
 static void statement(void);
 
+/* `for (init; condition; step) body`.
+ *
+ * One pass, so the code comes out in the order it is read, and the step --
+ * written before the body, run after it -- has to be jumped around to get
+ * there:
+ *
+ *         init
+ *   top:  if (!condition) goto end
+ *         goto body
+ *   step: step
+ *         goto top
+ *   body: body
+ *         goto step
+ *   end:
+ *
+ * Two jumps a trip where a compiler that could reorder would have one. A
+ * missing step leaves out its block and the body goes straight back to the
+ * top; a missing condition leaves out the test, which is C's `for (;;)`.
+ *
+ * The init may declare, as C99 lets it, and what it declares ends with the
+ * loop: `for (int i = 0; ...)` twice in one function is two variables, and
+ * neither is visible after its loop. */
+static void for_statement(void)
+{
+    int mark = sym_scope_begin();
+    int top, to_end = -1, to_body, again;
+
+    next();
+    expect(TK_LPAREN, "'('");
+
+    if (starts_type(tok)) {
+        declaration();                  /* and its semicolon */
+    } else {
+        if (tok != TK_SEMI) {
+            expr();
+            vdrop();
+        }
+        expect(TK_SEMI, "';'");
+    }
+
+    gen_stmt_end();
+    top = gen_here();
+    if (tok != TK_SEMI) {
+        expr();
+        to_end = gen_jump_if_false();
+    }
+    expect(TK_SEMI, "';'");
+
+    again = top;
+    if (tok != TK_RPAREN) {
+        to_body = gen_jump();
+        again = gen_here();
+        gen_stmt_end();
+        expr();
+        vdrop();
+        gen_jump_to(top);
+        gen_label(to_body);
+    }
+    expect(TK_RPAREN, "')'");
+
+    statement();
+    gen_jump_to(again);
+    if (to_end >= 0)
+        gen_label(to_end);
+
+    sym_scope_end(mark);
+}
+
 /* `{ ... }` where a statement is expected. Declarations are not allowed in
  * one: sym_drop_locals drops every local a function has, so there is nothing
  * yet that could give an inner block a scope of its own, and a name declared
@@ -969,7 +1037,7 @@ static void statement(void)
     gen_stmt_end();
 
     /* Before anything else, because most of what is missing from acc is a
-     * statement: for, do, break, continue, switch, goto. Left to fall through
+     * statement: do, break, continue, switch, goto. Left to fall through
      * they lex as names and the complaint is that the name is not declared. */
     if (tok == TK_KW_RESERVED)
         reserved_word();
@@ -1016,6 +1084,11 @@ static void statement(void)
     case TK_LBRACE:
         next();
         block();
+
+        return;
+
+    case TK_KW_FOR:
+        for_statement();
 
         return;
 

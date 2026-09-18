@@ -177,6 +177,7 @@ enum {
     TK_KW_UNSIGNED,
     TK_KW_FLOAT,
     TK_KW_DOUBLE,
+    TK_KW_FOR,
 
     /* Every other word C99 reserves. acc implements none of them, and they
      * are all one token because there is nothing to tell them apart for:
@@ -306,6 +307,11 @@ int  sym_push(NameRef name, int kind, int val);
 extern Sym *sym_table;
 #define sym_at(i)  ((Sym *) ((char *) sym_table + (i)))
 void sym_drop_locals(void);              /* at the end of a function */
+
+/* A scope inside a function, which so far only a `for` has: the locals it
+ * declares are dropped at its end, and their frame bytes are not reused. */
+int  sym_scope_begin(void);
+void sym_scope_end(int mark);
 
 /* ------------------------------------------------------------------ */
 /* values                                                              */

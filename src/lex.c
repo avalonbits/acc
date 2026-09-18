@@ -424,6 +424,7 @@ static void keywords_init(void)
     keyword("unsigned", 8, TK_KW_UNSIGNED);
     keyword("float", 5, TK_KW_FLOAT);
     keyword("double", 6, TK_KW_DOUBLE);
+    keyword("for", 3, TK_KW_FOR);
 
     /* The rest of what C99 reserves. None of it is implemented and all of it
      * is refused by name, which is the whole reason for interning it: a word
@@ -439,7 +440,6 @@ static void keywords_init(void)
     keyword("do", 2, TK_KW_RESERVED);
     keyword("enum", 4, TK_KW_RESERVED);
     keyword("extern", 6, TK_KW_RESERVED);
-    keyword("for", 3, TK_KW_RESERVED);
     keyword("goto", 4, TK_KW_RESERVED);
     keyword("inline", 6, TK_KW_RESERVED);
     keyword("register", 8, TK_KW_RESERVED);
@@ -896,6 +896,7 @@ const char *tok_spelling(int token)
     case TK_KW_UNSIGNED: return "'unsigned'";
     case TK_KW_FLOAT:  return "'float'";
     case TK_KW_DOUBLE: return "'double'";
+    case TK_KW_FOR:    return "'for'";
     case TK_KW_RESERVED: return "a reserved word";
     case TK_FLOAT:     return "a floating-point number";
     case TK_LPAREN:    return "'('";
