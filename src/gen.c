@@ -22,29 +22,33 @@
 /* Z80 numbers a register pair in a two-bit field: BC 0, DE 1, HL 2. acc
  * numbers them HL, DE, BC so that HL -- the one everything returns in -- is
  * register zero. This maps between the two. */
-static const unsigned char reg_code[NREGS] = { 2, 1, 0 };
+/* Kept already shifted into the bits of an opcode where the register goes.
+ * Every use is `reg_code * 0x10` added to a base opcode, and a byte shift by
+ * four is a call into the runtime on this target -- once for every register
+ * load, store, push and pop the compiler emitted. */
+static const unsigned char reg_code[NREGS] = { 0x20, 0x10, 0x00 };
 
 static void ld_rr_imm(int reg, int imm)    /* ld rr, nn */
 {
-    out_opcode24(0x01 + reg_code[reg] * 0x10, imm);
+    out_opcode24(0x01 + reg_code[reg], imm);
 }
 
 static inline __attribute__((always_inline))
 void ld_rr_ix(int reg, int disp)           /* ld rr, (ix+d) */
 {
-    out_byte3(0xdd, 0x07 + reg_code[reg] * 0x10, disp);
+    out_byte3(0xdd, 0x07 + reg_code[reg], disp);
 }
 
 static void ld_ix_rr(int disp, int reg)    /* ld (ix+d), rr */
 {
-    out_byte3(0xdd, 0x0f + reg_code[reg] * 0x10, disp);
+    out_byte3(0xdd, 0x0f + reg_code[reg], disp);
 }
 
-static void push_rr(int reg) { out_byte(0xc5 + reg_code[reg] * 0x10); }
-static void pop_rr(int reg)  { out_byte(0xc1 + reg_code[reg] * 0x10); }
+static void push_rr(int reg) { out_byte(0xc5 + reg_code[reg]); }
+static void pop_rr(int reg)  { out_byte(0xc1 + reg_code[reg]); }
 
-static void add_hl_rr(int reg) { out_byte(0x09 + reg_code[reg] * 0x10); }
-static void sbc_hl_rr(int reg) { out_byte2(0xed, 0x42 + reg_code[reg] * 0x10); }
+static void add_hl_rr(int reg) { out_byte(0x09 + reg_code[reg]); }
+static void sbc_hl_rr(int reg) { out_byte2(0xed, 0x42 + reg_code[reg]); }
 static void or_a_a(void)     { out_byte(0xb7); }
 
 /* There is no ld rr, rr' on this chip. Always through the stack and never
@@ -80,7 +84,7 @@ static void disp_too_far(int d)
 #define need_disp(d)  do { if ((unsigned) ((d) + 128) > 255u) disp_too_far(d); } while (0)
 
 static int  spill_slot(void);
-static int  force_reg_at(int depth);
+static int  force_reg(Value *val);
 static int  long_scratch(void);
 static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
@@ -398,7 +402,7 @@ void vconvert(Type to)
          * are already at int width and only need the label. */
         if (type_size(top->type) < ACC_INT_SIZE
             && (top->kind == VAL_LOCAL || top->kind == VAL_ACC))
-            force_reg_at(0);
+            force_reg(vsp - 1);
         top->type = to;
 
         return;
@@ -554,9 +558,16 @@ static int reg_alloc_other(int avoid)
 
 /* Materialises the entry at `depth` below the top into a register and returns
  * it. Anything already in a register stays where it is. */
-static int force_reg_at(int depth)
+/* The value at `val` -- the top of the stack or the one under it -- in a
+ * register, and which one.
+ *
+ * Given the Value itself rather than a depth. `vsp - 1 - depth` inside the
+ * function was a negation and a multiply by the size of a Value, both calls
+ * into the runtime on this target, for every value forced into a register;
+ * `vsp - 1` at the call site is a fixed offset, which the eZ80 does with one
+ * lea. */
+static int force_reg(Value *val)
 {
-    Value *val = vsp - 1 - depth;
     int reg;
 
     /* Forcing a value into a register is asking for it as an integer. For a
@@ -668,7 +679,7 @@ static void force_into(Value *target, int want)
 
 int vpop_reg(void)
 {
-    int reg = force_reg_at(0);
+    int reg = force_reg(vsp - 1);
 
     vdrop();
 
@@ -797,7 +808,7 @@ static void vbinop(int op)
         force_into(vsp - 1, R_BC);
         right = R_BC;
     } else {
-        right = force_reg_at(0);
+        right = force_reg(vsp - 1);
     }
 
     lhs_type = type_promote(lhs->type);
@@ -898,7 +909,7 @@ void vstore_local(int offset, Type type)
         return;
     }
 
-    reg = force_reg_at(0);
+    reg = force_reg(vsp - 1);
     need_disp(offset);
     ld_ix_rr(offset, reg);
 }
@@ -1271,7 +1282,7 @@ static void vcmp(int op)
     }
 
     force_into(vsp - 2, R_HL);
-    right = force_reg_at(0);
+    right = force_reg(vsp - 1);
 
     or_a_a();                   /* sbc reads the carry, so clear it */
     sbc_hl_rr(right);
@@ -1302,7 +1313,7 @@ static void vcmp(int op)
  *
  * On the stack a long is therefore always VAL_LOCAL. Anything that forces it
  * into a register is asking for the int it converts to, which is its low
- * three bytes -- so force_reg_at does exactly that and needs no special case.
+ * three bytes -- so force_reg does exactly that and needs no special case.
  */
 
 static int spill_slot_of(int size);
@@ -2610,7 +2621,7 @@ void vstore_indirect(void)
     /* The value in HL and the address in DE, which is the way round that
      * makes a three-byte store one instruction between two exchanges. */
     force_into(vsp - 1, R_HL);
-    addr = force_reg_at(1);
+    addr = force_reg(vsp - 2);
     if (addr != R_DE) {
         evict_reg(R_DE);
         mov_rr(R_DE, addr);
@@ -2653,7 +2664,7 @@ void vdup(void)
     if (vtop <= 0)
         acc_error("internal: nothing to duplicate");
     if (top->kind == VAL_ACC)
-        force_reg_at(0);
+        force_reg(vsp - 1);
     if (top->kind == VAL_REG)
         save_regs_below(0);
 
@@ -2692,7 +2703,7 @@ static void vsnapshot(void)
         return;
     }
 
-    force_reg_at(0);
+    force_reg(vsp - 1);
 }
 
 /* What x steps by is 1, however wide x is: a pointer turns it into the width
