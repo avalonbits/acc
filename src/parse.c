@@ -48,6 +48,10 @@ void acc_error(const char *fmt, ...)
 /* expressions                                                         */
 
 static void expr(void);
+static void deref_rest(void);
+static void conditional_rest(void);
+static void primary(void);
+static void binary_rest(int min_prec);
 
 /* The width the value being parsed is going straight into, when that is
  * narrower than an int -- the destination of an assignment or an initialiser.
@@ -107,6 +111,116 @@ static void reserved_word(void)
     acc_error_at(tok_line, "'%s' is not supported yet", name_text(tok_name));
 }
 
+/* The local called `name`, as a value -- or, when `++` or `--` follows it,
+ * as the value it had before they changed it.
+ *
+ * Postfix binds tighter than anything else in an expression, tighter even
+ * than a unary `*`, so `*p++` is `*(p++)`: it reads through p and leaves p
+ * pointing at the next one. That falls out of handling it here, where the
+ * name is and before whatever the caller does with its value. */
+static void local_value(NameRef name)
+{
+    int sym = sym_find(name);
+
+    if (sym == SYM_NONE)
+        acc_error_at(tok_line, "'%s' is not declared", name_text(name));
+    if (sym_at(sym)->kind != SYM_LOCAL)
+        acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
+
+    if (tok == TK_INC || tok == TK_DEC) {
+        vpostfix_local(sym_at(sym)->val, sym_at(sym)->type,
+                       tok == TK_INC ? TK_PLUS : TK_MINUS);
+        next();
+
+        return;
+    }
+
+    vpush_local(sym_at(sym)->val, sym_at(sym)->type);
+}
+
+/* `++x`, `--x`, `++*p`, `--*p`: the operand changed, and the answer is its
+ * new value. The operand has to be somewhere a value can be stored -- a local,
+ * or what a pointer points at -- which is checked here rather than left to
+ * produce a value and then find nowhere to put it back. */
+static void prefix_step(void)
+{
+    int op = (tok == TK_INC) ? TK_PLUS : TK_MINUS;
+    const char *spelling = tok_spelling(tok);
+
+    next();
+
+    if (tok == TK_IDENT) {
+        int sym = sym_find(tok_name);
+
+        if (sym == SYM_NONE)
+            acc_error_at(tok_line, "'%s' is not declared", name_text(tok_name));
+        if (sym_at(sym)->kind != SYM_LOCAL)
+            acc_error_at(tok_line, "'%s' cannot be changed by %s",
+                         name_text(tok_name), spelling);
+        next();
+        vprefix_local(sym_at(sym)->val, sym_at(sym)->type, op);
+
+        return;
+    }
+
+    if (tok == TK_STAR) {
+        int stars = 0;
+
+        while (accept(TK_STAR))
+            stars++;
+        primary();
+        while (--stars > 0)
+            vderef();
+        vprefix_indirect(op);
+
+        return;
+    }
+
+    acc_error_at(tok_line, "%s needs a variable, or something a pointer points "
+                           "at, and this is %s", spelling, tok_spelling(tok));
+}
+
+/* `(*p)++` and `(*p)--`, which is how a count kept behind a pointer is
+ * stepped -- `*p++` would step the pointer instead. Tried when a parenthesis
+ * opens on a star, and given back to the ordinary path unless the star's
+ * operand is followed directly by the closing parenthesis and then `++` or
+ * `--`. Giving it back means reading through the pointer, so what the caller
+ * parses next continues from the value, exactly as if this had not looked.
+ *
+ * Returns whether it consumed the whole parenthesis. */
+static int paren_deref_step(void)
+{
+    int stars = 0;
+
+    while (accept(TK_STAR))
+        stars++;
+    primary();
+    while (--stars > 0)
+        vderef();
+
+    if (tok == TK_RPAREN) {
+        next();
+        if (tok == TK_INC || tok == TK_DEC) {
+            vpostfix_indirect(tok == TK_INC ? TK_PLUS : TK_MINUS);
+            next();
+        } else {
+            vderef();
+        }
+
+        return 1;
+    }
+
+    /* Not `(*p)` alone: the rest of what is inside the parenthesis is an
+     * expression that happens to begin at a pointer -- a store through it,
+     * or a read and then whatever follows. */
+    deref_rest();
+    if (tok == TK_QUESTION)
+        conditional_rest();
+    expect(TK_RPAREN, "')'");
+
+    return 1;
+}
+
 /* A name used as a value: a local read, or a call. */
 static void primary(void)
 {
@@ -129,6 +243,8 @@ static void primary(void)
 
     if (tok == TK_LPAREN) {
         next();
+        if (tok == TK_STAR && paren_deref_step())
+            return;
         expr();
         expect(TK_RPAREN, "')'");
 
@@ -147,6 +263,12 @@ static void primary(void)
         next();
         primary();
         vnot();
+
+        return;
+    }
+
+    if (tok == TK_INC || tok == TK_DEC) {
+        prefix_step();
 
         return;
     }
@@ -202,7 +324,6 @@ static void primary(void)
 
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
-        int sym;
 
         next();
 
@@ -212,12 +333,7 @@ static void primary(void)
             return;
         }
 
-        sym = sym_find(name);
-        if (sym == SYM_NONE)
-            acc_error_at(tok_line, "'%s' is not declared", name_text(name));
-        if (sym_at(sym)->kind != SYM_LOCAL)
-            acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
-        vpush_local(sym_at(sym)->val, sym_at(sym)->type);
+        local_value(name);
 
         return;
     }
@@ -229,9 +345,6 @@ static void primary(void)
      * start. Name the operator, as expect() does when one turns up where a
      * statement was meant to end; "expected an expression" is true and sends
      * the reader looking for the wrong thing. */
-    if (tok_is_unimplemented_op(tok))
-        acc_error_at(tok_line, "%s is not supported yet", tok_spelling(tok));
-
     acc_error_at(tok_line, "expected an expression, found %s", tok_spelling(tok));
 }
 
@@ -485,12 +598,7 @@ static void assignment(void)
         if (accept(TK_LPAREN)) {
             call_rest(name);
         } else {
-            sym = sym_find(name);
-            if (sym == SYM_NONE)
-                acc_error_at(tok_line, "'%s' is not declared", name_text(name));
-            if (sym_at(sym)->kind != SYM_LOCAL)
-                acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
-            vpush_local(sym_at(sym)->val, sym_at(sym)->type);
+            local_value(name);
         }
 
         binary_rest(PREC_LOWEST);
@@ -511,28 +619,7 @@ static void assignment(void)
         primary();
         while (--stars > 0)
             vderef();
-
-        if (accept(TK_ASSIGN)) {
-            Type outer = narrow_dest;
-            Type target = type_pointer(vtype()) ? type_deref(vtype()) : 0;
-
-            narrow_dest = (target && type_size(target) < ACC_INT_SIZE)
-                          ? target : 0;
-            expr();
-            narrow_dest = outer;
-            vstore_indirect();
-
-            return;
-        }
-
-        if (compound_op[tok]) {
-            compound_indirect();
-
-            return;
-        }
-
-        vderef();
-        binary_rest(PREC_LOWEST);
+        deref_rest();
 
         return;
     }
@@ -540,22 +627,93 @@ static void assignment(void)
     binary(PREC_LOWEST);
 }
 
+/* What follows `*operand`, with the address on the stack and the last star
+ * not yet applied to it: a store through it, a compound store, or -- if no
+ * assignment follows -- a read, and then the rest of an expression that
+ * began with that read. */
+static void deref_rest(void)
+{
+    if (accept(TK_ASSIGN)) {
+        Type outer = narrow_dest;
+        Type target = type_pointer(vtype()) ? type_deref(vtype()) : 0;
+
+        narrow_dest = (target && type_size(target) < ACC_INT_SIZE) ? target : 0;
+        expr();
+        narrow_dest = outer;
+        vstore_indirect();
+
+        return;
+    }
+
+    if (compound_op[tok]) {
+        compound_indirect();
+
+        return;
+    }
+
+    vderef();
+    binary_rest(PREC_LOWEST);
+}
+
 /* An expression, and then whatever the expression did not consume, checked
  * for the two things that end up here by mistake.
  *
  * An assignment operator left over means its left side was not something
  * that can be assigned to -- `3 = x`, `a + b += 1` -- which is a better thing
- * to say than that a semicolon was expected. And an operator acc has not got
- * to yet is named, rather than being reported as the place parsing stopped. */
+ * to say than that a semicolon was expected.
+ *
+ * A `?` left over is where a conditional starts. It is taken here, after the
+ * assignment, because it binds more loosely than everything but assignment:
+ * in `a = b ? c : d` the assignment has already consumed the whole of it as
+ * its right side, and in `a + b ? c : d` the condition is `a + b`. */
 static void expr(void)
 {
     assignment();
 
-    if (tok == TK_ASSIGN || compound_op[tok])
+    if (tok == TK_QUESTION)
+        conditional_rest();
+    if (tok == TK_ASSIGN || compound_op[tok] || tok == TK_INC || tok == TK_DEC)
         acc_error_at(tok_line, "the left of %s is not something that can be "
                                "assigned to", tok_spelling(tok));
-    if (tok_is_unimplemented_op(tok))
-        acc_error_at(tok_line, "%s is not supported yet", tok_spelling(tok));
+}
+
+/* The third operand of `?:`, which may itself be a conditional -- `a ? b : c ?
+ * d : e` groups to the right -- but not an assignment: C reads `a ? b : c = d`
+ * as an assignment to the whole conditional, which cannot be assigned to. */
+static void conditional(void)
+{
+    binary(PREC_LOWEST);
+    if (tok == TK_QUESTION)
+        conditional_rest();
+}
+
+/* `cond ? middle : third`, with the condition on the stack.
+ *
+ * Only one of the two is evaluated, and which is decided at run time, so each
+ * is generated on its own path -- and the type the answer has is decided by
+ * both of them together, which is only known once the second has been parsed.
+ * The first path therefore parks its value and jumps forward to a stub the
+ * generator writes afterwards, where its conversion to the common type can
+ * finally be emitted. Neither side is narrowed on the way: which type wins is
+ * not known while either is being parsed. */
+static void conditional_rest(void)
+{
+    Type outer = narrow_dest;
+    Type middle;
+    int slot, to_third, to_stub, middle_null;
+
+    next();
+    to_third = gen_cond_begin(&slot);
+
+    narrow_dest = 0;
+    expr();
+    expect(TK_COLON, "':'");
+    to_stub = gen_cond_middle(slot, &middle, &middle_null);
+
+    gen_label(to_third);
+    conditional();
+    gen_cond_end(to_stub, slot, middle, middle_null);
+    narrow_dest = outer;
 }
 
 /* ------------------------------------------------------------------ */

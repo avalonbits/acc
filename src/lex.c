@@ -416,7 +416,8 @@ static const unsigned char punct[256] = {
     ['*'] = TK_STAR,   ['/'] = TK_SLASH,  ['%'] = TK_PERCENT,
     ['&'] = TK_AMP,    ['|'] = TK_PIPE,   ['^'] = TK_CARET,
     ['~'] = TK_TILDE,
-    ['<'] = TK_LT,     ['>'] = TK_GT
+    ['<'] = TK_LT,     ['>'] = TK_GT,
+    ['?'] = TK_QUESTION, [':'] = TK_COLON
 };
 
 /* Read a floating literal from the cursor, which is at its first character.
@@ -779,6 +780,8 @@ const char *tok_spelling(int token)
     case TK_XOR_ASSIGN: return "'^='";
     case TK_SHL_ASSIGN: return "'<<='";
     case TK_SHR_ASSIGN: return "'>>='";
+    case TK_QUESTION:  return "'?'";
+    case TK_COLON:     return "':'";
     case TK_INC:       return "'++'";
     case TK_DEC:       return "'--'";
     case TK_SHL:       return "'<<'";
@@ -798,16 +801,6 @@ const char *tok_spelling(int token)
 /* The operators the lexer knows and the code generator does not, so that the
  * parser can name the missing feature rather than complain about a ';'. The
  * eZ80 has no instruction for any of them; they are the next milestone. */
-int tok_is_unimplemented_op(int token)
-{
-    switch (token) {
-    case TK_INC:
-    case TK_DEC:
-        return 1;
-    }
-
-    return 0;
-}
 
 int accept(int token)
 {
@@ -821,12 +814,7 @@ int accept(int token)
 void expect(int token, const char *what)
 {
     if (tok != token) {
-        /* An operator acc has not got to yet turns up where a statement was
-         * meant to end. Say which operator rather than ask for the ';'. */
-        if (tok_is_unimplemented_op(tok))
-            acc_error_at(tok_line, "%s is not supported yet", tok_spelling(tok));
-
-        /* Otherwise point at where the missing token should have gone, which
+        /* Point at where the missing token should have gone, which
          * is the end of the token before it, not the start of whatever
          * turned up instead: a ';' left off the end of line 4 is a mistake
          * on line 4, even though the '}' that reveals it is on line 5. */

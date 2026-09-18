@@ -2636,3 +2636,206 @@ void vdup(void)
     top = vsp - 1;
     vpush(top->kind, top->type, top->val);
 }
+
+/* ------------------------------------------------------------------ */
+/* ++ and --                                                           */
+
+/* The top stops being the name of a variable and becomes a value of its own.
+ *
+ * A local on the stack is a description of where to find it, and reading it
+ * later reads whatever is there later. That is what an operand wants, and not
+ * what `x++` wants: its answer is the value x had before it was changed, and
+ * the change happens before the answer is used. A long or a float is copied
+ * to a scratch slot; anything else is loaded into a register, which is a copy
+ * by being somewhere else. */
+static void vsnapshot(void)
+{
+    Value *top = vsp - 1;
+
+    if (top->kind != VAL_LOCAL)
+        return;
+
+    if (type_wide(top->type)) {
+        Type type = top->type;
+        int slot = long_scratch();
+
+        need_disp(slot);
+        need_disp(slot + ACC_LONG_SIZE - 1);
+        materialise_long(slot, type);
+        vdrop();
+        vpush(VAL_LOCAL, type, slot);
+
+        return;
+    }
+
+    force_reg_at(0);
+}
+
+/* What x steps by is 1, however wide x is: a pointer turns it into the width
+ * of what it points at, and a float into 1.0, both by the ordinary rules. The
+ * narrow destination lets a byte step in A, as `c = c + 1` already may. */
+static void vstep(int op, Type type)
+{
+    vpush_const(1, TY_INT);
+    vapply(op, type_size(type) < ACC_INT_SIZE ? type : 0);
+}
+
+/* ++x and --x on a local: x changed, and the answer is its new value. */
+void vprefix_local(int offset, Type type, int op)
+{
+    vpush_local(offset, type);
+    vstep(op, type);
+    vstore_local(offset, type);
+}
+
+/* x++ and x-- on a local: x changed, and the answer is its old value. */
+void vpostfix_local(int offset, Type type, int op)
+{
+    vpush_local(offset, type);
+    vsnapshot();
+    vpush_local(offset, type);
+    vstep(op, type);
+    vstore_local(offset, type);
+    vdrop();
+}
+
+/* The same two through a pointer, with the address on the stack.
+ *
+ * The address is worked out once and used twice, to read and then to write,
+ * which is why it is duplicated rather than parsed again: `*p++` changes p,
+ * and parsing it twice would change it twice. */
+void vprefix_indirect(int op)
+{
+    Type target = type_deref(vtype());
+
+    vdup();
+    vderef();
+    vstep(op, target);
+    vstore_indirect();
+}
+
+void vpostfix_indirect(int op)
+{
+    Type target = type_deref(vtype());
+    Value held;
+
+    vdup();                     /* address, address */
+    vderef();                   /* address, old */
+    vdup();                     /* address, old, old */
+    vstep(op, target);          /* address, old, new */
+
+    /* The old value moved from between the address and the new one to
+     * underneath both, which is where the store will leave it: nothing is
+     * emitted, a Value being a description of where something is and not
+     * the thing. */
+    held = *(vsp - 3);
+    *(vsp - 3) = *(vsp - 2);
+    *(vsp - 2) = held;
+
+    vstore_indirect();          /* old, new */
+    vdrop();                    /* old */
+}
+
+/* ------------------------------------------------------------------ */
+/* ?:                                                                  */
+
+/* The type the two sides of `?:` meet at. Arithmetic types by the usual
+ * conversions, promoted to at least int; two pointers only if they agree about
+ * what they point at, and a pointer with a literal 0, which is the null
+ * pointer spelled the way C spells it. */
+static Type cond_type(Type a, int a_null, Type b, int b_null)
+{
+    if (type_pointer(a) || type_pointer(b)) {
+        if (a == b)
+            return a;
+        if (type_pointer(a) && b_null)
+            return a;
+        if (type_pointer(b) && a_null)
+            return b;
+        acc_error_at(tok_line, "the two sides of ?: are %s",
+                     type_pointer(a) && type_pointer(b)
+                         ? "pointers to different types"
+                         : "a pointer and a number that is not 0");
+    }
+
+    if (type_wide(a) || type_wide(b))
+        return common_wide(a, b);
+
+    a = type_promote(a);
+    b = type_promote(b);
+
+    return (type_unsigned(a) || type_unsigned(b)) ? TY_UINT : TY_INT;
+}
+
+/* Where an answer waits for the join: in HL if it fits in a register, in the
+ * slot reserved for it if it does not. Both paths put theirs in the same
+ * place, which is what lets one descriptor stand for it afterwards. */
+static void cond_park(int slot)
+{
+    Value *top = vsp - 1;
+
+    if (type_wide(top->type))
+        materialise_long(slot, top->type);
+    else
+        force_into(top, R_HL);
+    vdrop();
+}
+
+/* After the condition: a home for the answer, and a jump to the third
+ * operand when the condition is false. Everything below the condition goes
+ * to the frame first, because from here the two paths diverge. */
+int gen_cond_begin(int *slot)
+{
+    *slot = long_scratch();
+    need_disp(*slot);
+    need_disp(*slot + ACC_LONG_SIZE - 1);
+    save_regs_below(1);
+
+    return jump_on_truth(0);
+}
+
+/* After the middle operand: park it as the type it is, and jump forward to a
+ * stub that does not exist yet. What the answer's type is depends on the
+ * third operand, which has not been parsed, so converting now would be
+ * guessing. */
+int gen_cond_middle(int slot, Type *middle, int *middle_null)
+{
+    Value *top = vsp - 1;
+
+    *middle = top->type;
+    *middle_null = (top->kind == VAL_CONST && top->val == 0);
+    cond_park(slot);
+
+    return jump_op(JP_ANY);
+}
+
+/* After the third operand, when both types are known. The third converts
+ * and parks where it is; then the stub the middle jumped to is written, and
+ * it finds the middle's value exactly where it was left -- nothing between
+ * the jump and here ran on that path -- converts it the same way, and parks
+ * it in the same place. */
+void gen_cond_end(int to_stub, int slot, Type middle, int middle_null)
+{
+    Value *top = vsp - 1;
+    int third_null = (top->kind == VAL_CONST && top->val == 0);
+    Type result = cond_type(middle, middle_null, top->type, third_null);
+    int done;
+
+    vconvert(result);
+    cond_park(slot);
+    done = jump_op(JP_ANY);
+
+    patch_to_here(to_stub);
+    if (type_wide(middle))
+        vpush(VAL_LOCAL, middle, slot);
+    else
+        vpush(VAL_REG, type_promote(middle), R_HL);
+    vconvert(result);
+    cond_park(slot);
+
+    patch_to_here(done);
+    if (type_wide(result))
+        vpush(VAL_LOCAL, result, slot);
+    else
+        vpush(VAL_REG, result, R_HL);
+}

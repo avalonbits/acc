@@ -189,9 +189,8 @@ enum {
     TK_ADD_ASSIGN, TK_SUB_ASSIGN, TK_MUL_ASSIGN, TK_DIV_ASSIGN, TK_MOD_ASSIGN,
     TK_AND_ASSIGN, TK_OR_ASSIGN, TK_XOR_ASSIGN, TK_SHL_ASSIGN, TK_SHR_ASSIGN,
 
-    /* Not implemented, and lexed anyway: left as two pluses, `a ++ b` is
-     * `a + +b` and compiles to the wrong thing without a word said. */
     TK_INC, TK_DEC,
+    TK_QUESTION, TK_COLON,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -214,7 +213,6 @@ void next(void);                 /* advance to the following token */
 int  accept(int token);          /* consume it if present; say whether it was */
 void expect(int token, const char *what);
 const char *tok_spelling(int token);
-int         tok_is_unimplemented_op(int token); /* for diagnostics */
 
 /* ------------------------------------------------------------------ */
 /* symbols                                                             */
@@ -339,6 +337,13 @@ int  gen_logic_left(int settles);     /* && and ||: after the left operand */
 void gen_logic_right(int settles, int early);  /* and after the right */
 void vtruth(int op);                  /* compare the top with zero: TK_NE, TK_EQ */
 void vdup(void);                      /* the top twice */
+void vprefix_local(int offset, Type type, int op);   /* ++x, --x */
+void vpostfix_local(int offset, Type type, int op);  /* x++, x-- */
+void vprefix_indirect(int op);        /* ++*p, with p on the stack */
+void vpostfix_indirect(int op);       /* (*p)++, with p on the stack */
+int  gen_cond_begin(int *slot);       /* ?: after the condition */
+int  gen_cond_middle(int slot, Type *middle, int *middle_null);
+void gen_cond_end(int to_stub, int slot, Type middle, int middle_null);
 void gen_label(int hole);             /* fill a hole in with here */
 void gen_return(void);
 void gen_finish(void);          /* resolve calls to functions defined later */
