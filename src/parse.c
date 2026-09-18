@@ -893,7 +893,11 @@ static Type object_type(const char *what)
 /* ------------------------------------------------------------------ */
 /* statements and declarations                                         */
 
-static void declaration(void)
+/* Inlined into both callers, the function body and a for's first clause:
+ * it was inlined into the first when it had only that one, and as a call it
+ * is one more on every declaration in the program. */
+static inline __attribute__((always_inline))
+void declaration(void)
 {
     Type base = base_type();
 
@@ -950,7 +954,12 @@ static void statement(void);
  *
  * The init may declare, as C99 lets it, and what it declares ends with the
  * loop: `for (int i = 0; ...)` twice in one function is two variables, and
- * neither is visible after its loop. */
+ * neither is visible after its loop.
+ *
+ * Out of line: inlined into statement(), which every statement in the
+ * program goes through, it gave that a larger frame and cost 1.5% of a
+ * compile of programs with no for loop in them. */
+__attribute__((noinline))
 static void for_statement(void)
 {
     int mark = sym_scope_begin();

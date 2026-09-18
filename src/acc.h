@@ -177,7 +177,6 @@ enum {
     TK_KW_UNSIGNED,
     TK_KW_FLOAT,
     TK_KW_DOUBLE,
-    TK_KW_FOR,
 
     /* Every other word C99 reserves. acc implements none of them, and they
      * are all one token because there is nothing to tell them apart for:
@@ -203,6 +202,12 @@ enum {
 
     TK_INC, TK_DEC,
     TK_QUESTION, TK_COLON,
+
+    /* Tokens added since, at the end: inserting one earlier renumbers every
+     * token after it, which changes how clang lowers the switches and tables
+     * keyed on them, and adding `for` among the keywords made the compiler
+     * 1.5% slower on programs that do not use it. */
+    TK_KW_FOR,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
