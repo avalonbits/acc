@@ -48,9 +48,20 @@ fi
 emu_available || exit 77
 [ -f "$ACC" ] || { echo "no $ACC -- run make -f Makefile.agon" >&2; exit 2; }
 
-# Matched with the --sdcard it is always started with, so that a shell whose
-# command line merely mentions the emulator does not count as one running.
-if pgrep -f 'agon-cli-emulator .*--sdcard' >/dev/null 2>&1; then
+# Matched with the --sdcard it is always started with, and anchored to the
+# start of the command line, so that only a process whose executable is the
+# emulator counts. Unanchored, a shell whose command merely contained this
+# pattern -- an edit to this very line, say -- counted as an emulator running,
+# and the benchmark refused to start.
+#
+# One that has just finished can still be exiting when the next run starts --
+# two benchmarks back to back tripped this repeatedly -- so it is given a few
+# seconds to go before this gives up.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -f '^[^ ]*agon-cli-emulator .*--sdcard' >/dev/null 2>&1 || break
+    sleep 1
+done
+if pgrep -f '^[^ ]*agon-cli-emulator .*--sdcard' >/dev/null 2>&1; then
     echo "another emulator is running -- stop it first" >&2
     exit 2
 fi
