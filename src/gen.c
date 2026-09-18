@@ -2226,8 +2226,8 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
     }
 
     /* The callee fetched once rather than at each of the six places below
-     * that want something from it: sym_at is a call and a multiply by the
-     * size of a Sym, and nothing between here and the end pushes a symbol. */
+     * that want something from it; nothing between here and the end pushes a
+     * symbol, so the pointer stays good. */
     callee = sym_at(fn);
 
     if (callee->val) {

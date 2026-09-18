@@ -261,15 +261,9 @@ enum {
     SYM_FUNC        /* a function: val is its address in the image */
 };
 
-/* Seven bytes on the target: a name, a kind, and one number whose meaning the
- * kind decides. tinycc's equivalent is 31, and at four hundred lines of input
- * that difference was 40 KB of a 206 KB budget. */
-/* Eight bytes and not seven. Turning an index into an address always costs a
- * helper call on this target -- there is no barrel shifter and no multiplier
- * wider than the 8-bit MLT -- and the only choice is which one: a 7-byte
- * element is `call __imulu`, an 8-byte element is `call __ishl`, which is the
- * cheaper of the two. sym_push alone does five of them. The pad byte costs
- * one byte per symbol in a program that has a few thousand. */
+/* Eight bytes on the target: a name, a kind, one number whose meaning the
+ * kind decides, and a type. tinycc's equivalent is 31, and at four hundred
+ * lines of input that difference was 40 KB of a 206 KB budget. */
 typedef struct {
     NameRef       name;
     unsigned char kind;
@@ -297,9 +291,12 @@ int  sym_push(NameRef name, int kind, int val);
 /* Symbol i. Good until the next sym_push, which may move the table; nothing
  * holds one across a push. A macro over the table itself rather than a call,
  * because it is used on every name the program mentions and the call opened a
- * frame to do one add. */
+ * frame to do one add.
+ *
+ * An index is the symbol's offset into the table in bytes, which is what makes
+ * it one add: see sym.c. */
 extern Sym *sym_table;
-#define sym_at(i)  (&sym_table[i])
+#define sym_at(i)  ((Sym *) ((char *) sym_table + (i)))
 void sym_drop_locals(void);              /* at the end of a function */
 
 /* ------------------------------------------------------------------ */

@@ -126,9 +126,8 @@ static void local_value(NameRef name)
     if (sym == SYM_NONE)
         acc_error_at(tok_line, "'%s' is not declared", name_text(name));
 
-    /* Fetched once. Each sym_at is a call and a multiply by the size of a
-     * Sym, and this is every read of every variable; nothing below pushes a
-     * symbol, so the pointer stays good. */
+    /* Fetched once, so the fields below are read through one pointer held in
+     * a register; nothing below pushes a symbol, so it stays good. */
     local = sym_at(sym);
     if (local->kind != SYM_LOCAL)
         acc_error_at(tok_line, "'%s' is not a variable", name_text(name));

@@ -42,9 +42,16 @@
  * the two places that most want to hold on to a symbol -- a call waiting for
  * its callee's address, and a function definition waiting to record its own --
  * are both separated from their push by an arbitrary amount of parsing. Handing
- * out indices makes that safe by construction rather than by remembering. */
+ * out indices makes that safe by construction rather than by remembering.
+ *
+ * An index is the symbol's offset into the table in bytes, not its position.
+ * Turning a position into an address is a multiply by the size of a Sym, which
+ * on this target is `call __ishl` -- there is no barrel shifter -- and it was
+ * paid wherever a symbol was touched: several times a name in the parser, and
+ * in every step of the walk below. An offset needs only the add. So the
+ * counts below are in bytes too, and step by the size of a Sym. */
 Sym           *sym_table;     /* sym_at reads it directly */
-static int     nsyms, nglobals, cap;
+static int     nsyms, nglobals, cap;    /* bytes, not symbols */
 
 #ifdef ACC_HASH_STATS
 unsigned long sym_probes;
@@ -55,8 +62,8 @@ unsigned long sym_probes;
 
 void sym_init(void)
 {
-    cap = 64;
-    sym_table = malloc(cap * sizeof *sym_table);
+    cap = 64 * sizeof *sym_table;
+    sym_table = malloc(cap);
     if (!sym_table)
         acc_error("out of memory for symbols");
     nsyms = nglobals = 0;
@@ -71,7 +78,7 @@ __attribute__((noinline))
 static void syms_grow(void)
 {
     cap *= 2;
-    sym_table = realloc(sym_table, cap * sizeof *sym_table);
+    sym_table = realloc(sym_table, cap);
     if (!sym_table)
         acc_error("out of memory for symbols");
 }
@@ -79,17 +86,20 @@ static void syms_grow(void)
 int sym_push(NameRef name, int kind, int val)
 {
     Sym *sym;
+    int at;
 
     if (nsyms == cap)
         syms_grow();
     if (kind == SYM_LOCAL) {
-        sym = &sym_table[nsyms];
+        at = nsyms;
+        sym = sym_at(at);
         sym->name = name;
         sym->kind = (unsigned char) kind;
         sym->val = val;
         sym->type = TY_INT;     /* until the declaration says otherwise */
+        nsyms += sizeof *sym;
 
-        return nsyms++;
+        return at;
     }
 
     /* File scope. It goes in below the locals, which keeps every index
@@ -97,19 +107,20 @@ int sym_push(NameRef name, int kind, int val)
      * generator is holding in its fixups -- pointing at the same symbol.
      * Only the locals move, and nothing holds a local's index across a push.
      * A function has a handful of them, so the move is a few dozen bytes. */
-    memmove(&sym_table[nglobals + 1], &sym_table[nglobals],
-            (size_t) (nsyms - nglobals) * sizeof *sym_table);
-    sym = &sym_table[nglobals];
+    at = nglobals;
+    sym = sym_at(at);
+    memmove(sym + 1, sym, (size_t) (nsyms - at));
     sym->name = name;
     sym->kind = (unsigned char) kind;
     sym->val = val;
     sym->type = TY_INT;         /* a function called before it is defined is
                                  * assumed to return int, as C says */
-    sym_set_params(nglobals, 0, 0);     /* and to take nothing known */
-    nsyms++;
-    name_set_global(name, nglobals);
+    sym_set_params(at, 0, 0);   /* and to take nothing known */
+    nsyms += sizeof *sym;
+    nglobals += sizeof *sym;
+    name_set_global(name, at);
 
-    return nglobals++;
+    return at;
 }
 
 int sym_find(NameRef name)
@@ -120,9 +131,10 @@ int sym_find(NameRef name)
      * compare, which on this target is a helper call to repair the flags. */
     unsigned i = (unsigned) nsyms;
 
-    while (i-- > (unsigned) nglobals) {
+    while (i > (unsigned) nglobals) {
+        i -= sizeof(Sym);
         COUNT_PROBE();
-        if (sym_table[i].name == name)
+        if (sym_at(i)->name == name)
             return (int) i;
     }
 
@@ -148,35 +160,50 @@ int sym_find(NameRef name)
  * C89 would call that the programmer's fault for not writing a prototype;
  * C99, which acc is aimed at, requires the conversion.
  *
- * Kept beside the symbols rather than in them: a Sym is eight bytes and
- * indexing one is a shift, and two more fields would make it twelve. */
+ * Kept beside the symbols rather than in them: a Sym is eight bytes, and two
+ * more fields would make it twelve for every local as well as every
+ * function. */
 static Type    *param_type;
 static unsigned param_used, param_cap;
 
 /* Where each function's run starts and how long it is, indexed by its symbol.
  * File-scope symbols keep their index when others are added, so this stays
- * lined up with them. */
-static int          *fn_first;
-static unsigned char *fn_count;
-static unsigned      fn_cap;
+ * lined up with them.
+ *
+ * A record is as wide as a Sym, so that a symbol's index -- its offset into
+ * the symbol table -- is also its signature's offset into this one, and
+ * finding it is an add like sym_at. */
+typedef union {
+    struct {
+        int           first;
+        unsigned char count;
+    } s;
+    unsigned char size[sizeof(Sym)];
+} FnSig;
+
+typedef char fn_sig_is_a_sym_wide[sizeof(FnSig) == sizeof(Sym) ? 1 : -1];
+
+static unsigned char *fn_sigs;
+static unsigned       fn_cap;           /* bytes */
+
+#define fn_sig(sym)  ((FnSig *) (fn_sigs + (sym)))
 
 static void fn_room(unsigned want)
 {
     if (want < fn_cap)
         return;
     while (fn_cap <= want)
-        fn_cap = fn_cap ? fn_cap * 2 : 64;
-    fn_first = realloc(fn_first, fn_cap * sizeof *fn_first);
-    fn_count = realloc(fn_count, fn_cap * sizeof *fn_count);
-    if (!fn_first || !fn_count)
+        fn_cap = fn_cap ? fn_cap * 2 : 64 * sizeof(FnSig);
+    fn_sigs = realloc(fn_sigs, fn_cap);
+    if (!fn_sigs)
         acc_error("out of memory for the function signatures");
 }
 
 void sym_set_params(int sym, int first, int count)
 {
     fn_room((unsigned) sym);
-    fn_first[sym] = first;
-    fn_count[sym] = (unsigned char) count;
+    fn_sig(sym)->s.first = first;
+    fn_sig(sym)->s.count = (unsigned char) count;
 }
 
 /* The reads need no room check: a symbol only has a signature because
@@ -185,12 +212,12 @@ void sym_set_params(int sym, int first, int count)
  * the path of every argument of every call. */
 int sym_params_first(int sym)
 {
-    return fn_first[sym];
+    return fn_sig(sym)->s.first;
 }
 
 int sym_nparams(int sym)
 {
-    return fn_count[sym];
+    return fn_sig(sym)->s.count;
 }
 
 int sym_params_begin(void)
