@@ -87,22 +87,35 @@ That 2A is 42.
 What acc can do today
 ---------------------
 
-  char, short, int, and the unsigned form of each
+  char, short, int, long, and the unsigned form of each
+  float and double
   functions, parameters, locals, calls, recursion
   + - * / % and unary minus, ~
   & | ^ << >>
   assignment
   < > <= >= == !=, signed or unsigned according to the operands
   if, else, else if, while
+  decimal and hex constants, with the u and l suffixes
+  floating constants, with or without an exponent
   /* block */ and // line comments, anywhere a space can go
 
-char is one byte, short two, int three -- agondev's widths, so a program
-compiled by either comes out the same. Arithmetic happens at int width and
-only a store narrows, which is what C says.
+char is one byte, short two, int three, long four -- agondev's widths, so a
+program compiled by either comes out the same. Arithmetic happens at int
+width and only a store narrows, which is what C says; a long or a float
+drags the other operand up to its own width instead.
 
-The eZ80 has no instruction for * / % & | ^ << or >> on a 24-bit value, so
-acc carries the routines and puts the ones a program uses into that
-program's image. A program that uses none pays nothing for them.
+float and double are both the same four bytes, IEEE-754 single, which is
+what agondev makes them. Denormals, infinities and NaNs all work. What is
+missing is the part of IEEE-754 about the machine rather than the numbers:
+no exception flags, no rounding mode but to nearest with ties to even, and a
+signalling NaN is treated as a quiet one. C99 puts all of that behind
+<fenv.h> and makes it optional.
+
+The eZ80 has an instruction for almost none of this -- no 24-bit AND, no
+shift of more than one place, no multiply wider than 8x8, no divide at all,
+and nothing whatever for floating point. So acc carries the routines and
+puts the ones a program uses into that program's image. A program that uses
+none pays nothing for them.
 
 What it cannot do yet
 ---------------------
@@ -110,21 +123,28 @@ What it cannot do yet
 The language acc is being written towards is C99. Everything below is
 missing rather than excluded.
 
-  ! && ||              -- no logical operators; a condition is a value, or
-                          a comparison
-  a constant above 16777215 -- and C99 would call one above 8388607 a long,
-                          where acc makes it unsigned int
-  more than 42 int locals in one function -- (ix+d) reaches 128 bytes and
-                          that is what fits
-  for do break continue   -- while is the only loop
-  long, long long      -- they need a value to live in more than one
-                          register, which is not done yet
-  float double         -- no floating point
-  pointers, arrays, structs
-  #include, #define    -- no preprocessor
+  ! && || ?:           -- no logical or conditional operators; a condition
+                          is a value, or a comparison
+  for do break continue switch -- while is the only loop and the only
+                          branch besides if
+  (int) x              -- no casts; a conversion happens where a value is
+                          assigned or passed, and nowhere else
+  ++ -- += -= etc.     -- no increment, decrement or compound assignment
+  pointers, arrays, structs, unions, enums
+  'c' and "text"       -- no character or string constants
+  variables at file scope -- everything lives in a function
+  void f(void)         -- a function has to return something
+  int f(int);          -- no declaration without a definition, so a function
+                          must be defined above its first call unless it
+                          takes and returns int
   declarations inside a block -- they go at the start of the function
+  long long, long double
+  #include, #define    -- no preprocessor
   printf               -- no library, which is why a program prints its
-                         result the way it does
+                          result the way it does
+
+  a frame over 128 bytes -- which is 42 ints or 32 longs in one function.
+                          (ix+d) reaches that far and no further.
 
 Anything acc cannot do it should name and point at, rather than emit
 something that misbehaves. broken.c is there to be refused.
