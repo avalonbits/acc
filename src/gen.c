@@ -124,11 +124,8 @@ static void ld_l_a(void)        { out_byte(0x6f); }
 static void ld_h_a(void)        { out_byte(0x67); }
 static void ld_a_l(void)        { out_byte(0x7d); }
 static void ld_a_h(void)        { out_byte(0x7c); }
-static void ld_e_l(void)        { out_byte(0x5d); }
-static void ld_l_e(void)        { out_byte(0x6b); }
 static void rlc_l(void)         { out_byte2(0xcb, 0x05); }
 static void ld_a_hl(void)       { out_byte(0x7e); }      /* ld a, (hl) */
-static void ld_e_hl(void)       { out_byte(0x5e); }      /* ld e, (hl) */
 static void ld_hl_a(void)       { out_byte(0x77); }      /* ld (hl), a */
 static void inc_hl(void)        { out_byte(0x23); }
 static void inc_de(void)        { out_byte(0x13); }
@@ -172,11 +169,15 @@ static void load_narrow(int disp, Type type)
         return;
     }
 
-    ld_e_ix(disp);              /* low byte kept aside */
-    ld_a_ix(disp + 1);          /* high byte decides the sign */
+    /* The high byte first, since it decides the sign, and the low one
+     * straight into L once the fill has been done -- nothing kept aside in
+     * another register, which the allocator may be holding a value in. E
+     * was, once, and a signed short read while a value sat in DE cost that
+     * value its low byte. */
+    ld_a_ix(disp + 1);
     fill_hl_with_sign_of_a();
     ld_h_a();
-    ld_l_e();
+    ld_l_ix(disp);
 }
 
 /* The narrow loads work in HL, because that is the only register `sbc hl, hl`
@@ -229,14 +230,17 @@ static void convert_in_hl(Type to)
         return;
     }
 
+    /* The low byte is kept in IY, the backend's own scratch, rather than
+     * in E: DE may be holding a value, and this would have cost it its low
+     * byte. */
+    out_byte3(0xe5, 0xfd, 0xe1);        /* push hl; pop iy */
     ld_a_h();
-    ld_e_l();
     if (type_unsigned(to))
         fill_hl_with_zero();
     else
         fill_hl_with_sign_of_a();
     ld_h_a();
-    ld_l_e();
+    out_byte3(0xfd, 0x7d, 0x6f);        /* ld a, iyl; ld l, a */
 }
 
 /* The type this function was declared to return, so that `char f()` giving
@@ -2332,9 +2336,9 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
 
             need_disp(slot);
             need_disp(slot + ACC_LONG_SIZE - 1);
-            ld_e_ix(slot + ACC_INT_SIZE);
             ld_rr_imm(R_HL, 0);
-            out_byte(0x6b);                      /* ld l, e */
+            ld_l_ix(slot + ACC_INT_SIZE);       /* not through E: DE may hold
+                                                 * an argument still to go */
             push_rr(R_HL);
             ld_rr_ix(R_HL, slot);
             push_rr(R_HL);
@@ -2679,18 +2683,18 @@ void vderef(void)
             fill_hl_with_sign_of_a();
         ld_l_a();
     } else {
-        /* Two bytes, with the low one kept in E while the high one is
-         * fetched: loading either into H or into L would overwrite the
-         * pointer before the other had been read. */
-        ld_e_hl();
-        inc_hl();
-        ld_a_hl();
+        /* Two bytes, read through IY: loading either into H or into L would
+         * overwrite the pointer before the other had been read, and keeping
+         * the low one in E, as this once did, overwrote whatever the
+         * allocator was holding in DE. IY is the backend's own scratch. */
+        out_byte3(0xe5, 0xfd, 0xe1);    /* push hl; pop iy */
+        out_byte3(0xfd, 0x7e, 0x01);    /* ld a, (iy+1) */
         if (type_unsigned(to))
             fill_hl_with_zero();
         else
             fill_hl_with_sign_of_a();
         ld_h_a();
-        ld_l_e();
+        out_byte3(0xfd, 0x6e, 0x00);    /* ld l, (iy+0) */
     }
 
     vdrop();
