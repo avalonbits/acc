@@ -1777,27 +1777,94 @@ void gen_jump_to(int target)
     out_opcode24(JP_ANY, target);
 }
 
-int gen_jump_if_false(void)
+/* Pop the top and jump when it is true (`when_true`) or when it is false.
+ *
+ * Nothing below the top may be in a register: the code between this jump and
+ * wherever it lands runs on one path and not the other, so a value that one
+ * path moves and the other does not would be in two places at the join. The
+ * callers make sure of it, and it is what lets this use BC freely.
+ *
+ * A long or a float is first brought down to the 0 or 1 of comparing it with
+ * zero at its own type. Testing it as though it were an int reads three of
+ * its four bytes, so a long of 0x1000000 was false; and a float is not an
+ * integer at all -- -0.0 is false and 0.5 is true, neither of which its bytes
+ * say. */
+static int jump_on_truth(int when_true)
 {
-    int reg = vpop_reg();
+    int reg;
 
+    if (type_wide(vtype()))
+        vtruth(TK_NE);
+
+    reg = vpop_reg();
     if (reg != R_HL)
         mov_rr(R_HL, reg);
 
     /* There is no "is this register zero" instruction for a 24-bit value.
      * The upper byte of HL is not addressable, so the 16-bit idiom -- `ld a,l`
      * then `or a,h` -- would test two thirds of the value and call 0x010000
-     * false. Subtracting zero tests all of it.
-     *
-     * This clobbers BC, which is free because the stack is empty here: the
-     * condition was the only thing on it and it has just been popped. */
-    if (vtop != 0)
-        acc_error("internal: %d values still live at a branch", vtop);
+     * false. Subtracting zero tests all of it. */
     ld_rr_imm(R_BC, 0);
     or_a_a();
     sbc_hl_rr(R_BC);
 
-    return jump_op(JP_Z);
+    return jump_op(when_true ? JP_NZ : JP_Z);
+}
+
+int gen_jump_if_false(void)
+{
+    if (vtop != 1)
+        acc_error("internal: %d values live at a branch", vtop);
+
+    return jump_on_truth(0);
+}
+
+/* The top becomes 0 or 1 according to how it compares with zero -- TK_NE for
+ * its truth, TK_EQ for `!`. The zero is of the value's own kind, so the
+ * comparison is a float one for a float and a four-byte one for a long, and a
+ * pointer compares with the null pointer as the unsigned int it is. */
+void vtruth(int op)
+{
+    if (type_float(vtype()))
+        vpush_const_float(0.0f);
+    else
+        vpush_const(0, TY_INT);
+    vapply(op, 0);
+}
+
+/* `a && b` and `a || b`, in two halves around the right operand.
+ *
+ * Each stops as soon as its answer is known: a false left side settles `&&`
+ * and a true one settles `||`, and the right side is then never evaluated --
+ * which C guarantees, and which a program relies on whenever the right side
+ * would be an error if the left had gone the other way. `settles` is the truth
+ * value that decides the whole thing early: 0 for `&&`, 1 for `||`.
+ *
+ * Everything below the left operand goes to the frame first, so that no
+ * register holds a value that only one path knows about. */
+int gen_logic_left(int settles)
+{
+    save_regs_below(1);
+
+    return jump_on_truth(settles);
+}
+
+void gen_logic_right(int settles, int early)
+{
+    int late, done;
+
+    save_regs_below(1);
+    late = jump_on_truth(settles);
+
+    ld_rr_imm(R_HL, !settles);          /* neither side settled it */
+    done = jump_op(JP_ANY);
+
+    patch_to_here(early);
+    patch_to_here(late);
+    ld_rr_imm(R_HL, settles);           /* one of them did */
+
+    patch_to_here(done);
+    vpush_reg(R_HL);
 }
 
 void gen_label(int hole)
@@ -2521,4 +2588,23 @@ void vstore_indirect(void)
         vdrop();
         vpush(kept.kind, kept.type, kept.val);
     }
+}
+
+/* The top twice. A value in a register goes to the frame first: two
+ * descriptors naming one register would be two owners of it, and the first
+ * to be used would overwrite what the second still expects to find there. A
+ * frame slot can be read any number of times. */
+void vdup(void)
+{
+    Value *top = vsp - 1;
+
+    if (vtop <= 0)
+        acc_error("internal: nothing to duplicate");
+    if (top->kind == VAL_ACC)
+        force_reg_at(0);
+    if (top->kind == VAL_REG)
+        save_regs_below(0);
+
+    top = vsp - 1;
+    vpush(top->kind, top->type, top->val);
 }

@@ -647,36 +647,84 @@ void next(void)
     if (tok == TK_EOF)
         acc_error_at(line, "stray '%c' in the source", c);
 
-    /* Six characters can begin a two-character operator: `<`, `>`, `&` and
-     * `|` can be doubled, `<`, `>`, `=` and `!` can be followed by `=`.
-     * Everything else is one character, so the common case is two compares
-     * that both fail rather than a walk through the pairs.
+    /* Most punctuation can be the first of two or three characters: an
+     * operator doubled (`<<`, `&&`, `++`), followed by `=` (`<=`, `+=`), or
+     * both (`<<=`). Everything else is one character, so the common case is
+     * two compares that both fail rather than a walk through the pairs.
      *
-     * `&&` and `||` are lexed although neither is implemented, because the
-     * alternative is not that they are refused later but that they are
-     * misread: `a && b` is a bitwise and of `a` with the address of `b`, and
-     * what acc said about it was that pointers are not supported. */
+     * Some of what is lexed here is not implemented. It is lexed anyway,
+     * because the alternative is not that it is refused later but that it is
+     * misread: `a && b` becomes a bitwise and of a with the address of b, and
+     * `a ++ b` becomes `a + +b`, and neither says a word about it. */
     if (*cursor == '=' || *cursor == c) {
+        int assign = (*cursor == '=');
+
         switch (c) {
+        case '+':
+            cursor++;
+            tok = assign ? TK_ADD_ASSIGN : TK_INC;
+            break;
+        case '-':
+            cursor++;
+            tok = assign ? TK_SUB_ASSIGN : TK_DEC;
+            break;
+        case '*':
+            if (assign) { cursor++; tok = TK_MUL_ASSIGN; }
+            break;
+        case '/':
+            if (assign) { cursor++; tok = TK_DIV_ASSIGN; }
+            break;
+        case '%':
+            if (assign) { cursor++; tok = TK_MOD_ASSIGN; }
+            break;
+        case '^':
+            if (assign) { cursor++; tok = TK_XOR_ASSIGN; }
+            break;
         case '&':
-            if (*cursor == '&') { cursor++; tok = TK_ANDAND; }
+            cursor++;
+            if (assign) {
+                tok = TK_AND_ASSIGN;
+                break;
+            }
+            tok = TK_ANDAND;
+            if (*cursor == '=')
+                acc_error_at(line, "'&&=' is not an operator in C; "
+                                   "`a = a && b` is what it would mean");
             break;
         case '|':
-            if (*cursor == '|') { cursor++; tok = TK_OROR; }
+            cursor++;
+            if (assign) {
+                tok = TK_OR_ASSIGN;
+                break;
+            }
+            tok = TK_OROR;
+            if (*cursor == '=')
+                acc_error_at(line, "'||=' is not an operator in C; "
+                                   "`a = a || b` is what it would mean");
             break;
         case '<':
-            if (*cursor == '<') { cursor++; tok = TK_SHL; }
-            else                { cursor++; tok = TK_LE; }
+            cursor++;
+            if (assign) {
+                tok = TK_LE;
+                break;
+            }
+            tok = TK_SHL;
+            if (*cursor == '=') { cursor++; tok = TK_SHL_ASSIGN; }
             break;
         case '>':
-            if (*cursor == '>') { cursor++; tok = TK_SHR; }
-            else                { cursor++; tok = TK_GE; }
+            cursor++;
+            if (assign) {
+                tok = TK_GE;
+                break;
+            }
+            tok = TK_SHR;
+            if (*cursor == '=') { cursor++; tok = TK_SHR_ASSIGN; }
             break;
         case '=':
-            if (*cursor == '=') { cursor++; tok = TK_EQ; }
+            if (assign) { cursor++; tok = TK_EQ; }
             break;
         case '!':
-            if (*cursor == '=') { cursor++; tok = TK_NE; }
+            if (assign) { cursor++; tok = TK_NE; }
             break;
         }
     }
@@ -721,6 +769,18 @@ const char *tok_spelling(int token)
     case TK_TILDE:     return "'~'";
     case TK_ANDAND:    return "'&&'";
     case TK_OROR:      return "'||'";
+    case TK_ADD_ASSIGN: return "'+='";
+    case TK_SUB_ASSIGN: return "'-='";
+    case TK_MUL_ASSIGN: return "'*='";
+    case TK_DIV_ASSIGN: return "'/='";
+    case TK_MOD_ASSIGN: return "'%='";
+    case TK_AND_ASSIGN: return "'&='";
+    case TK_OR_ASSIGN:  return "'|='";
+    case TK_XOR_ASSIGN: return "'^='";
+    case TK_SHL_ASSIGN: return "'<<='";
+    case TK_SHR_ASSIGN: return "'>>='";
+    case TK_INC:       return "'++'";
+    case TK_DEC:       return "'--'";
     case TK_SHL:       return "'<<'";
     case TK_SHR:       return "'>>'";
     case TK_LT:        return "'<'";
@@ -741,9 +801,8 @@ const char *tok_spelling(int token)
 int tok_is_unimplemented_op(int token)
 {
     switch (token) {
-    case TK_NOT:
-    case TK_ANDAND:
-    case TK_OROR:
+    case TK_INC:
+    case TK_DEC:
         return 1;
     }
 

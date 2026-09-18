@@ -183,7 +183,15 @@ enum {
     TK_SHL, TK_SHR,
     TK_LT, TK_GT, TK_LE, TK_GE, TK_EQ, TK_NE,
     TK_NOT,
-    TK_ANDAND, TK_OROR,          /* lexed so they can be refused as themselves */
+    TK_ANDAND, TK_OROR,
+
+    /* x op= y, one token apiece. */
+    TK_ADD_ASSIGN, TK_SUB_ASSIGN, TK_MUL_ASSIGN, TK_DIV_ASSIGN, TK_MOD_ASSIGN,
+    TK_AND_ASSIGN, TK_OR_ASSIGN, TK_XOR_ASSIGN, TK_SHL_ASSIGN, TK_SHR_ASSIGN,
+
+    /* Not implemented, and lexed anyway: left as two pluses, `a ++ b` is
+     * `a + +b` and compiles to the wrong thing without a word said. */
+    TK_INC, TK_DEC,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -327,6 +335,10 @@ int  gen_here(void);                  /* the address a backward jump aims at */
 int  gen_jump(void);                  /* jp nn, to be patched; returns the hole */
 void gen_jump_to(int target);         /* jp nn, backwards */
 int  gen_jump_if_false(void);         /* pop the top, jump when it is zero */
+int  gen_logic_left(int settles);     /* && and ||: after the left operand */
+void gen_logic_right(int settles, int early);  /* and after the right */
+void vtruth(int op);                  /* compare the top with zero: TK_NE, TK_EQ */
+void vdup(void);                      /* the top twice */
 void gen_label(int hole);             /* fill a hole in with here */
 void gen_return(void);
 void gen_finish(void);          /* resolve calls to functions defined later */

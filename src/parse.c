@@ -151,6 +151,17 @@ static void primary(void)
         return;
     }
 
+    /* `!x` is `x == 0`, compared at x's own type -- so a float is false only
+     * at zero of either sign, and a long is false only when all four of its
+     * bytes are. */
+    if (tok == TK_NOT) {
+        next();
+        primary();
+        vtruth(TK_EQ);
+
+        return;
+    }
+
     if (tok == TK_PLUS) {       /* unary plus is the value unchanged */
         next();
         primary();
@@ -237,18 +248,24 @@ static void primary(void)
  * order matters; they are C's levels rather than acc's, so that adding an
  * operator is a row in the table and not a decision. */
 enum {
-    PREC_NONE       = 0,        /* not a binary operator */
-    PREC_BIT_OR     = 1,        /* | */
-    PREC_BIT_XOR    = 2,        /* ^ */
-    PREC_BIT_AND    = 3,        /* & */
-    PREC_EQUALITY   = 4,        /* ==  != */
-    PREC_RELATIONAL = 5,        /* <  >  <=  >= */
-    PREC_SHIFT      = 6,        /* <<  >> */
-    PREC_ADDITIVE   = 7,        /* +  - */
-    PREC_MULTIPLY   = 8         /* *  /  % */
+    PREC_NONE        = 0,       /* not a binary operator */
+    PREC_LOGICAL_OR  = 1,       /* || */
+    PREC_LOGICAL_AND = 2,       /* && */
+    PREC_BIT_OR      = 3,       /* | */
+    PREC_BIT_XOR     = 4,       /* ^ */
+    PREC_BIT_AND     = 5,       /* & */
+    PREC_EQUALITY    = 6,       /* ==  != */
+    PREC_RELATIONAL  = 7,       /* <  >  <=  >= */
+    PREC_SHIFT       = 8,       /* <<  >> */
+    PREC_ADDITIVE    = 9,       /* +  - */
+    PREC_MULTIPLY    = 10,      /* *  /  % */
+
+    PREC_LOWEST      = PREC_LOGICAL_OR  /* where a whole expression starts */
 };
 
 static const unsigned char prec[TK_COUNT] = {
+    [TK_OROR]   = PREC_LOGICAL_OR,
+    [TK_ANDAND] = PREC_LOGICAL_AND,
     [TK_PIPE]  = PREC_BIT_OR,
     [TK_CARET] = PREC_BIT_XOR,
     [TK_AMP]   = PREC_BIT_AND,
@@ -290,6 +307,33 @@ static int expression_ends_here(void)
     return tok == TK_SEMI || tok == TK_COMMA || tok == TK_RPAREN;
 }
 
+/* The right-hand side of `&&` or `||`, with the left already on the stack.
+ *
+ * Unlike every other binary operator the left side is dealt with before the
+ * right is parsed, because whether the right is evaluated at all depends on
+ * it: that is the short circuit, and C guarantees it. The right operand is
+ * parsed with no narrow destination whatever the assignment around it: its
+ * value is only ever compared with zero, so truncating it to a byte first
+ * would make 256 false.
+ */
+static void binary_rest(int min_prec);
+
+static void logical_rest(int op, int op_prec)
+{
+    int settles = (op == TK_OROR);      /* the truth that decides it early */
+    Type outer = narrow_dest;
+    int early;
+
+    early = gen_logic_left(settles);
+
+    narrow_dest = 0;
+    primary();
+    binary_rest(op_prec + 1);
+    narrow_dest = outer;
+
+    gen_logic_right(settles, early);
+}
+
 /* The operator loop, with the left operand already on the stack. `min_prec`
  * is the loosest binding this call will take: an operator looser than that
  * belongs to the caller. */
@@ -302,6 +346,13 @@ static void binary_rest(int min_prec)
         if (op_prec < min_prec)         /* PREC_NONE included: not an operator */
             return;
         next();
+
+        if (op == TK_ANDAND || op == TK_OROR) {
+            logical_rest(op, op_prec);
+
+            continue;
+        }
+
         primary();
         binary_rest(op_prec + 1);       /* everything binding tighter first */
 
@@ -323,7 +374,75 @@ static void binary(int min_prec)
 
 /* Assignment is right associative and its left side has to be a name, which
  * is the whole of what a milestone with no pointers can assign to. */
-static void expr(void)
+/* `x op= y` is `x = x op y` with x evaluated once -- which for a local is no
+ * restriction at all, and for `*p op= y` means the address is worked out
+ * once and used twice, to read and then to write.
+ *
+ * The right side is parsed whole and with no narrow destination: it is one
+ * operand of op, and truncating it to the width of x before op had seen it
+ * would give `c += 200 + 100` the wrong answer. The operator itself may still
+ * run at x's width, for the same reason `c = c + y` may -- the result goes
+ * straight into x and nothing wider ever sees it.
+ */
+static const unsigned char compound_op[TK_COUNT] = {
+    [TK_ADD_ASSIGN] = TK_PLUS,    [TK_SUB_ASSIGN] = TK_MINUS,
+    [TK_MUL_ASSIGN] = TK_STAR,    [TK_DIV_ASSIGN] = TK_SLASH,
+    [TK_MOD_ASSIGN] = TK_PERCENT,
+    [TK_AND_ASSIGN] = TK_AMP,     [TK_OR_ASSIGN]  = TK_PIPE,
+    [TK_XOR_ASSIGN] = TK_CARET,
+    [TK_SHL_ASSIGN] = TK_SHL,     [TK_SHR_ASSIGN] = TK_SHR
+};
+
+static Type compound_narrow(int op, Type dest)
+{
+    return (type_size(dest) < ACC_INT_SIZE && transparent_op(op)) ? dest : 0;
+}
+
+static void compound_local(NameRef name)
+{
+    int op = compound_op[tok];
+    int sym = sym_find(name);
+    Type outer = narrow_dest;
+    Type type;
+    int off;
+
+    if (sym == SYM_NONE)
+        acc_error_at(tok_line, "'%s' is not declared", name_text(name));
+    if (sym_at(sym)->kind != SYM_LOCAL)
+        acc_error_at(tok_line, "'%s' cannot be assigned to", name_text(name));
+
+    /* Taken now rather than looked up again after the right side: a call in
+     * it to a function not yet seen pushes a symbol and moves the locals
+     * along, so the index would be stale. The frame offset is not. */
+    type = sym_at(sym)->type;
+    off = sym_at(sym)->val;
+    next();
+
+    vpush_local(off, type);
+    narrow_dest = 0;
+    expr();
+    narrow_dest = outer;
+    vapply(op, compound_narrow(op, type));
+    vstore_local(off, type);
+}
+
+static void compound_indirect(void)
+{
+    int op = compound_op[tok];
+    Type outer = narrow_dest;
+    Type target = type_pointer(vtype()) ? type_deref(vtype()) : 0;
+
+    next();
+    vdup();                     /* the address: once to read, once to write */
+    vderef();
+    narrow_dest = 0;
+    expr();
+    narrow_dest = outer;
+    vapply(op, target ? compound_narrow(op, target) : 0);
+    vstore_indirect();
+}
+
+static void assignment(void)
 {
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
@@ -355,6 +474,12 @@ static void expr(void)
             return;
         }
 
+        if (compound_op[tok]) {
+            compound_local(name);
+
+            return;
+        }
+
         /* Not an assignment. Put the name back by handling it here rather
          * than by pushing the token back, which would need a queue. */
         if (accept(TK_LPAREN)) {
@@ -368,7 +493,7 @@ static void expr(void)
             vpush_local(sym_at(sym)->val, sym_at(sym)->type);
         }
 
-        binary_rest(PREC_BIT_OR);
+        binary_rest(PREC_LOWEST);
 
         return;
     }
@@ -400,13 +525,37 @@ static void expr(void)
             return;
         }
 
+        if (compound_op[tok]) {
+            compound_indirect();
+
+            return;
+        }
+
         vderef();
-        binary_rest(PREC_BIT_OR);
+        binary_rest(PREC_LOWEST);
 
         return;
     }
 
-    binary(PREC_BIT_OR);
+    binary(PREC_LOWEST);
+}
+
+/* An expression, and then whatever the expression did not consume, checked
+ * for the two things that end up here by mistake.
+ *
+ * An assignment operator left over means its left side was not something
+ * that can be assigned to -- `3 = x`, `a + b += 1` -- which is a better thing
+ * to say than that a semicolon was expected. And an operator acc has not got
+ * to yet is named, rather than being reported as the place parsing stopped. */
+static void expr(void)
+{
+    assignment();
+
+    if (tok == TK_ASSIGN || compound_op[tok])
+        acc_error_at(tok_line, "the left of %s is not something that can be "
+                               "assigned to", tok_spelling(tok));
+    if (tok_is_unimplemented_op(tok))
+        acc_error_at(tok_line, "%s is not supported yet", tok_spelling(tok));
 }
 
 /* ------------------------------------------------------------------ */
