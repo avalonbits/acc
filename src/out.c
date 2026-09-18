@@ -98,25 +98,6 @@ void out_grow(void)
     out_limit = img + cap;
 }
 
-/* The three bytes of a 24-bit value, lowest first, at `at`.
- *
- * Copied rather than shifted out. `value >> 8` and `value >> 16` are each a
- * call into the runtime on this target -- there is no instruction that shifts
- * a 24-bit register by more than one place -- and this runs for every call,
- * jump and constant the compiler emits. The value is already those three
- * bytes, lowest first, in memory, so copying them is the whole job. On a host
- * that keeps its bytes the other way round it is not, and the shifts are used
- * there instead. */
-static void put24(unsigned char *at, int value)
-{
-#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    at[0] = (unsigned char) value;
-    at[1] = (unsigned char) (value >> 8);
-    at[2] = (unsigned char) (value >> 16);
-#else
-    memcpy(at, &value, 3);
-#endif
-}
 
 
 /* Two bytes and three bytes, which is what nearly every instruction acc emits
@@ -139,16 +120,6 @@ void out_word24(int value)
     out_put += 3;
 }
 
-/* An opcode and the 24-bit operand that follows it, which is the shape of a
- * call, a jump and every load of a constant. Four bytes, one bounds check. */
-void out_opcode24(int opcode, int value)
-{
-    if (out_limit - out_put < 4)
-        out_grow();
-    out_put[0] = (unsigned char) opcode;
-    put24(out_put + 1, value);
-    out_put += 4;
-}
 
 int out_here(void)
 {

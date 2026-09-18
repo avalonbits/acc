@@ -29,7 +29,8 @@ static void ld_rr_imm(int reg, int imm)    /* ld rr, nn */
     out_opcode24(0x01 + reg_code[reg] * 0x10, imm);
 }
 
-static void ld_rr_ix(int reg, int disp)    /* ld rr, (ix+d) */
+static inline __attribute__((always_inline))
+void ld_rr_ix(int reg, int disp)           /* ld rr, (ix+d) */
 {
     out_byte3(0xdd, 0x07 + reg_code[reg] * 0x10, disp);
 }

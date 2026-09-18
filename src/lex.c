@@ -813,16 +813,13 @@ int accept_next(void)
     return 1;
 }
 
-void expect(int token, const char *what)
+/* Point at where the missing token should have gone, which is the end of the
+ * token before it, not the start of whatever turned up instead: a ';' left
+ * off the end of line 4 is a mistake on line 4, even though the '}' that
+ * reveals it is on line 5. */
+void expect_failed(const char *what)
 {
-    if (tok != token) {
-        /* Point at where the missing token should have gone, which
-         * is the end of the token before it, not the start of whatever
-         * turned up instead: a ';' left off the end of line 4 is a mistake
-         * on line 4, even though the '}' that reveals it is on line 5. */
-        acc_error_at(tok_prev_line, "expected %s, found %s", what, tok_spelling(tok));
-    }
-    next();
+    acc_error_at(tok_prev_line, "expected %s, found %s", what, tok_spelling(tok));
 }
 
 void lex_init(void)

@@ -26,6 +26,7 @@
 #define ACC_H
 
 #include <stddef.h>
+#include <string.h>
 
 /* The target's own widths, which are also the host's when acc is compiled by
  * agondev to run on the Agon. Named rather than assumed, because the whole
@@ -239,7 +240,15 @@ int         accept_next(void);          /* next(), returning 1, for accept */
  * call to find that out opened a frame on this target before comparing two
  * bytes. `token` is evaluated once. */
 #define accept(token)  (tok == (token) ? accept_next() : 0)
-void expect(int token, const char *what);
+void expect_failed(const char *what);
+
+/* Step past the current token, which has to be `token`. A macro for the same
+ * reason accept is one, the other way round: nearly always the token is there,
+ * and the call to find that out opened a frame to compare two bytes and then
+ * call next. `token` is evaluated once and `what` only on the way to an
+ * error. */
+#define expect(token, what) \
+    ((void) (tok == (token) ? next() : expect_failed(what)))
 const char *tok_spelling(int token);
 
 /* ------------------------------------------------------------------ */
@@ -394,6 +403,39 @@ void out_close(void);
 extern unsigned char *out_put, *out_limit;
 void out_grow(void);
 
+/* The three bytes of a 24-bit value, lowest first, at `at`.
+ *
+ * Copied rather than shifted out. `value >> 8` and `value >> 16` are each a
+ * call into the runtime on this target -- there is no instruction that shifts
+ * a 24-bit register by more than one place -- and this runs for every call,
+ * jump and constant the compiler emits. The value is already those three
+ * bytes, lowest first, in memory, so copying them is the whole job. On a host
+ * that keeps its bytes the other way round it is not, and the shifts are used
+ * there instead. */
+static inline __attribute__((always_inline))
+void put24(unsigned char *at, int value)
+{
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    at[0] = (unsigned char) value;
+    at[1] = (unsigned char) (value >> 8);
+    at[2] = (unsigned char) (value >> 16);
+#else
+    memcpy(at, &value, 3);
+#endif
+}
+
+/* An opcode and the 24-bit operand that follows it, which is the shape of a
+ * call, a jump and every load of a constant. Four bytes, one bounds check. */
+static inline __attribute__((always_inline))
+void out_opcode24(int opcode, int value)
+{
+    if (out_limit - out_put < 4)
+        out_grow();
+    out_put[0] = (unsigned char) opcode;
+    put24(out_put + 1, value);
+    out_put += 4;
+}
+
 static inline __attribute__((always_inline)) void out_byte(int byte)
 {
     if (out_put == out_limit)
@@ -419,7 +461,6 @@ static inline __attribute__((always_inline)) void out_byte3(int first, int secon
     out_put[2] = (unsigned char) third;
     out_put += 3;
 }
-void out_opcode24(int opcode, int value);
 void out_word24(int v);
 int  out_here(void);                  /* the address the next byte will have */
 void out_patch24(int at, int v);
