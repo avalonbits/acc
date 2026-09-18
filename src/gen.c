@@ -74,6 +74,8 @@ static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
 static void vunary_long(int which, Type type);
+static void vswap(void);
+static int  is_comparison(int op);
 static void convert_int_to_float(void);
 static void convert_float_to_int(Type to);
 static void force_into(Value *target, int want);
@@ -107,6 +109,15 @@ static void ld_a_h(void)        { out_byte(0x7c); }
 static void ld_e_l(void)        { out_byte(0x5d); }
 static void ld_l_e(void)        { out_byte(0x6b); }
 static void rlc_l(void)         { out_byte2(0xcb, 0x05); }
+static void ld_a_hl(void)       { out_byte(0x7e); }      /* ld a, (hl) */
+static void ld_e_hl(void)       { out_byte(0x5e); }      /* ld e, (hl) */
+static void ld_hl_a(void)       { out_byte(0x77); }      /* ld (hl), a */
+static void inc_hl(void)        { out_byte(0x23); }
+static void inc_de(void)        { out_byte(0x13); }
+static void ld_de_a(void)       { out_byte(0x12); }      /* ld (de), a */
+static void ex_de_hl(void)      { out_byte(0xeb); }
+static void ld_hl_ind_hl(void)  { out_byte2(0xed, 0x27); }  /* ld hl, (hl) */
+static void ld_ind_hl_de(void)  { out_byte2(0xed, 0x1f); }  /* ld (hl), de */
 static void sbc_hl_hl(void)     { out_byte2(0xed, 0x62); }
 
 /* HL = the sign of A, in all three bytes. Clobbers L on the way. */
@@ -2156,6 +2167,81 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
     (vsp - 1)->type = type_promote(sym_at(fn)->type);
 }
 
+/* What an operator means when a pointer is one of its operands.
+ *
+ * `p + 1` is the next object, not the next byte, so the integer side is
+ * multiplied by the width of what the pointer points at -- and `q - p` is
+ * the other way about, a difference in bytes divided back down into a count
+ * of objects. A pointer to a one-byte type needs neither, which is most of
+ * why char is the type people reach for when they want the bytes.
+ */
+static void vbinop_pointer(int op, Type left, Type right)
+{
+    int both = type_pointer(left) && type_pointer(right);
+    Type ptr = type_pointer(left) ? left : right;
+    int step;
+
+    if (type_deref(ptr) == TY_VOID)
+        acc_error_at(tok_line, "a 'void *' does not say what it points at, so "
+                               "arithmetic on it has no step to take");
+    step = type_step(ptr);
+
+    if (is_comparison(op)) {
+        if (both && left != right)
+            acc_error_at(tok_line, "these are pointers to different types");
+        vcmp(op);
+
+        return;
+    }
+
+    if (both) {
+        if (op != TK_MINUS)
+            acc_error_at(tok_line, "%s does not take two pointers",
+                         tok_spelling(op));
+        if (left != right)
+            acc_error_at(tok_line, "these are pointers to different types");
+
+        vbinop(TK_MINUS);
+        if (step > 1) {
+            vpush_const(step, TY_INT);
+            vbinop(TK_SLASH);
+        }
+        (vsp - 1)->type = TY_INT;
+
+        return;
+    }
+
+    if (op != TK_PLUS && op != TK_MINUS)
+        acc_error_at(tok_line, "%s does not take a pointer", tok_spelling(op));
+
+    /* `n + p` is `p + n`; subtraction has no such freedom, and a pointer on
+     * the right of one is the program's mistake. */
+    if (!type_pointer(left)) {
+        if (op == TK_MINUS)
+            acc_error_at(tok_line, "'-' takes a pointer on its left, not its "
+                                   "right");
+        vswap();
+    }
+
+    if (step > 1) {
+        vpush_const(step, TY_INT);
+        vbinop(TK_STAR);
+    }
+    vbinop(op);
+    (vsp - 1)->type = ptr;
+}
+
+/* The top two values exchanged. Nothing is emitted: a Value says where a
+ * value is, not where it is on this stack, so swapping two of them is a
+ * swap of two descriptors. */
+static void vswap(void)
+{
+    Value held = *(vsp - 1);
+
+    *(vsp - 1) = *(vsp - 2);
+    *(vsp - 2) = held;
+}
+
 /* The operators that leave a 0 or 1 behind rather than a number. */
 static int is_comparison(int op)
 {
@@ -2188,6 +2274,12 @@ void vapply(int op, Type narrow)
 
     left  = (vsp - 2)->type;
     right = (vsp - 1)->type;
+
+    if (type_pointer(left) || type_pointer(right)) {
+        vbinop_pointer(op, left, right);
+
+        return;
+    }
 
     /* A shift is not one of the operators the usual arithmetic conversions
      * apply to. C99 6.5.7 promotes each operand on its own and gives the
@@ -2248,4 +2340,178 @@ void vapply(int op, Type narrow)
     }
 
     vbinop(op);
+}
+
+/* ------------------------------------------------------------------ */
+/* pointers                                                            */
+
+/* A pointer on this machine is the three bytes an int is, so it lives in a
+ * register like one and needs no widening anywhere. What it does need is a
+ * width to read and write through it, and that is the type it points at --
+ * which is the whole of what the pointer depth in the type byte is for.
+ */
+
+/* &local: the address of a frame slot, which lea computes without loading
+ * the value first or touching the flags. */
+void vaddr_local(int offset, Type type)
+{
+    int reg;
+
+    if (type_ptr_depth(type) == TY_PTR_MAX)
+        acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
+                     TY_PTR_MAX);
+
+    reg = reg_alloc();
+    need_disp(offset);
+    lea_rr_ix(reg, offset);
+    vpush(VAL_REG, type_ptr_to(type), reg);
+}
+
+/* *p: the top is a pointer and becomes what it points at.
+ *
+ * Four bytes go to a frame slot, because that is where every four-byte value
+ * lives; the rest come back in HL at int width, the narrow ones widened on
+ * the way exactly as a load from a frame slot widens them. */
+void vderef(void)
+{
+    Value *top = vsp - 1;
+    Type to;
+
+    if (vtop <= 0)
+        acc_error("internal: nothing to dereference");
+    if (!type_pointer(top->type))
+        acc_error_at(tok_line, "'*' takes a pointer, and this is %s",
+                     type_float(top->type) ? "a floating-point value"
+                                           : "an integer");
+
+    to = type_deref(top->type);
+    if (to == TY_VOID)
+        acc_error_at(tok_line, "a 'void *' does not say what it points at, so "
+                               "it cannot be read through");
+
+    force_into(top, R_HL);
+
+    if (type_wide(to)) {
+        int slot = long_scratch();
+        int i;
+
+        need_disp(slot);
+        need_disp(slot + ACC_LONG_SIZE - 1);
+        for (i = 0; i < ACC_LONG_SIZE; i++) {
+            ld_a_hl();
+            ld_ix_a(slot + i);
+            if (i < ACC_LONG_SIZE - 1)
+                inc_hl();
+        }
+        vdrop();
+        vpush(VAL_LOCAL, to, slot);
+
+        return;
+    }
+
+    if (type_size(to) == ACC_INT_SIZE) {
+        ld_hl_ind_hl();
+    } else if (type_size(to) == 1) {
+        ld_a_hl();
+        if (type_unsigned(to))
+            fill_hl_with_zero();
+        else
+            fill_hl_with_sign_of_a();
+        ld_l_a();
+    } else {
+        /* Two bytes, with the low one kept in E while the high one is
+         * fetched: loading either into H or into L would overwrite the
+         * pointer before the other had been read. */
+        ld_e_hl();
+        inc_hl();
+        ld_a_hl();
+        if (type_unsigned(to))
+            fill_hl_with_zero();
+        else
+            fill_hl_with_sign_of_a();
+        ld_h_a();
+        ld_l_e();
+    }
+
+    vdrop();
+    vpush_reg(R_HL);
+    (vsp - 1)->type = type_promote(to);
+}
+
+/* *p = v, with the pointer under the value on the stack. The value is left
+ * behind, because an assignment is an expression and what it comes to is
+ * what was assigned. */
+void vstore_indirect(void)
+{
+    Type to;
+    int addr;
+
+    if (vtop < 2)
+        acc_error("internal: a store through nothing");
+    if (!type_pointer((vsp - 2)->type))
+        acc_error_at(tok_line, "'*' takes a pointer");
+
+    to = type_deref((vsp - 2)->type);
+    if (to == TY_VOID)
+        acc_error_at(tok_line, "a 'void *' does not say what it points at, so "
+                               "it cannot be written through");
+
+    vconvert(to);
+
+    if (type_wide(to)) {
+        int slot = long_scratch();
+        int i;
+
+        /* The value first, because building it may want HL, and the address
+         * afterwards, which is what is left underneath it. */
+        materialise_long(slot, to);
+        vdrop();
+        force_into(vsp - 1, R_HL);
+        need_disp(slot);
+        need_disp(slot + ACC_LONG_SIZE - 1);
+        for (i = 0; i < ACC_LONG_SIZE; i++) {
+            ld_a_ix(slot + i);
+            ld_hl_a();
+            if (i < ACC_LONG_SIZE - 1)
+                inc_hl();
+        }
+        vdrop();
+        vpush(VAL_LOCAL, to, slot);
+
+        return;
+    }
+
+    /* The value in HL and the address in DE, which is the way round that
+     * makes a three-byte store one instruction between two exchanges. */
+    force_into(vsp - 1, R_HL);
+    addr = force_reg_at(1);
+    if (addr != R_DE) {
+        evict_reg(R_DE);
+        mov_rr(R_DE, addr);
+        (vsp - 2)->val = R_DE;
+    }
+
+    if (type_size(to) == ACC_INT_SIZE) {
+        ex_de_hl();
+        ld_ind_hl_de();
+        ex_de_hl();
+    } else if (type_size(to) == 1) {
+        ld_a_l();
+        ld_de_a();
+    } else {
+        ld_a_l();
+        ld_de_a();
+        inc_de();
+        ld_a_h();
+        ld_de_a();
+    }
+
+    /* The value is the answer; the address has done its work. */
+    {
+        Value kept = *(vsp - 1);
+
+        vdrop();
+        vdrop();
+        vpush(kept.kind, kept.type, kept.val);
+    }
 }

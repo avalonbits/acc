@@ -68,21 +68,53 @@ typedef unsigned char Type;
 #define TY_FLOATING 0x10
 #define TY_FLOAT    ((Type) (ACC_LONG_SIZE | TY_FLOATING))
 
-#define type_float(ty)    ((ty) & TY_FLOATING)
+#define type_float(ty)    (!type_pointer(ty) && ((ty) & TY_FLOATING))
 #define TY_VOID     ((Type) 0)
+
+/* How many times a type is a pointer, in the top three bits.
+ *
+ * A type is one byte and has to stay one byte: a Sym is eight, which is what
+ * makes indexing the symbol table a shift rather than a multiply, and a
+ * ninth byte would round it up to twelve. So the pointer depth shares the
+ * byte with what it points at -- `int *` is a depth of one over TY_INT, and
+ * `char **` a depth of two over TY_CHAR -- and the width of the pointer
+ * itself is not stored at all, because every pointer on this machine is the
+ * same three bytes an int is.
+ *
+ * Seven levels. Nobody writing C for a machine with 512 KB of address space
+ * is going to miss the eighth.
+ */
+#define TY_PTR_SHIFT  5
+#define TY_PTR_MASK   0xe0
+#define TY_PTR_MAX    7
+
+#define type_pointer(ty)   ((ty) & TY_PTR_MASK)
+#define type_ptr_to(ty)    ((Type) ((ty) + (1 << TY_PTR_SHIFT)))
+#define type_deref(ty)     ((Type) ((ty) - (1 << TY_PTR_SHIFT)))
+#define type_ptr_depth(ty) (((ty) & TY_PTR_MASK) >> TY_PTR_SHIFT)
 
 /* A long is wider than any register, so it never lives in one: it stays in
  * the frame and the code generator works on it there. type_wide says which
- * values that applies to. */
+ * values that applies to. A pointer never does, however wide the thing it
+ * points at. */
 #define type_wide(ty)     (type_size(ty) > ACC_INT_SIZE)
 
-#define type_size(ty)     ((int) ((ty) & TY_SIZE_MASK))
-#define type_unsigned(ty) ((ty) & TY_UNSIGNED)
+#define type_size(ty)     (type_pointer(ty) ? ACC_INT_SIZE \
+                                            : (int) ((ty) & TY_SIZE_MASK))
+#define type_unsigned(ty) (type_pointer(ty) || ((ty) & TY_UNSIGNED))
+
+/* What `p + 1` moves by, which is the width of what p points at. */
+#define type_step(ty)     type_size(type_deref(ty))
 
 /* C promotes anything narrower than int to int before doing arithmetic on it,
  * so a value in a register is always int-wide. Only loads, stores and casts
  * deal in the narrow widths. */
 #define type_promote(ty)  ((Type) (type_size(ty) < ACC_INT_SIZE ? TY_INT : (ty)))
+
+/* Two pointers are the same type when they agree all the way down. Compared
+ * whole rather than piecewise: the encoding puts the depth and what it points
+ * at in the one byte, so equality of the byte is equality of the type. */
+#define type_same(a, b)   ((a) == (b))
 
 /* ------------------------------------------------------------------ */
 /* diagnostics                                                         */
@@ -268,6 +300,9 @@ void vstore_local(int offset, Type type); /* pop the top into a local */
  * about the text after the operator, not about the values.
  */
 void vapply(int op, Type narrow);
+void vaddr_local(int offset, Type type);  /* &local */
+void vderef(void);                    /* *p, replacing the pointer */
+void vstore_indirect(void);           /* *p = v, with p under v */
 void vneg(void);
 void vnot(void);
 int  vpop_reg(void);                  /* force the top into a register */

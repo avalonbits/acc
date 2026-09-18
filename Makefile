@@ -68,6 +68,7 @@ test: all unit $(BIN)/acc-asan
 	@test/abi-acc.sh
 	@ACC=$(BIN)/acc-asan test/errors.sh
 	@ACC=$(BIN)/acc-asan test/run.sh
+	@ACC=$(BIN)/acc-asan test/self.sh
 
 unit: | $(BIN)
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_timing test/test_timing.c

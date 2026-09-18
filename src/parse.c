@@ -158,6 +158,37 @@ static void primary(void)
         return;
     }
 
+    /* A `*` or a `&` where an expression was meant to start is a dereference
+     * or an address-of, not the binary operator of the same spelling. Both
+     * bind tighter than any binary operator, which is what putting them here
+     * rather than in binary_rest says. */
+    if (tok == TK_STAR) {
+        next();
+        primary();
+        vderef();
+
+        return;
+    }
+
+    if (tok == TK_AMP) {
+        int sym;
+
+        next();
+        if (tok != TK_IDENT)
+            acc_error_at(tok_line, "'&' takes the address of a variable, and "
+                                   "this is %s", tok_spelling(tok));
+        sym = sym_find(tok_name);
+        if (sym == SYM_NONE)
+            acc_error_at(tok_line, "'%s' is not declared", name_text(tok_name));
+        if (sym_at(sym)->kind != SYM_LOCAL)
+            acc_error_at(tok_line, "'%s' is not a variable, so it has no "
+                                   "address to take", name_text(tok_name));
+        vaddr_local(sym_at(sym)->val, sym_at(sym)->type);
+        next();
+
+        return;
+    }
+
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
         int sym;
@@ -182,12 +213,6 @@ static void primary(void)
 
     if (tok == TK_KW_RESERVED)
         reserved_word();
-
-    /* A `*` or `&` where an expression was meant to start is a dereference or
-     * an address-of, not the binary operator of the same spelling. Say which
-     * feature is missing rather than which character was unexpected. */
-    if (tok == TK_STAR || tok == TK_AMP)
-        acc_error_at(tok_line, "pointers are not supported yet");
 
     /* An operator acc has not got to yet, where an expression was meant to
      * start. Name the operator, as expect() does when one turns up where a
@@ -300,6 +325,39 @@ static void binary(int min_prec)
  * is the whole of what a milestone with no pointers can assign to. */
 static void expr(void)
 {
+    /* A dereference, which may be what is being assigned to. The stars are
+     * counted here rather than left to primary() because the address has to
+     * reach the stack before the value does: `*p = v` evaluates p, then v,
+     * then stores. All but the last star is a read; the last one is either
+     * the store or, if no `=` follows, a read like the others. */
+    if (tok == TK_STAR) {
+        int stars = 0;
+
+        while (accept(TK_STAR))
+            stars++;
+        primary();
+        while (--stars > 0)
+            vderef();
+
+        if (accept(TK_ASSIGN)) {
+            Type outer = narrow_dest;
+            Type target = type_pointer(vtype()) ? type_deref(vtype()) : 0;
+
+            narrow_dest = (target && type_size(target) < ACC_INT_SIZE)
+                          ? target : 0;
+            expr();
+            narrow_dest = outer;
+            vstore_indirect();
+
+            return;
+        }
+
+        vderef();
+        binary_rest(PREC_BIT_OR);
+
+        return;
+    }
+
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
         int sym;
@@ -456,21 +514,46 @@ static Type type_specifier(void)
     return type_specifier_slow(first, line);
 }
 
-/* A type in a place that has to hold a value. */
-static Type object_type(const char *what)
+/* The keywords at the front of a declaration, which say what the type is
+ * before any star has narrowed it down. `int *p, q;` has one of these and two
+ * declarators, and q is an int: a star belongs to the name it is written next
+ * to and not to the type at the head of the line. */
+static Type base_type(void)
 {
     int line = tok_line;
-    Type type;
 
     if (tok == TK_KW_RESERVED)
         reserved_word();
     if (!starts_type(tok))
         acc_error_at(line, "expected a type, found %s", tok_spelling(tok));
-    type = type_specifier();
-    if (type == TY_VOID)
+
+    return type_specifier();
+}
+
+/* The stars in front of one name, and then the check that what is left is a
+ * type a value can have. That check has to come after them: there is no value
+ * of type void, but `void *` is an ordinary pointer to something unsaid. */
+static Type declarator_type(Type base, const char *what)
+{
+    int line = tok_line;
+
+    while (accept(TK_STAR)) {
+        if (type_ptr_depth(base) == TY_PTR_MAX)
+            acc_error_at(line, "a pointer can be %d deep and this is deeper",
+                         TY_PTR_MAX);
+        base = type_ptr_to(base);
+    }
+
+    if (base == TY_VOID)
         acc_error_at(line, "'void' is not a type %s can have", what);
 
-    return type;
+    return base;
+}
+
+/* A type and one declarator together, for the places that have only one. */
+static Type object_type(const char *what)
+{
+    return declarator_type(base_type(), what);
 }
 
 /* ------------------------------------------------------------------ */
@@ -478,9 +561,10 @@ static Type object_type(const char *what)
 
 static void declaration(void)
 {
-    Type type = object_type("a variable");
+    Type base = base_type();
 
     for (;;) {
+        Type type = declarator_type(base, "a variable");
         NameRef name;
         int off, sym;
 
