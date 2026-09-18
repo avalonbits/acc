@@ -121,6 +121,39 @@ done
 for op in - '~' '!'; do
     check_op "$op" "int main(void) { int a = 1; return $op a; }"
 done
+
+# And the ones acc gained after the list above was written, which it did not
+# know to look for: the benchmark went on measuring none of them, and the
+# first input written to cover pointers found three code-generation bugs
+# that the older inputs could never have reached.
+for op in '&&' '||'; do
+    check_op "$op" "int main(void) { int a = 1; int b = 2; return a $op b; }"
+done
+for op in '+=' '-=' '*=' '/=' '%=' '&=' '|=' '^=' '<<=' '>>='; do
+    check_op "$op" "int main(void) { int a = 1; a $op 2; return a; }"
+done
+for op in '++' '--'; do
+    check_op "$op" "int main(void) { int a = 1; a$op; return a; }"
+done
+check_op '?' "int main(void) { int a = 1; return a ? 2 : 3; }"
+check_op '[' "int main(void) { int a[2]; a[0] = 1; return a[0]; }"
+
+# Forms rather than operators: what they look like has no one spelling, so
+# each is a pattern, and each is only asked for once acc compiles it.
+check_form() {
+    printf '%s\n' "$3" > "$tmp/op.c"
+    bin/acc "$tmp/op.c" -o "$tmp/op.bin" -x >/dev/null 2>&1 || return 0
+    grep -qE -- "$2" "$tmp/code.c" || missing="$missing $1"
+}
+check_form "globals" '^(int|char|short|long|unsigned|signed|float|double)[^(]*[;=[]' \
+    "int g; int main(void) { return g; }"
+check_form "pointers" '(char|short|int|long|float|void) +\*+ *[A-Za-z_]' \
+    "int main(void) { int a = 1; int *p = &a; return *p; }"
+check_form "&variable" '(^|[^&])&[A-Za-z_]' \
+    "int main(void) { int a = 1; int *p = &a; return *p; }"
+check_form "hex" '0[xX][0-9a-fA-F]' "int main(void) { return 0x2a; }"
+check_form "octal" '(^|[^0-9A-Za-z_.])0[0-7]+([^0-9A-Za-z_.]|$)' \
+    "int main(void) { return 052; }"
 set +f
 
 [ -z "$missing" ] || echo "note: no benchmark input uses:$missing" >&2

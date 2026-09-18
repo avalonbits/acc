@@ -1,0 +1,417 @@
+#!/usr/bin/env python3
+"""Writes the benchmark inputs that cover what the older ones do not.
+
+    test/bench/generate.py            # rewrites pointers.c, operators.c, data.c
+
+The eight older inputs were written before acc had pointers, the logical
+operators, ++ and --, ?:, compound assignment, hex and octal constants,
+for loops, globals or arrays, and none of them uses any of those -- so the
+benchmark measured all of it as costing nothing, which is the mistake
+control.c was written to stop happening for if and while. These three are
+the same size as the others, at around 17 KB, with names the length real C
+has (see names.c), and each returns 42.
+
+The outputs are committed, as the others are, so that a number from today
+can be compared with one from last week; this is here so that they can be
+made again rather than edited by hand. What main has to subtract to land on
+42 is found by compiling the program with the host's C compiler and running
+it: every value stays far from the edge of a 24-bit int, where the host's
+32 bits and the Agon's 24 would disagree.
+"""
+
+import os
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+NOUNS = ["anchor", "buffer", "cursor", "header", "margin", "marker",
+         "offset", "record", "result", "stride", "bucket", "origin",
+         "prefix", "window", "column", "credit", "ledger", "sample",
+         "signal", "target"]
+
+
+def names(count):
+    """count distinct nouns, cycling through the list with a number when it
+    runs out."""
+    out = []
+    for i in range(count):
+        noun = NOUNS[i % len(NOUNS)]
+        out.append(noun if i < len(NOUNS) else f"{noun}{i // len(NOUNS)}")
+    return out
+
+
+# ---------------------------------------------------------------- pointers
+
+def pointers(fn_count):
+    parts = []
+    calls = []
+    for i, noun in enumerate(names(fn_count)):
+        k = i % 7
+        kind = i % 7
+        if kind == 0:
+            parts.append(f"""int swap_{noun}(int *left, int *right) {{
+    int held = *left;
+
+    *left = *right;
+    *right = held;
+
+    return *left - *right + {k};
+}}
+""")
+            calls.append(f"    total = total + swap_{noun}(&left, &right);")
+        elif kind == 1:
+            parts.append(f"""int clamp_{noun}(int *slot, int limit) {{
+    if (*slot > limit)
+        *slot = limit;
+
+    return *slot + {k};
+}}
+""")
+            calls.append(f"    total = total + clamp_{noun}(&left, {5 + k});")
+        elif kind == 2:
+            parts.append(f"""int total_{noun}(int *first, int count) {{
+    int total = 0;
+    int *cursor = first;
+
+    while (count) {{
+        total = total + *cursor;
+        cursor = cursor + 1;
+        count = count - 1;
+    }}
+
+    return total - {k};
+}}
+""")
+            calls.append(f"    total = total + total_{noun}(table, {1 + k});")
+        elif kind == 3:
+            parts.append(f"""int span_{noun}(char *start, char *end) {{
+    char *probe = start;
+    int steps = 0;
+
+    while (probe != end) {{
+        steps = steps + *probe;
+        probe = probe + 1;
+    }}
+
+    return steps + (end - start);
+}}
+""")
+            calls.append(f"    total = total + span_{noun}(text, text + {2 + k});")
+        elif kind == 4:
+            parts.append(f"""int adjust_{noun}(int **handle, int value) {{
+    int *inner = *handle;
+
+    **handle = **handle + value;
+    *inner = *inner - {k};
+
+    return **handle;
+}}
+""")
+            calls.append(f"    total = total + adjust_{noun}(&where, {3 + k});")
+        elif kind == 5:
+            parts.append(f"""int bump_{noun}(char *field, short *half, int amount) {{
+    *field = *field + amount;
+    *half = *half - *field;
+
+    return *field + *half;
+}}
+""")
+            calls.append(f"    total = total + bump_{noun}(&small, &half, {k});")
+        else:
+            parts.append(f"""int widen_{noun}(short *half, long *whole) {{
+    long *spare = whole;
+
+    *spare = *whole + *half;
+    if (*whole > 1000)
+        *whole = *whole - 1000;
+
+    return *half + {k};
+}}
+""")
+            calls.append(f"    total = total + widen_{noun}(&half, &whole);")
+
+    main_head = """int main(void) {
+    int left = 3;
+    int right = 11;
+    int table[8];
+    char text[12];
+    char small = 5;
+    short half = 70;
+    long whole = 100;
+    int *where = &right;
+    int total = 0;
+    int i = 0;
+
+    while (i < 8) {
+        table[i] = i * 3 + 1;
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 12) {
+        text[i] = i;
+        i = i + 1;
+    }
+"""
+    return parts, main_head, calls, "total"
+
+
+# ---------------------------------------------------------------- operators
+
+def operators(fn_count):
+    parts = []
+    calls = []
+    for i, noun in enumerate(names(fn_count)):
+        k = i % 9
+        kind = i % 6
+        if kind == 0:
+            parts.append(f"""int either_{noun}(int left, int right) {{
+    if (left > {k} && right < {k + 20} || left == right)
+        return 1 + !right;
+
+    return !left || right > {k};
+}}
+""")
+            calls.append(f"    total = total + either_{noun}({k + 1}, {k + 2});")
+        elif kind == 1:
+            parts.append(f"""int pick_{noun}(int value, int limit) {{
+    int wide = value > limit ? value - limit : limit - value;
+
+    return wide > {k} ? wide : value < 0 ? -value : {k};
+}}
+""")
+            calls.append(f"    total = total + pick_{noun}({k * 3}, {k + 4});")
+        elif kind == 2:
+            parts.append(f"""int count_{noun}(int value) {{
+    int steps = 0;
+    int rest = value;
+
+    while (value-- > 0)
+        steps++;
+    --rest;
+    ++steps;
+
+    return steps + rest--;
+}}
+""")
+            calls.append(f"    total = total + count_{noun}({k + 2});")
+        elif kind == 3:
+            parts.append(f"""int mix_{noun}(int value) {{
+    int sum = {k + 10};
+
+    sum += value;
+    sum -= 3;
+    sum *= 2;
+    sum /= 3;
+    sum %= 1000;
+    sum <<= 2;
+    sum >>= 1;
+    sum &= 0x7ff;
+    sum |= 010;
+    sum ^= 0x55;
+
+    return sum;
+}}
+""")
+            calls.append(f"    total = total + mix_{noun}({k * 5});")
+        elif kind == 4:
+            parts.append(f"""int flags_{noun}(unsigned int mask) {{
+    unsigned int low = mask & 0x0f;
+
+    if (low != 0 && !(mask & 0x100))
+        return 0x10 + low;
+
+    return mask & 0200 ? 020 : 07;
+}}
+""")
+            calls.append(f"    total = total + flags_{noun}(0x{0x21 + k * 0x13:x});")
+        else:
+            parts.append(f"""int tally_{noun}(int start, int step) {{
+    int count = 0;
+    int limit = start + {k + 6};
+
+    while (start < limit && count < 20) {{
+        count += start % 2 == 0 || step > 3 ? 2 : 1;
+        start += step;
+    }}
+
+    return count;
+}}
+""")
+            calls.append(f"    total = total + tally_{noun}({k}, {1 + k % 4});")
+
+    main_head = """int main(void) {
+    int total = 0;
+"""
+    return parts, main_head, calls, "total"
+
+
+# ---------------------------------------------------------------- data
+
+def data(fn_count):
+    parts = []
+    calls = []
+    for i, noun in enumerate(names(fn_count)):
+        k = i % 8
+        kind = i % 5
+        if kind == 0:
+            parts.append(f"""int table_{noun}[8] = {{{", ".join(str((j * 3 + k) % 11) for j in range(8))}}};
+int count_{noun};
+
+int scan_{noun}(int limit) {{
+    int found = 0;
+
+    for (int i = 0; i < 8; i++)
+        if (table_{noun}[i] > limit)
+            found = found + 1;
+    count_{noun} = count_{noun} + found;
+
+    return found + count_{noun};
+}}
+""")
+            calls.append(f"    total = total + scan_{noun}({k % 6});")
+        elif kind == 1:
+            parts.append(f"""int fill_{noun}(int start) {{
+    int items[6];
+    int sum = 0;
+
+    for (int i = 0; i < 6; i++)
+        items[i] = start + i;
+    for (int i = 5; i >= 0; i = i - 1)
+        sum = sum + items[i];
+
+    return sum - {k};
+}}
+""")
+            calls.append(f"    total = total + fill_{noun}({k});")
+        elif kind == 2:
+            parts.append(f"""char marks_{noun}[16];
+
+int mark_{noun}(int step) {{
+    int i;
+
+    for (i = 0; i < 16; i = i + step)
+        marks_{noun}[i] = i;
+
+    return marks_{noun}[step] + i;
+}}
+""")
+            calls.append(f"    total = total + mark_{noun}({1 + k % 4});")
+        elif kind == 3:
+            parts.append(f"""long weights_{noun}[] = {{{", ".join(str(1000 * (j + 1) + k) for j in range(5))}}};
+
+int weigh_{noun}(int index) {{
+    long sum = 0;
+
+    for (int i = 0; i < 5; i = i + 1)
+        sum = sum + weights_{noun}[i];
+    weights_{noun}[index] = weights_{noun}[index] + {k};
+
+    return sum / 1000 + index;
+}}
+""")
+            calls.append(f"    total = total + weigh_{noun}({k % 5});")
+        else:
+            parts.append(f"""int level_{noun} = {k + 1};
+
+int shift_{noun}(int amount) {{
+    short cells[4] = {{{k}, {k + 1}}};
+    int sum = 0;
+
+    for (int i = 0; i < 4; i = i + 1)
+        sum = sum + cells[i] * level_{noun};
+    level_{noun} = level_{noun} + amount;
+
+    return sum;
+}}
+""")
+            calls.append(f"    total = total + shift_{noun}({k});")
+
+    main_head = """int main(void) {
+    int total = 0;
+"""
+    return parts, main_head, calls, "total"
+
+
+HEADERS = {
+    "pointers.c": """/* The pointer benchmark input.
+ *
+ * Pointers to every width, read and written through, a pointer to a
+ * pointer, a pointer walked along an array and two subtracted: what acc
+ * gained with pointers and none of the older inputs uses.
+ *
+ * Generated by generate.py and committed, so that a number from today can
+ * be compared with one from last week. Returns 42.
+ */
+""",
+    "operators.c": """/* The operator benchmark input.
+ *
+ * && || and ! with their short circuits, ?: nested, ++ and -- on both
+ * sides, every compound assignment, and hex and octal constants: the
+ * operators acc gained after the older inputs were written, which none of
+ * them uses.
+ *
+ * Generated by generate.py and committed, so that a number from today can
+ * be compared with one from last week. Returns 42.
+ */
+""",
+    "data.c": """/* The data benchmark input.
+ *
+ * Globals and global arrays declared between the functions that use them,
+ * with and without initial values; local arrays, one of them initialised in
+ * part; and for loops, with a declaration in the first clause and without:
+ * what acc gained after the older inputs were written, which none of them
+ * uses.
+ *
+ * Generated by generate.py and committed, so that a number from today can
+ * be compared with one from last week. Returns 42.
+ */
+""",
+}
+
+
+def assemble(header, parts, main_head, calls, var, subtract):
+    main = main_head + "\n".join(calls) + f"\n\n    return {var} - {subtract};\n}}\n"
+    return header + "\n" + "\n".join(parts) + "\n" + main
+
+
+def host_result(source):
+    """What main returns, compiled by the host's compiler: a char is signed
+    on the Agon, so it is here too."""
+    with tempfile.TemporaryDirectory() as tmp:
+        c = os.path.join(tmp, "t.c")
+        exe = os.path.join(tmp, "t")
+        with open(c, "w") as f:
+            f.write(source.replace("int main(void)", "int bench_main(void)")
+                    + '\n#include <stdio.h>\nint main(void) '
+                      '{ printf("%d\\n", bench_main()); return 0; }\n')
+        subprocess.run(["cc", "-std=c99", "-fsigned-char", "-w", "-o", exe, c],
+                       check=True)
+        return int(subprocess.run([exe], check=True, capture_output=True,
+                                  text=True).stdout)
+
+
+def write(name, build, target_bytes=17500):
+    fn_count = 10
+    while True:
+        parts, head, calls, var = build(fn_count)
+        source = assemble(HEADERS[name], parts, head, calls, var, 0)
+        if len(source) >= target_bytes:
+            break
+        fn_count += 1
+
+    total = host_result(source)
+    if abs(total) > 1000000:
+        sys.exit(f"{name}: the total, {total}, is too near a 24-bit int's edge")
+    source = assemble(HEADERS[name], parts, head, calls, var, total - 42)
+    assert host_result(source) == 42
+    with open(os.path.join(HERE, name), "w") as f:
+        f.write(source)
+    print(f"{name}: {fn_count} functions, {len(source)} bytes")
+
+
+if __name__ == "__main__":
+    write("pointers.c", pointers)
+    write("operators.c", operators)
+    write("data.c", data)
