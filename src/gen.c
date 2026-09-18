@@ -294,9 +294,35 @@ static int spill_used;           /* the scratch in use right now */
 static int spill_peak;           /* the most it ever held */
 static int frame_patch;          /* where the prologue's frame size is written */
 
+/* Local arrays, which go below everything else in the frame.
+ *
+ * (ix+d) reaches 128 bytes, and the locals and the scratch area have to fit
+ * in them. An array is too big to share that -- one of a few hundred bytes
+ * declared first would put every scalar after it out of reach -- and it does
+ * not need to: an array is only ever used through its address, which is
+ * worked out, so it can be anywhere. So the arrays take the frame from where
+ * the rest ends, and since where that is depends on the deepest the scratch
+ * area gets, which is not known until the function ends, the offset in every
+ * address computed is left as a hole and filled in then.
+ *
+ * An array is known by a number, and the area records where each one ends.
+ * Its size can be given after it is first used: `int a[] = { ... }` has its
+ * elements stored before the closing brace says how many there are. */
+static int arrays_size;          /* bytes of arrays sized so far */
+static int *array_end;           /* by array number: its end in the area */
+static int narrays, array_end_cap;
+
+typedef struct {
+    int at;                      /* the hole: the operand of an ld de, nn */
+    int array;                   /* whose address it is */
+} ArrayPatch;
+
+static ArrayPatch *array_patches;
+static int narray_patches, array_patches_cap;
+
 static int frame_size(void)
 {
-    return locals_size + spill_peak;
+    return locals_size + spill_peak + arrays_size;
 }
 
 static void vcheck(void)
@@ -2087,6 +2113,78 @@ int gen_local(int size)
     return -locals_size;
 }
 
+int gen_local_array(void)
+{
+    if (narrays == array_end_cap) {
+        array_end_cap = array_end_cap ? array_end_cap * 2 : 16;
+        array_end = realloc(array_end, (size_t) array_end_cap * sizeof *array_end);
+        if (!array_end)
+            acc_error("out of memory for local arrays");
+    }
+    array_end[narrays] = arrays_size;
+
+    return narrays++;
+}
+
+/* Called once per array, before the next one is declared. */
+void gen_local_array_size(int array, int size)
+{
+    arrays_size += size;
+    array_end[array] = arrays_size;
+}
+
+/* The address of a local array's first element, in HL:
+ *
+ *   push de / ld de, K / push ix / pop hl / add hl, de / pop de
+ *
+ * with K patched when the function ends. DE is kept, because whatever it
+ * holds may still be wanted. */
+void vaddr_array(int array, Type elem)
+{
+    if (type_ptr_depth(elem) == TY_PTR_MAX)
+        acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
+                     TY_PTR_MAX);
+
+    evict_reg(R_HL);
+    out_byte2(0xd5, 0x11);               /* push de; ld de, nn */
+    if (narray_patches == array_patches_cap) {
+        array_patches_cap = array_patches_cap ? array_patches_cap * 2 : 16;
+        array_patches = realloc(array_patches,
+                                (size_t) array_patches_cap * sizeof *array_patches);
+        if (!array_patches)
+            acc_error("out of memory for local arrays");
+    }
+    array_patches[narray_patches].at = out_here();
+    array_patches[narray_patches].array = array;
+    narray_patches++;
+    out_word24(0);
+    out_byte2(0xdd, 0xe5);               /* push ix */
+    out_byte3(0xe1, 0x19, 0xd1);         /* pop hl; add hl, de; pop de */
+    vpush(VAL_REG, type_ptr_to(elem), R_HL);
+}
+
+/* Bytes [from, from + size) of a local array set to zero, which is what the
+ * elements an initialiser does not mention start as: the first byte cleared,
+ * and ldir copying it along the rest. Only at a declaration, where no value
+ * is being held anywhere. */
+void gen_zero_array(int array, int from, int size)
+{
+    vaddr_array(array, TY_CHAR);
+    vdrop();
+    if (from) {
+        out_byte(0x11);                  /* ld de, from */
+        out_word24(from);
+        out_byte(0x19);                  /* add hl, de */
+    }
+    out_byte2(0x36, 0x00);               /* ld (hl), 0 */
+    if (size > 1) {
+        out_byte3(0xe5, 0xd1, 0x13);     /* push hl; pop de; inc de */
+        out_byte(0x01);                  /* ld bc, nn */
+        out_word24(size - 1);
+        out_byte2(0xed, 0xb0);           /* ldir */
+    }
+}
+
 /* A slot for a spilled register, which lasts until the end of the statement.
  * They are handed out in order and all released together, so this is a
  * high-water mark and not a free list -- there is nothing to free, since the
@@ -2121,6 +2219,9 @@ void gen_func_begin(int fn, int nparams, Type returns)
     locals_size = 0;
     spill_used = 0;
     spill_peak = 0;
+    arrays_size = 0;
+    narrays = 0;
+    narray_patches = 0;
 
     /* push ix / ld ix, 0 / add ix, sp -- the frame agondev's __frameset
      * builds, written out rather than called, because there is nothing to
@@ -2148,6 +2249,14 @@ void gen_func_end(void)
     out_byte(0xc9);                              /* ret */
 
     out_patch24(frame_patch, -frame_size());
+
+    {
+        int above = locals_size + spill_peak, i;
+
+        for (i = 0; i < narray_patches; i++)
+            out_patch24(array_patches[i].at,
+                        -(above + array_end[array_patches[i].array]));
+    }
 }
 
 void gen_return(void)

@@ -201,7 +201,9 @@ enum {
     TK_ADD_ASSIGN, TK_SUB_ASSIGN, TK_MUL_ASSIGN, TK_DIV_ASSIGN, TK_MOD_ASSIGN,
     TK_AND_ASSIGN, TK_OR_ASSIGN, TK_XOR_ASSIGN, TK_SHL_ASSIGN, TK_SHR_ASSIGN,
 
-    TK_INC, TK_DEC,
+    /* What can follow a name and act on it, together: whether any of the
+     * three does is one compare after every local the program reads. */
+    TK_INC, TK_DEC, TK_LBRACKET,
     TK_QUESTION, TK_COLON,
 
     /* Tokens added since, at the end: inserting one earlier renumbers every
@@ -209,6 +211,7 @@ enum {
      * keyed on them, and adding `for` among the keywords made the compiler
      * 1.5% slower on programs that do not use it. */
     TK_KW_FOR,
+    TK_RBRACKET,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -257,6 +260,15 @@ int         accept_next(void);          /* next(), returning 1, for accept */
  * call to find that out opened a frame on this target before comparing two
  * bytes. `token` is evaluated once. */
 #define accept(token)  (tok == (token) ? accept_next() : 0)
+
+/* tok against one token by its low byte, which is all of it: every token is
+ * below 256. For the tests on the hottest paths -- whether a `[` follows each
+ * name the program reads -- where a 24-bit compare is seven instructions and
+ * a byte compare two. */
+#define tok_is(token)  ((unsigned char) tok == (token))
+typedef char tokens_fit_a_byte[TK_COUNT <= 256 ? 1 : -1];
+typedef char postfix_tokens_are_adjacent[(TK_DEC == TK_INC + 1
+                                          && TK_LBRACKET == TK_INC + 2) ? 1 : -1];
 void expect_failed(const char *what);
 
 /* Step past the current token, which has to be `token`. A macro for the same
@@ -271,11 +283,23 @@ const char *tok_spelling(int token);
 /* ------------------------------------------------------------------ */
 /* symbols                                                             */
 
+/* Arrays have the type of an element. A local one is not at a frame offset
+ * known when it is declared -- see gen_local_array -- so its val is its
+ * number in the function's array area; a global one's is its address.
+ *
+ * The two kinds that belong to a function come first, so that telling a
+ * local from a file-scope symbol is one compare. */
 enum {
-    SYM_LOCAL,      /* a local or a parameter: val is its frame offset */
-    SYM_FUNC,       /* a function: val is its address in the image */
-    SYM_GLOBAL      /* a file-scope variable: val is its address */
+    SYM_LOCAL,          /* a local or a parameter: val is its frame offset */
+    SYM_LOCAL_ARRAY,    /* a local array: val is its number */
+    SYM_FUNC,           /* a function: val is its address in the image */
+    SYM_GLOBAL,         /* a file-scope variable: val is its address */
+    SYM_GLOBAL_ARRAY    /* a file-scope array: val is its address */
 };
+
+/* Whether a symbol of this kind belongs to the function being compiled
+ * rather than to file scope. */
+#define sym_kind_local(kind) ((unsigned) (kind) <= SYM_LOCAL_ARRAY)
 
 /* Eight bytes on the target: a name, a kind, one number whose meaning the
  * kind decides, and a type. tinycc's equivalent is 31, and at four hundred
@@ -355,6 +379,10 @@ void gen_init(void);
 void gen_func_begin(int fn, int nparams, Type returns);
 void gen_func_end(void);
 int  gen_local(int size);             /* reserve a slot; returns its offset */
+int  gen_local_array(void);           /* a new local array; returns its number */
+void gen_local_array_size(int array, int size);  /* and how big, once known */
+void vaddr_array(int array, Type elem);  /* its first element's address */
+void gen_zero_array(int array, int from, int size);  /* zero part of one */
 
 void vpush_const(int val, Type type);
 void vpush_const_long(long val, Type type);  /* four bytes, so it goes to the frame */

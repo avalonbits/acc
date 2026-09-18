@@ -90,7 +90,7 @@ int sym_push(NameRef name, int kind, int val)
 
     if (nsyms == cap)
         syms_grow();
-    if (kind == SYM_LOCAL) {
+    if (sym_kind_local(kind)) {
         at = nsyms;
         sym = sym_at(at);
         sym->name = name;

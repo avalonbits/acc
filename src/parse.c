@@ -139,14 +139,111 @@ static void object_value(void)
     vderef();
 }
 
-/* A global as an operand, which is its address and then a read through it.
- * Out of line, like the other path a global takes below, so that reading a
- * local -- which is most of what a program does -- carries none of it. */
-__attribute__((noinline))
-static void global_value(const Sym *global)
+/* `[index]`, with a pointer on the stack: the address of the element it
+ * picks, which is `pointer + index` with the step C gives it. */
+static void subscript(void)
 {
-    global_address(global);
+    Type outer = narrow_dest;
+
+    if (!type_pointer(vtype()))
+        acc_error_at(tok_line, "'[' needs an array or a pointer, and this is %s",
+                     type_float(vtype()) ? "a floating-point value"
+                                         : "an integer");
+    next();
+    narrow_dest = 0;            /* the index is not the destination */
+    expr();
+    narrow_dest = outer;
+    expect(TK_RBRACKET, "']'");
+    vapply(TK_PLUS, 0);
+}
+
+/* What a name turned out to be, once it and any subscripts after it have been
+ * read. */
+enum {
+    NAME_LOCAL,     /* a local that is not an array, not subscripted: nothing
+                     * is pushed, and the caller has its own ways with one */
+    NAME_OBJECT,    /* the address of something that can be assigned to: a
+                     * global, or an element */
+    NAME_VALUE      /* a value that is not an object: an array, which is the
+                     * address of its first element */
+};
+
+/* A name that has been looked up and read, and the subscripts after it.
+ *
+ * Everything but a plain local is reached through an address, which is what
+ * lets all of it share the code that `*p` already has: a global is at a
+ * constant address, an array is the address of its first element, and
+ * `a[i]` is the address `a + i`. A second subscript reads the element first,
+ * since it has to be a pointer to be subscripted again: that is `p[i][j]` on
+ * an array of pointers. Arrays of arrays are not here yet. */
+__attribute__((noinline))
+static int name_operand(int sym, NameRef name)
+{
+    const Sym *s;
+
+    if (sym == SYM_NONE)
+        acc_error_at(tok_line, "'%s' is not declared", name_text(name));
+    s = sym_at(sym);
+
+    switch (s->kind) {
+    case SYM_LOCAL:
+        if (tok != TK_LBRACKET)
+            return NAME_LOCAL;
+        vpush_local(s->val, s->type);
+        break;
+    case SYM_GLOBAL:
+        global_address(s);
+        if (tok != TK_LBRACKET)
+            return NAME_OBJECT;
+        vderef();
+        break;
+    case SYM_LOCAL_ARRAY:
+        vaddr_array(s->val, s->type);
+        if (tok != TK_LBRACKET)
+            return NAME_VALUE;
+        break;
+    case SYM_GLOBAL_ARRAY:
+        if (type_ptr_depth(s->type) == TY_PTR_MAX)
+            acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
+                         TY_PTR_MAX);
+        vpush_const(s->val, type_ptr_to(s->type));
+        if (tok != TK_LBRACKET)
+            return NAME_VALUE;
+        break;
+    default:
+        acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
+    }
+
+    for (;;) {
+        subscript();
+        if (tok != TK_LBRACKET)
+            return NAME_OBJECT;
+        vderef();
+    }
+}
+
+/* Subscripts after a value that is not a name -- `(p + 1)[i]`, `f()[i]` --
+ * and then the element's value. */
+__attribute__((noinline))
+static void subscript_value(void)
+{
+    for (;;) {
+        subscript();
+        if (tok != TK_LBRACKET)
+            break;
+        vderef();
+    }
     object_value();
+}
+
+/* Anything but a plain local, as an operand. Out of line, like the other path
+ * these take below, so that reading a local -- which is most of what a
+ * program does -- carries none of it. */
+__attribute__((noinline))
+static void object_operand(int sym, NameRef name)
+{
+    if (name_operand(sym, name) == NAME_OBJECT)
+        object_value();
 }
 
 /* The variable called `name`, as a value -- or, when `++` or `--` follows it,
@@ -171,14 +268,19 @@ void symbol_value(int sym, NameRef name)
      * a register; nothing below pushes a symbol, so it stays good. */
     local = sym_at(sym);
     if (local->kind != SYM_LOCAL) {
-        if (local->kind != SYM_GLOBAL)
-            acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
-        global_value(local);
+        object_operand(sym, name);
 
         return;
     }
 
-    if (tok == TK_INC || tok == TK_DEC) {
+    /* `++`, `--` or `[` after it, tested as one range: the bracket was a test
+     * of its own on every local read, and cost 0.5% of a compile. */
+    if ((unsigned char) (tok - TK_INC) < 3u) {
+        if (tok_is(TK_LBRACKET)) {
+            object_operand(sym, name);
+
+            return;
+        }
         vpostfix_local(local->val, local->type,
                        tok == TK_INC ? TK_PLUS : TK_MINUS);
         next();
@@ -197,7 +299,11 @@ static void local_value(NameRef name)
 /* `++x`, `--x`, `++*p`, `--*p`: the operand changed, and the answer is its
  * new value. The operand has to be somewhere a value can be stored -- a local,
  * or what a pointer points at -- which is checked here rather than left to
- * produce a value and then find nowhere to put it back. */
+ * produce a value and then find nowhere to put it back.
+ *
+ * Out of line, which it stopped being when it grew: inlined, its locals gave
+ * primary() -- which every operand goes through -- a larger frame. */
+__attribute__((noinline))
 static void prefix_step(void)
 {
     int op = (tok == TK_INC) ? TK_PLUS : TK_MINUS;
@@ -206,26 +312,26 @@ static void prefix_step(void)
     next();
 
     if (tok == TK_IDENT) {
-        int sym = sym_find(tok_name);
-        const Sym *local;
+        NameRef name = tok_name;
+        int sym = sym_find(name);
+        int line = tok_line;
 
-        if (sym == SYM_NONE)
-            acc_error_at(tok_line, "'%s' is not declared", name_text(tok_name));
-        local = sym_at(sym);
-        if (local->kind == SYM_GLOBAL) {
-            global_address(local);
-            next();
+        next();
+        switch (name_operand(sym, name)) {
+        case NAME_LOCAL: {
+            const Sym *local = sym_at(sym);
+
+            vprefix_local(local->val, local->type, op);
+
+            return;
+        }
+        case NAME_OBJECT:
             vprefix_indirect(op);
 
             return;
         }
-        if (local->kind != SYM_LOCAL)
-            acc_error_at(tok_line, "'%s' cannot be changed by %s",
-                         name_text(tok_name), spelling);
-        next();
-        vprefix_local(local->val, local->type, op);
-
-        return;
+        acc_error_at(line, "'%s' cannot be changed by %s", name_text(name),
+                     spelling);
     }
 
     if (tok == TK_STAR) {
@@ -286,6 +392,42 @@ static int paren_deref_step(void)
     return 1;
 }
 
+/* `&name`, `&name[i]`: the address of a variable or an element. Out of line:
+ * inlined, its locals gave primary() -- which every operand goes through -- a
+ * larger frame. */
+__attribute__((noinline))
+static void address_of(void)
+{
+    NameRef name;
+    int sym, line;
+
+    next();
+    if (tok != TK_IDENT)
+        acc_error_at(tok_line, "'&' takes the address of a variable, and "
+                               "this is %s", tok_spelling(tok));
+    name = tok_name;
+    line = tok_line;
+    sym = sym_find(name);
+    if (sym != SYM_NONE && sym_at(sym)->kind == SYM_FUNC)
+        acc_error_at(line, "'%s' is not a variable, so it has no address to "
+                           "take", name_text(name));
+    next();
+    switch (name_operand(sym, name)) {
+    case NAME_LOCAL: {
+        const Sym *local = sym_at(sym);
+
+        vaddr_local(local->val, local->type);
+
+        return;
+    }
+    case NAME_OBJECT:
+        return;                 /* the address is what is wanted */
+    }
+    acc_error_at(line, "the address of a whole array is not supported yet; "
+                       "&%s[0] is the address of its first element",
+                 name_text(name));
+}
+
 /* A name used as a value: a local read, or a call. */
 static void primary(void)
 {
@@ -312,6 +454,8 @@ static void primary(void)
             return;
         expr();
         expect(TK_RPAREN, "')'");
+        if (tok == TK_LBRACKET)
+            subscript_value();
 
         return;
     }
@@ -369,27 +513,7 @@ static void primary(void)
     }
 
     if (tok == TK_AMP) {
-        int sym;
-
-        next();
-        if (tok != TK_IDENT)
-            acc_error_at(tok_line, "'&' takes the address of a variable, and "
-                                   "this is %s", tok_spelling(tok));
-        sym = sym_find(tok_name);
-        if (sym == SYM_NONE)
-            acc_error_at(tok_line, "'%s' is not declared", name_text(tok_name));
-        {
-            const Sym *local = sym_at(sym);
-
-            if (local->kind == SYM_GLOBAL)
-                global_address(local);
-            else if (local->kind != SYM_LOCAL)
-                acc_error_at(tok_line, "'%s' is not a variable, so it has no "
-                                       "address to take", name_text(tok_name));
-            else
-                vaddr_local(local->val, local->type);
-        }
-        next();
+        address_of();
 
         return;
     }
@@ -401,6 +525,8 @@ static void primary(void)
 
         if (accept(TK_LPAREN)) {
             call_rest(name);
+            if (tok == TK_LBRACKET)
+                subscript_value();
 
             return;
         }
@@ -631,13 +757,19 @@ static void compound_indirect(void)
     vstore_indirect();
 }
 
-/* A global at the start of an expression, where it may be assigned to: its
- * address, and then what follows it handled as what follows `*p` is. Out of
- * line for the reason global_value is. */
+/* Anything but a plain local at the start of an expression, where it may be
+ * assigned to: an object's address, and then what follows it handled as what
+ * follows `*p` is -- or, for an array, its value and the rest of the
+ * expression, which will refuse an `=` after it. Out of line for the reason
+ * object_operand is. */
 __attribute__((noinline))
-static void global_statement(const Sym *global)
+static void object_statement(int sym, NameRef name)
 {
-    global_address(global);
+    if (name_operand(sym, name) != NAME_OBJECT) {
+        binary_rest(PREC_LOWEST);
+
+        return;
+    }
     if (tok == TK_INC || tok == TK_DEC) {
         object_value();
         binary_rest(PREC_LOWEST);
@@ -663,12 +795,13 @@ static void assignment(void)
             return;
         }
 
-        /* A global is reached through its address, so what follows it is
-         * handled as what follows `*p` is: a store, a compound store, a step,
-         * or a read and the rest of the expression. */
+        /* A global or an element is reached through its address, so what
+         * follows it is handled as what follows `*p` is: a store, a compound
+         * store, a step, or a read and the rest of the expression. */
         sym = sym_find(name);
-        if (sym != SYM_NONE && sym_at(sym)->kind == SYM_GLOBAL) {
-            global_statement(sym_at(sym));
+        if (sym != SYM_NONE
+            && (sym_at(sym)->kind != SYM_LOCAL || tok_is(TK_LBRACKET))) {
+            object_statement(sym, name);
 
             return;
         }
@@ -1001,6 +1134,107 @@ static Type object_type(const char *what)
 /* ------------------------------------------------------------------ */
 /* statements and declarations                                         */
 
+/* A constant integer a declaration needs now: an array's size. Parsed as an
+ * expression, which has to fold to a constant with nothing emitted, as a
+ * global's initial value does. */
+static int constant_int(const char *what, int line)
+{
+    int before = out_here(), val;
+    Type outer = narrow_dest, type;
+
+    narrow_dest = 0;
+    binary(PREC_LOWEST);
+    narrow_dest = outer;
+    if (!vconst_top(&val, &type) || out_here() != before
+        || type_pointer(type) || type_float(type))
+        acc_error_at(line, "%s has to be a constant integer", what);
+    vdrop();
+
+    return val;
+}
+
+/* `[N]` or `[]` after a name being declared: the number of elements, -1 for
+ * `[]`, and 0 when there are no brackets at all. */
+static int array_suffix(Type elem)
+{
+    int line = tok_line, n = -1;
+
+    if (!accept(TK_LBRACKET))
+        return 0;
+    if (tok != TK_RBRACKET) {
+        n = constant_int("an array's size", line);
+        if (n <= 0)
+            acc_error_at(line, "an array needs at least one element");
+        if (n > 0x7fffff / type_size(elem))
+            acc_error_at(line, "an array this large does not fit in memory");
+    }
+    expect(TK_RBRACKET, "']'");
+    if (tok == TK_LBRACKET)
+        acc_error_at(tok_line, "arrays of arrays are not supported yet");
+
+    return n;
+}
+
+/* A local array, from just past its brackets.
+ *
+ * The elements an initialiser gives are stored one at a time, each at the
+ * array's address plus its offset, and any it does not give are zeroed
+ * after them -- which is what C says they start as, and which leaves an
+ * array with no initialiser as whatever the stack held, as C also says. A
+ * `[]` array is as long as its initialiser, which is only known once the
+ * brace closes; its size is given then, the elements having been stored
+ * against an address that is only filled in when the function ends. */
+__attribute__((noinline))
+static void local_array(Type elem, NameRef name, int count, int line)
+{
+    int array = gen_local_array();
+    int step = type_size(elem), n = 0, sym;
+
+    if (count > 0)
+        gen_local_array_size(array, count * step);
+
+    if (accept(TK_ASSIGN)) {
+        expect(TK_LBRACE, "'{'");
+        while (tok != TK_RBRACE) {
+            Type outer = narrow_dest;
+
+            if (n == count)
+                acc_error_at(tok_line, "more initial values than the array has "
+                                       "elements");
+            vaddr_array(array, elem);
+            if (n) {
+                vpush_const(n, TY_INT);
+                vapply(TK_PLUS, 0);
+            }
+            narrow_dest = (step < ACC_INT_SIZE) ? elem : 0;
+            expr();
+            narrow_dest = outer;
+            vstore_indirect();
+            vdrop();
+            gen_stmt_end();
+            n++;
+            if (!accept(TK_COMMA))
+                break;
+        }
+        expect(TK_RBRACE, "'}'");
+
+        if (count < 0) {
+            if (n == 0)
+                acc_error_at(line, "an array needs at least one element");
+            count = n;
+            gen_local_array_size(array, count * step);
+        } else if (n < count) {
+            gen_zero_array(array, n * step, (count - n) * step);
+        }
+    } else if (count < 0) {
+        acc_error_at(line, "an array declared with [] needs initial values to "
+                           "say how long it is");
+    }
+
+    sym = sym_push(name, SYM_LOCAL_ARRAY, array);
+    sym_at(sym)->type = elem;
+}
+
 /* Inlined into both callers, the function body and a for's first clause:
  * it was inlined into the first when it had only that one, and as a call it
  * is one more on every declaration in the program. */
@@ -1018,6 +1252,15 @@ void declaration(void)
             acc_error_at(tok_line, "expected a name, found %s", tok_spelling(tok));
         name = tok_name;
         next();
+
+        if (tok == TK_LBRACKET) {
+            int line = tok_line;
+
+            local_array(type, name, array_suffix(type), line);
+            if (!accept(TK_COMMA))
+                break;
+            continue;
+        }
 
         off = gen_local(type_size(type));
         if (accept(TK_ASSIGN)) {
@@ -1262,12 +1505,27 @@ static void function_rest(Type ret_type, NameRef name)
     } else if (tok != TK_RPAREN) {
         for (;;) {
             Type ptype = object_type("a parameter");
+            NameRef pname;
             int psym;
 
             if (tok != TK_IDENT)
                 acc_error_at(tok_line, "expected a parameter name, found %s",
                              tok_spelling(tok));
-            psym = sym_push(tok_name, SYM_LOCAL, argoff);
+            pname = tok_name;
+            next();
+
+            /* `int a[]` and `int a[10]` declare a parameter that is a
+             * pointer, as C says: an array is passed as the address of its
+             * first element, and the size, if there is one, is not kept. */
+            if (tok == TK_LBRACKET) {
+                array_suffix(ptype);
+                if (type_ptr_depth(ptype) == TY_PTR_MAX)
+                    acc_error_at(tok_line, "a pointer can be %d deep and this "
+                                           "is deeper", TY_PTR_MAX);
+                ptype = type_ptr_to(ptype);
+            }
+
+            psym = sym_push(pname, SYM_LOCAL, argoff);
             sym_at(psym)->type = ptype;
             sym_param_add(ptype);
 
@@ -1276,7 +1534,6 @@ static void function_rest(Type ret_type, NameRef name)
              * are read from the low bytes of their slot. */
             argoff += type_wide(ptype) ? 2 * ACC_INT_SIZE : ACC_INT_SIZE;
             nparams++;
-            next();
             if (!accept(TK_COMMA))
                 break;
         }
@@ -1384,6 +1641,46 @@ store:
     }
 }
 
+/* A file-scope array, from just past its brackets: the elements written into
+ * the image as they are read, each a constant as a global's value has to be,
+ * and zeros for the rest. A `[]` array is as long as its initialiser. */
+static void global_array(Type elem, NameRef name, int count, int line)
+{
+    int at = out_here(), step = type_size(elem), n = 0, sym, i;
+
+    if (accept(TK_ASSIGN)) {
+        expect(TK_LBRACE, "'{'");
+        while (tok != TK_RBRACE) {
+            unsigned char bytes[ACC_LONG_SIZE] = { 0 };
+
+            if (n == count)
+                acc_error_at(tok_line, "more initial values than the array has "
+                                       "elements");
+            global_initializer(elem, bytes, tok_line);
+            for (i = 0; i < step; i++)
+                out_byte(bytes[i]);
+            n++;
+            if (!accept(TK_COMMA))
+                break;
+        }
+        expect(TK_RBRACE, "'}'");
+        if (count < 0) {
+            if (n == 0)
+                acc_error_at(line, "an array needs at least one element");
+            count = n;
+        }
+    } else if (count < 0) {
+        acc_error_at(line, "an array declared with [] needs initial values to "
+                           "say how long it is");
+    }
+
+    for (i = n * step; i < count * step; i++)
+        out_byte(0);
+
+    sym = sym_push(name, SYM_GLOBAL_ARRAY, at);
+    sym_at(sym)->type = elem;
+}
+
 /* One file-scope variable: its bytes written into the image where it is
  * declared, and its name bound to where they went.
  *
@@ -1406,6 +1703,12 @@ static void global_variable(Type type, NameRef name, int line)
                            : "'%s' is already declared, and a second "
                              "declaration of a global is not supported yet",
                      name_text(name));
+
+    if (tok == TK_LBRACKET) {
+        global_array(type, name, array_suffix(type), line);
+
+        return;
+    }
 
     if (accept(TK_ASSIGN))
         global_initializer(type, bytes, line);

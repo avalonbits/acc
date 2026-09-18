@@ -472,7 +472,8 @@ static const unsigned char punct[256] = {
     ['&'] = TK_AMP,    ['|'] = TK_PIPE,   ['^'] = TK_CARET,
     ['~'] = TK_TILDE,
     ['<'] = TK_LT,     ['>'] = TK_GT,
-    ['?'] = TK_QUESTION, [':'] = TK_COLON
+    ['?'] = TK_QUESTION, [':'] = TK_COLON,
+    ['['] = TK_LBRACKET, [']'] = TK_RBRACKET
 };
 
 /* Read a floating literal from the cursor, which is at its first character.
@@ -928,6 +929,8 @@ const char *tok_spelling(int token)
     case TK_SHL_ASSIGN: return "'<<='";
     case TK_SHR_ASSIGN: return "'>>='";
     case TK_QUESTION:  return "'?'";
+    case TK_LBRACKET:  return "'['";
+    case TK_RBRACKET:  return "']'";
     case TK_COLON:     return "':'";
     case TK_INC:       return "'++'";
     case TK_DEC:       return "'--'";
