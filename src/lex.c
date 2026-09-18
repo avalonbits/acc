@@ -30,20 +30,36 @@ static size_t names_len, names_cap;
  * walks forward. Sized as a power of two so the modulo is a mask, and grown by
  * doubling so the transient peak stays near 1.5x rather than 2x -- the
  * difference matters on a machine with no virtual memory. */
-/* A slot is four bytes and not three, for the reason the symbol index is
- * eight and not six: turning a slot number into an address costs a helper
- * call whatever the width, and a three-byte element buys `call __imulu`
- * where a four-byte one buys the cheaper `call __ishl`. The probe runs for
+/* A slot is four bytes and not three, so that a slot's offset is a byte
+ * pattern that can be assembled without arithmetic: see home, below. A
+ * three-byte slot would make it a multiply, `call __imulu`. The probe runs for
  * every identifier in the program, which is what the compiler does most.
  *
  * An empty slot holds NAME_NONE. */
-typedef struct {
+typedef union {
     NameRef       ref;
-    unsigned char pad;
+    unsigned char size[4];      /* four bytes on the host too, so the hash
+                                 * test measures the table the Agon has */
 } Bucket;
 
-static Bucket  *buckets;
+static Bucket  *buckets, *buckets_end;
 static unsigned nbuckets, nnames;
+static unsigned names_room;     /* names that fit before the table must grow */
+
+/* Where a name's probe starts, as a byte offset into the table: a slot
+ * number times the slot's size, masked to the table's size. It is assembled a byte at a
+ * time, in memory, because each way of computing it in a register is a helper
+ * call -- `high << 8` is `call __ishl`, masking a 24-bit value is `call
+ * __iand`, and the slot times four is `call __ishl` again -- and those three
+ * ran for every identifier in the program. Byte-wise they are an 8-bit `and`
+ * and a store each, and the load that reads the offset back is one 24-bit
+ * load. It has to go through memory: assembled in a local, the compiler
+ * recognises the pattern and puts the shifts back.
+ *
+ * The bytes above the second stay zero, which caps the table at 64 KB: 16384
+ * slots, and so 8191 distinct names in a program on the Agon. */
+static unsigned char home[sizeof(unsigned)];
+static unsigned char mask_lo, mask_hi;
 
 #ifdef ACC_HASH_STATS
 /* Counts probes so a test can tell a hash that spreads from one that does
@@ -97,32 +113,29 @@ static const unsigned char pearson[256] = {
     241,  97, 174,  21
 };
 
-/* Returns 16 bits. The caller masks it down to the table size. */
-/* Always inlined. It has two callers and so is not inlined of its own
- * accord, and then every identifier paid for a call that opened a second
- * frame inside name_intern's, which already has one the hash can use. */
+/* Returns the bucket a name's probe starts at. */
 static inline __attribute__((always_inline))
-unsigned name_hash(const char *text, int len)
+Bucket *name_home(const char *text, unsigned n)
 {
     /* Sixteen bits from one table lookup per character rather than two.
      *
      * Two independent Pearson lanes is the obvious way to widen the hash and
-     * it costs a lookup per character per lane. Only one of the two bytes has
-     * to be that good: a table of 2^k entries takes its index from the low
-     * bits, so the low byte does the work and the high byte only has to break
-     * ties among names that already agree in it. Doubling and adding the
-     * character is enough for that, and it is two adds against a second
-     * indexed load.
+     * it costs a lookup per character per lane. Only one lane has to be
+     * that good. The other only has to carry what the first loses, and
+     * doubling and adding the character does that for two adds against a
+     * second indexed load; one more lookup at the end, once per name, mixes
+     * it in.
      *
      * Cheaper and better, which was not the expected result. Measured over
      * the two thousand names the hash test interns, the two-lane version
-     * needs 1.54 probes for a lookup and this needs 1.46 -- the shift carries
-     * position information that a second Pearson lane, being the same
-     * function of the same bytes, largely repeats.
+     * needed 1.54 probes for a lookup and this one 1.46 when the table took
+     * its index from the low sixteen bits -- the shift carries position
+     * information that a second Pearson lane, being the same function of the
+     * same bytes, largely repeats.
      */
-    unsigned char low = (unsigned char) len;   /* so "ab" and "ba" differ */
+    unsigned char low = (unsigned char) n;     /* so "ab" and "ba" differ */
     unsigned char high = 0;
-    unsigned n = (unsigned) len, i;
+    unsigned i, offset;
 
     /* Unsigned, so the loop test is not a signed compare: `i < len` on two
      * ints is `call pe, __setflag` to repair the flags on overflow, and this
@@ -134,8 +147,24 @@ unsigned name_hash(const char *text, int len)
         high = (unsigned char) (high + high + c);
     }
 
-    /* One shift per name interned, not one per character. */
-    return ((unsigned) high << 8) | low;
+    /* The offset's low byte is a multiple of the slot's size, so whatever
+     * goes there loses its bottom two bits, and neither byte can be `high`
+     * as it stands: its low bits are the last character's and not much else.
+     * Both bytes are therefore mixed ones, and together they still tell
+     * apart every pair of bytes the loop could have ended on. Over the hash
+     * test's names this probes 1.50 times a lookup; `low` and `high` as
+     * they were, low byte first, probe 1.96, and a uniform hash at this load
+     * 1.48. */
+    high = (unsigned char) (pearson[high] ^ low);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    offset = ((unsigned) (low & mask_hi) << 8) | (high & mask_lo);
+#else
+    home[0] = high & mask_lo;
+    home[1] = low & mask_hi;
+    memcpy(&offset, home, sizeof offset);
+#endif
+
+    return (Bucket *) ((char *) buckets + offset);
 }
 
 /* Split so that the test can be inlined into name_intern and the growth
@@ -159,25 +188,32 @@ static void names_grow(size_t need)
 
 static void buckets_rehash(unsigned newn)
 {
-    Bucket *fresh = calloc(newn, sizeof *fresh);
-    unsigned i;
+    Bucket *old = buckets, *end = buckets_end, *from;
+    unsigned mask = newn * sizeof *buckets - 1;
 
-    if (!fresh)
+    if (newn * sizeof *buckets > 65536)
+        acc_error("too many names: the limit is %u", 65536 / sizeof *buckets / 2 - 1);
+    buckets = calloc(newn, sizeof *buckets);
+    if (!buckets)
         acc_error("out of memory for the name table");
-    for (i = 0; i < nbuckets; i++) {
-        NameRef ref = buckets[i].ref;
-        unsigned slot;
+    buckets_end = buckets + newn;
+    nbuckets = newn;
+    names_room = newn / 2 - 1 - nnames;
+    mask_lo = (unsigned char) (mask & ~(sizeof *buckets - 1));
+    mask_hi = (unsigned char) (mask >> 8);
+    for (from = old; from != end; from++) {
+        NameRef ref = from->ref;
+        Bucket *b;
 
         if (ref == NAME_NONE)
             continue;
-        slot = name_hash(names + ref, (int) strlen(names + ref)) & (newn - 1);
-        while (fresh[slot].ref != NAME_NONE)
-            slot = (slot + 1) & (newn - 1);
-        fresh[slot].ref = ref;
+        b = name_home(names + ref, (unsigned) strlen(names + ref));
+        while (b->ref != NAME_NONE)
+            if (++b == buckets_end)
+                b = buckets;
+        b->ref = ref;
     }
-    free(buckets);
-    buckets = fresh;
-    nbuckets = newn;
+    free(old);
 }
 
 void name_init(void)
@@ -193,16 +229,11 @@ void name_init(void)
 
 NameRef name_intern(const char *text, int len)
 {
-    unsigned slot;
+    Bucket *b = name_home(text, (unsigned) len);
     NameRef ref;
 
-    /* Kept under half full. Past that a linear probe starts walking. */
-    if ((nnames + 1) * 2 >= nbuckets)
-        buckets_rehash(nbuckets * 2);
-
-    slot = name_hash(text, len) & (nbuckets - 1);
     PROBE();
-    while ((ref = buckets[slot].ref) != NAME_NONE) {
+    while ((ref = b->ref) != NAME_NONE) {
         /* Compare, then check the terminator, rather than measure first.
          * strlen walks the stored name to its end before memcmp walks it
          * again, and it walked it even when the first character already said
@@ -210,8 +241,18 @@ NameRef name_intern(const char *text, int len)
          * program. */
         if (memcmp(names + ref, text, len) == 0 && names[ref + len] == '\0')
             return ref;
-        slot = (slot + 1) & (nbuckets - 1);
+        if (++b == buckets_end)
+            b = buckets;
         PROBE();
+    }
+
+    /* Kept under half full, since past that a linear probe starts walking.
+     * Checked here, where the name is new, rather than on every lookup: the
+     * growth moves every name, so the probe starts again. */
+    if (names_room == 0) {
+        buckets_rehash(nbuckets * 2);
+
+        return name_intern(text, len);
     }
 
     names_grow(len + 1);
@@ -219,8 +260,9 @@ NameRef name_intern(const char *text, int len)
     memcpy(names + names_len, text, len);
     names[names_len + len] = '\0';
     names_len += len + 1;
-    buckets[slot].ref = ref;
+    b->ref = ref;
     nnames++;
+    names_room--;
 
     return ref;
 }

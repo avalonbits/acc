@@ -32,12 +32,22 @@ static void is(const char *name, long got, long want)
     }
 }
 
-/* lex.c reports through these; nothing here should reach one. */
+/* Set by the last check, which is the only one that means to reach
+ * acc_error: the name that does not fit. */
+static int  at_limit, interned;
+
+static void finish(void);
+
+/* lex.c reports through these; nothing here should reach one but that. */
 void acc_error(const char *fmt, ...)
 {
     (void) fmt;
-    fprintf(stderr, "  FAIL  acc_error during the test\n");
-    exit(2);
+    if (!at_limit) {
+        fprintf(stderr, "  FAIL  acc_error during the test\n");
+        exit(2);
+    }
+    is("refused at name number", interned, 8192);
+    finish();
 }
 
 void acc_error_at(int line, const char *fmt, ...)
@@ -92,7 +102,7 @@ int main(void)
      * when the hash is good.
      *
      * The bound is 1.8 rather than a round 3. Two independent Pearson lanes
-     * gave 1.54 and the single-lane version that replaced them gives 1.46,
+     * gave 1.54 and the single-lane version that replaced them gives 1.50,
      * but the first attempt at halving the work -- chaining, where the second
      * byte is just the previous value of the first -- gave exactly 2.00,
      * because two bytes one step apart in the same chain are not independent
@@ -116,10 +126,37 @@ int main(void)
             failures++;
     is("none is still none", (long) NAME_NONE, 0);
 
+    /* The table is 64 KB at most, because a probe's starting offset is put
+     * together from two bytes: 16384 slots, kept under half full, is 8191
+     * names. The one after them has to be refused rather than hashed into
+     * slots the offset cannot reach -- a table that kept growing past that
+     * would still answer, and answer wrongly. */
+    {
+        char more[16];
+
+        interned = N;
+        at_limit = 1;
+        for (i = 0; i < 8191 - N; i++) {
+            sprintf(more, "g%d", i);
+            name_intern(more, (int) strlen(more));
+            interned++;
+        }
+        interned++;
+        name_intern("one_too_many", 12);
+        is("the name past the limit is refused", 0, 1);
+    }
+
+    finish();
+
+    return 0;
+}
+
+static void finish(void)
+{
     if (failures)
         fprintf(stderr, "  %d failed\n", failures);
     else
         fprintf(stderr, "  %d passed, 0 failed\n", checks);
 
-    return failures ? 1 : 0;
+    exit(failures ? 1 : 0);
 }
