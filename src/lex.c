@@ -235,11 +235,16 @@ NameRef name_intern(const char *text, int len)
     PROBE();
     while ((ref = b->ref) != NAME_NONE) {
         /* Compare, then check the terminator, rather than measure first.
-         * strlen walks the stored name to its end before memcmp walks it
+         * strlen walks the stored name to its end before the compare walks it
          * again, and it walked it even when the first character already said
-         * the two were different. This runs 1.54 times per identifier in the
-         * program. */
-        if (memcmp(names + ref, text, len) == 0 && names[ref + len] == '\0')
+         * the two were different. This runs 1.5 times per identifier in the
+         * program.
+         *
+         * strncmp and not memcmp, which reads all len bytes of the stored
+         * name whether or not it ends first -- off the end of the arena when
+         * it is the last name there. strncmp stops at its terminator, so the
+         * check after it only runs on a name at least len long. */
+        if (strncmp(names + ref, text, len) == 0 && names[ref + len] == '\0')
             return ref;
         if (++b == buckets_end)
             b = buckets;
