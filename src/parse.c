@@ -448,11 +448,23 @@ static void primary(void)
         return;
     }
 
+    /* A parenthesis is an operand of whatever surrounds it, so nothing in it
+     * is the last operation before the destination, whatever the `)` that
+     * closes it looks like to expression_ends_here: `c = (x ^ y) & z` ran
+     * the `^` in A, as if its result were going straight into c, and the
+     * load of z then overwrote it. An assignment inside sets its own. */
     if (tok == TK_LPAREN) {
+        Type outer = narrow_dest;
+
         next();
-        if (tok == TK_STAR && paren_deref_step())
+        narrow_dest = 0;
+        if (tok == TK_STAR && paren_deref_step()) {
+            narrow_dest = outer;
+
             return;
+        }
         expr();
+        narrow_dest = outer;
         expect(TK_RPAREN, "')'");
         if (tok == TK_LBRACKET)
             subscript_value();
