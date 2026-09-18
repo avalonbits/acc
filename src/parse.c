@@ -98,6 +98,15 @@ static void call_rest(NameRef name)
     gen_call(fn, nargs, sym_params_first(fn), sym_nparams(fn));
 }
 
+/* A word C99 reserves and acc has not implemented. Named rather than
+ * described, because which one it is is the whole of what the reader needs:
+ * there is nothing acc can say about `switch` that is not also true of
+ * `goto`. */
+static void reserved_word(void)
+{
+    acc_error_at(tok_line, "'%s' is not supported yet", name_text(tok_name));
+}
+
 /* A name used as a value: a local read, or a call. */
 static void primary(void)
 {
@@ -170,6 +179,9 @@ static void primary(void)
 
         return;
     }
+
+    if (tok == TK_KW_RESERVED)
+        reserved_word();
 
     /* A `*` or `&` where an expression was meant to start is a dereference or
      * an address-of, not the binary operator of the same spelling. Say which
@@ -450,6 +462,8 @@ static Type object_type(const char *what)
     int line = tok_line;
     Type type;
 
+    if (tok == TK_KW_RESERVED)
+        reserved_word();
     if (!starts_type(tok))
         acc_error_at(line, "expected a type, found %s", tok_spelling(tok));
     type = type_specifier();
@@ -535,6 +549,12 @@ static void statement(void)
      * with. This is the only place that is true: a long result lives there
      * and outlives the values it was computed from. */
     gen_stmt_end();
+
+    /* Before anything else, because most of what is missing from acc is a
+     * statement: for, do, break, continue, switch, goto. Left to fall through
+     * they lex as names and the complaint is that the name is not declared. */
+    if (tok == TK_KW_RESERVED)
+        reserved_word();
 
     switch (tok) {
     case TK_KW_IF: {

@@ -125,6 +125,13 @@ enum {
     TK_KW_UNSIGNED,
     TK_KW_FLOAT,
     TK_KW_DOUBLE,
+
+    /* Every other word C99 reserves. acc implements none of them, and they
+     * are all one token because there is nothing to tell them apart for:
+     * what the parser does with any of them is name it and stop. Without
+     * this they lex as ordinary identifiers and the diagnostic comes out as
+     * "'break' is not declared", which points at the wrong thing entirely. */
+    TK_KW_RESERVED,
     TK_FLOAT,        /* a floating literal; tok_fval holds it */
 
     /* punctuation, one per spelling so the parser never re-reads text */
@@ -135,6 +142,7 @@ enum {
     TK_SHL, TK_SHR,
     TK_LT, TK_GT, TK_LE, TK_GE, TK_EQ, TK_NE,
     TK_NOT,
+    TK_ANDAND, TK_OROR,          /* lexed so they can be refused as themselves */
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };

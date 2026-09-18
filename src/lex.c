@@ -328,16 +328,22 @@ static void skip_space(void)
  *
  * The table has an entry per byte of arena the keywords occupy, of which only
  * the ones a name actually starts at are ever read. The rest say TK_IDENT so
- * that a bug reads as "not a keyword" rather than as whatever was there. */
+ * that a bug reads as "not a keyword" rather than as whatever was there.
+ *
+ * Which is why it is this size: the keywords are interned first, end to end
+ * and each with its terminator, so the table has to reach as far as the last
+ * of them starts. C99 reserves thirty-seven words and they take a little
+ * under three hundred bytes between them. */
 static NameRef kw_limit;
-static unsigned char kw_tok[128];
+static unsigned char kw_tok[320];
 
 static void keyword(const char *text, int len, int token)
 {
     NameRef ref = name_intern(text, len);
 
     if (ref >= (NameRef) sizeof kw_tok)
-        acc_error("internal: the keyword table is too small");
+        acc_error("internal: the keyword table needs %d entries, not %d",
+                  (int) ref + 1, (int) sizeof kw_tok);
     kw_tok[ref] = (unsigned char) token;
     if (ref + 1 > kw_limit)
         kw_limit = ref + 1;
@@ -363,6 +369,36 @@ static void keywords_init(void)
     keyword("unsigned", 8, TK_KW_UNSIGNED);
     keyword("float", 5, TK_KW_FLOAT);
     keyword("double", 6, TK_KW_DOUBLE);
+
+    /* The rest of what C99 reserves. None of it is implemented and all of it
+     * is refused by name, which is the whole reason for interning it: a word
+     * the lexer does not know becomes an identifier, and the complaint that
+     * follows is about a name not being declared rather than about the
+     * feature not being there. */
+    keyword("auto", 4, TK_KW_RESERVED);
+    keyword("break", 5, TK_KW_RESERVED);
+    keyword("case", 4, TK_KW_RESERVED);
+    keyword("const", 5, TK_KW_RESERVED);
+    keyword("continue", 8, TK_KW_RESERVED);
+    keyword("default", 7, TK_KW_RESERVED);
+    keyword("do", 2, TK_KW_RESERVED);
+    keyword("enum", 4, TK_KW_RESERVED);
+    keyword("extern", 6, TK_KW_RESERVED);
+    keyword("for", 3, TK_KW_RESERVED);
+    keyword("goto", 4, TK_KW_RESERVED);
+    keyword("inline", 6, TK_KW_RESERVED);
+    keyword("register", 8, TK_KW_RESERVED);
+    keyword("restrict", 8, TK_KW_RESERVED);
+    keyword("sizeof", 6, TK_KW_RESERVED);
+    keyword("static", 6, TK_KW_RESERVED);
+    keyword("struct", 6, TK_KW_RESERVED);
+    keyword("switch", 6, TK_KW_RESERVED);
+    keyword("typedef", 7, TK_KW_RESERVED);
+    keyword("union", 5, TK_KW_RESERVED);
+    keyword("volatile", 8, TK_KW_RESERVED);
+    keyword("_Bool", 5, TK_KW_RESERVED);
+    keyword("_Complex", 8, TK_KW_RESERVED);
+    keyword("_Imaginary", 10, TK_KW_RESERVED);
 }
 
 /* Punctuation, by the character that begins it. TK_EOF means the character
@@ -611,12 +647,23 @@ void next(void)
     if (tok == TK_EOF)
         acc_error_at(line, "stray '%c' in the source", c);
 
-    /* Four characters can begin a two-character operator: `<` and `>` can be
-     * doubled or followed by `=`, and `=` and `!` can be followed by `=`.
+    /* Six characters can begin a two-character operator: `<`, `>`, `&` and
+     * `|` can be doubled, `<`, `>`, `=` and `!` can be followed by `=`.
      * Everything else is one character, so the common case is two compares
-     * that both fail rather than a walk through the pairs. */
+     * that both fail rather than a walk through the pairs.
+     *
+     * `&&` and `||` are lexed although neither is implemented, because the
+     * alternative is not that they are refused later but that they are
+     * misread: `a && b` is a bitwise and of `a` with the address of `b`, and
+     * what acc said about it was that pointers are not supported. */
     if (*cursor == '=' || *cursor == c) {
         switch (c) {
+        case '&':
+            if (*cursor == '&') { cursor++; tok = TK_ANDAND; }
+            break;
+        case '|':
+            if (*cursor == '|') { cursor++; tok = TK_OROR; }
+            break;
         case '<':
             if (*cursor == '<') { cursor++; tok = TK_SHL; }
             else                { cursor++; tok = TK_LE; }
@@ -654,6 +701,7 @@ const char *tok_spelling(int token)
     case TK_KW_UNSIGNED: return "'unsigned'";
     case TK_KW_FLOAT:  return "'float'";
     case TK_KW_DOUBLE: return "'double'";
+    case TK_KW_RESERVED: return "a reserved word";
     case TK_FLOAT:     return "a floating-point number";
     case TK_LPAREN:    return "'('";
     case TK_RPAREN:    return "')'";
@@ -671,6 +719,8 @@ const char *tok_spelling(int token)
     case TK_PIPE:      return "'|'";
     case TK_CARET:     return "'^'";
     case TK_TILDE:     return "'~'";
+    case TK_ANDAND:    return "'&&'";
+    case TK_OROR:      return "'||'";
     case TK_SHL:       return "'<<'";
     case TK_SHR:       return "'>>'";
     case TK_LT:        return "'<'";
@@ -692,6 +742,8 @@ int tok_is_unimplemented_op(int token)
 {
     switch (token) {
     case TK_NOT:
+    case TK_ANDAND:
+    case TK_OROR:
         return 1;
     }
 
