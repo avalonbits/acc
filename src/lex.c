@@ -335,6 +335,38 @@ void lex_close(void)
 const char *lex_path(void) { return src_path; }
 int lex_line(void)         { return line; }
 
+/* A comment, with the cursor on its opening `/`. Out of line so that
+ * skip_space, which is inlined into next(), carries nothing but the cursor
+ * and the line count: the comment scan's own state, the line a block comment
+ * opened on, was enough to give next() a stack frame -- on every token,
+ * where comments are one call each. */
+__attribute__((noinline))
+static void skip_comment(void)
+{
+    if (cursor[1] == '/') {
+        while (*cursor && *cursor != '\n')
+            cursor++;
+
+        return;
+    }
+
+    /* Where it opened, which is where the mistake is. Reporting the line the
+     * scan gave up on points at the end of the file, which is the one place
+     * the reader already knows is not the problem. */
+    int opened = line;
+
+    cursor += 2;
+    while (*cursor && !(cursor[0] == '*' && cursor[1] == '/')) {
+        if (*cursor == '\n')
+            line++;
+        cursor++;
+    }
+    if (!*cursor)
+        acc_error_at(opened, "unterminated comment");
+    cursor += 2;
+}
+
+__attribute__((noinline))
 static void skip_space(void)
 {
     for (;;) {
@@ -343,29 +375,9 @@ static void skip_space(void)
                 line++;
             cursor++;
         }
-        if (cursor[0] == '/' && cursor[1] == '/') {
-            while (*cursor && *cursor != '\n')
-                cursor++;
-            continue;
-        }
-        if (cursor[0] == '/' && cursor[1] == '*') {
-            /* Where it opened, which is where the mistake is. Reporting the
-             * line the scan gave up on points at the end of the file, which
-             * is the one place the reader already knows is not the problem. */
-            int opened = line;
-
-            cursor += 2;
-            while (*cursor && !(cursor[0] == '*' && cursor[1] == '/')) {
-                if (*cursor == '\n')
-                    line++;
-                cursor++;
-            }
-            if (!*cursor)
-                acc_error_at(opened, "unterminated comment");
-            cursor += 2;
-            continue;
-        }
-        return;
+        if (cursor[0] != '/' || (cursor[1] != '/' && cursor[1] != '*'))
+            return;
+        skip_comment();
     }
 }
 
@@ -472,13 +484,13 @@ static const unsigned char punct[256] = {
  * Out of line because next() is the hottest function in the compiler and most
  * programs have no floating literals at all. */
 __attribute__((noinline))
-static void lex_floating(int line)
+static void lex_floating(void)
 {
     char *end;
 
     tok_fval = (float) strtod(cursor, &end);
     if (end == cursor)
-        acc_error_at(line, "a floating-point number with no digits");
+        acc_error_at(tok_line, "a floating-point number with no digits");
     cursor = end;
     if (*cursor == 'f' || *cursor == 'F')
         cursor++;
@@ -496,7 +508,7 @@ static void lex_floating(int line)
  * are names and punctuation, which need no frame at all. Out of line, the
  * cost is paid by the numeric constants and by nothing else. */
 __attribute__((noinline))
-static void lex_number(int line)
+static void lex_number(void)
 {
     /* One or two decimal digits, with nothing after them that could make the
      * constant anything but a small int -- no suffix, no point, no exponent,
@@ -562,16 +574,16 @@ static void lex_number(int line)
         not_decimal = 1;
         cursor += 2;
         if (!is_alnum((unsigned char) *cursor))
-            acc_error_at(line, "hex constant with no digits");
+            acc_error_at(tok_line, "hex constant with no digits");
         while (is_alnum((unsigned char) *cursor)) {
             int digit = *cursor;
 
             if (is_digit(digit))                     digit -= '0';
             else if (digit >= 'a' && digit <= 'f')   digit -= 'a' - 10;
             else if (digit >= 'A' && digit <= 'F')   digit -= 'A' - 10;
-            else acc_error_at(line, "bad digit '%c' in a hex constant", digit);
+            else acc_error_at(tok_line, "bad digit '%c' in a hex constant", digit);
             if (value > 0xfffffffUL)
-                acc_error_at(line, "the constant does not fit in %d bits",
+                acc_error_at(tok_line, "the constant does not fit in %d bits",
                              ACC_LONG_SIZE * 8);
             value = value * 16 + digit;
             cursor++;
@@ -641,16 +653,16 @@ static void lex_number(int line)
     if (*cursor == '.' || *cursor == 'e' || *cursor == 'E'
         || *cursor == 'f' || *cursor == 'F') {
         cursor = start;
-        lex_floating(line);
+        lex_floating();
 
         return;
     }
 
     if (bad_digit)
-        acc_error_at(line, "'%c' is not an octal digit, and a constant that "
+        acc_error_at(tok_line, "'%c' is not an octal digit, and a constant that "
                            "starts with 0 is octal", bad_digit);
     if (overflowed)
-        acc_error_at(line, "the constant does not fit in %d bits",
+        acc_error_at(tok_line, "the constant does not fit in %d bits",
                      ACC_LONG_SIZE * 8);
 
     /* The suffix, which narrows the list before the value is measured
@@ -662,7 +674,7 @@ static void lex_number(int line)
            || *cursor == 'l' || *cursor == 'L') {
         if (*cursor == 'u' || *cursor == 'U') {
             if (suffix_u)
-                acc_error_at(line, "the constant has more than one 'u' suffix");
+                acc_error_at(tok_line, "the constant has more than one 'u' suffix");
             suffix_u = 1;
             cursor++;
 
@@ -670,15 +682,15 @@ static void lex_number(int line)
         }
 
         if (suffix_l)
-            acc_error_at(line, "the constant has more than one 'l' suffix");
+            acc_error_at(tok_line, "the constant has more than one 'l' suffix");
         if (cursor[1] == *cursor) {
-            acc_error_at(line, "'long long' is not supported yet");
+            acc_error_at(tok_line, "'long long' is not supported yet");
         }
         suffix_l = 1;
         cursor++;
     }
     if (is_alnum((unsigned char) *cursor))
-        acc_error_at(line, "'%c' is not a suffix a constant can have", *cursor);
+        acc_error_at(tok_line, "'%c' is not a suffix a constant can have", *cursor);
 
     /* C99 types a constant by the first type in that list that can hold it.
      * The unsigned types are in it when the suffix says u, and also when a
@@ -706,7 +718,7 @@ static void lex_number(int line)
     }
 
     if (tok_type == TY_VOID)
-        acc_error_at(line, "the constant is too large for a long, and "
+        acc_error_at(tok_line, "the constant is too large for a long, and "
                            "long long is not supported yet");
 
     /* An unsigned int is normalised to the signed pattern of the same 24
@@ -717,6 +729,23 @@ static void lex_number(int line)
 
     tok = TK_INT;
     tok_val = (long) value;
+}
+
+/* The punctuation next() refuses: a character that begins no token, or the
+ * `&&=` and `||=` that C does not have, named by their first character. Out
+ * of line, reading the line for itself, so that next() keeps nothing for an
+ * error it will almost never report: holding the line and the character for
+ * these calls was a stack frame on every token. */
+__attribute__((noinline, noreturn))
+static void punct_error(int c)
+{
+    if (c == '&' && cursor[0] == '=')
+        acc_error_at(tok_line, "'&&=' is not an operator in C; "
+                               "`a = a && b` is what it would mean");
+    if (c == '|' && cursor[0] == '=')
+        acc_error_at(tok_line, "'||=' is not an operator in C; "
+                               "`a = a || b` is what it would mean");
+    acc_error_at(tok_line, "stray '%c' in the source", c);
 }
 
 void next(void)
@@ -740,13 +769,13 @@ void next(void)
      * numeric token in the program a second pass over its digits. */
     if (c == '.' && is_digit((unsigned char) cursor[1]))
     {
-        lex_floating(line);
+        lex_floating();
 
         return;
     }
 
     if (is_digit(c)) {
-        lex_number(line);
+        lex_number();
 
         return;
     }
@@ -765,7 +794,7 @@ void next(void)
     cursor++;
     tok = punct[(unsigned char) c];
     if (tok == TK_EOF)
-        acc_error_at(line, "stray '%c' in the source", c);
+        punct_error(c);
 
     /* Most punctuation can be the first of two or three characters: an
      * operator doubled (`<<`, `&&`, `++`), followed by `=` (`<=`, `+=`), or
@@ -808,8 +837,7 @@ void next(void)
             }
             tok = TK_ANDAND;
             if (*cursor == '=')
-                acc_error_at(line, "'&&=' is not an operator in C; "
-                                   "`a = a && b` is what it would mean");
+                punct_error('&');
             break;
         case '|':
             cursor++;
@@ -819,8 +847,7 @@ void next(void)
             }
             tok = TK_OROR;
             if (*cursor == '=')
-                acc_error_at(line, "'||=' is not an operator in C; "
-                                   "`a = a || b` is what it would mean");
+                punct_error('|');
             break;
         case '<':
             cursor++;

@@ -129,8 +129,11 @@ typedef unsigned char Type;
 /* ------------------------------------------------------------------ */
 /* diagnostics                                                         */
 
-void acc_error(const char *fmt, ...);   /* reports and does not return */
-void acc_error_at(int line, const char *fmt, ...);
+/* Both report and do not return, and are declared so: a caller then has
+ * nothing to keep for after the call, which in the lexer was a stack frame on
+ * every token to hold values only an error path would have gone on to use. */
+__attribute__((noreturn)) void acc_error(const char *fmt, ...);
+__attribute__((noreturn)) void acc_error_at(int line, const char *fmt, ...);
 
 /* ------------------------------------------------------------------ */
 /* names                                                               */
