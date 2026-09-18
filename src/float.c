@@ -237,6 +237,62 @@ static const char *read_exponent(const char *p, long *out)
     return p;
 }
 
+/* The float nearest q * 2^(e - bl + 1), where q has bl = 25 or 26 bits and
+ * so e is the exponent of its leading one, and sticky says there is a little
+ * more than q: rounded once, to nearest with ties to even, at the bit the
+ * exponent leaves for the last -- the 24th for a normal number, fewer for a
+ * subnormal. */
+static uint32_t float_pack(uint32_t q, int e, int sticky)
+{
+    int bl = (q >> 25) ? 26 : 25;
+    int p_bits = (e >= -126) ? 24 : e + 150;    /* bits the result can hold */
+    int drop;
+    uint32_t half, rem, m;
+
+    if (p_bits < 0)
+        return 0;                               /* under half the smallest */
+
+    drop = bl - p_bits;
+    half = (uint32_t) 1 << (drop - 1);
+    rem = q & ((half << 1) - 1);
+    m = q >> drop;
+    if (rem > half || (rem == half && (sticky || (m & 1))))
+        m++;
+
+    /* Subnormal, and a mantissa that rounded up to 2^23 is the smallest
+     * normal number, which is what those bits say without help. */
+    if (e < -126)
+        return m;
+    if (m == (uint32_t) 1 << 24) {
+        m >>= 1;
+        e++;
+    }
+    if (e > 127)
+        return 0x7f800000;
+
+    return ((uint32_t) (e + 127) << 23) | (m & 0x7fffff);
+}
+
+/* The float nearest an integer, given as a magnitude and a sign: what a
+ * global's initial value is when an integer constant initialises a float.
+ * Exact for anything under 2^24, and rounded like a literal above it. */
+uint32_t float_from_int(uint32_t magnitude, int negative)
+{
+    int bl = bits64(magnitude), sticky = 0;
+    uint32_t q = magnitude;
+
+    if (magnitude == 0)
+        return negative ? 0x80000000 : 0;
+    if (bl < 26) {
+        q <<= 26 - bl;
+    } else {
+        sticky = (q & (((uint32_t) 1 << (bl - 26)) - 1)) != 0;
+        q >>= bl - 26;
+    }
+
+    return float_pack(q, bl - 1, sticky) | (negative ? 0x80000000 : 0);
+}
+
 /* The literal at s: its bits as a float, and where it ends. It ends at s if
  * there are no digits. The grammar is strtod's for a literal with no sign:
  * decimal digits with a point and an exponent, each optional, or 0x and hex
@@ -254,8 +310,8 @@ const char *float_literal(const char *s, uint32_t *bits)
     long scale = 0;     /* a power of the base the kept digits are off by */
     long power2 = 0;    /* and a power of two on top, for hex */
     long exp;
-    int num_bits, k, bl, e, p_bits, drop, i;
-    uint32_t q, half, rem, m;
+    int num_bits, k, i;
+    uint32_t q;
 
     *bits = 0;
     big_set(&num, 0);
@@ -410,34 +466,7 @@ const char *float_literal(const char *s, uint32_t *bits)
     }
 
     /* The value is q * 2^(power2 - k), and a little more if sticky. */
-    bl = (q >> 25) ? 26 : 25;
-    e = bl - 1 - k + (int) power2;
-    p_bits = (e >= -126) ? 24 : e + 150;    /* bits the result can hold */
-    if (p_bits < 0)
-        return p;                           /* under half the smallest */
-
-    drop = bl - p_bits;
-    half = (uint32_t) 1 << (drop - 1);
-    rem = q & ((half << 1) - 1);
-    m = q >> drop;
-    if (rem > half || (rem == half && (sticky || (m & 1))))
-        m++;
-
-    if (e < -126) {
-        /* Subnormal, and a mantissa that rounded up to 2^23 is the smallest
-         * normal number, which is what those bits say without help. */
-        *bits = m;
-        return p;
-    }
-    if (m == (uint32_t) 1 << 24) {
-        m >>= 1;
-        e++;
-    }
-    if (e > 127) {
-        *bits = 0x7f800000;
-        return p;
-    }
-    *bits = ((uint32_t) (e + 127) << 23) | (m & 0x7fffff);
+    *bits = float_pack(q, ((q >> 25) ? 25 : 24) - k + (int) power2, sticky);
 
     return p;
 }

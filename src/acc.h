@@ -154,6 +154,7 @@ extern char *name_arena;    /* for name_global, further down */
 /* The floating literal at s, as the bits of the nearest float; returns where
  * it ends, which is s if it has no digits. In float.c. */
 const char *float_literal(const char *s, uint32_t *bits);
+uint32_t    float_from_int(uint32_t magnitude, int negative);
 
 /* ------------------------------------------------------------------ */
 /* tokens                                                              */
@@ -272,7 +273,8 @@ const char *tok_spelling(int token);
 
 enum {
     SYM_LOCAL,      /* a local or a parameter: val is its frame offset */
-    SYM_FUNC        /* a function: val is its address in the image */
+    SYM_FUNC,       /* a function: val is its address in the image */
+    SYM_GLOBAL      /* a file-scope variable: val is its address */
 };
 
 /* Eight bytes on the target: a name, a kind, one number whose meaning the
@@ -359,6 +361,7 @@ void vpush_const_long(long val, Type type);  /* four bytes, so it goes to the fr
 void vpush_const_float(float val);
 void vconvert(Type to);               /* narrow the top, then widen it back */
 Type vtype(void);                     /* the type of the top */
+int  vconst_top(int *val, Type *type);  /* whether the top is a constant */
 Type vtype_at(int depth);             /* 0 is the top, 1 the one below */
 void vpush_local(int offset, Type type);
 void vpush_reg(int reg);

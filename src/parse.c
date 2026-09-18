@@ -111,16 +111,57 @@ static void reserved_word(void)
     acc_error_at(tok_line, "'%s' is not supported yet", name_text(tok_name));
 }
 
-/* The local called `name`, as a value -- or, when `++` or `--` follows it,
+/* A global, as its address: the pointer `*` would take to reach it.
+ *
+ * A global is at an address fixed when it is declared, so reading one is
+ * reading through a pointer that is a constant, and everything that works on
+ * `*p` -- a store, `+=`, `++` either side, a value that is four bytes wide --
+ * works on a global by pushing this and carrying on exactly as it would after
+ * a star. */
+static void global_address(const Sym *global)
+{
+    if (type_ptr_depth(global->type) == TY_PTR_MAX)
+        acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
+                     TY_PTR_MAX);
+    vpush_const(global->val, type_ptr_to(global->type));
+}
+
+/* The object whose address is on the stack, as an operand: its value, or --
+ * when `++` or `--` follows -- the value it had before they changed it. */
+static void object_value(void)
+{
+    if (tok == TK_INC || tok == TK_DEC) {
+        vpostfix_indirect(tok == TK_INC ? TK_PLUS : TK_MINUS);
+        next();
+
+        return;
+    }
+    vderef();
+}
+
+/* A global as an operand, which is its address and then a read through it.
+ * Out of line, like the other path a global takes below, so that reading a
+ * local -- which is most of what a program does -- carries none of it. */
+__attribute__((noinline))
+static void global_value(const Sym *global)
+{
+    global_address(global);
+    object_value();
+}
+
+/* The variable called `name`, as a value -- or, when `++` or `--` follows it,
  * as the value it had before they changed it.
  *
  * Postfix binds tighter than anything else in an expression, tighter even
  * than a unary `*`, so `*p++` is `*(p++)`: it reads through p and leaves p
  * pointing at the next one. That falls out of handling it here, where the
- * name is and before whatever the caller does with its value. */
-static void local_value(NameRef name)
+ * name is and before whatever the caller does with its value.
+ *
+ * With the name already looked up. Inlined into both callers: as a call of
+ * its own it was one more on the path of every local read. */
+static inline __attribute__((always_inline))
+void symbol_value(int sym, NameRef name)
 {
-    int sym = sym_find(name);
     const Sym *local;
 
     if (sym == SYM_NONE)
@@ -129,8 +170,13 @@ static void local_value(NameRef name)
     /* Fetched once, so the fields below are read through one pointer held in
      * a register; nothing below pushes a symbol, so it stays good. */
     local = sym_at(sym);
-    if (local->kind != SYM_LOCAL)
-        acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
+    if (local->kind != SYM_LOCAL) {
+        if (local->kind != SYM_GLOBAL)
+            acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
+        global_value(local);
+
+        return;
+    }
 
     if (tok == TK_INC || tok == TK_DEC) {
         vpostfix_local(local->val, local->type,
@@ -141,6 +187,11 @@ static void local_value(NameRef name)
     }
 
     vpush_local(local->val, local->type);
+}
+
+static void local_value(NameRef name)
+{
+    symbol_value(sym_find(name), name);
 }
 
 /* `++x`, `--x`, `++*p`, `--*p`: the operand changed, and the answer is its
@@ -161,6 +212,13 @@ static void prefix_step(void)
         if (sym == SYM_NONE)
             acc_error_at(tok_line, "'%s' is not declared", name_text(tok_name));
         local = sym_at(sym);
+        if (local->kind == SYM_GLOBAL) {
+            global_address(local);
+            next();
+            vprefix_indirect(op);
+
+            return;
+        }
         if (local->kind != SYM_LOCAL)
             acc_error_at(tok_line, "'%s' cannot be changed by %s",
                          name_text(tok_name), spelling);
@@ -323,10 +381,13 @@ static void primary(void)
         {
             const Sym *local = sym_at(sym);
 
-            if (local->kind != SYM_LOCAL)
+            if (local->kind == SYM_GLOBAL)
+                global_address(local);
+            else if (local->kind != SYM_LOCAL)
                 acc_error_at(tok_line, "'%s' is not a variable, so it has no "
                                        "address to take", name_text(tok_name));
-            vaddr_local(local->val, local->type);
+            else
+                vaddr_local(local->val, local->type);
         }
         next();
 
@@ -570,6 +631,22 @@ static void compound_indirect(void)
     vstore_indirect();
 }
 
+/* A global at the start of an expression, where it may be assigned to: its
+ * address, and then what follows it handled as what follows `*p` is. Out of
+ * line for the reason global_value is. */
+__attribute__((noinline))
+static void global_statement(const Sym *global)
+{
+    global_address(global);
+    if (tok == TK_INC || tok == TK_DEC) {
+        object_value();
+        binary_rest(PREC_LOWEST);
+
+        return;
+    }
+    deref_rest();
+}
+
 static void assignment(void)
 {
     if (tok == TK_IDENT) {
@@ -579,8 +656,25 @@ static void assignment(void)
         /* Look one token ahead by remembering this one: an identifier
          * followed by '=' is an assignment, anything else is a value. */
         next();
+        if (accept(TK_LPAREN)) {
+            call_rest(name);
+            binary_rest(PREC_LOWEST);
+
+            return;
+        }
+
+        /* A global is reached through its address, so what follows it is
+         * handled as what follows `*p` is: a store, a compound store, a step,
+         * or a read and the rest of the expression. */
+        sym = sym_find(name);
+        if (sym != SYM_NONE && sym_at(sym)->kind == SYM_GLOBAL) {
+            global_statement(sym_at(sym));
+
+            return;
+        }
+
         if (tok == TK_ASSIGN) {
-            int dest = sym_find(name);
+            int dest = sym;
             Type outer = narrow_dest;
 
             next();
@@ -622,12 +716,7 @@ static void assignment(void)
 
         /* Not an assignment. Put the name back by handling it here rather
          * than by pushing the token back, which would need a queue. */
-        if (accept(TK_LPAREN)) {
-            call_rest(name);
-        } else {
-            local_value(name);
-        }
-
+        symbol_value(sym, name);
         binary_rest(PREC_LOWEST);
 
         return;
@@ -864,10 +953,11 @@ static Type base_type(void)
     return type_specifier();
 }
 
-/* The stars in front of one name, and then the check that what is left is a
- * type a value can have. That check has to come after them: there is no value
- * of type void, but `void *` is an ordinary pointer to something unsaid. */
-static Type declarator_type(Type base, const char *what)
+/* The stars in front of one name. Inlined, as not_void is: they were one
+ * function before the split, and as two calls each they cost 1% of a compile
+ * of a program that declares a lot of names. */
+static inline __attribute__((always_inline))
+Type declarator_stars(Type base)
 {
     int line = tok_line;
 
@@ -878,8 +968,26 @@ static Type declarator_type(Type base, const char *what)
         base = type_ptr_to(base);
     }
 
-    if (base == TY_VOID)
+    return base;
+}
+
+/* That what the stars left is a type a value can have. The check has to come
+ * after them: there is no value of type void, but `void *` is an ordinary
+ * pointer to something unsaid. */
+static inline __attribute__((always_inline))
+void not_void(Type type, const char *what, int line)
+{
+    if (type == TY_VOID)
         acc_error_at(line, "'void' is not a type %s can have", what);
+}
+
+/* The stars in front of one name, and then that check. */
+static Type declarator_type(Type base, const char *what)
+{
+    int line = tok_line;
+
+    base = declarator_stars(base);
+    not_void(base, what, line);
 
     return base;
 }
@@ -1129,21 +1237,17 @@ static void statement(void)
     }
 }
 
-static void function(void)
+/* A function's definition, from just past its name. */
+static void function_rest(Type ret_type, NameRef name)
 {
-    NameRef name;
     int fn;
     int nparams = 0, argoff, params_first;
-    Type ret_type;
 
-    ret_type = object_type("a function");
-    if (tok != TK_IDENT)
-        acc_error_at(tok_line, "expected a function name, found %s", tok_spelling(tok));
-    name = tok_name;
-    next();
     expect(TK_LPAREN, "'('");
 
     fn = sym_find(name);
+    if (fn != SYM_NONE && sym_at(fn)->kind == SYM_GLOBAL)
+        acc_error_at(tok_line, "'%s' is already a variable", name_text(name));
     if (fn != SYM_NONE && sym_at(fn)->kind == SYM_FUNC && sym_at(fn)->val)
         acc_error_at(tok_line, "'%s' is defined twice", name_text(name));
     if (fn == SYM_NONE)
@@ -1190,10 +1294,174 @@ static void function(void)
     sym_drop_locals();
 }
 
+/* A global's initial value, as the bytes it starts with.
+ *
+ * It has to be known now, because it is written into the image here, so it
+ * has to be a constant -- which is what C says too. A literal, with a sign
+ * or without, is read directly, which is the only way to get a long or a
+ * float: those are too wide for the value stack to hold as a constant.
+ * Anything else is parsed as an ordinary expression and has to fold to a
+ * constant without the code generator emitting anything: `3 * 4 + 1`, `-5`,
+ * `&counter`. */
+static void global_initializer(Type type, unsigned char *bytes, int line)
+{
+    int size = type_size(type);
+    int negative = 0;
+    uint32_t value;
+    int i;
+
+    if (tok == TK_MINUS || tok == TK_PLUS) {
+        negative = (tok == TK_MINUS);
+        next();
+        if (tok != TK_INT && tok != TK_FLOAT)
+            goto expression;
+    }
+
+    if (tok == TK_FLOAT) {
+        uint32_t bits;
+
+        if (!type_float(type))
+            acc_error_at(line, "a floating-point initial value for an integer "
+                               "or a pointer is not supported yet");
+        memcpy(&bits, &tok_fval, sizeof bits);
+        value = bits ^ (negative ? 0x80000000u : 0);
+        next();
+        goto store;
+    }
+
+    if (tok == TK_INT && type_wide(tok_type)) {
+        value = (uint32_t) tok_val;
+        if (type_float(type))
+            value = float_from_int(value, negative);
+        else if (negative)
+            value = 0u - value;
+        next();
+        goto store;
+    }
+
+    if (negative) {
+        /* A sign in front of something narrower: put it back into the
+         * expression by negating what that comes to. */
+        primary();
+        vneg();
+        binary_rest(PREC_LOWEST);
+        goto folded;
+    }
+
+expression:
+    binary(PREC_LOWEST);
+
+folded:
+    {
+        int before = out_here();
+        int val;
+        Type from;
+
+        if (!type_wide(type) && !type_float(type))
+            vconvert(type);
+        if (!vconst_top(&val, &from) || out_here() != before)
+            acc_error_at(line, "a global's initial value has to be a constant");
+        vdrop();
+
+        if (type_float(type)) {
+            if (type_unsigned(from))
+                value = float_from_int((uint32_t) val & 0xffffff, 0);
+            else if (val < 0)
+                value = float_from_int((uint32_t) -(long) val, 1);
+            else
+                value = float_from_int((uint32_t) val, 0);
+        } else if (type_unsigned(from)) {
+            value = (uint32_t) val & 0xffffff;
+        } else {
+            value = (uint32_t) (long) val;      /* sign-extended */
+        }
+    }
+
+store:
+    for (i = 0; i < size; i++) {
+        bytes[i] = (unsigned char) value;
+        value >>= 8;
+    }
+}
+
+/* One file-scope variable: its bytes written into the image where it is
+ * declared, and its name bound to where they went.
+ *
+ * Between two functions is as good a place as any: nothing runs into it,
+ * since every function ends in a return, and the address is known the moment
+ * it is written, so nothing that refers to it ever needs patching. A global
+ * with no initial value is zero, as C says, and takes its bytes in the image
+ * like any other -- there is no separate zeroed area yet. */
+static void global_variable(Type type, NameRef name, int line)
+{
+    unsigned char bytes[ACC_LONG_SIZE] = { 0 };
+    int size = type_size(type), sym, i, at;
+
+    /* C lets `int x;` be said twice at file scope, as long as at most one of
+     * them gives a value. acc takes one declaration of a global for now. */
+    sym = sym_find(name);
+    if (sym != SYM_NONE)
+        acc_error_at(line, sym_at(sym)->kind == SYM_FUNC
+                           ? "'%s' is already a function"
+                           : "'%s' is already declared, and a second "
+                             "declaration of a global is not supported yet",
+                     name_text(name));
+
+    if (accept(TK_ASSIGN))
+        global_initializer(type, bytes, line);
+
+    at = out_here();
+    for (i = 0; i < size; i++)
+        out_byte(bytes[i]);
+
+    sym = sym_push(name, SYM_GLOBAL, at);
+    sym_at(sym)->type = type;
+}
+
+/* What is at file scope: a function's definition, or a list of variables.
+ * Which one shows only once the name has been read, by whether a '(' comes
+ * next -- the type and the stars in front of the name are the same for
+ * both. */
+static void external_declaration(void)
+{
+    Type base = base_type();
+    int line = tok_line;
+    Type type = declarator_stars(base);
+    NameRef name;
+
+    if (tok != TK_IDENT)
+        acc_error_at(tok_line, "expected a name, found %s", tok_spelling(tok));
+    name = tok_name;
+    next();
+
+    if (tok == TK_LPAREN) {
+        not_void(type, "a function", line);
+        function_rest(type, name);
+
+        return;
+    }
+
+    for (;;) {
+        not_void(type, "a variable", line);
+        global_variable(type, name, line);
+        if (!accept(TK_COMMA))
+            break;
+
+        line = tok_line;
+        type = declarator_stars(base);
+        if (tok != TK_IDENT)
+            acc_error_at(tok_line, "expected a name, found %s",
+                         tok_spelling(tok));
+        name = tok_name;
+        next();
+    }
+    expect(TK_SEMI, "';'");
+}
+
 static void translation_unit(void)
 {
     while (tok != TK_EOF)
-        function();
+        external_declaration();
 }
 
 /* ------------------------------------------------------------------ */

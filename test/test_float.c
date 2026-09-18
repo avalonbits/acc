@@ -198,6 +198,31 @@ int main(void)
         check(text);
     }
 
+    /* Integers to float, as an integer constant initialising a float global
+     * is converted: against the host's own conversion, which rounds to
+     * nearest. Every width of magnitude, each side of 2^24 where rounding
+     * starts, and the ends. */
+    for (i = 0; i < 100000; i++) {
+        uint32_t mag = rand32() >> (rand32() % 32);
+        int negative = (int) (rand32() % 2);
+        float want;
+        uint32_t want_bits, got;
+
+        if (i < 64)                     /* 2^n - 1 and 2^n, for every n */
+            mag = ((uint32_t) 1 << (i % 32)) - (uint32_t) (i / 32);
+        want = negative ? -(float) mag : (float) mag;
+        got = float_from_int(mag, negative);
+        memcpy(&want_bits, &want, sizeof want_bits);
+        checks++;
+        if (got != want_bits) {
+            if (failures < 20)
+                fprintf(stderr, "  FAIL int %s%lu: got %08lx, want %08lx\n",
+                        negative ? "-" : "", (unsigned long) mag,
+                        (unsigned long) got, (unsigned long) want_bits);
+            failures++;
+        }
+    }
+
     if (failures)
         fprintf(stderr, "  %d of %ld failed\n", failures, checks);
     else

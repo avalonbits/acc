@@ -441,6 +441,20 @@ Type vtype_at(int depth)
     return (vsp - 1 - depth)->type;
 }
 
+/* Whether the top of the stack is a constant, and if so its value and type.
+ * What a global's initial value has to come to. */
+int vconst_top(int *val, Type *type)
+{
+    const Value *top = vsp - 1;
+
+    if (vtop <= 0 || top->kind != VAL_CONST)
+        return 0;
+    *val = top->val;
+    *type = top->type;
+
+    return 1;
+}
+
 void vdrop(void)
 {
     if (vtop <= 0)
