@@ -88,6 +88,8 @@ static void syms_grow(void)
  * constant, a typedef or a tag declared inside a function belongs to the
  * block it is declared in, where the same declaration at file scope does
  * not. */
+static void fn_shift(int at, int bytes);
+
 static inline __attribute__((always_inline))
 int push_local(NameRef name, int kind, int val)
 {
@@ -131,6 +133,11 @@ int sym_push(NameRef name, int kind, int val)
     at = nglobals;
     sym = sym_at(at);
     memmove(sym + 1, sym, (size_t) (nsyms - at));
+
+    /* And what the table beside it holds for the locals -- an array's count
+     * -- moves with them: `sizeof a` after a call to a function not yet
+     * seen read another symbol's. */
+    fn_shift(at, nsyms - at);
     sym->name = name;
     sym->kind = (unsigned char) kind;
     sym->val = val;
@@ -224,6 +231,14 @@ static void fn_room(unsigned want)
     fn_sigs = realloc(fn_sigs, fn_cap);
     if (!fn_sigs)
         acc_error("out of memory for the function signatures");
+}
+
+/* The records from `at` on, `bytes` of them, one symbol's width further up:
+ * see sym_push. */
+static void fn_shift(int at, int bytes)
+{
+    fn_room((unsigned) (at + bytes + sizeof(FnSig)));
+    memmove(fn_sigs + at + sizeof(FnSig), fn_sigs + at, (size_t) bytes);
 }
 
 void sym_set_params(int sym, int first, int count)
