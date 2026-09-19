@@ -110,6 +110,7 @@ static void struct_used(void)
 }
 
 static int  long_scratch(void);
+static void bool_from(void);
 static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
@@ -419,6 +420,13 @@ void vconvert(Type to)
      * here on its way to a parameter. */
     if (top->type == to)
         return;
+
+    /* To _Bool is a comparison with zero, whatever it is from. */
+    if (to == TY_BOOL) {
+        bool_from();
+
+        return;
+    }
 
     /* Between a float and an integer is a conversion of the value, not of
      * the label on it. Both directions go through an int, so a narrow type
@@ -1042,8 +1050,9 @@ void vstore_local(int offset, Type type)
      * relabelling. vconvert is where it lives; this used to refuse instead,
      * which is why a float could be stored and read back but never made from
      * anything. */
-    if (type_float(type) != type_float((vsp - 1)->type))
-        vconvert(type);
+    if (type_float(type) != type_float((vsp - 1)->type) || type == TY_BOOL)
+        vconvert(type);         /* a _Bool from all of a long, not its low
+                                 * bytes, which the narrow store takes */
 
     if (type_wide(type)) {
         need_disp(offset);
@@ -2063,6 +2072,14 @@ void gen_switch_case(long value, Type type, int target)
  * its truth, TK_EQ for `!`. The zero is of the value's own kind, so the
  * comparison is a float one for a float and a four-byte one for a long, and a
  * pointer compares with the null pointer as the unsigned int it is. */
+/* The top as a _Bool: 0 when it is zero, 1 when it is not -- a float at
+ * either zero, a long in all four bytes, a pointer that is null. */
+__attribute__((noinline))
+static void bool_from(void)
+{
+    vtruth(TK_NE);
+}
+
 void vtruth(int op)
 {
     if (type_float(vtype()))
@@ -3298,7 +3315,7 @@ static void vsnapshot(void)
 static void vstep(int op, Type type)
 {
     vpush_const(1, TY_INT);
-    vapply(op, type_size(type) < ACC_INT_SIZE ? type : 0);
+    vapply(op, type_narrow(type));
 }
 
 /* ++x and --x on a local: x changed, and the answer is its new value. */

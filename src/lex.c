@@ -487,7 +487,7 @@ static void keywords_init(void)
     keyword("typedef", 7, TK_KW_TYPEDEF);
     keyword("union", 5, TK_KW_UNION);
     keyword("volatile", 8, TK_KW_VOLATILE);
-    keyword("_Bool", 5, TK_KW_RESERVED);
+    keyword("_Bool", 5, TK_KW_BOOL);
     keyword("_Complex", 8, TK_KW_RESERVED);
     keyword("_Imaginary", 10, TK_KW_RESERVED);
 }
@@ -1086,6 +1086,7 @@ const char *tok_spelling(int token)
     case TK_KW_VOLATILE: return "'volatile'";
     case TK_KW_RESTRICT: return "'restrict'";
     case TK_KW_INLINE: return "'inline'";
+    case TK_KW_BOOL:   return "'_Bool'";
     case TK_DOT:       return "'.'";
     case TK_ARROW:     return "'->'";
     case TK_STRING:    return "a string";

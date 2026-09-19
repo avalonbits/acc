@@ -64,6 +64,11 @@ typedef unsigned int NameRef;
 #define TY_UCHAR    ((Type) (1 | TY_UNSIGNED))
 #define TY_SHORT    ((Type) 2)
 #define TY_USHORT   ((Type) (2 | TY_UNSIGNED))
+
+/* _Bool: one byte, unsigned, read and stored as unsigned char is -- and
+ * converting anything to it gives 0 or 1, which is the one thing about it
+ * that is its own. The floating bit makes it a code no other type has. */
+#define TY_BOOL     ((Type) (TY_FLOATING | TY_UNSIGNED | 1))
 #define TY_INT      ((Type) ACC_INT_SIZE)
 #define TY_UINT     ((Type) (ACC_INT_SIZE | TY_UNSIGNED))
 #define TY_LONG     ((Type) ACC_LONG_SIZE)
@@ -195,6 +200,12 @@ int     member_offset(int member);
  * deal in the narrow widths. */
 #define type_promote(ty)  ((Type) (type_size(ty) < ACC_INT_SIZE ? TY_INT : (ty)))
 
+/* The type a byte or two of arithmetic may be done in, when the result is
+ * on its way into an object of that type: see narrow_dest. Not _Bool, which
+ * does not keep the low bits of what it is given: 2 in a _Bool is 1. */
+#define type_narrow(ty)   ((Type) (type_size(ty) < ACC_INT_SIZE \
+                                   && (ty) != TY_BOOL ? (ty) : 0))
+
 /* Two pointers are the same type when they agree all the way down. Compared
  * whole rather than piecewise: the encoding puts the depth and what it points
  * at in the one byte, so equality of the byte is equality of the type. */
@@ -290,7 +301,7 @@ enum {
     TK_KW_ENUM, TK_KW_STRUCT, TK_KW_UNION, TK_KW_TYPEDEF,
     TK_KW_STATIC, TK_KW_EXTERN, TK_KW_AUTO, TK_KW_REGISTER,
     TK_KW_CONST, TK_KW_VOLATILE, TK_KW_RESTRICT,
-    TK_KW_INLINE,
+    TK_KW_INLINE, TK_KW_BOOL,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };

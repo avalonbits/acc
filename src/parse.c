@@ -924,7 +924,7 @@ static const unsigned char compound_op[TK_COUNT] = {
 
 static Type compound_narrow(int op, Type dest)
 {
-    return (type_size(dest) < ACC_INT_SIZE && transparent_op(op)) ? dest : 0;
+    return transparent_op(op) ? type_narrow(dest) : 0;
 }
 
 static void compound_local(NameRef name)
@@ -1101,9 +1101,8 @@ static void assignment(void)
             if (dest != SYM_NONE) {
                 const Sym *local = sym_at(dest);
 
-                if (local->kind == SYM_LOCAL
-                    && type_size(local->type) < ACC_INT_SIZE)
-                    narrow_dest = local->type;
+                if (local->kind == SYM_LOCAL)
+                    narrow_dest = type_narrow(local->type);
             }
             expr();
             narrow_dest = outer;
@@ -1168,7 +1167,7 @@ static void deref_rest(void)
         Type outer = narrow_dest;
         Type target = type_pointer(vtype()) ? type_deref(vtype()) : 0;
 
-        narrow_dest = (target && type_size(target) < ACC_INT_SIZE) ? target : 0;
+        narrow_dest = target ? type_narrow(target) : 0;
         expr();
         narrow_dest = outer;
         vstore_indirect();
@@ -1302,7 +1301,8 @@ static const unsigned char spec_alone[TK_COUNT] = {
     [TK_KW_UNSIGNED] = TY_UINT + 1,
     [TK_KW_LONG]     = TY_LONG + 1,
     [TK_KW_FLOAT]    = TY_FLOAT + 1,
-    [TK_KW_DOUBLE]   = TY_FLOAT + 1
+    [TK_KW_DOUBLE]   = TY_FLOAT + 1,
+    [TK_KW_BOOL]     = TY_BOOL + 1
 };
 
 static int starts_type(int token)
@@ -1316,7 +1316,7 @@ __attribute__((noinline))
 static Type type_specifier_slow(int first, int line)
 {
     int is_void = 0, is_char = 0, is_short = 0, is_int = 0;
-    int is_long = 0, is_signed = 0, is_unsigned = 0, is_float = 0;
+    int is_long = 0, is_signed = 0, is_unsigned = 0, is_float = 0, is_bool = 0;
     int token = first;
 
     for (;;) {
@@ -1330,6 +1330,7 @@ static Type type_specifier_slow(int first, int line)
         case TK_KW_UNSIGNED: is_unsigned++; break;
         case TK_KW_FLOAT:    is_float++;    break;
         case TK_KW_DOUBLE:   is_float++;    break;
+        case TK_KW_BOOL:     is_bool++;     break;
         }
         if (tok_qualifier())
             qualifiers();
@@ -1339,6 +1340,13 @@ static Type type_specifier_slow(int first, int line)
         next();
     }
 
+    if (is_bool) {
+        if (is_bool > 1 || is_void || is_char || is_short || is_int || is_long
+            || is_signed || is_unsigned || is_float)
+            acc_error_at(line, "'_Bool' with another type");
+
+        return TY_BOOL;
+    }
     if (is_long > 1 && !is_float)
         acc_error_at(line, "'long long' is not supported yet");
     if (is_signed && is_unsigned)
@@ -1744,7 +1752,7 @@ static unsigned char decl_start[TK_COUNT] = {
     [TK_KW_ENUM] = 1, [TK_KW_STRUCT] = 1, [TK_KW_UNION] = 1,
     [TK_KW_TYPEDEF] = 1, [TK_KW_STATIC] = 1, [TK_KW_EXTERN] = 1,
     [TK_KW_AUTO] = 1, [TK_KW_REGISTER] = 1, [TK_KW_CONST] = 1,
-    [TK_KW_VOLATILE] = 1, [TK_KW_INLINE] = 1
+    [TK_KW_VOLATILE] = 1, [TK_KW_INLINE] = 1, [TK_KW_BOOL] = 1
 };
 
 __attribute__((noinline))
@@ -2404,7 +2412,7 @@ static void local_put(Type scalar, int offset, int value)
      * width. */
     vaddr_array(init_array, TY_CHAR);
     vmember(offset, scalar, 0, 0);     /* an initialiser writes const too */
-    narrow_dest = (type_size(scalar) < ACC_INT_SIZE) ? scalar : 0;
+    narrow_dest = type_narrow(scalar);
     if (value >= 0)
         vpush_const(value, TY_INT);
     else
@@ -2777,7 +2785,7 @@ void declaration(void)
         if (accept(TK_ASSIGN)) {
             Type outer = narrow_dest;
 
-            narrow_dest = (type_size(type) < ACC_INT_SIZE) ? type : 0;
+            narrow_dest = type_narrow(type);
             expr();
             narrow_dest = outer;
             vstore_local(off, type);
