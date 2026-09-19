@@ -185,12 +185,11 @@ int sym_find(NameRef name)
  * Kept beside the symbols rather than in them: a Sym is eight bytes, and two
  * more fields would make it twelve for every local as well as every
  * function. */
-typedef struct {
-    Type          type;
-    unsigned char ext;          /* a struct's, which says how big it is */
-} Param;
-
-static Param   *param_type;
+/* Two arrays of bytes rather than one of pairs: reaching the pair would be
+ * a shift of the index, which is a call into the runtime on this target, on
+ * every argument of every call. */
+static Type          *param_type;
+static unsigned char *param_ext;       /* a struct's, which says how big */
 static unsigned param_used, param_cap;
 
 /* Where each function's run starts and how long it is, indexed by its symbol.
@@ -256,23 +255,24 @@ void sym_param_add(Type type, int ext)
 {
     if (param_used == param_cap) {
         param_cap = param_cap ? param_cap * 2 : 64;
-        param_type = realloc(param_type, param_cap * sizeof *param_type);
-        if (!param_type)
+        param_type = realloc(param_type, param_cap);
+        param_ext = realloc(param_ext, param_cap);
+        if (!param_type || !param_ext)
             acc_error("out of memory for the parameter types");
     }
-    param_type[param_used].type = type;
-    param_type[param_used].ext = (unsigned char) ext;
+    param_type[param_used] = type;
+    param_ext[param_used] = (unsigned char) ext;
     param_used++;
 }
 
 Type sym_param_type(int first, int index)
 {
-    return param_type[first + index].type;
+    return param_type[first + index];
 }
 
 int sym_param_ext(int first, int index)
 {
-    return param_type[first + index].ext;
+    return param_ext[first + index];
 }
 
 /* The mark is a count of bytes above the file-scope symbols rather than a
@@ -319,17 +319,22 @@ int sym_count(int sym)
  * -- until ext_record_done. */
 #define NEXT_TYPES 255
 
-enum { EXT_ARRAY, EXT_STRUCT, EXT_UNION };
-
+/* Eight bytes an entry, and the rest in arrays of their own: an entry is
+ * found by a shift of its index, which a width that is not a power of two
+ * turns into a call to multiply -- and ext_bytes is on the path of every
+ * pointer step. The byte arrays need neither. */
 static struct {
     Type          elem;
     unsigned char elem_x;
-    unsigned char what;         /* EXT_ARRAY, EXT_STRUCT or EXT_UNION */
-    unsigned char complete;
     int           count;        /* elements, or a record's first member */
     int           bytes;
-    NameRef       tag;
 } ext_types[NEXT_TYPES + 1];
+
+enum { EXT_ARRAY = 0, EXT_STRUCT = 1, EXT_UNION = 2, EXT_COMPLETE = 4 };
+
+static unsigned char ext_what[NEXT_TYPES + 1];      /* the kind, and whether
+                                                     * a record is complete */
+static NameRef       ext_tags[NEXT_TYPES + 1];
 
 static int next_types;
 
@@ -348,7 +353,7 @@ int ext_array(Type elem, int elem_x, int count)
     int i;
 
     for (i = 1; i <= next_types; i++)
-        if (ext_types[i].what == EXT_ARRAY && ext_types[i].elem == elem
+        if (!(ext_what[i] & (EXT_STRUCT | EXT_UNION)) && ext_types[i].elem == elem
             && ext_types[i].elem_x == elem_x && ext_types[i].count == count)
             return i;
 
@@ -358,8 +363,7 @@ int ext_array(Type elem, int elem_x, int count)
     i = ext_new();
     ext_types[i].elem = elem;
     ext_types[i].elem_x = (unsigned char) elem_x;
-    ext_types[i].what = EXT_ARRAY;
-    ext_types[i].complete = 1;
+    ext_what[i] = EXT_ARRAY | EXT_COMPLETE;
     ext_types[i].count = count;
     ext_types[i].bytes = count * type_bytes(elem, elem_x);
 
@@ -389,7 +393,9 @@ int ext_bytes(int x)
 /* ------------------------------------------------------------------ */
 /* structs and unions                                                  */
 
-/* Every member of every struct, each record's a chain from its first. */
+/* Every member of every struct, each record's a chain from its first. A
+ * member is named by its offset into the table in bytes, as a symbol is, so
+ * that reaching one is an add and not a multiply by eleven. */
 typedef struct {
     NameRef       name;
     int           offset;
@@ -399,66 +405,69 @@ typedef struct {
 } Member;
 
 static Member *members;
-static int     nmembers, members_cap;
+static int     members_used, members_cap;       /* bytes */
+
+#define member_at(m)  ((Member *) ((char *) members + (m)))
 
 int ext_record(int is_union, NameRef tag)
 {
     int x = ext_new();
 
-    ext_types[x].what = is_union ? EXT_UNION : EXT_STRUCT;
-    ext_types[x].complete = 0;
+    ext_what[x] = is_union ? EXT_UNION : EXT_STRUCT;
     ext_types[x].count = -1;
     ext_types[x].bytes = 0;
-    ext_types[x].tag = tag;
+    ext_tags[x] = tag;
 
     return x;
 }
 
 int ext_is_union(int x)
 {
-    return ext_types[x].what == EXT_UNION;
+    return (ext_what[x] & EXT_UNION) != 0;
 }
 
 int ext_complete(int x)
 {
-    return ext_types[x].complete;
+    return (ext_what[x] & EXT_COMPLETE) != 0;
 }
 
 NameRef ext_tag(int x)
 {
-    return ext_types[x].tag;
+    return ext_tags[x];
 }
 
 void ext_record_done(int x, int first, int bytes)
 {
     ext_types[x].count = first;
     ext_types[x].bytes = bytes;
-    ext_types[x].complete = 1;
+    ext_what[x] |= EXT_COMPLETE;
 }
 
 int member_add(NameRef name, Type type, int ext, int offset)
 {
     Member *m;
+    int at = members_used;
 
-    if (nmembers == members_cap) {
-        members_cap = members_cap ? members_cap * 2 : 32;
-        members = realloc(members, (size_t) members_cap * sizeof *members);
+    if (members_used == members_cap) {
+        members_cap = members_cap ? members_cap * 2 : 32 * (int) sizeof *m;
+        members = realloc(members, (size_t) members_cap);
         if (!members)
             acc_error("out of memory for struct members");
     }
-    m = &members[nmembers];
+    m = member_at(at);
     m->name = name;
     m->offset = offset;
     m->next = -1;
     m->type = type;
     m->ext = (unsigned char) ext;
+    members_used += sizeof *m;
 
-    return nmembers++;
+    return at;
 }
 
 void member_link(int member, int next)
 {
-    members[member].next = next;
+    member_at(member)->next = next;
 }
 
 int member_first(int x)
@@ -468,15 +477,15 @@ int member_first(int x)
 
 int member_next(int member)
 {
-    return members[member].next;
+    return member_at(member)->next;
 }
 
 int member_find(int x, NameRef name)
 {
     int m;
 
-    for (m = ext_types[x].count; m >= 0; m = members[m].next)
-        if (members[m].name == name)
+    for (m = ext_types[x].count; m >= 0; m = member_at(m)->next)
+        if (member_at(m)->name == name)
             return m;
 
     return -1;
@@ -484,22 +493,22 @@ int member_find(int x, NameRef name)
 
 NameRef member_name(int member)
 {
-    return members[member].name;
+    return member_at(member)->name;
 }
 
 Type member_type(int member)
 {
-    return members[member].type;
+    return member_at(member)->type;
 }
 
 int member_ext(int member)
 {
-    return members[member].ext;
+    return member_at(member)->ext;
 }
 
 int member_offset(int member)
 {
-    return members[member].offset;
+    return member_at(member)->offset;
 }
 
 void sym_drop_locals(void)

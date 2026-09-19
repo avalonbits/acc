@@ -23,32 +23,53 @@ CC=$AGONDEV/bin/ez80-none-elf-clang
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-# file, then the functions in it that must not call the helper
+# Each check: a file, a helper, and the functions in it that must not call
+# it. `-` as the helper means the function must not be called at all -- it
+# has to stay inlined into its callers.
+#
+#   __setflag  a signed compare; see above.
+#   __iand     a 24-bit AND. `(unsigned char) tok - X < 3` loads all of tok
+#              and masks it, which is this call: tok_low reads the byte.
+#   __imulu    a multiply. An extension or a member reached by index into
+#              an array of entries whose width is not a power of two.
+#   __ishl     a shift. An array of two-byte entries, indexed.
 checks=(
-    "gen.c vpush_const vpush_local vpush_reg vdrop vtype vtype_at vconst_top
-           vdup ld_ix_rr push_rr pop_rr add_hl_rr sbc_hl_rr"
-    "out.c out_word24"
+    "gen.c __setflag vpush_const vpush_local vpush_reg vdrop vtype vtype_at
+           vconst_top vdup ld_ix_rr push_rr pop_rr add_hl_rr sbc_hl_rr"
+    "out.c __setflag out_word24"
+    "parse.c __iand expr primary postfix_statement name_operand string_value"
+    "sym.c __imulu ext_bytes ext_elem ext_elem_x ext_count member_find
+           member_type member_offset member_next"
+    "sym.c __ishl sym_param_type sym_param_ext"
+    "parse.c - starts_decl"
 )
 
 fail=0
 for check in "${checks[@]}"; do
     set -- $check
-    file=$1; shift
+    file=$1 helper=$2; shift 2
     "$CC" -mllvm -z80-gas-style -nostdinc -Isrc -isystem "$AGONDEV/include" \
         -target ez80-none-elf -DAGONDEV -Oz -S -o "$tmp/out.s" "src/$file" || exit 1
     for fn in "$@"; do
+        if [ "$helper" = - ]; then
+            if grep -qE "call[[:space:]]+_$fn\$" "$tmp/out.s"; then
+                echo "  FAIL $file: $fn is called rather than inlined"
+                fail=1
+            fi
+            continue
+        fi
         body=$(awk -v f="_$fn:" '$1 == f { on = 1; next }
                                  on && /^_[A-Za-z0-9_.]+:/ { exit }
                                  on' "$tmp/out.s")
         if [ -z "$body" ]; then
             echo "  FAIL $file: no function $fn"
             fail=1
-        elif grep -q '__setflag' <<<"$body"; then
-            echo "  FAIL $file: $fn makes a signed compare (__setflag)"
+        elif grep -q "$helper" <<<"$body"; then
+            echo "  FAIL $file: $fn calls $helper"
             fail=1
         fi
     done
 done
 
-[ $fail -eq 0 ] && echo "  helpers: the hot paths make no signed compares"
+[ $fail -eq 0 ] && echo "  helpers: the hot paths call none of the runtime's slow helpers"
 exit $fail

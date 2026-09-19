@@ -412,8 +412,6 @@ void vconvert(Type to)
         acc_error("internal: nothing to convert");
     if (top->kind == VAL_VOID)
         void_used();
-    if (type_is_struct(top->type) || type_is_struct(to))
-        struct_used();
 
     /* Converting to the type it already has is nothing at all, and that is
      * the common case now that every argument of every call comes through
@@ -459,6 +457,12 @@ void vconvert(Type to)
         return;
     }
     if (type_size(to) >= ACC_INT_SIZE) {
+        /* A struct is as wide as an int, so it is here that one converted
+         * to or from anything is caught -- after the common case, a value
+         * already of the type it is going to, has left. */
+        if (type_is_struct(top->type) || type_is_struct(to))
+            struct_used();
+
         /* Widening. A value still sitting in the frame at its own narrow
          * width has to be loaded before it can be called an int, because the
          * load is what widens it -- relabelling it would have the next load
@@ -680,11 +684,14 @@ static int force_reg(Value *val)
 
     /* Forcing a value into a register is asking for it as an integer. For a
      * float that is a conversion, not a load of its low three bytes. */
-    if (type_float(val->type))
+    /* A struct is refused here too, with the same compare: its code is one
+     * below float's, so the two are one range. */
+    if ((Type) (val->type - TY_STRUCT) < 2u) {
+        if (type_is_struct(val->type))
+            struct_used();
         acc_error_at(tok_line, "converting a floating-point value to an "
                                "integer is not implemented yet");
-    if (type_is_struct(val->type))
-        struct_used();
+    }
 
     if (val->kind == VAL_REG)
         return val->val;
@@ -2545,6 +2552,7 @@ void gen_return(int line)
 
 /* That a struct argument and its parameter are the same struct: a struct
  * cannot be converted to anything, nor anything to one. */
+__attribute__((noinline))
 static void struct_argument(Type param, int param_ext, int which)
 {
     if (!type_is_struct(param) || !type_is_struct(vtype())
@@ -2557,6 +2565,7 @@ static void struct_argument(Type param, int param_ext, int which)
 /* A struct argument, from the address on top: its bytes copied onto the
  * stack, in as many whole slots as they fill, the struct at the lowest
  * address -- as agondev passes one. Returns the slots it took. */
+__attribute__((noinline))
 static int push_struct(void)
 {
     int bytes = ext_bytes((vsp - 1)->ext);
@@ -2598,19 +2607,22 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
          * parameter that many from the end. */
         int which = nargs - 1 - i;
 
+        /* A struct argument has to meet a struct parameter; anything else
+         * meeting one is refused by the conversion. */
+        if (type_is_struct((vsp - 1)->type)) {
+            if (which < nparams)
+                struct_argument(sym_param_type(params_first, which),
+                                sym_param_ext(params_first, which), which);
+            argslots += push_struct();
+            continue;
+        }
         if (which < nparams) {
             Type param = sym_param_type(params_first, which);
 
-            if (type_is_struct(param) || type_is_struct(vtype()))
+            if (type_is_struct(param))
                 struct_argument(param, sym_param_ext(params_first, which),
                                 which);
-            else
-                vconvert(param);
-        }
-
-        if (type_is_struct(vtype())) {
-            argslots += push_struct();
-            continue;
+            vconvert(param);
         }
 
         if (type_wide(vtype())) {

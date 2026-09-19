@@ -235,8 +235,7 @@ static int postfix_chain(int object)
 }
 
 /* Whether a subscript or a member follows. */
-#define tok_postfix()  (tok_is(TK_LBRACKET) || tok_pair(tok, TK_DOT))
-typedef char dot_arrow_are_adjacent[TK_ARROW == TK_DOT + 1 ? 1 : -1];
+#define tok_postfix()  ((unsigned char) (tok_low - TK_LBRACKET) < 3u)
 
 /* A name that has been looked up and read, and the subscripts and members
  * after it.
@@ -344,10 +343,11 @@ void symbol_value(int sym, NameRef name)
         return;
     }
 
-    /* `++`, `--` or `[` after it, tested as one range: the bracket was a test
-     * of its own on every local read, and cost 0.5% of a compile. */
-    if ((unsigned char) (tok - TK_INC) < 3u) {
-        if (tok_is(TK_LBRACKET)) {
+    /* `++`, `--`, `[`, `.` or `->` after it, tested as one range: the
+     * bracket was a test of its own on every local read, and cost 0.5% of a
+     * compile. */
+    if ((unsigned char) (tok - TK_INC) < 5u) {
+        if (tok_postfix()) {
             object_operand(sym, name);
 
             return;
@@ -358,12 +358,6 @@ void symbol_value(int sym, NameRef name)
 
         return;
     }
-    if (tok_pair(tok, TK_DOT)) {       /* `.` or `->` */
-        object_operand(sym, name);
-
-        return;
-    }
-
     vpush_local(local->val, local->type);
     if (local->ext)
         vset_ext(local->ext);
@@ -558,7 +552,7 @@ static void string_value(void)
 
 static void cast_rest(void);
 static void sizeof_value(void);
-static int  starts_decl(void);
+static inline __attribute__((always_inline)) int starts_decl(void);
 
 /* A name used as a value: a local read, or a call. */
 static void primary(void)
@@ -1021,8 +1015,7 @@ static void assignment(void)
          * store, a step, or a read and the rest of the expression. */
         sym = sym_find(name);
         if (sym != SYM_NONE
-            && (sym_at(sym)->kind != SYM_LOCAL || tok_is(TK_LBRACKET)
-                || tok_pair(tok, TK_DOT))) {
+            && (sym_at(sym)->kind != SYM_LOCAL || tok_postfix())) {
             object_statement(sym, name);
 
             return;
@@ -1606,18 +1599,17 @@ static Type base_type(void)
 
 /* Whether the current token begins a declaration: a specifier keyword, or
  * one that introduces a tagged type or a typedef. */
-static const unsigned char decl_start[TK_COUNT] = {
+/* A name is in it too, once the program has declared a typedef: a name can
+ * only be told to be one by looking it up, and a program with none -- most
+ * of them -- is spared the lookup at the start of every statement, since
+ * until then the table says a name never begins one. */
+static unsigned char decl_start[TK_COUNT] = {
     [TK_KW_VOID] = 1, [TK_KW_CHAR] = 1, [TK_KW_SHORT] = 1, [TK_KW_INT] = 1,
     [TK_KW_SIGNED] = 1, [TK_KW_UNSIGNED] = 1, [TK_KW_LONG] = 1,
     [TK_KW_FLOAT] = 1, [TK_KW_DOUBLE] = 1,
     [TK_KW_ENUM] = 1, [TK_KW_STRUCT] = 1, [TK_KW_UNION] = 1,
     [TK_KW_TYPEDEF] = 1
 };
-
-/* How many typedef names the program has declared. A name can only be
- * checked for being one by looking it up, and a program with none -- most of
- * them -- is spared the lookup at the start of every statement. */
-static int typedefs;
 
 __attribute__((noinline))
 static int is_typedef_name(NameRef name)
@@ -1627,12 +1619,15 @@ static int is_typedef_name(NameRef name)
     return sym != SYM_NONE && sym_at(sym)->kind == SYM_TYPEDEF;
 }
 
-static int starts_decl(void)
+/* Inlined: it is asked before every statement in the program, and as a call
+ * it cost more than the table lookup it makes. */
+static inline __attribute__((always_inline))
+int starts_decl(void)
 {
-    if (decl_start[tok])
-        return 1;
+    if (!decl_start[tok])
+        return 0;
 
-    return tok == TK_IDENT && typedefs && is_typedef_name(tok_name);
+    return tok != TK_IDENT || is_typedef_name(tok_name);
 }
 
 /* The stars in front of one name. Inlined, as not_void is: they were one
@@ -2435,7 +2430,7 @@ static void typedef_declaration(void)
         sym = push_here(name, SYM_TYPEDEF, 0);
         sym_at(sym)->type = type;
         sym_at(sym)->ext = (unsigned char) ext;
-        typedefs++;
+        decl_start[TK_IDENT] = 1;
         if (!accept(TK_COMMA))
             break;
     }
@@ -3200,9 +3195,37 @@ static StructParam *struct_params;
 static int          nstruct_params, struct_params_cap;
 
 /* A function's definition, from just past its name. */
+/* A struct parameter is copied from its slots into the array area, where
+ * every local struct lives, so that the body finds it as it finds any
+ * other: the slots are above the frame, and past the reach of (ix+d) once
+ * there are a few of them. Out of line, for the few functions that have
+ * one. */
+__attribute__((noinline))
+static void struct_params_copy(void)
+{
+    int i;
+
+    for (i = 0; i < nstruct_params; i++) {
+        Sym *param = sym_at(struct_params[i].sym);
+        int array = gen_local_array(), x = param->ext;
+
+        gen_local_array_size(array, ext_bytes(x));
+        vaddr_array(array, TY_STRUCT);
+        vset_ext(x);
+        vaddr_local(struct_params[i].argoff, TY_STRUCT);
+        vset_ext(x);
+        vderef();
+        vstore_indirect();
+        vdrop();
+        param = sym_at(struct_params[i].sym);
+        param->kind = SYM_LOCAL_STRUCT;
+        param->val = array;
+    }
+}
+
 static void function_rest(Type ret_type, int ret_ext, NameRef name)
 {
-    int fn, i;
+    int fn;
     int nparams = 0, argoff, params_first;
 
     expect(TK_LPAREN, "'('");
@@ -3297,26 +3320,8 @@ static void function_rest(Type ret_type, int ret_ext, NameRef name)
     sym_set_params(fn, params_first, nparams);
     gen_func_begin(fn, nparams, ret_type);
 
-    /* A struct parameter is copied from its slots into the array area, where
-     * every local struct lives, so that the body finds it as it finds any
-     * other: the slots are above the frame, and past the reach of (ix+d)
-     * once there are a few of them. */
-    for (i = 0; i < nstruct_params; i++) {
-        Sym *param = sym_at(struct_params[i].sym);
-        int array = gen_local_array(), x = param->ext;
-
-        gen_local_array_size(array, ext_bytes(x));
-        vaddr_array(array, TY_STRUCT);
-        vset_ext(x);
-        vaddr_local(struct_params[i].argoff, TY_STRUCT);
-        vset_ext(x);
-        vderef();
-        vstore_indirect();
-        vdrop();
-        param = sym_at(struct_params[i].sym);
-        param->kind = SYM_LOCAL_STRUCT;
-        param->val = array;
-    }
+    if (nstruct_params)
+        struct_params_copy();
     in_body = 1;
     block();
     in_body = 0;

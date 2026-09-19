@@ -138,13 +138,15 @@ Bucket *name_home(const char *text, unsigned n)
      */
     unsigned char low = (unsigned char) n;     /* so "ab" and "ba" differ */
     unsigned char high = 0;
-    unsigned i, offset;
+    const unsigned char *at = (const unsigned char *) text, *end = at + n;
+    unsigned offset;
 
-    /* Unsigned, so the loop test is not a signed compare: `i < len` on two
-     * ints is `call pe, __setflag` to repair the flags on overflow, and this
-     * loop runs once per character of every identifier in the program. */
-    for (i = 0; i < n; i++) {
-        unsigned char c = (unsigned char) text[i];
+    /* A pointer walked to the end rather than an index: the index was an add
+     * to the base on every character, and the base and the count were read
+     * back from the frame on every one -- a fifth of a compile went through
+     * this loop. */
+    while (at != end) {
+        unsigned char c = *at++;
 
         low  = pearson[low ^ c];
         high = (unsigned char) (high + high + c);

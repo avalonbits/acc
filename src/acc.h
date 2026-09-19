@@ -271,8 +271,8 @@ enum {
     TK_AND_ASSIGN, TK_OR_ASSIGN, TK_XOR_ASSIGN, TK_SHL_ASSIGN, TK_SHR_ASSIGN,
 
     /* What can follow a name and act on it, together: whether any of the
-     * three does is one compare after every local the program reads. */
-    TK_INC, TK_DEC, TK_LBRACKET,
+     * five does is one compare after every local the program reads. */
+    TK_INC, TK_DEC, TK_LBRACKET, TK_DOT, TK_ARROW,
     TK_QUESTION, TK_COLON,
 
     /* Tokens added since, at the end: inserting one earlier renumbers every
@@ -287,7 +287,6 @@ enum {
     TK_STRING,                  /* a string literal; tok_str holds its bytes */
     TK_KW_SIZEOF,
     TK_KW_ENUM, TK_KW_STRUCT, TK_KW_UNION, TK_KW_TYPEDEF,
-    TK_DOT, TK_ARROW,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -345,9 +344,21 @@ int         accept_next(void);          /* next(), returning 1, for accept */
  * name the program reads -- where a 24-bit compare is seven instructions and
  * a byte compare two. */
 #define tok_is(token)  ((unsigned char) tok == (token))
+
+/* The current token's low byte, read as a byte. Narrowing tok with a cast is
+ * not the same thing on this target: clang loads all three bytes and masks
+ * them, and a mask of a 24-bit value is a call into the runtime -- which
+ * `(unsigned char) tok - X < 3` made on every operand the program has. */
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define tok_low  ((unsigned char) tok)
+#else
+#define tok_low  (*(const unsigned char *) &tok)
+#endif
 typedef char tokens_fit_a_byte[TK_COUNT <= 256 ? 1 : -1];
 typedef char postfix_tokens_are_adjacent[(TK_DEC == TK_INC + 1
-                                          && TK_LBRACKET == TK_INC + 2) ? 1 : -1];
+                                          && TK_LBRACKET == TK_INC + 2
+                                          && TK_DOT == TK_INC + 3
+                                          && TK_ARROW == TK_INC + 4) ? 1 : -1];
 void expect_failed(const char *what);
 
 /* Step past the current token, which has to be `token`. A macro for the same
