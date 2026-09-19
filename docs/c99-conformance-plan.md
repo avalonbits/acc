@@ -183,5 +183,5 @@ It is strict both ways:
 
 acc's own license was the third, and is settled: LGPL-2.1 or later, which is
 what decides the vendoring above. The prelude of step 2 is copied into test
-programs the way `src/rt/` is copied into every program, so whatever license
-the runtime gets should cover it too.
+programs the way `src/rt/` is copied into every program, so it takes the
+runtime's license: LGPL-2.1 or later with glibc's linking exception.

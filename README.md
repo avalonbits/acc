@@ -92,6 +92,9 @@ acc is free software under the GNU Lesser General Public License, version 2.1
 or (at your option) any later version; see `COPYING`.
 
 The routines in `src/rt/` -- the startup stub and the arithmetic helpers --
-are not the compiler's to license the same way, because acc copies them into
-every program it compiles. They are not yet under a license of their own,
-and until they are, what applies to the programs acc produces is undecided.
+are copied into every program acc compiles, so they carry an exception, the
+one glibc gives its own startup code: you may link them into your programs
+and distribute those programs without any restriction coming from them. A
+program does not take on acc's license by being compiled by it. The LGPL
+still covers the routines themselves, if you modify or distribute them on
+their own; the full text is at the top of each file.

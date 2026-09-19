@@ -1,6 +1,11 @@
 /* Generated from src/rt/helpers.s by embed.py. Do not edit.
  *
  * Each entry is one helper, whole and position independent.
+ *
+ * The bytes are the runtime acc copies into every program it
+ * compiles, and carry its license: LGPL-2.1-or-later with the
+ * linking exception written out at the top of src/rt/helpers.s, so that
+ * a program does not take on acc's license by being compiled by it.
  */
 #ifndef ACC_RT_HELPERS_H
 #define ACC_RT_HELPERS_H

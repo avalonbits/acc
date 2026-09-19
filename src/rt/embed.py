@@ -63,7 +63,12 @@ def main(asm, out, tools):
         f.write('/* Generated from %s by %s. Do not edit.\n'
                 ' *\n'
                 ' * Each entry is one helper, whole and position independent.\n'
-                ' */\n' % (asm, __file__.split('/')[-1]))
+                ' *\n'
+                ' * The bytes are the runtime acc copies into every program it\n'
+                ' * compiles, and carry its license: LGPL-2.1-or-later with the\n'
+                ' * linking exception written out at the top of %s, so that\n'
+                ' * a program does not take on acc\'s license by being compiled by it.\n'
+                ' */\n' % (asm, __file__.split('/')[-1], asm))
         f.write('#ifndef ACC_RT_HELPERS_H\n#define ACC_RT_HELPERS_H\n\n')
         f.write('static const unsigned char rt_code[] = {\n')
         for i in range(0, len(text), 12):
