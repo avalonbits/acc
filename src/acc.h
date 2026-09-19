@@ -188,6 +188,7 @@ int     ext_func(Type ret, int ret_x, int first, int count, int declared);
 int     ext_func_first(int x);          /* its parameters' run */
 int     ext_func_count(int x);
 int     ext_func_declared(int x);       /* whether it gives them */
+int     ext_func_variadic(int x);       /* and more, with `...` */
 void    ext_record_done(int x, int first, int bytes);
 int     ext_is_union(int x);
 int     ext_complete(int x);
@@ -326,6 +327,8 @@ enum {
     TK_KW_STATIC, TK_KW_EXTERN, TK_KW_AUTO, TK_KW_REGISTER,
     TK_KW_CONST, TK_KW_VOLATILE, TK_KW_RESTRICT,
     TK_KW_INLINE, TK_KW_BOOL,
+    TK_ELLIPSIS,
+    TK_KW_VA_LIST, TK_KW_VA_START, TK_KW_VA_ARG, TK_KW_VA_END, TK_KW_VA_COPY,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -492,9 +495,10 @@ enum {
                                  * assumed from a call */
     SYMF_DEFINED  = 2,          /* a function: its body has been read; a
                                  * variable: its initial value has */
-    SYMF_PARAMS   = 4           /* a function: its parameters are declared,
+    SYMF_PARAMS   = 4,          /* a function: its parameters are declared,
                                  * where `()` in a declaration says nothing
                                  * about them */
+    SYMF_VARIADIC = 8           /* a function: and more of them, `...` */
 };
 void sym_set_flags(int sym, int flags);
 unsigned char sym_flags(int sym);

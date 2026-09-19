@@ -488,6 +488,15 @@ static void keywords_init(void)
     keyword("union", 5, TK_KW_UNION);
     keyword("volatile", 8, TK_KW_VOLATILE);
     keyword("_Bool", 5, TK_KW_BOOL);
+
+    /* What <stdarg.h> would give, taken as words of the language: acc has
+     * no preprocessor to include it with, and a program that reads its
+     * variable arguments has no other way to. */
+    keyword("va_list", 7, TK_KW_VA_LIST);
+    keyword("va_start", 8, TK_KW_VA_START);
+    keyword("va_arg", 6, TK_KW_VA_ARG);
+    keyword("va_end", 6, TK_KW_VA_END);
+    keyword("va_copy", 7, TK_KW_VA_COPY);
     keyword("_Complex", 8, TK_KW_RESERVED);
     keyword("_Imaginary", 10, TK_KW_RESERVED);
 }
@@ -920,6 +929,14 @@ static void lex_two(int c)
 {
     int assign = (*cursor == '=');
 
+    if (c == '.') {                     /* `..`, which only `...` may be */
+        if (cursor[1] != '.')
+            acc_error_at(tok_line, "'..' is not something C has; '...' is");
+        cursor += 2;
+        tok = TK_ELLIPSIS;
+
+        return;
+    }
     switch (c) {
     case '+':
         cursor++;
@@ -1091,6 +1108,12 @@ const char *tok_spelling(int token)
     case TK_KW_RESTRICT: return "'restrict'";
     case TK_KW_INLINE: return "'inline'";
     case TK_KW_BOOL:   return "'_Bool'";
+    case TK_ELLIPSIS:  return "'...'";
+    case TK_KW_VA_LIST: return "'va_list'";
+    case TK_KW_VA_START: return "'va_start'";
+    case TK_KW_VA_ARG: return "'va_arg'";
+    case TK_KW_VA_END: return "'va_end'";
+    case TK_KW_VA_COPY: return "'va_copy'";
     case TK_DOT:       return "'.'";
     case TK_ARROW:     return "'->'";
     case TK_STRING:    return "a string";

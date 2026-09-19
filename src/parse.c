@@ -110,7 +110,8 @@ static void call_value(void)
         acc_error_at(tok_line, "only a function or a pointer to one can be "
                                "called");
     nargs = call_args();
-    if (ext_func_declared(x) && nargs != ext_func_count(x))
+    if (ext_func_declared(x) && nargs != ext_func_count(x)
+        && !(nargs > ext_func_count(x) && ext_func_variadic(x)))
         acc_error_at(tok_line, "this function takes %d argument%s, and this "
                                "call gives it %d", ext_func_count(x),
                      ext_func_count(x) == 1 ? "" : "s", nargs);
@@ -157,10 +158,12 @@ static void call_rest(NameRef name)
 
     nargs = call_args();
     nparams = sym_nparams(fn);
-    if (nargs != nparams && (sym_flags(fn) & SYMF_PARAMS))
-        acc_error_at(tok_line, "'%s' takes %d argument%s, and this call gives "
-                               "it %d", name_text(name), nparams,
-                     nparams == 1 ? "" : "s", nargs);
+    if (nargs != nparams && (sym_flags(fn) & SYMF_PARAMS)
+        && !(nargs > nparams && (sym_flags(fn) & SYMF_VARIADIC)))
+        acc_error_at(tok_line, "'%s' takes %s%d argument%s, and this call gives "
+                               "it %d", name_text(name),
+                     sym_flags(fn) & SYMF_VARIADIC ? "at least " : "",
+                     nparams, nparams == 1 ? "" : "s", nargs);
     gen_call(fn, nargs, sym_params_first(fn), nparams);
 }
 
@@ -170,7 +173,8 @@ static int function_ext(int fn)
     const Sym *f = sym_at(fn);
 
     return ext_func(f->type, f->ext, sym_params_first(fn), sym_nparams(fn),
-                    (sym_flags(fn) & SYMF_PARAMS) != 0);
+                    ((sym_flags(fn) & SYMF_PARAMS) != 0)
+                    | ((sym_flags(fn) & SYMF_VARIADIC) ? 2 : 0));
 }
 
 /* A word C99 reserves and acc has not implemented. Named rather than
@@ -731,6 +735,7 @@ static void string_value(void)
 
 static void cast_rest(void);
 static void sizeof_value(void);
+static void va_form(void);
 static inline __attribute__((always_inline)) int starts_decl(void);
 
 /* A name used as a value: a local read, or a call. */
@@ -868,6 +873,13 @@ static void primary(void)
 
     if (tok == TK_KW_SIZEOF) {
         sizeof_value();
+
+        return;
+    }
+
+    /* va_start, va_arg, va_end, va_copy. */
+    if ((unsigned char) (tok_low - TK_KW_VA_START) < 4u) {
+        va_form();
 
         return;
     }
@@ -1420,7 +1432,8 @@ static const unsigned char spec_alone[TK_COUNT] = {
     [TK_KW_LONG]     = TY_LONG + 1,
     [TK_KW_FLOAT]    = TY_FLOAT + 1,
     [TK_KW_DOUBLE]   = TY_FLOAT + 1,
-    [TK_KW_BOOL]     = TY_BOOL + 1
+    [TK_KW_BOOL]     = TY_BOOL + 1,
+    [TK_KW_VA_LIST]  = type_ptr_to(TY_CHAR) + 1  /* walked along the slots */
 };
 
 static int starts_type(int token)
@@ -1521,6 +1534,10 @@ static Type type_specifier(void)
 /* Whether the parser is inside a function body, where an enum constant, a
  * typedef or a tag belongs to the block it is declared in. */
 static int in_body;
+
+/* The function whose body is being read, for va_start to check it has a
+ * `...` to start after. */
+static int current_fn = SYM_NONE;
 
 static NameRef declared_name(void);
 static int     constant_int(const char *what, int line);
@@ -1938,7 +1955,8 @@ static unsigned char decl_start[TK_COUNT] = {
     [TK_KW_ENUM] = 1, [TK_KW_STRUCT] = 1, [TK_KW_UNION] = 1,
     [TK_KW_TYPEDEF] = 1, [TK_KW_STATIC] = 1, [TK_KW_EXTERN] = 1,
     [TK_KW_AUTO] = 1, [TK_KW_REGISTER] = 1, [TK_KW_CONST] = 1,
-    [TK_KW_VOLATILE] = 1, [TK_KW_INLINE] = 1, [TK_KW_BOOL] = 1
+    [TK_KW_VOLATILE] = 1, [TK_KW_INLINE] = 1, [TK_KW_BOOL] = 1,
+    [TK_KW_VA_LIST] = 1
 };
 
 __attribute__((noinline))
@@ -2282,6 +2300,113 @@ static int sizeof_unary(void)
     return SIZEOF_VALUE;
 }
 
+/* How far one argument of a type is from the next: whole three-byte slots,
+ * two for a long or a float, and as many as a struct fills -- as the call
+ * pushed them. A char or a short came as an int. */
+static int va_slot(Type type, int ext)
+{
+    if (type_is_struct(type))
+        return (ext_bytes(ext) + ACC_INT_SIZE - 1) / ACC_INT_SIZE * ACC_INT_SIZE;
+
+    return type_wide(type) ? 2 * ACC_INT_SIZE : ACC_INT_SIZE;
+}
+
+/* The address of the va_list variable a form names: a local, a parameter,
+ * or a global, by its name. */
+static void va_list_address(void)
+{
+    int sym;
+    const Sym *v;
+
+    if (tok != TK_IDENT)
+        acc_error_at(tok_line, "expected the va_list's name, found %s",
+                     tok_spelling(tok));
+    sym = sym_find(tok_name);
+    if (sym == SYM_NONE)
+        acc_error_at(tok_line, "'%s' is not declared", name_text(tok_name));
+    v = sym_at(sym);
+    if (v->type != type_ptr_to(TY_CHAR)
+        || (v->kind != SYM_LOCAL && v->kind != SYM_GLOBAL))
+        acc_error_at(tok_line, "'%s' is not a va_list", name_text(tok_name));
+    if (v->kind == SYM_LOCAL)
+        vaddr_local(v->val, v->type);
+    else
+        global_address(v);
+    next();
+}
+
+/* What <stdarg.h> would give, as the language's own words. A va_list is a
+ * char * walked along the argument slots above the frame: va_start points
+ * it just past the last named parameter's, and va_arg reads a value of the
+ * type it is given there and steps it over the slots that value took.
+ * va_end has nothing to undo, and va_copy is an assignment. */
+__attribute__((noinline))
+static void va_form(void)
+{
+    int form = tok, line = tok_line;
+
+    next();
+    expect(TK_LPAREN, "'('");
+    va_list_address();
+
+    switch (form) {
+    case TK_KW_VA_START: {
+        const Sym *last;
+        int sym;
+
+        expect(TK_COMMA, "','");
+        if (current_fn == SYM_NONE || !(sym_flags(current_fn) & SYMF_VARIADIC))
+            acc_error_at(line, "va_start in a function with no '...'");
+        sym = tok == TK_IDENT ? sym_find(tok_name) : SYM_NONE;
+        last = sym == SYM_NONE ? NULL : sym_at(sym);
+        if (!last || (last->kind != SYM_LOCAL && last->kind != SYM_LOCAL_CONST)
+            || last->val < 2 * ACC_PTR_SIZE)
+            acc_error_at(tok_line, "va_start needs the function's last named "
+                                   "parameter");
+        vaddr_local(last->val + va_slot(last->type, last->ext), TY_CHAR);
+        next();
+        vstore_indirect();
+        break;
+    }
+    case TK_KW_VA_ARG: {
+        int x, slot;
+        Type type;
+
+        expect(TK_COMMA, "','");
+        if (!starts_decl())
+            acc_error_at(tok_line, "va_arg needs a type, found %s",
+                         tok_spelling(tok));
+        type = type_name(&x);
+        slot = va_slot(type, x);
+
+        /* ap = ap + slot, and the value at ap - slot. */
+        vdup();
+        vderef();
+        vpush_const(slot, TY_INT);
+        vapply(TK_PLUS, 0);
+        vstore_indirect();
+        vpush_const(slot, TY_INT);
+        vapply(TK_MINUS, 0);
+        vset_type(type_ptr_to(type), x);
+        vderef();
+        expect(TK_RPAREN, "')'");
+
+        return;
+    }
+    case TK_KW_VA_COPY:
+        expect(TK_COMMA, "','");
+        expr();
+        vstore_indirect();
+        break;
+    default:                            /* va_end */
+        vdrop();
+        vpush_const(0, TY_INT);
+        break;
+    }
+    expect(TK_RPAREN, "')'");
+    vcast(TY_VOID, 0, 0);               /* they come to nothing */
+}
+
 /* `sizeof operand` and `sizeof (type)`, as a constant of type size_t, which
  * is unsigned int here as it is in agondev. */
 __attribute__((noinline))
@@ -2498,7 +2623,7 @@ static NameRef decl_full(void)
  * `()` does not give them. */
 static int param_types(int *first, int *count)
 {
-    int saved_abstract = abstract_ok;
+    int saved_abstract = abstract_ok, variadic = 0;
 
     *first = sym_params_begin();
     *count = 0;
@@ -2535,14 +2660,15 @@ static int param_types(int *first, int *count)
         (*count)++;
         if (!accept(TK_COMMA))
             break;
-        if (tok == TK_DOT)
-            acc_error_at(tok_line, "a variable number of arguments is not "
-                                   "supported yet");
+        if (accept(TK_ELLIPSIS)) {
+            variadic = 2;
+            break;
+        }
     }
     abstract_ok = saved_abstract;
     expect(TK_RPAREN, "')'");
 
-    return 1;
+    return 1 | variadic;
 }
 
 /* A parameter list after a plain name, where it makes a function type:
@@ -4067,7 +4193,7 @@ static void same_signature(int fn, Type ret_type, int ret_ext, int first,
 static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                                int line)
 {
-    int fn, declared, params = 1, unnamed = 0, mark;
+    int fn, declared, params = 1, unnamed = 0, mark, variadic = 0;
     int nparams = 0, argoff, params_first;
 
     expect(TK_LPAREN, "'('");
@@ -4178,17 +4304,23 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
             nparams++;
             if (!accept(TK_COMMA))
                 break;
-            if (tok == TK_DOT)          /* `...` */
-                acc_error_at(tok_line, "a variable number of arguments is "
-                                       "not supported yet");
+            if (accept(TK_ELLIPSIS)) {
+                variadic = SYMF_VARIADIC;
+                break;
+            }
         }
     }
     abstract_ok = 0;
     expect(TK_RPAREN, "')'");
 
-    if (declared)
+    if (declared) {
         same_signature(fn, ret_type, ret_ext, params_first, nparams, params,
                        name, line);
+        if (params && (sym_flags(fn) & SYMF_PARAMS)
+            && (sym_flags(fn) & SYMF_VARIADIC) != variadic)
+            acc_error_at(line, "'%s' is declared again with%s '...'",
+                         name_text(name), variadic ? "" : "out");
+    }
     sym_at(fn)->type = ret_type;
     sym_at(fn)->ext = (unsigned char) ret_ext;
     sym_at(fn)->quals = decl_bottom_const;
@@ -4200,7 +4332,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
         sym_scope_end(mark);
         if (!declared || !(sym_flags(fn) & SYMF_PARAMS)) {
             sym_set_params(fn, params_first, nparams);
-            sym_set_flags(fn, params ? SYMF_DECLARED | SYMF_PARAMS
+            sym_set_flags(fn, params ? SYMF_DECLARED | SYMF_PARAMS | variadic
                                      : SYMF_DECLARED);
         }
 
@@ -4215,7 +4347,8 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     next();                     /* the body's `{` */
 
     sym_set_params(fn, params_first, nparams);
-    sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED);
+    sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED | variadic);
+    current_fn = fn;
     gen_func_begin(fn, nparams, ret_type);
 
     if (nstruct_params)
@@ -4767,7 +4900,9 @@ static int function_from_type(int x, NameRef name, int line)
     sym_at(fn)->ext = (unsigned char) ret_x;
     if (tok != TK_LBRACE || in_body) {
         sym_set_params(fn, first, count);
-        sym_set_flags(fn, params ? SYMF_DECLARED | SYMF_PARAMS : SYMF_DECLARED);
+        sym_set_flags(fn, params ? SYMF_DECLARED | SYMF_PARAMS
+                                   | (ext_func_variadic(x) ? SYMF_VARIADIC : 0)
+                                 : SYMF_DECLARED);
 
         return 0;
     }
@@ -4805,7 +4940,9 @@ static int function_from_type(int x, NameRef name, int line)
     }
     next();                     /* the body's `{` */
     sym_set_params(fn, first, count);
-    sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED);
+    sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED
+                      | (ext_func_variadic(x) ? SYMF_VARIADIC : 0));
+    current_fn = fn;
     gen_func_begin(fn, count, ret);
     if (nstruct_params)
         struct_params_copy();

@@ -28,7 +28,8 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 "$AGONDEV/bin/ez80-none-elf-as" -march=ez80+full "$here/oracle/start.s" -o "$tmp/start.o" || exit 1
 "$AGONDEV/bin/ez80-none-elf-clang" -mllvm -z80-gas-style -mllvm -z80-print-zero-offset -nostdinc \
-    -isystem "$AGONDEV/include" -target ez80-none-elf -Oz -Wa,-march=ez80+full \
+    -isystem "$AGONDEV/include" -include "$here/oracle/prelude.h" \
+    -target ez80-none-elf -Oz -Wa,-march=ez80+full \
     -c "$src" -o "$tmp/t.o" || exit 1
 "$AGONDEV/bin/ez80-none-elf-ld" --oformat binary -Ttext=0x40000 -e _start \
     -o "$out" "$tmp/start.o" "$tmp/t.o" -L"$AGONDEV/lib" -lagon || exit 1

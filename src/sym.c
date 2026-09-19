@@ -444,7 +444,12 @@ int ext_func_count(int x)
 
 int ext_func_declared(int x)
 {
-    return ext_types[x].bytes >> 8;
+    return ext_types[x].bytes >> 8 & 1;
+}
+
+int ext_func_variadic(int x)
+{
+    return ext_types[x].bytes >> 9 & 1;
 }
 
 Type ext_elem(int x)
