@@ -137,7 +137,8 @@ int sym_push(NameRef name, int kind, int val)
     /* And what the table beside it holds for the locals -- an array's count
      * -- moves with them: `sizeof a` after a call to a function not yet
      * seen read another symbol's. */
-    fn_shift(at, nsyms - at);
+    if (nsyms != at)            /* at file scope there are no locals */
+        fn_shift(at, nsyms - at);
     sym->name = name;
     sym->kind = (unsigned char) kind;
     sym->val = val;
@@ -255,7 +256,7 @@ void sym_set_flags(int sym, int flags)
     fn_sig(sym)->s.flags |= (unsigned char) flags;
 }
 
-int sym_flags(int sym)
+unsigned char sym_flags(int sym)
 {
     return fn_sig(sym)->s.flags;
 }

@@ -75,7 +75,7 @@ static Type narrow_dest;
 static void call_rest(NameRef name)
 {
     int fn = sym_find(name);
-    int nargs = 0;
+    int nargs = 0, nparams;
 
     /* Not seen yet: assumed to be a function defined further down the file.
      * gen_finish reports it if it never is. */
@@ -100,11 +100,12 @@ static void call_rest(NameRef name)
     }
 
     expect(TK_RPAREN, "')'");
-    if ((sym_flags(fn) & SYMF_PARAMS) && nargs != sym_nparams(fn))
+    nparams = sym_nparams(fn);
+    if (nargs != nparams && (sym_flags(fn) & SYMF_PARAMS))
         acc_error_at(tok_line, "'%s' takes %d argument%s, and this call gives "
-                               "it %d", name_text(name), sym_nparams(fn),
-                     sym_nparams(fn) == 1 ? "" : "s", nargs);
-    gen_call(fn, nargs, sym_params_first(fn), sym_nparams(fn));
+                               "it %d", name_text(name), nparams,
+                     nparams == 1 ? "" : "s", nargs);
+    gen_call(fn, nargs, sym_params_first(fn), nparams);
 }
 
 /* A word C99 reserves and acc has not implemented. Named rather than
@@ -1265,6 +1266,7 @@ static int starts_type(int token)
 
 /* The several-keyword case: `unsigned short int` and `int short unsigned` are
  * the same type, so they are counted rather than matched against a list. */
+__attribute__((noinline))
 static Type type_specifier_slow(int first, int line)
 {
     int is_void = 0, is_char = 0, is_short = 0, is_int = 0;
@@ -1613,7 +1615,7 @@ static Type struct_specifier(void)
 /* Whether the type base_type last read was const. Kept for the variable a
  * declaration names, which is refused as the target of an assignment; what
  * a pointer points at being const is taken and not checked. */
-static int base_const;
+static unsigned char base_const;
 
 /* `const`s, as many as there are, with the base_type's marked: see
  * base_const. `volatile` and `restrict` are not here yet. */
@@ -1724,7 +1726,7 @@ int starts_decl(void)
 
 /* Whether the last star read was followed by `const`: `int *const p`, which
  * makes p itself const, where `const int *p` does not. */
-static int stars_const;
+static unsigned char stars_const;
 
 __attribute__((noinline))
 static int star_qualifiers(void)
@@ -2531,7 +2533,7 @@ static int  global_again(int sym, Type type, int ext, int count, int line);
 /* How the variable being declared at file scope is bound: see push_global. */
 static int static_local;
 static int redefining = SYM_NONE;
-static int decl_const;          /* the variable being declared is const */
+static unsigned char decl_const;    /* the variable being declared is const */
 
 /* `typedef`, and names for types rather than objects: each declarator names
  * the type it would have given a variable. An array type keeps its shape in
@@ -2606,7 +2608,8 @@ static void storage_declaration(void)
 {
     int storage = tok;
     Type base;
-    int bx, bc;
+    int bx;
+    unsigned char bc;
 
     if (storage == TK_KW_TYPEDEF) {
         typedef_declaration();
@@ -2652,7 +2655,8 @@ static inline __attribute__((always_inline))
 void declaration(void)
 {
     Type base;
-    int bx, bc;
+    int bx;
+    unsigned char bc;
 
     /* typedef, static and extern, one range. */
     if ((unsigned char) (tok_low - TK_KW_TYPEDEF) < 3u) {
@@ -3513,13 +3517,11 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     } else {
         for (;;) {
             Type pbase, ptype, pstars;
-            int pbx, pconst, pline = tok_line, pcount, pext;
+            unsigned char pconst;
+            int pbx, pline = tok_line, pcount, pext;
             NameRef pname;
             int psym = SYM_NONE;
 
-            if (tok == TK_RPAREN || tok == TK_COMMA)
-                acc_error_at(tok_line, "expected a parameter, found %s",
-                             tok_spelling(tok));
             pbase = base_type();
             pbx = base_ext;
             pconst = base_const;
@@ -4003,7 +4005,8 @@ static void global_variable(Type type, int ext, NameRef name, int count,
 static void external_declaration(void)
 {
     Type base, type;
-    int line, count = 0, ext, bx, bc;
+    int line, count = 0, ext, bx;
+    unsigned char bc;
     NameRef name;
 
     if (tok == TK_KW_TYPEDEF) {

@@ -446,7 +446,7 @@ enum {
                                  * about them */
 };
 void sym_set_flags(int sym, int flags);
-int  sym_flags(int sym);
+unsigned char sym_flags(int sym);
 
 /* How many elements an array symbol has, kept where a function's signature
  * would be: `&a` needs it to say what it points at. */

@@ -31,7 +31,10 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 #
 #   __setflag  a signed compare; see above.
 #   __iand     a 24-bit AND. `(unsigned char) tok - X < 3` loads all of tok
-#              and masks it, which is this call: tok_low reads the byte.
+#              and masks it, which is this call: tok_low reads the byte. So
+#              does a flag kept in an int that clang knows is 0 or 1, when it
+#              is copied, and `tok == A || tok == B` for two tokens that are
+#              not neighbours.
 #   __imulu    a multiply. An extension or a member reached by index into
 #              an array of entries whose width is not a power of two.
 #   __ishl     a shift. An array of two-byte entries, indexed.
@@ -39,12 +42,14 @@ checks=(
     "gen.c __setflag vpush_const vpush_local vpush_reg vdrop vtype vtype_at
            vconst_top vdup ld_ix_rr push_rr pop_rr add_hl_rr sbc_hl_rr"
     "out.c __setflag out_word24"
-    "parse.c __iand expr primary postfix_statement name_operand string_value"
+    "parse.c __iand expr primary postfix_statement name_operand string_value
+           function_declarator call_rest block"
     "sym.c __imulu ext_bytes ext_elem ext_elem_x ext_count member_find
            member_type member_offset member_next"
     "sym.c __ishl sym_param_type sym_param_ext"
     "parse.c - starts_decl"
     "lex.c +next lex_two"
+    "parse.c +base_type type_specifier_slow"
 )
 
 fail=0
