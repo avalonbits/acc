@@ -299,43 +299,59 @@ int sym_count(int sym)
 /* ------------------------------------------------------------------ */
 /* extended types                                                      */
 
-/* The table TY_EXT's extension indexes, from 1; 0 is no extension. Arrays
- * only, for now: an element type with its own extension, a count, and the
- * size, worked out once. */
+/* The table TY_EXT's and TY_STRUCT's extension indexes, from 1; 0 is no
+ * extension. An array is an element type with its own extension, a count,
+ * and its size, worked out once. A struct or union is its members, as a
+ * chain through the member table below, its size, and its tag for the
+ * diagnostics; it is incomplete -- declared, but its members not yet given
+ * -- until ext_record_done. */
 #define NEXT_TYPES 255
+
+enum { EXT_ARRAY, EXT_STRUCT, EXT_UNION };
 
 static struct {
     Type          elem;
     unsigned char elem_x;
-    int           count;
+    unsigned char what;         /* EXT_ARRAY, EXT_STRUCT or EXT_UNION */
+    unsigned char complete;
+    int           count;        /* elements, or a record's first member */
     int           bytes;
+    NameRef       tag;
 } ext_types[NEXT_TYPES + 1];
 
 static int next_types;
+
+static int ext_new(void)
+{
+    if (next_types == NEXT_TYPES)
+        acc_error_at(tok_line, "this program has more than %d different "
+                               "array shapes and structs, which acc cannot "
+                               "tell apart yet", NEXT_TYPES);
+
+    return ++next_types;
+}
 
 int ext_array(Type elem, int elem_x, int count)
 {
     int i;
 
     for (i = 1; i <= next_types; i++)
-        if (ext_types[i].elem == elem && ext_types[i].elem_x == elem_x
-            && ext_types[i].count == count)
+        if (ext_types[i].what == EXT_ARRAY && ext_types[i].elem == elem
+            && ext_types[i].elem_x == elem_x && ext_types[i].count == count)
             return i;
 
-    if (next_types == NEXT_TYPES)
-        acc_error_at(tok_line, "this program has more than %d different "
-                               "array shapes, which acc cannot tell apart yet",
-                     NEXT_TYPES);
     if ((long) count * type_bytes(elem, elem_x) > 0x7fffff)
         acc_error_at(tok_line, "an array this large does not fit in memory");
 
-    next_types++;
-    ext_types[next_types].elem = elem;
-    ext_types[next_types].elem_x = (unsigned char) elem_x;
-    ext_types[next_types].count = count;
-    ext_types[next_types].bytes = count * type_bytes(elem, elem_x);
+    i = ext_new();
+    ext_types[i].elem = elem;
+    ext_types[i].elem_x = (unsigned char) elem_x;
+    ext_types[i].what = EXT_ARRAY;
+    ext_types[i].complete = 1;
+    ext_types[i].count = count;
+    ext_types[i].bytes = count * type_bytes(elem, elem_x);
 
-    return next_types;
+    return i;
 }
 
 Type ext_elem(int x)
@@ -356,6 +372,122 @@ int ext_count(int x)
 int ext_bytes(int x)
 {
     return ext_types[x].bytes;
+}
+
+/* ------------------------------------------------------------------ */
+/* structs and unions                                                  */
+
+/* Every member of every struct, each record's a chain from its first. */
+typedef struct {
+    NameRef       name;
+    int           offset;
+    int           next;         /* the record's next member, or -1 */
+    Type          type;
+    unsigned char ext;
+} Member;
+
+static Member *members;
+static int     nmembers, members_cap;
+
+int ext_record(int is_union, NameRef tag)
+{
+    int x = ext_new();
+
+    ext_types[x].what = is_union ? EXT_UNION : EXT_STRUCT;
+    ext_types[x].complete = 0;
+    ext_types[x].count = -1;
+    ext_types[x].bytes = 0;
+    ext_types[x].tag = tag;
+
+    return x;
+}
+
+int ext_is_union(int x)
+{
+    return ext_types[x].what == EXT_UNION;
+}
+
+int ext_complete(int x)
+{
+    return ext_types[x].complete;
+}
+
+NameRef ext_tag(int x)
+{
+    return ext_types[x].tag;
+}
+
+void ext_record_done(int x, int first, int bytes)
+{
+    ext_types[x].count = first;
+    ext_types[x].bytes = bytes;
+    ext_types[x].complete = 1;
+}
+
+int member_add(NameRef name, Type type, int ext, int offset)
+{
+    Member *m;
+
+    if (nmembers == members_cap) {
+        members_cap = members_cap ? members_cap * 2 : 32;
+        members = realloc(members, (size_t) members_cap * sizeof *members);
+        if (!members)
+            acc_error("out of memory for struct members");
+    }
+    m = &members[nmembers];
+    m->name = name;
+    m->offset = offset;
+    m->next = -1;
+    m->type = type;
+    m->ext = (unsigned char) ext;
+
+    return nmembers++;
+}
+
+void member_link(int member, int next)
+{
+    members[member].next = next;
+}
+
+int member_first(int x)
+{
+    return ext_types[x].count;
+}
+
+int member_next(int member)
+{
+    return members[member].next;
+}
+
+int member_find(int x, NameRef name)
+{
+    int m;
+
+    for (m = ext_types[x].count; m >= 0; m = members[m].next)
+        if (members[m].name == name)
+            return m;
+
+    return -1;
+}
+
+NameRef member_name(int member)
+{
+    return members[member].name;
+}
+
+Type member_type(int member)
+{
+    return members[member].type;
+}
+
+int member_ext(int member)
+{
+    return members[member].ext;
+}
+
+int member_offset(int member)
+{
+    return members[member].offset;
 }
 
 void sym_drop_locals(void)

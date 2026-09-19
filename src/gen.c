@@ -97,6 +97,18 @@ static void void_used(void)
     acc_error_at(tok_line, "a void function returns nothing, so its result "
                            "cannot be used");
 }
+/* A struct used where a number was wanted: an operand, a condition, a
+ * conversion. A struct value is its address, in a register or a frame slot,
+ * and everything that uses one as a struct -- a member, a copy, an argument
+ * -- relabels it as a pointer before it loads it. So anything that loads one
+ * still labelled a struct is using it as a number, and that is found where
+ * values are loaded and converted, as a void result is. */
+__attribute__((noinline, noreturn))
+static void struct_used(void)
+{
+    acc_error_at(tok_line, "a struct or union cannot be used as a number");
+}
+
 static int  long_scratch(void);
 static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
@@ -399,6 +411,8 @@ void vconvert(Type to)
         acc_error("internal: nothing to convert");
     if (top->kind == VAL_VOID)
         void_used();
+    if (type_is_struct(top->type) || type_is_struct(to))
+        struct_used();
 
     /* Converting to the type it already has is nothing at all, and that is
      * the common case now that every argument of every call comes through
@@ -668,6 +682,8 @@ static int force_reg(Value *val)
     if (type_float(val->type))
         acc_error_at(tok_line, "converting a floating-point value to an "
                                "integer is not implemented yet");
+    if (type_is_struct(val->type))
+        struct_used();
 
     if (val->kind == VAL_REG)
         return val->val;
@@ -767,6 +783,9 @@ static void evict_reg(int reg)
 static void force_into(Value *target, int want)
 {
     Value *entry;
+
+    if (type_is_struct(target->type))
+        struct_used();
 
     for (entry = vstack; entry < vsp; entry++) {
         if (entry == target)
@@ -2874,6 +2893,18 @@ void vderef(void)
         return;
     }
 
+    /* A struct is not read either: its value is its address, held as a
+     * register or a slot so that the one thing it can never be is a
+     * constant -- which keeps constant folding from mistaking it for a
+     * number. */
+    if (type_is_struct(to)) {
+        if (top->kind == VAL_CONST)
+            force_reg(top);
+        top->type = TY_STRUCT;
+
+        return;
+    }
+
     /* A pointer read through a pointer keeps its extension: the chain is
      * one level shorter, and its bottom is the same. */
     if (type_pointer(to))
@@ -2930,6 +2961,54 @@ void vderef(void)
         (vsp - 1)->ext = (unsigned char) deref_ext;
 }
 
+/* A member's address from its struct's: the offset added, as bytes, and the
+ * member's type put on it. A member that is itself an array or a struct is
+ * an object like any other, reached the same way. */
+void vmember(int offset, Type type, int ext)
+{
+    if (type_ptr_depth(type) == TY_PTR_MAX)
+        acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
+                     TY_PTR_MAX);
+    if (offset) {
+        (vsp - 1)->type = type_ptr_to(TY_CHAR);
+        vpush_const(offset, TY_INT);
+        vapply(TK_PLUS, 0);
+    }
+    (vsp - 1)->type = type_ptr_to(type);
+    (vsp - 1)->ext = (unsigned char) ext;
+}
+
+/* `a = b` for structs: the bytes copied with ldir, from b's address in HL to
+ * a's in DE, and a's address -- the struct, as a value -- left as the
+ * answer. */
+static void vcopy_struct(void)
+{
+    Value *dest = vsp - 2, *src = vsp - 1;
+    int x = dest->ext, bytes;
+
+    if (!type_is_struct(src->type) || src->ext != x)
+        acc_error_at(tok_line, "a struct can only be assigned a struct of the "
+                               "same type");
+    bytes = ext_bytes(x);
+
+    dest->type = src->type = type_ptr_to(TY_CHAR);
+    force_into(src, R_HL);
+    force_into(dest, R_DE);
+    evict_reg(R_BC);
+    if (bytes) {
+        push_rr(R_DE);
+        ld_rr_imm(R_BC, bytes);
+        out_byte2(0xed, 0xb0);              /* ldir */
+        pop_rr(R_HL);
+    } else {
+        ex_de_hl();
+    }
+    vdrop();
+    vdrop();
+    vpush(VAL_REG, TY_STRUCT, R_HL);
+    (vsp - 1)->ext = (unsigned char) x;
+}
+
 /* *p = v, with the pointer under the value on the stack. The value is left
  * behind, because an assignment is an expression and what it comes to is
  * what was assigned. */
@@ -2949,6 +3028,11 @@ void vstore_indirect(void)
                                "it cannot be written through");
     if (type_is_array(to))
         acc_error_at(tok_line, "an array cannot be assigned to as a whole");
+    if (type_is_struct(to)) {
+        vcopy_struct();
+
+        return;
+    }
 
     vconvert(to);
 

@@ -462,10 +462,10 @@ static void keywords_init(void)
     keyword("restrict", 8, TK_KW_RESERVED);
     keyword("sizeof", 6, TK_KW_SIZEOF);
     keyword("static", 6, TK_KW_RESERVED);
-    keyword("struct", 6, TK_KW_RESERVED);
+    keyword("struct", 6, TK_KW_STRUCT);
     keyword("switch", 6, TK_KW_SWITCH);
     keyword("typedef", 7, TK_KW_TYPEDEF);
-    keyword("union", 5, TK_KW_RESERVED);
+    keyword("union", 5, TK_KW_UNION);
     keyword("volatile", 8, TK_KW_RESERVED);
     keyword("_Bool", 5, TK_KW_RESERVED);
     keyword("_Complex", 8, TK_KW_RESERVED);
@@ -489,7 +489,8 @@ static const unsigned char punct[256] = {
     ['~'] = TK_TILDE,
     ['<'] = TK_LT,     ['>'] = TK_GT,
     ['?'] = TK_QUESTION, [':'] = TK_COLON,
-    ['['] = TK_LBRACKET, [']'] = TK_RBRACKET
+    ['['] = TK_LBRACKET, [']'] = TK_RBRACKET,
+    ['.'] = TK_DOT
 };
 
 /* Read a floating literal from the cursor, which is at its first character.
@@ -1015,6 +1016,9 @@ void next(void)
             if (assign) { cursor++; tok = TK_NE; }
             break;
         }
+    } else if (c == '-' && *cursor == '>') {
+        cursor++;
+        tok = TK_ARROW;
     }
 }
 

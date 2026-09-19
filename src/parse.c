@@ -172,18 +172,86 @@ enum {
     NAME_CONST      /* an enum constant, as a constant int */
 };
 
-/* A name that has been looked up and read, and the subscripts after it.
+static const char *record_name(int x);
+static void        record_complete(int x, int line);
+
+/* `.name` or `->name`, with the struct's address on the stack and the
+ * operator not yet read: the member's address in its place. */
+__attribute__((noinline))
+static void member(void)
+{
+    int line = tok_line, arrow = (tok == TK_ARROW), x = vext(), m;
+    Type type = vtype();
+    NameRef name;
+
+    next();
+    if (type != type_ptr_to(TY_STRUCT))
+        acc_error_at(line, arrow ? "'->' needs a pointer to a struct or union"
+                                 : "'.' needs a struct or union");
+    record_complete(x, line);
+    if (tok != TK_IDENT)
+        acc_error_at(tok_line, "expected a member's name, found %s",
+                     tok_spelling(tok));
+    name = tok_name;
+    m = member_find(x, name);
+    if (m < 0)
+        acc_error_at(tok_line, "'%s' has no member '%s'", record_name(x),
+                     name_text(name));
+    next();
+    vmember(member_offset(m), member_type(m), member_ext(m));
+}
+
+/* The subscripts and members after an operand: `a[i]`, `s.m`, `p->m`, in any
+ * number and order. `object` says whether what is on the stack is an
+ * object's address -- a global, an element, a member -- or a value, and so
+ * whether the address has to be read first to have a pointer: `p[i]` on a
+ * global p reads p, and on an array does not. Each of them leaves an object.
+ * Returns whether what is on the stack is one. */
+static int postfix_chain(int object)
+{
+    for (;;) {
+        if (tok == TK_LBRACKET) {
+            if (object)
+                vderef();
+            subscript();
+        } else if (tok == TK_DOT) {
+            /* A struct as a value -- what a call returned, or `(*p)` -- is
+             * its address, which is the object's. */
+            if (!object) {
+                if (!type_is_struct(vtype()))
+                    acc_error_at(tok_line, "'.' needs a struct or union");
+                vset_type(type_ptr_to(TY_STRUCT), vext());
+            }
+            member();
+        } else if (tok == TK_ARROW) {
+            if (object)
+                vderef();
+            member();
+        } else {
+            return object;
+        }
+        object = 1;
+    }
+}
+
+/* Whether a subscript or a member follows. */
+#define tok_postfix()  (tok_is(TK_LBRACKET) || tok_pair(tok, TK_DOT))
+typedef char dot_arrow_are_adjacent[TK_ARROW == TK_DOT + 1 ? 1 : -1];
+
+/* A name that has been looked up and read, and the subscripts and members
+ * after it.
  *
  * Everything but a plain local is reached through an address, which is what
  * lets all of it share the code that `*p` already has: a global is at a
  * constant address, an array is the address of its first element, and
  * `a[i]` is the address `a + i`. A second subscript reads the element first,
  * since it has to be a pointer to be subscripted again: that is `p[i][j]` on
- * an array of pointers. Arrays of arrays are not here yet. */
+ * an array of pointers. */
 __attribute__((noinline))
 static int name_operand(int sym, NameRef name)
 {
     const Sym *s;
+    int object;
 
     if (sym == SYM_NONE)
         acc_error_at(tok_line, "'%s' is not declared", name_text(name));
@@ -191,22 +259,25 @@ static int name_operand(int sym, NameRef name)
 
     switch (s->kind) {
     case SYM_LOCAL:
-        if (tok != TK_LBRACKET)
+        if (!tok_postfix())
             return NAME_LOCAL;
         vpush_local(s->val, s->type);
         vset_ext(s->ext);
+        object = 0;
         break;
     case SYM_GLOBAL:
         global_address(s);
-        if (tok != TK_LBRACKET)
-            return NAME_OBJECT;
-        vderef();
+        object = 1;
         break;
     case SYM_LOCAL_ARRAY:
         vaddr_array(s->val, s->type);
         vset_ext(s->ext);
-        if (tok != TK_LBRACKET)
-            return NAME_VALUE;
+        object = 0;
+        break;
+    case SYM_LOCAL_STRUCT:
+        vaddr_array(s->val, TY_STRUCT);
+        vset_ext(s->ext);
+        object = 1;
         break;
     case SYM_GLOBAL_ARRAY:
         if (type_ptr_depth(s->type) == TY_PTR_MAX)
@@ -214,8 +285,7 @@ static int name_operand(int sym, NameRef name)
                          TY_PTR_MAX);
         vpush_const(s->val, type_ptr_to(s->type));
         vset_ext(s->ext);
-        if (tok != TK_LBRACKET)
-            return NAME_VALUE;
+        object = 0;
         break;
     case SYM_CONST:
         vpush_const(s->val, TY_INT);
@@ -225,25 +295,15 @@ static int name_operand(int sym, NameRef name)
         acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
     }
 
-    for (;;) {
-        subscript();
-        if (tok != TK_LBRACKET)
-            return NAME_OBJECT;
-        vderef();
-    }
+    return postfix_chain(object) ? NAME_OBJECT : NAME_VALUE;
 }
 
-/* Subscripts after a value that is not a name -- `(p + 1)[i]`, `f()[i]` --
- * and then the element's value. */
+/* Subscripts and members after a value that is not a name -- `(p + 1)[i]`,
+ * `f()[i]`, `f().m` -- and then the element's value. */
 __attribute__((noinline))
 static void subscript_value(void)
 {
-    for (;;) {
-        subscript();
-        if (tok != TK_LBRACKET)
-            break;
-        vderef();
-    }
+    postfix_chain(0);
     object_value();
 }
 
@@ -295,6 +355,11 @@ void symbol_value(int sym, NameRef name)
         vpostfix_local(local->val, local->type, local->ext,
                        tok == TK_INC ? TK_PLUS : TK_MINUS);
         next();
+
+        return;
+    }
+    if (tok_pair(tok, TK_DOT)) {       /* `.` or `->` */
+        object_operand(sym, name);
 
         return;
     }
@@ -487,7 +552,7 @@ static void string_value(void)
     int len = string_gather();
 
     vpush_const(gen_data(str_joined, len), type_ptr_to(TY_CHAR));
-    if (tok == TK_LBRACKET)
+    if (tok_postfix())
         subscript_value();
 }
 
@@ -540,7 +605,7 @@ static void primary(void)
         expr();
         narrow_dest = outer;
         expect(TK_RPAREN, "')'");
-        if (tok == TK_LBRACKET)
+        if (tok_postfix())
             subscript_value();
 
         return;
@@ -611,7 +676,7 @@ static void primary(void)
 
         if (accept(TK_LPAREN)) {
             call_rest(name);
-            if (tok == TK_LBRACKET)
+            if (tok_postfix())
                 subscript_value();
 
             return;
@@ -904,17 +969,12 @@ static void paren_statement(void)
     }
     narrow_dest = outer;
 
-    if (tok != TK_LBRACKET) {
+    if (!tok_postfix()) {
         binary_rest(PREC_LOWEST);
 
         return;
     }
-    for (;;) {
-        subscript();
-        if (tok != TK_LBRACKET)
-            break;
-        vderef();
-    }
+    postfix_chain(0);
     if (tok == TK_INC || tok == TK_DEC) {
         object_value();
         binary_rest(PREC_LOWEST);
@@ -951,7 +1011,8 @@ static void assignment(void)
          * store, a step, or a read and the rest of the expression. */
         sym = sym_find(name);
         if (sym != SYM_NONE
-            && (sym_at(sym)->kind != SYM_LOCAL || tok_is(TK_LBRACKET))) {
+            && (sym_at(sym)->kind != SYM_LOCAL || tok_is(TK_LBRACKET)
+                || tok_pair(tok, TK_DOT))) {
             object_statement(sym, name);
 
             return;
@@ -1347,6 +1408,147 @@ static Type enum_specifier(void)
     return type;
 }
 
+static int  base_ext;
+static Type base_type(void);
+static Type declarator_stars_out(Type base);
+static NameRef direct_declarator_out(Type t, int tx, Type *type, int *ext,
+                                     int *count);
+
+/* The name a record is called by in a diagnostic: `struct point`, or
+ * `struct` alone when it has no tag. */
+static const char *record_name(int x)
+{
+    static char buf[80];
+    NameRef tag = ext_tag(x);
+    const char *kw = ext_is_union(x) ? "union" : "struct";
+
+    if (!tag)
+        return kw;
+    snprintf(buf, sizeof buf, "%s %s", kw, name_text(tag) + 1);
+
+    return buf;
+}
+
+/* That a record's members are known: it cannot be declared, sized or looked
+ * into before they are. */
+static void record_complete(int x, int line)
+{
+    if (!ext_complete(x))
+        acc_error_at(line, "'%s' is declared but its members are not given",
+                     record_name(x));
+}
+
+/* A record's members, from just past its `{`. Each is laid where the last
+ * ended, with no padding: every type on this machine is aligned to a byte,
+ * which is how agondev lays them out too. A union's are all at its start,
+ * and it is as big as the biggest. */
+static void record_members(int x, int is_union, int line)
+{
+    int first = -1, last = -1, size = 0;
+
+    while (tok != TK_RBRACE) {
+        Type base = base_type();
+        int bx = base_ext;
+
+        if (accept(TK_SEMI))
+            continue;               /* a nested struct declared, nothing more */
+        for (;;) {
+            int mline = tok_line, count, ext, bytes, m;
+            Type type;
+            NameRef name = direct_declarator_out(declarator_stars_out(base),
+                                                 bx, &type, &ext, &count);
+
+            if (tok == TK_COLON)
+                acc_error_at(mline, "bit-fields are not supported yet");
+            if (count < 0)
+                acc_error_at(mline, "a member that is an array needs its size");
+            if (count) {
+                ext = ext_array(type, ext, count);
+                type = TY_EXT;
+            }
+            if (type == TY_VOID)
+                acc_error_at(mline, "'void' is not a type a member can have");
+            if (type_is_struct(type))
+                record_complete(ext, mline);
+            for (m = first; m >= 0; m = member_next(m))
+                if (member_name(m) == name)
+                    acc_error_at(mline, "'%s' is already a member of '%s'",
+                                 name_text(name), record_name(x));
+
+            bytes = type_bytes(type, ext);
+            m = member_add(name, type, ext, is_union ? 0 : size);
+            if (last >= 0)
+                member_link(last, m);
+            else
+                first = m;
+            last = m;
+            if (is_union) {
+                if (bytes > size)
+                    size = bytes;
+            } else {
+                size += bytes;
+            }
+            if (size > 0x7fffff)
+                acc_error_at(mline, "a struct this large does not fit in "
+                                    "memory");
+            if (!accept(TK_COMMA))
+                break;
+        }
+        expect(TK_SEMI, "';'");
+    }
+    if (first < 0)
+        acc_error_at(line, "a struct or union needs at least one member");
+    ext_record_done(x, first, size);
+}
+
+/* `struct` or `union`, and a tag, a list of members or both. A tag with no
+ * members refers to the record already declared by that name, or declares
+ * one whose members come later -- enough for a pointer to it, which is how
+ * a record points at another of its own kind. */
+__attribute__((noinline))
+static Type struct_specifier(void)
+{
+    int line = tok_line, is_union = (tok == TK_KW_UNION), kind, sym, x;
+    NameRef name = NAME_NONE, tag = NAME_NONE;
+
+    kind = is_union ? TAG_UNION : TAG_STRUCT;
+    next();
+    if (tok == TK_IDENT) {
+        name = tok_name;
+        tag = tag_name(name);
+        next();
+    }
+
+    if (tag) {
+        sym = tag_find(tag, kind, name, line);
+        if (sym != SYM_NONE && tok == TK_LBRACE
+            && !sym_declared_in(sym, scope_mark))
+            sym = SYM_NONE;                 /* a new one, shadowing it */
+        if (sym == SYM_NONE) {
+            x = ext_record(is_union, tag);
+            sym = push_here(tag, SYM_TAG, kind);
+            sym_at(sym)->type = TY_STRUCT;
+            sym_at(sym)->ext = (unsigned char) x;
+        }
+        x = sym_at(sym)->ext;
+    } else {
+        if (tok != TK_LBRACE)
+            acc_error_at(line, "'%s' needs a name or a list of members",
+                         is_union ? "union" : "struct");
+        x = ext_record(is_union, NAME_NONE);
+    }
+
+    if (accept(TK_LBRACE)) {
+        if (ext_complete(x))
+            acc_error_at(line, "'%s' is defined twice", record_name(x));
+        record_members(x, is_union, line);
+        expect(TK_RBRACE, "'}'");
+    }
+    base_ext = x;
+
+    return TY_STRUCT;
+}
+
 /* The keywords at the front of a declaration, which say what the type is
  * before any star has narrowed it down. `int *p, q;` has one of these and two
  * declarators, and q is an int: a star belongs to the name it is written next
@@ -1356,8 +1558,6 @@ static Type enum_specifier(void)
  * result because nearly every caller wants only the type -- and it is
  * overwritten by the next type read, which may be inside the declaration
  * (a cast in an initialiser), so a caller that wants it copies it at once. */
-static int base_ext;
-
 __attribute__((noinline))
 static Type base_type_other(void)
 {
@@ -1366,6 +1566,9 @@ static Type base_type_other(void)
     switch (tok) {
     case TK_KW_ENUM:
         return enum_specifier();
+    case TK_KW_STRUCT:
+    case TK_KW_UNION:
+        return struct_specifier();
     case TK_IDENT: {
         int sym = sym_find(tok_name);
 
@@ -1513,6 +1716,8 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
 
     if (base == TY_VOID)
         acc_error_at(tok_line, "an array of void has no elements to hold");
+    if (type_is_struct(base))
+        record_complete(base_x, tok_line);
     *elem = base;
     *elem_x = base_x;
     for (i = n - 1; i >= 1; i--) {
@@ -1619,12 +1824,8 @@ static int sizeof_unary(void);
  * any `++` or `--`, which do not change the type. */
 static int sizeof_postfix(int what)
 {
-    while (tok == TK_LBRACKET) {
-        if (what == SIZEOF_OBJECT)
-            vderef();
-        subscript();
+    if (tok_postfix() && postfix_chain(what == SIZEOF_OBJECT))
         what = SIZEOF_OBJECT;
-    }
     while (tok == TK_INC || tok == TK_DEC)
         next();
 
@@ -1853,6 +2054,19 @@ NameRef direct_declarator(Type t, int tx, Type *type, int *ext, int *count)
     return name;
 }
 
+/* The two above as calls, for a struct's members, where they are not on the
+ * path of every declaration. */
+static Type declarator_stars_out(Type base)
+{
+    return declarator_stars(base);
+}
+
+static NameRef direct_declarator_out(Type t, int tx, Type *type, int *ext,
+                                     int *count)
+{
+    return direct_declarator(t, tx, type, ext, count);
+}
+
 /* An array's initialiser, walked into the scalars it gives: each is handed to
  * `put` with its offset in the array, and whatever `put` does with it --
  * store it, for a local; write its bytes, for a global -- is the caller's.
@@ -1865,6 +2079,7 @@ NameRef direct_declarator(Type t, int tx, Type *type, int *ext, int *count)
 typedef void (*InitPut)(Type scalar, int offset, int value);
 
 static void init_element(Type type, int x, int offset, InitPut put);
+static void init_record(int x, int offset, InitPut put, int braced);
 static int  init_string(int count, int offset, InitPut put);
 
 /* Whether `type`, an element type, is one of the three chars a string can
@@ -1917,6 +2132,11 @@ static void init_elided(int x, int offset, InitPut put)
 
 static void init_element(Type type, int x, int offset, InitPut put)
 {
+    if (type_is_struct(type)) {
+        init_record(x, offset, put, accept(TK_LBRACE));
+
+        return;
+    }
     if (type_is_array(type)) {
         if (tok == TK_STRING && type_is_char(ext_elem(x))) {
             init_string(ext_count(x), offset, put);
@@ -1961,15 +2181,37 @@ static int init_string(int count, int offset, InitPut put)
     return len;
 }
 
-/* The scalar type an array is made of, however many dimensions it has. */
-static Type innermost(Type type, int x)
+/* A struct's or a union's initialiser: its members in order, or a union's
+ * first. Braced, the list is its own and ends at its brace; with the braces
+ * left out it takes values from the list it is in until every member has
+ * one or the list ends, as an elided row does. */
+static void init_record(int x, int offset, InitPut put, int braced)
 {
-    while (type_is_array(type)) {
-        type = ext_elem(x);
-        x = ext_elem_x(x);
-    }
+    int m = member_first(x), i;
 
-    return type;
+    record_complete(x, tok_line);
+    for (i = 0; m >= 0; i++) {
+        if (braced && tok == TK_RBRACE)
+            break;
+        if (!braced && i) {
+            if (tok != TK_COMMA)
+                return;
+            next();
+            if (tok == TK_RBRACE)
+                return;
+        }
+        init_element(member_type(m), member_ext(m),
+                     offset + member_offset(m), put);
+        m = ext_is_union(x) ? -1 : member_next(m);
+        if (braced && !accept(TK_COMMA))
+            break;
+    }
+    if (!braced)
+        return;
+    if (tok != TK_RBRACE)
+        acc_error_at(tok_line, "more initial values than '%s' has members",
+                     record_name(x));
+    next();
 }
 
 /* The local array being initialised, and which of its scalars the
@@ -1981,13 +2223,12 @@ static int            init_given_cap;
 static void local_put(Type scalar, int offset, int value)
 {
     Type outer = narrow_dest;
-    int slot = offset / type_size(scalar);
+    int size = type_size(scalar), end = offset + size;
 
-    vaddr_array(init_array, scalar);
-    if (slot) {
-        vpush_const(slot, TY_INT);
-        vapply(TK_PLUS, 0);
-    }
+    /* By the byte: a struct's members are not at multiples of their own
+     * width. */
+    vaddr_array(init_array, TY_CHAR);
+    vmember(offset, scalar, 0);
     narrow_dest = (type_size(scalar) < ACC_INT_SIZE) ? scalar : 0;
     if (value >= 0)
         vpush_const(value, TY_INT);
@@ -1998,10 +2239,10 @@ static void local_put(Type scalar, int offset, int value)
     vdrop();
     gen_stmt_end();
 
-    if (slot >= init_given_cap) {
+    if (end > init_given_cap) {
         int cap = init_given_cap ? init_given_cap : 64;
 
-        while (cap <= slot)
+        while (cap < end)
             cap *= 2;
         init_given = realloc(init_given, (size_t) cap);
         if (!init_given)
@@ -2009,7 +2250,57 @@ static void local_put(Type scalar, int offset, int value)
         memset(init_given + init_given_cap, 0, (size_t) (cap - init_given_cap));
         init_given_cap = cap;
     }
-    init_given[slot] = 1;
+    memset(init_given + offset, 1, (size_t) size);
+}
+
+/* Zeroes the bytes of the first `total` of a local array or struct that its
+ * initialiser did not give, a run at a time. */
+static void zero_gaps(int array, int total)
+{
+    int i, run;
+
+    for (i = 0; i < total; i = run) {
+        if (i < init_given_cap && init_given[i]) {
+            run = i + 1;
+            continue;
+        }
+        for (run = i; run < total && !(run < init_given_cap && init_given[run]); run++)
+            ;
+        gen_zero_array(array, i, run - i);
+    }
+}
+
+/* A local struct or union, from just past its declarator: in the array area,
+ * where it is reached by its address as an array is. Its initialiser is a
+ * braced list, the members not given zeroed, or a struct of the same type,
+ * copied. */
+__attribute__((noinline))
+static void local_struct(int x, NameRef name, int line)
+{
+    int array = gen_local_array(), sym;
+
+    record_complete(x, line);
+    gen_local_array_size(array, ext_bytes(x));
+    if (accept(TK_ASSIGN)) {
+        if (accept(TK_LBRACE)) {
+            init_array = array;
+            if (init_given_cap)
+                memset(init_given, 0, (size_t) init_given_cap);
+            init_record(x, 0, local_put, 1);
+            zero_gaps(array, ext_bytes(x));
+        } else {
+            vaddr_array(array, TY_STRUCT);
+            vset_ext(x);
+            expr();
+            vstore_indirect();
+            vdrop();
+            gen_stmt_end();
+        }
+    }
+
+    sym = sym_push(name, SYM_LOCAL_STRUCT, array);
+    sym_at(sym)->type = TY_STRUCT;
+    sym_at(sym)->ext = (unsigned char) x;
 }
 
 /* A local array, from just past its declarator.
@@ -2052,7 +2343,7 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
         gen_copy_to_array(array, 0, from, n);
         if (n < count)
             gen_zero_array(array, n, count - n);
-    } else if (init && !type_is_array(elem)) {
+    } else if (init && !type_is_array(elem) && !type_is_struct(elem)) {
         /* One dimension: the values in order, each stored as it is read, and
          * the rest zeroed after them in one run, as before arrays of
          * arrays. */
@@ -2079,9 +2370,6 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
             gen_zero_array(array, n * step, (count - n) * step);
         }
     } else if (init) {
-        Type scalar = innermost(elem, elem_x);
-        int each = type_size(scalar), slots, i, run;
-
         expect(TK_LBRACE, "'{'");
         init_array = array;
         if (init_given_cap)
@@ -2097,16 +2385,7 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
             }
         }
 
-        slots = count * step / each;
-        for (i = 0; i < slots; i = run) {
-            if (i < init_given_cap && init_given[i]) {
-                run = i + 1;
-                continue;
-            }
-            for (run = i; run < slots && !(run < init_given_cap && init_given[run]); run++)
-                ;
-            gen_zero_array(array, i * each, (run - i) * each);
-        }
+        zero_gaps(array, count * step);
     } else if (count < 0) {
         acc_error_at(line, "an array declared with [] needs initial values to "
                            "say how long it is");
@@ -2182,6 +2461,12 @@ void declaration(void)
 
         if (count) {
             local_array(type, ext, name, count, line);
+            if (!accept(TK_COMMA))
+                break;
+            continue;
+        }
+        if (type_is_struct(type)) {
+            local_struct(ext, name, line);
             if (!accept(TK_COMMA))
                 break;
             continue;
@@ -2901,6 +3186,10 @@ static void function_rest(Type ret_type, NameRef name)
     int fn;
     int nparams = 0, argoff, params_first;
 
+    if (type_is_struct(ret_type))
+        acc_error_at(tok_line, "a struct or union returned by value is not "
+                               "supported yet");
+
     expect(TK_LPAREN, "'('");
 
     fn = sym_find(name);
@@ -2942,6 +3231,9 @@ static void function_rest(Type ret_type, NameRef name)
                 ptype = type_ptr_to(ptype);
             }
             not_void(ptype, "a parameter", pline);
+            if (type_is_struct(ptype))
+                acc_error_at(pline, "a struct or union passed by value is not "
+                                    "supported yet");
 
             psym = sym_push(pname, SYM_LOCAL, argoff);
             sym_at(psym)->type = ptype;
@@ -3119,7 +3411,8 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
      * walk, with a buffer, it cost 1% of a compile of a program with a few
      * dozen small ones. A string for a char array goes the walk's way, which
      * already knows strings. */
-    if (!type_is_array(elem) && !(init && tok == TK_STRING)) {
+    if (!type_is_array(elem) && !type_is_struct(elem)
+        && !(init && tok == TK_STRING)) {
         int n = 0;
 
         at = out_here();
@@ -3199,6 +3492,30 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
     sym_set_count(sym, count);
 }
 
+/* A file-scope struct or union: its bytes built from a braced initialiser,
+ * as an array's are, zeros for whatever it does not give. */
+__attribute__((noinline))
+static void global_struct(int x, NameRef name, int line)
+{
+    int total, at, sym, i;
+
+    record_complete(x, line);
+    total = ext_bytes(x);
+    init_bytes_len = 0;
+    if (accept(TK_ASSIGN)) {
+        expect(TK_LBRACE, "'{'");
+        init_record(x, 0, global_put, 1);
+    }
+    init_room(total);
+    at = out_here();
+    for (i = 0; i < total; i++)
+        out_byte(init_bytes[i]);
+
+    sym = sym_push(name, SYM_GLOBAL, at);
+    sym_at(sym)->type = TY_STRUCT;
+    sym_at(sym)->ext = (unsigned char) x;
+}
+
 /* One file-scope variable: its bytes written into the image where it is
  * declared, and its name bound to where they went.
  *
@@ -3225,6 +3542,11 @@ static void global_variable(Type type, int ext, NameRef name, int count,
 
     if (count) {
         global_array(type, ext, name, count, line);
+
+        return;
+    }
+    if (type_is_struct(type)) {
+        global_struct(ext, name, line);
 
         return;
     }

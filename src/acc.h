@@ -51,6 +51,12 @@
  * which is a different piece of work from this one. */
 typedef unsigned char Type;
 
+/* Every identifier in the program is stored once, in one arena that grows and
+ * is never freed. A name is referred to by its offset into that arena, which
+ * is three bytes rather than a pointer plus a length plus a hash link. */
+typedef unsigned int NameRef;
+#define NAME_NONE ((NameRef) 0)
+
 #define TY_SIZE_MASK  0x07              /* the width, in bytes */
 #define TY_UNSIGNED   0x08
 
@@ -139,8 +145,21 @@ typedef unsigned char Type;
 
 #define type_is_array(ty)   ((Type) (ty) == TY_EXT)
 
-/* The size of any type, arrays included, given its extension. */
-#define type_bytes(ty, x)   (type_is_array(ty) ? ext_bytes(x) : type_size(ty))
+/* A struct or a union, whose extension says which and what is in it.
+ *
+ * A value of one is never loaded: it is carried as its address, which is
+ * what an assignment copies from, a member is found from, and an argument is
+ * copied out of. So it has the width of an address, which keeps it off every
+ * path for four-byte values, and the floating bit, which no int has and
+ * which float, being four bytes, is not confused with. Wherever a value is
+ * loaded as the number it is, a struct is refused: see struct_used. */
+#define TY_STRUCT   ((Type) (TY_FLOATING | ACC_INT_SIZE))
+
+#define type_is_struct(ty)  ((Type) (ty) == TY_STRUCT)
+
+/* The size of any type, arrays and structs included, given its extension. */
+#define type_bytes(ty, x)   (type_is_array(ty) || type_is_struct(ty) \
+                             ? ext_bytes(x) : type_size(ty))
 
 /* What `p + 1` moves by, which is the width of what p points at -- a whole
  * row, when that is an array. */
@@ -151,6 +170,24 @@ Type ext_elem(int x);           /* an array's element type */
 int  ext_elem_x(int x);         /* and its extension */
 int  ext_count(int x);
 int  ext_bytes(int x);
+
+int     ext_record(int is_union, NameRef tag);   /* a new, incomplete record */
+void    ext_record_done(int x, int first, int bytes);
+int     ext_is_union(int x);
+int     ext_complete(int x);
+NameRef ext_tag(int x);                 /* NAME_NONE when it has none */
+
+/* A record's members, in the order they were declared: member_first, then
+ * member_next until -1. */
+int     member_add(NameRef name, Type type, int ext, int offset);
+void    member_link(int member, int next);
+int     member_first(int x);
+int     member_next(int member);
+int     member_find(int x, NameRef name);      /* -1 if it has none so named */
+NameRef member_name(int member);
+Type    member_type(int member);
+int     member_ext(int member);
+int     member_offset(int member);
 
 /* C promotes anything narrower than int to int before doing arithmetic on it,
  * so a value in a register is always int-wide. Only loads, stores and casts
@@ -174,11 +211,8 @@ __attribute__((noreturn)) void acc_error_at(int line, const char *fmt, ...);
 /* ------------------------------------------------------------------ */
 /* names                                                               */
 
-/* Every identifier in the program is stored once, in one arena that grows and
- * is never freed. A name is referred to by its offset into that arena, which
- * is three bytes rather than a pointer plus a length plus a hash link. */
-typedef unsigned int NameRef;
-#define NAME_NONE ((NameRef) 0)
+/* NameRef is declared with Type, at the top: the struct members below the
+ * types are named by one. */
 
 NameRef     name_intern(const char *text, int len);
 const char *name_text(NameRef ref);
@@ -337,6 +371,8 @@ const char *tok_spelling(int token);
 enum {
     SYM_LOCAL,          /* a local or a parameter: val is its frame offset */
     SYM_LOCAL_ARRAY,    /* a local array: val is its number */
+    SYM_LOCAL_STRUCT,   /* a local struct or union: val is its number in the
+                         * array area, where it lives as an array does */
     SYM_FUNC,           /* a function: val is its address in the image */
     SYM_GLOBAL,         /* a file-scope variable: val is its address */
     SYM_GLOBAL_ARRAY,   /* a file-scope array: val is its address */
@@ -353,7 +389,7 @@ enum {
 
 /* Whether a symbol of this kind belongs to the function being compiled
  * rather than to file scope. */
-#define sym_kind_local(kind) ((unsigned) (kind) <= SYM_LOCAL_ARRAY)
+#define sym_kind_local(kind) ((unsigned) (kind) <= SYM_LOCAL_STRUCT)
 
 /* Nine bytes on the target: a name, a kind, one number whose meaning the
  * kind decides, and a type with its extension. tinycc's equivalent is 31, and
@@ -480,6 +516,7 @@ void vstore_local(int offset, Type type); /* pop the top into a local */
 void vapply(int op, Type narrow);
 void vaddr_local(int offset, Type type);  /* &local */
 void vderef(void);                    /* *p, replacing the pointer */
+void vmember(int offset, Type type, int ext);  /* p->m, from p, as an address */
 void vstore_indirect(void);           /* *p = v, with p under v */
 void vneg(void);
 void vnot(void);
