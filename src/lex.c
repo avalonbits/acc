@@ -433,12 +433,12 @@ static void keywords_init(void)
      * follows is about a name not being declared rather than about the
      * feature not being there. */
     keyword("auto", 4, TK_KW_RESERVED);
-    keyword("break", 5, TK_KW_RESERVED);
-    keyword("case", 4, TK_KW_RESERVED);
+    keyword("break", 5, TK_KW_BREAK);
+    keyword("case", 4, TK_KW_CASE);
     keyword("const", 5, TK_KW_RESERVED);
-    keyword("continue", 8, TK_KW_RESERVED);
-    keyword("default", 7, TK_KW_RESERVED);
-    keyword("do", 2, TK_KW_RESERVED);
+    keyword("continue", 8, TK_KW_CONTINUE);
+    keyword("default", 7, TK_KW_DEFAULT);
+    keyword("do", 2, TK_KW_DO);
     keyword("enum", 4, TK_KW_RESERVED);
     keyword("extern", 6, TK_KW_RESERVED);
     keyword("goto", 4, TK_KW_RESERVED);
@@ -448,7 +448,7 @@ static void keywords_init(void)
     keyword("sizeof", 6, TK_KW_RESERVED);
     keyword("static", 6, TK_KW_RESERVED);
     keyword("struct", 6, TK_KW_RESERVED);
-    keyword("switch", 6, TK_KW_RESERVED);
+    keyword("switch", 6, TK_KW_SWITCH);
     keyword("typedef", 7, TK_KW_RESERVED);
     keyword("union", 5, TK_KW_RESERVED);
     keyword("volatile", 8, TK_KW_RESERVED);
@@ -899,6 +899,12 @@ const char *tok_spelling(int token)
     case TK_KW_FLOAT:  return "'float'";
     case TK_KW_DOUBLE: return "'double'";
     case TK_KW_FOR:    return "'for'";
+    case TK_KW_BREAK:  return "'break'";
+    case TK_KW_CONTINUE: return "'continue'";
+    case TK_KW_DO:     return "'do'";
+    case TK_KW_SWITCH: return "'switch'";
+    case TK_KW_CASE:   return "'case'";
+    case TK_KW_DEFAULT: return "'default'";
     case TK_KW_RESERVED: return "a reserved word";
     case TK_FLOAT:     return "a floating-point number";
     case TK_LPAREN:    return "'('";

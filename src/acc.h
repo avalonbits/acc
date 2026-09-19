@@ -213,6 +213,8 @@ enum {
      * 1.5% slower on programs that do not use it. */
     TK_KW_FOR,
     TK_RBRACKET,
+    TK_KW_BREAK, TK_KW_CONTINUE, TK_KW_DO, TK_KW_SWITCH, TK_KW_CASE,
+    TK_KW_DEFAULT,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -425,6 +427,13 @@ int  gen_here(void);                  /* the address a backward jump aims at */
 int  gen_jump(void);                  /* jp nn, to be patched; returns the hole */
 void gen_jump_to(int target);         /* jp nn, backwards */
 int  gen_jump_if_false(void);         /* pop the top, jump when it is zero */
+void gen_jump_if_true_to(int target); /* pop the top, jump back when it is not */
+
+/* A switch: the value it switches on, stored in a frame slot when the switch
+ * begins, loaded once where the cases are tested, and compared with each
+ * case's constant in turn. */
+void gen_switch_load(int slot, Type type);
+void gen_switch_case(long value, Type type, int target);
 int  gen_logic_left(int settles);     /* && and ||: after the left operand */
 void gen_logic_right(int settles, int early);  /* and after the right */
 void vtruth(int op);                  /* compare the top with zero: TK_NE, TK_EQ */

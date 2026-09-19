@@ -1933,6 +1933,49 @@ int gen_jump_if_false(void)
     return jump_on_truth(0);
 }
 
+/* The bottom of a do-while: back to the top while the condition holds. */
+void gen_jump_if_true_to(int target)
+{
+    if (vtop != 1)
+        acc_error("internal: %d values live at a branch", vtop);
+
+    out_patch24(jump_on_truth(1), target);
+}
+
+/* The value a switch compares its cases with, into HL -- and for a long its
+ * top byte into A -- once, ahead of all the tests. */
+void gen_switch_load(int slot, Type type)
+{
+    need_disp(slot);
+    ld_rr_ix(R_HL, slot);
+    if (type_wide(type)) {
+        need_disp(slot + ACC_INT_SIZE);
+        ld_a_ix(slot + ACC_INT_SIZE);
+    }
+}
+
+/* To `target` if the loaded value is `value`.
+ *
+ *   ld de, value / or a / sbc hl, de / add hl, de / jp z, target
+ *
+ * The add puts HL back for the next case and leaves the zero flag as the
+ * subtraction set it, so the value is loaded once however many cases there
+ * are. A long compares its top byte in A first and skips the rest when that
+ * differs. */
+void gen_switch_case(long value, Type type, int target)
+{
+    if (type_wide(type)) {
+        out_byte2(0xfe, (int) ((unsigned long) value >> 24) & 0xff);  /* cp n */
+        out_byte2(0x20, 12);                    /* jr nz, past the rest */
+    }
+    out_byte(0x11);                             /* ld de, value */
+    out_word24((int) (value & 0xffffff));
+    or_a_a();
+    sbc_hl_rr(R_DE);
+    add_hl_rr(R_DE);
+    out_opcode24(JP_Z, target);
+}
+
 /* The top becomes 0 or 1 according to how it compares with zero -- TK_NE for
  * its truth, TK_EQ for `!`. The zero is of the value's own kind, so the
  * comparison is a float one for a float and a four-byte one for a long, and a

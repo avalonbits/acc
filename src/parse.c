@@ -1150,20 +1150,29 @@ static Type object_type(const char *what)
 /* A constant integer a declaration needs now: an array's size. Parsed as an
  * expression, which has to fold to a constant with nothing emitted, as a
  * global's initial value does. */
-static int constant_int(const char *what, int line)
+static int constant_folded(const char *what, int line, int before)
 {
-    int before = out_here(), val;
-    Type outer = narrow_dest, type;
+    int val;
+    Type type;
 
-    narrow_dest = 0;
-    binary(PREC_LOWEST);
-    narrow_dest = outer;
     if (!vconst_top(&val, &type) || out_here() != before
         || type_pointer(type) || type_float(type))
         acc_error_at(line, "%s has to be a constant integer", what);
     vdrop();
 
     return val;
+}
+
+static int constant_int(const char *what, int line)
+{
+    int before = out_here();
+    Type outer = narrow_dest;
+
+    narrow_dest = 0;
+    binary(PREC_LOWEST);
+    narrow_dest = outer;
+
+    return constant_folded(what, line, before);
 }
 
 /* `[N]` or `[]` after a name being declared: the number of elements, -1 for
@@ -1296,6 +1305,340 @@ void declaration(void)
 }
 
 static void statement(void);
+static void condition(void);
+
+/* ------------------------------------------------------------------ */
+/* break, continue, and the cases of a switch                          */
+
+/* Jumps waiting for an address that is not known yet: a `break` for the end
+ * of the loop or switch it leaves, and a `continue` in a do-while for the
+ * condition, which comes after the body. Each construct notes how many there
+ * were when it began and fills in the ones above that when it ends, so
+ * nesting takes care of itself: the inner one has always finished with its
+ * own before the outer one looks. */
+typedef struct {
+    int *at;
+    int  count, cap;
+} Holes;
+
+static Holes breaks, continues;
+
+static void hole_push(Holes *h, int hole)
+{
+    if (h->count == h->cap) {
+        h->cap = h->cap ? h->cap * 2 : 16;
+        h->at = realloc(h->at, (size_t) h->cap * sizeof *h->at);
+        if (!h->at)
+            acc_error("out of memory for jumps");
+    }
+    h->at[h->count++] = hole;
+}
+
+/* Every hole above `mark`, filled in with here. */
+static void holes_land(Holes *h, int mark)
+{
+    while (h->count > mark)
+        gen_label(h->at[--h->count]);
+}
+
+/* What `break` and `continue` mean where the parser is now. A loop sets all
+ * three; a switch sets only where a break goes, which is why a `continue` in
+ * a switch in a loop continues the loop. */
+typedef struct {
+    int break_mark;     /* breaks from here up are this construct's; -1: none */
+    int continue_mark;  /* the same for continues; -1: not in a loop */
+    int continue_to;    /* where a continue goes, when that is already known;
+                         * -1 when it is further on, as in a do-while */
+} Jumps;
+
+static Jumps jumps = { -1, -1, -1 };
+
+/* A switch the parser is inside, for the case labels in it -- which may be
+ * anywhere in its body, inside loops and blocks, and in Duff's device are. */
+typedef struct {
+    int  case_mark;     /* its cases are the ones from here up; -1: none */
+    int  default_at;    /* where `default:` is, -1 if there is none yet */
+    Type type;          /* what the cases are converted to */
+} Switch;
+
+static Switch in_switch = { -1, -1, TY_INT };
+
+static long *case_value;
+static int  *case_at;
+static int   ncases, cases_cap;
+
+/* The contexts of the loops and switches the parser is inside, outermost
+ * first, three ints apiece on a stack walked by a pointer.
+ *
+ * Kept here rather than in the frames of the functions that parse them: one
+ * in for_statement's frame made it nine bytes larger and a compile of a
+ * program full of for loops 3% slower on the Agon. And kept as ints through
+ * a pointer rather than as an array of Jumps, which cost a multiply by the
+ * size of one -- a call on this target -- and a copy of it, each way: about
+ * 1100 cycles a loop. */
+static int *jump_stack, *jump_top, *jump_limit;
+
+__attribute__((noinline))
+static void jumps_grow(void)
+{
+    int used = (int) (jump_top - jump_stack);
+    int cap = used ? used * 2 : 24;
+
+    jump_stack = realloc(jump_stack, (size_t) cap * sizeof *jump_stack);
+    if (!jump_stack)
+        acc_error("out of memory for nested loops");
+    jump_top = jump_stack + used;
+    jump_limit = jump_stack + cap;
+}
+
+static inline __attribute__((always_inline)) void jumps_push(void)
+{
+    if (jump_top == jump_limit)
+        jumps_grow();
+    jump_top[0] = jumps.break_mark;
+    jump_top[1] = jumps.continue_mark;
+    jump_top[2] = jumps.continue_to;
+    jump_top += 3;
+}
+
+static inline __attribute__((always_inline)) void jumps_pop(void)
+{
+    jump_top -= 3;
+    jumps.break_mark = jump_top[0];
+    jumps.continue_mark = jump_top[1];
+    jumps.continue_to = jump_top[2];
+}
+
+static void loop_begin(int continue_to)
+{
+    jumps_push();
+    jumps.break_mark = breaks.count;
+    jumps.continue_mark = continues.count;
+    jumps.continue_to = continue_to;
+}
+
+/* The end of a loop: its breaks land here, which is past everything in it. */
+static void loop_end(void)
+{
+    holes_land(&breaks, jumps.break_mark);
+    jumps_pop();
+}
+
+__attribute__((noinline))
+static void break_statement(void)
+{
+    int line = tok_line;
+
+    next();
+    expect(TK_SEMI, "';'");
+    if (jumps.break_mark < 0)
+        acc_error_at(line, "'break' is not inside a loop or a switch");
+    hole_push(&breaks, gen_jump());
+}
+
+__attribute__((noinline))
+static void continue_statement(void)
+{
+    int line = tok_line;
+
+    next();
+    expect(TK_SEMI, "';'");
+    if (jumps.continue_mark < 0)
+        acc_error_at(line, "'continue' is not inside a loop");
+    if (jumps.continue_to >= 0)
+        gen_jump_to(jumps.continue_to);
+    else
+        hole_push(&continues, gen_jump());
+}
+
+/* `while (condition) body`, out of statement() for the reason for_statement
+ * is: its saved jumps would otherwise be in the frame of every statement. */
+__attribute__((noinline))
+static void while_statement(void)
+{
+    int top, to_end;
+
+    next();
+    top = gen_here();
+    condition();
+    to_end = gen_jump_if_false();
+    loop_begin(top);
+    statement();
+    gen_jump_to(top);
+    gen_label(to_end);
+    loop_end();
+}
+
+/* `do body while (condition);` -- the body first, then the test, and back to
+ * the top while it holds. A continue goes to the test, which is only reached
+ * once the body has been read, so it waits in the list with the breaks. */
+__attribute__((noinline))
+static void do_statement(void)
+{
+    int top = gen_here();
+
+    next();
+    loop_begin(-1);
+    statement();
+    expect(TK_KW_WHILE, "'while' after the body of a do");
+    holes_land(&continues, jumps.continue_mark);
+    condition();
+    expect(TK_SEMI, "';'");
+    gen_jump_if_true_to(top);
+    loop_end();
+}
+
+/* The constant a case label names, converted to the type the switch compares
+ * at. A literal, with a sign or without, is read directly, which is the only
+ * way to get one wider than an int -- the value stack holds constants at int
+ * width; anything else has to fold to a constant, as an array's size does. */
+static long case_constant(void)
+{
+    int line = tok_line;
+    long value;
+
+    if (tok == TK_INT && type_wide(tok_type)) {
+        value = tok_val;
+        next();
+    } else if (tok == TK_MINUS) {
+        /* A sign binds to what follows it and no further, so `-3 + 2` is
+         * -1: a wide literal after it is negated here, and anything else
+         * goes back into the expression the way a unary minus does. */
+        int before = out_here();
+
+        next();
+        if (tok == TK_INT && type_wide(tok_type)) {
+            value = -tok_val;
+            next();
+        } else {
+            Type outer = narrow_dest;
+
+            narrow_dest = 0;
+            primary();
+            vneg();
+            binary_rest(PREC_LOWEST);
+            narrow_dest = outer;
+            value = constant_folded("a case label", line, before);
+        }
+    } else {
+        value = constant_int("a case label", line);
+    }
+
+    if (type_wide(in_switch.type))
+        return (long) (uint32_t) value;
+
+    return value & 0xffffff;
+}
+
+/* `case constant:` -- where the code for it starts, noted for the tests at
+ * the end of the switch. The statement after it is parsed by the caller. */
+__attribute__((noinline))
+static void case_label(void)
+{
+    int line = tok_line, i;
+    long value;
+
+    next();
+    if (in_switch.case_mark < 0)
+        acc_error_at(line, "'case' is not inside a switch");
+    value = case_constant();
+    expect(TK_COLON, "':' after a case");
+
+    for (i = in_switch.case_mark; i < ncases; i++)
+        if (case_value[i] == value)
+            acc_error_at(line, "this switch already has a case for %ld",
+                         type_unsigned(in_switch.type) || type_wide(in_switch.type)
+                         ? value : (long) ((value ^ 0x800000) - 0x800000));
+
+    if (ncases == cases_cap) {
+        cases_cap = cases_cap ? cases_cap * 2 : 16;
+        case_value = realloc(case_value, (size_t) cases_cap * sizeof *case_value);
+        case_at = realloc(case_at, (size_t) cases_cap * sizeof *case_at);
+        if (!case_value || !case_at)
+            acc_error("out of memory for case labels");
+    }
+    case_value[ncases] = value;
+    case_at[ncases] = gen_here();
+    ncases++;
+}
+
+__attribute__((noinline))
+static void default_label(void)
+{
+    int line = tok_line;
+
+    next();
+    expect(TK_COLON, "':' after default");
+    if (in_switch.case_mark < 0)
+        acc_error_at(line, "'default' is not inside a switch");
+    if (in_switch.default_at >= 0)
+        acc_error_at(line, "this switch already has a default");
+    in_switch.default_at = gen_here();
+}
+
+/* `switch (value) body`.
+ *
+ * One pass, so the body is compiled where it is read, and a case label is
+ * only an address noted on the way: which is what lets one sit anywhere in
+ * the body -- inside a loop, as Duff's device has them -- and be jumped to
+ * from outside. The tests come after the body, where every case is known:
+ *
+ *         value to a frame slot
+ *         goto tests
+ *         body, with the cases in it
+ *         goto end
+ *   tests: if value == case 1 goto it ... else goto default, or end
+ *   end:
+ *
+ * The value is compared at its promoted type, as C says: a char is compared
+ * as the int it becomes, and each case is converted to that type. */
+__attribute__((noinline))
+static void switch_statement(void)
+{
+    Switch saved_switch = in_switch;
+    Type type;
+    int line, slot, to_tests, i;
+
+    next();
+    expect(TK_LPAREN, "'('");
+    line = tok_line;
+    expr();
+    expect(TK_RPAREN, "')'");
+    type = vtype();
+    if (type_pointer(type) || type_float(type))
+        acc_error_at(line, "a switch needs an integer, and this is %s",
+                     type_pointer(type) ? "a pointer" : "a floating-point value");
+    type = type_promote(type);
+    vconvert(type);
+    slot = gen_local(type_size(type));
+    vstore_local(slot, type);
+    vdrop();
+    to_tests = gen_jump();
+
+    in_switch.case_mark = ncases;
+    in_switch.default_at = -1;
+    in_switch.type = type;
+    jumps_push();
+    jumps.break_mark = breaks.count;
+
+    statement();
+
+    hole_push(&breaks, gen_jump());
+    gen_label(to_tests);
+    gen_stmt_end();
+    gen_switch_load(slot, type);
+    for (i = in_switch.case_mark; i < ncases; i++)
+        gen_switch_case(case_value[i], type, case_at[i]);
+    if (in_switch.default_at >= 0)
+        gen_jump_to(in_switch.default_at);
+    else
+        hole_push(&breaks, gen_jump());
+
+    ncases = in_switch.case_mark;
+    holes_land(&breaks, jumps.break_mark);
+    in_switch = saved_switch;
+    jumps_pop();
+}
 
 /* `for (init; condition; step) body`.
  *
@@ -1362,10 +1705,12 @@ static void for_statement(void)
     }
     expect(TK_RPAREN, "')'");
 
+    loop_begin(again);
     statement();
     gen_jump_to(again);
     if (to_end >= 0)
         gen_label(to_end);
+    loop_end();
 
     sym_scope_end(mark);
 }
@@ -1409,9 +1754,9 @@ static void statement(void)
      * and outlives the values it was computed from. */
     gen_stmt_end();
 
-    /* Before anything else, because most of what is missing from acc is a
-     * statement: do, break, continue, switch, goto. Left to fall through
-     * they lex as names and the complaint is that the name is not declared. */
+    /* Before anything else, because what is missing from acc is mostly a
+     * statement -- goto, for one. Left to fall through they lex as names and
+     * the complaint is that the name is not declared. */
     if (tok == TK_KW_RESERVED)
         reserved_word();
 
@@ -1440,19 +1785,43 @@ static void statement(void)
         return;
     }
 
-    case TK_KW_WHILE: {
-        int top, to_end;
-
-        next();
-        top = gen_here();
-        condition();
-        to_end = gen_jump_if_false();
-        statement();
-        gen_jump_to(top);
-        gen_label(to_end);
+    case TK_KW_WHILE:
+        while_statement();
 
         return;
-    }
+
+    case TK_KW_DO:
+        do_statement();
+
+        return;
+
+    case TK_KW_SWITCH:
+        switch_statement();
+
+        return;
+
+    case TK_KW_BREAK:
+        break_statement();
+
+        return;
+
+    case TK_KW_CONTINUE:
+        continue_statement();
+
+        return;
+
+    /* A label and then the statement it labels, which may be another. */
+    case TK_KW_CASE:
+        case_label();
+        statement();
+
+        return;
+
+    case TK_KW_DEFAULT:
+        default_label();
+        statement();
+
+        return;
 
     case TK_LBRACE:
         next();
