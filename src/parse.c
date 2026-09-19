@@ -2,6 +2,7 @@
  * The parser, which is also the code generator's caller.
  *
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  * There is no syntax tree. Each production emits as it is recognised, which
  * is what makes the compiler one pass and what keeps it small enough to run

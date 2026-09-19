@@ -2,6 +2,7 @@
  * What kind of character this is.
  *
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  * In a header so the table can be checked against the definitions it stands
  * for, over all 256 bytes, rather than against whichever characters the test

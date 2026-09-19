@@ -85,3 +85,13 @@ Each step is meant to be finished and measured before the next one starts.
 | a preprocessor | |
 | `struct`, `union`, `enum`, `typedef` | |
 | linking against libagon, so there is a C library | |
+
+## License
+
+acc is free software under the GNU Lesser General Public License, version 2.1
+or (at your option) any later version; see `COPYING`.
+
+The routines in `src/rt/` -- the startup stub and the arithmetic helpers --
+are not the compiler's to license the same way, because acc copies them into
+every program it compiles. They are not yet under a license of their own,
+and until they are, what applies to the programs acc produces is undecided.

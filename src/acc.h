@@ -2,6 +2,7 @@
  * acc -- a C compiler for the Agon Light.
  *
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  * One pass, no syntax tree, no intermediate representation. The parser emits
  * eZ80 machine code as it reads, with a small stack of *descriptions* of

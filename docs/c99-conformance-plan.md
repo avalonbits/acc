@@ -71,9 +71,11 @@ run every time the suite does.
 
 ## How the suite would be built
 
-**Do not vendor the tests.** acc has no license file yet. Copying GPL or LGPL
-test files into the tree would bring their terms with them, and the imports
-would be large. Instead:
+**Vendor what acc's license allows, and fetch the rest.** acc is LGPL-2.1 or
+later. scc's tests (ISC), chibicc's (MIT) and tinycc's (LGPL-2.1 or later)
+can live in the tree with their notices kept. gcc's are GPL-3, and are fetched
+rather than copied, so that nothing in the repository is under terms the
+compiler is not. And whatever is vendored, the imports are large. So:
 
 - `test/conformance/sources.txt` names each upstream source with a **pinned
   revision**, so a result is reproducible.
@@ -85,8 +87,9 @@ would be large. Instead:
     6.9 external definitions, 6.10 preprocessing, 7 library.
   - Needs: `cpp`, `libc`, `struct`, `switch`, `string` and so on.
   - Status: `pass`, `fail`, `needs <feature>`, or `excluded <reason>`.
-- Permissively licensed tests (scc's ISC, chibicc's MIT) could be vendored
-  later with attribution, if having them offline matters.
+- The tests that may be vendored (ISC, MIT, LGPL) can be copied in with
+  their notices once the importer has decided which ones survive, if having
+  them offline matters. The pinned fetch stays the source of truth.
 
 **Adapters, so that tests written for a full C implementation run on acc:**
 
@@ -174,8 +177,11 @@ It is strict both ways:
 
 ## Decisions for you
 
-1. **acc's license.** Whether acc takes a license, and which, decides whether
-   any tests can be vendored rather than fetched.
-2. **Order.** Whether the prelude (step 2) is worth building before the
+1. **Order.** Whether the prelude (step 2) is worth building before the
    preprocessor, which unblocks far more tests.
-3. **Commercial.** Whether a paid suite is ever in scope.
+2. **Commercial.** Whether a paid suite is ever in scope.
+
+acc's own license was the third, and is settled: LGPL-2.1 or later, which is
+what decides the vendoring above. The prelude of step 2 is copied into test
+programs the way `src/rt/` is copied into every program, so whatever license
+the runtime gets should cover it too.

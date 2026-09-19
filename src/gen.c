@@ -2,6 +2,7 @@
  * eZ80 code generation.
  *
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  * Values are not turned into instructions when they are parsed, only when
  * something needs them in a register. A constant stays a number, a local

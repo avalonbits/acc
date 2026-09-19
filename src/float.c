@@ -2,6 +2,7 @@
  * Floating literals: the text of one, to the nearest IEEE 754 single.
  *
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  * This was strtod, and it was wrong in two ways. On the Agon a double is
  * the same 32 bits as a float and agondev's strtod does not round correctly:

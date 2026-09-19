@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Turn assembled runtime helpers into a C table acc can emit.
 
 The helpers are written as assembly and read as assembly. Nothing here is
