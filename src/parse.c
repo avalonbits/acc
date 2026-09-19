@@ -1366,6 +1366,16 @@ static Type base_type_other(void)
     switch (tok) {
     case TK_KW_ENUM:
         return enum_specifier();
+    case TK_IDENT: {
+        int sym = sym_find(tok_name);
+
+        if (sym == SYM_NONE || sym_at(sym)->kind != SYM_TYPEDEF)
+            break;
+        next();
+        base_ext = sym_at(sym)->ext;
+
+        return sym_at(sym)->type;
+    }
     case TK_KW_RESERVED:
         reserved_word();
     }
@@ -1391,9 +1401,25 @@ static const unsigned char decl_start[TK_COUNT] = {
     [TK_KW_TYPEDEF] = 1
 };
 
+/* How many typedef names the program has declared. A name can only be
+ * checked for being one by looking it up, and a program with none -- most of
+ * them -- is spared the lookup at the start of every statement. */
+static int typedefs;
+
+__attribute__((noinline))
+static int is_typedef_name(NameRef name)
+{
+    int sym = sym_find(name);
+
+    return sym != SYM_NONE && sym_at(sym)->kind == SYM_TYPEDEF;
+}
+
 static int starts_decl(void)
 {
-    return decl_start[tok];
+    if (decl_start[tok])
+        return 1;
+
+    return tok == TK_IDENT && typedefs && is_typedef_name(tok_name);
 }
 
 /* The stars in front of one name. Inlined, as not_void is: they were one
@@ -1460,7 +1486,8 @@ static int constant_int(const char *what, int line)
  * of elements -- -1 for `[]`, which only the first may be -- and *elem their
  * type, which for an array of arrays is itself an array type: `int m[3][4]`
  * is three elements of int[4]. */
-static int array_dims(Type base, Type *elem, int *elem_x, int *count)
+static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
+                      int *count)
 {
     int dims[8], n = 0, i;
 
@@ -1487,7 +1514,7 @@ static int array_dims(Type base, Type *elem, int *elem_x, int *count)
     if (base == TY_VOID)
         acc_error_at(tok_line, "an array of void has no elements to hold");
     *elem = base;
-    *elem_x = 0;
+    *elem_x = base_x;
     for (i = n - 1; i >= 1; i--) {
         *elem_x = ext_array(*elem, *elem_x, dims[i]);
         *elem = TY_EXT;
@@ -1519,9 +1546,9 @@ static NameRef declared_name(void)
 static Type type_name(int *x)
 {
     Type t = declarator_stars(base_type()), elem;
-    int elem_x, n;
+    int tx = base_ext, elem_x, n;
 
-    *x = 0;
+    *x = tx;
     if (accept(TK_LPAREN)) {
         int inner = 0;
 
@@ -1531,7 +1558,7 @@ static Type type_name(int *x)
             acc_error_at(tok_line, "acc takes parentheses in a type name only "
                                    "around a pointer, as in (*)[4]");
         expect(TK_RPAREN, "')'");
-        if (!array_dims(t, &elem, &elem_x, &n) || n < 0)
+        if (!array_dims(t, tx, &elem, &elem_x, &n) || n < 0)
             acc_error_at(tok_line, "a pointer to an array needs the array's "
                                    "size");
         *x = ext_array(elem, elem_x, n);
@@ -1545,7 +1572,7 @@ static Type type_name(int *x)
 
         return t;
     }
-    if (array_dims(t, &elem, &elem_x, &n)) {
+    if (array_dims(t, tx, &elem, &elem_x, &n)) {
         if (n < 0)
             acc_error_at(tok_line, "an array type here needs its size");
         *x = ext_array(elem, elem_x, n);
@@ -1740,14 +1767,15 @@ static void sizeof_value(void)
  * where `int *p[4]` is four pointers. Functions are not declared this way,
  * since acc has no pointers to them. */
 __attribute__((noinline))
-static NameRef paren_declarator(Type t, Type *type, int *ext, int *count)
+static NameRef paren_declarator(Type t, int tx, Type *type, int *ext,
+                                int *count)
 {
     NameRef name;
     int inner = 0;
 
     if (accept(TK_LPAREN)) {
         Type elem;
-        int n, elem_x, x = 0;
+        int n, elem_x, x = tx;
 
         while (accept(TK_STAR))
             inner++;
@@ -1756,7 +1784,7 @@ static NameRef paren_declarator(Type t, Type *type, int *ext, int *count)
                                    "around a pointer, as in (*p)[4]");
         name = declared_name();
         expect(TK_RPAREN, "')'");
-        if (array_dims(t, &elem, &elem_x, &n)) {
+        if (array_dims(t, tx, &elem, &elem_x, &n)) {
             if (n < 0)
                 acc_error_at(tok_line, "a pointer to an array needs the "
                                        "array's size");
@@ -1777,13 +1805,26 @@ static NameRef paren_declarator(Type t, Type *type, int *ext, int *count)
     }
 
     name = declared_name();
-    if (!array_dims(t, type, ext, count)) {
+    if (!array_dims(t, tx, type, ext, count)) {
         *type = t;
-        *ext = 0;
+        *ext = tx;
         *count = 0;
     }
 
     return name;
+}
+
+/* An object whose type is an array by way of a typedef -- `row r;` with
+ * `typedef int row[3];` -- declared as the array it is: its element type
+ * and count, as if the dimension had been written after its name. */
+__attribute__((noinline))
+static void typedef_array(Type *type, int *ext, int *count)
+{
+    int x = *ext;
+
+    *type = ext_elem(x);
+    *ext = ext_elem_x(x);
+    *count = ext_count(x);
 }
 
 /* The same, with the common case -- a plain name, and nothing after it --
@@ -1791,19 +1832,23 @@ static NameRef paren_declarator(Type t, Type *type, int *ext, int *count)
  * dimensions were three more on every parameter and local in the program,
  * which cost 1.8% of a compile. */
 static inline __attribute__((always_inline))
-NameRef direct_declarator(Type t, Type *type, int *ext, int *count)
+NameRef direct_declarator(Type t, int tx, Type *type, int *ext, int *count)
 {
     NameRef name;
 
-    if (tok != TK_IDENT)
-        return paren_declarator(t, type, ext, count);
-    name = tok_name;
-    next();
-    *type = t;
-    *ext = 0;
-    *count = 0;
-    if (tok == TK_LBRACKET)
-        array_dims(t, type, ext, count);
+    if (tok != TK_IDENT) {
+        name = paren_declarator(t, tx, type, ext, count);
+    } else {
+        name = tok_name;
+        next();
+        *type = t;
+        *ext = tx;
+        *count = 0;
+        if (tok == TK_LBRACKET)
+            array_dims(t, tx, type, ext, count);
+    }
+    if (type_is_array(*type) && !*count)
+        typedef_array(type, ext, count);
 
     return name;
 }
@@ -2073,13 +2118,57 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
     sym_set_count(sym, count);
 }
 
+/* `typedef`, and names for types rather than objects: each declarator names
+ * the type it would have given a variable. An array type keeps its shape in
+ * an extension, so that an object declared with it is that array. */
+__attribute__((noinline))
+static void typedef_declaration(void)
+{
+    Type base;
+    int bx;
+
+    next();
+    base = base_type();
+    bx = base_ext;
+    for (;;) {
+        int line = tok_line, count, ext, sym;
+        Type type;
+        NameRef name = direct_declarator(declarator_stars(base), bx, &type,
+                                         &ext, &count);
+
+        if (count < 0)
+            acc_error_at(line, "a typedef of an array needs the array's size");
+        if (count) {
+            ext = ext_array(type, ext, count);
+            type = TY_EXT;
+        }
+        not_redeclared(name, line);
+        sym = push_here(name, SYM_TYPEDEF, 0);
+        sym_at(sym)->type = type;
+        sym_at(sym)->ext = (unsigned char) ext;
+        typedefs++;
+        if (!accept(TK_COMMA))
+            break;
+    }
+    expect(TK_SEMI, "';'");
+}
+
 /* Inlined into both callers, the function body and a for's first clause:
  * it was inlined into the first when it had only that one, and as a call it
  * is one more on every declaration in the program. */
 static inline __attribute__((always_inline))
 void declaration(void)
 {
-    Type base = base_type();
+    Type base;
+    int bx;
+
+    if (tok == TK_KW_TYPEDEF) {
+        typedef_declaration();
+
+        return;
+    }
+    base = base_type();
+    bx = base_ext;
 
     /* Nothing but the type: `enum e { A, B };`, declaring what is in it. */
     if (accept(TK_SEMI))
@@ -2088,8 +2177,8 @@ void declaration(void)
     for (;;) {
         int line = tok_line, count, ext, off, sym;
         Type type;
-        NameRef name = direct_declarator(declarator_stars(base), &type, &ext,
-                                         &count);
+        NameRef name = direct_declarator(declarator_stars(base), bx, &type,
+                                         &ext, &count);
 
         if (count) {
             local_array(type, ext, name, count, line);
@@ -2831,6 +2920,7 @@ static void function_rest(Type ret_type, NameRef name)
     } else if (tok != TK_RPAREN) {
         for (;;) {
             Type pbase = base_type(), ptype;
+            int pbx = base_ext;
             int pline = tok_line, pcount, pext;
             NameRef pname;
             int psym;
@@ -2838,8 +2928,8 @@ static void function_rest(Type ret_type, NameRef name)
             if (tok != TK_IDENT && tok != TK_STAR && tok != TK_LPAREN)
                 acc_error_at(tok_line, "expected a parameter name, found %s",
                              tok_spelling(tok));
-            pname = direct_declarator(declarator_stars(pbase), &ptype, &pext,
-                                      &pcount);
+            pname = direct_declarator(declarator_stars(pbase), pbx, &ptype,
+                                      &pext, &pcount);
 
             /* `int a[]`, `int a[10]` and `int m[][4]` declare a parameter
              * that is a pointer, as C says: an array is passed as the address
@@ -3158,13 +3248,22 @@ static void global_variable(Type type, int ext, NameRef name, int count,
  * both. */
 static void external_declaration(void)
 {
-    Type base = base_type();
-    int line = tok_line, count = 0, ext = 0;
+    Type base, stars, type;
+    int line, count = 0, ext, bx;
+    NameRef name;
 
+    if (tok == TK_KW_TYPEDEF) {
+        typedef_declaration();
+
+        return;
+    }
+    base = base_type();
+    bx = ext = base_ext;
+    line = tok_line;
     if (accept(TK_SEMI))
         return;
-    Type stars = declarator_stars(base), type = stars;
-    NameRef name;
+    stars = declarator_stars(base);
+    type = stars;
 
     /* A name and then '(' is a function; anything else is a variable, and
      * the rest of its declarator -- dimensions, or the parentheses of a
@@ -3177,10 +3276,12 @@ static void external_declaration(void)
 
             return;
         }
-        if (!array_dims(stars, &type, &ext, &count))
+        if (!array_dims(stars, bx, &type, &ext, &count))
             type = stars;
+        if (type_is_array(type) && !count)
+            typedef_array(&type, &ext, &count);
     } else if (tok == TK_LPAREN) {
-        name = direct_declarator(stars, &type, &ext, &count);
+        name = direct_declarator(stars, bx, &type, &ext, &count);
     } else {
         acc_error_at(tok_line, "expected a name, found %s", tok_spelling(tok));
     }
@@ -3191,7 +3292,8 @@ static void external_declaration(void)
             break;
 
         line = tok_line;
-        name = direct_declarator(declarator_stars(base), &type, &ext, &count);
+        name = direct_declarator(declarator_stars(base), bx, &type, &ext,
+                                 &count);
     }
     expect(TK_SEMI, "';'");
 }

@@ -464,7 +464,7 @@ static void keywords_init(void)
     keyword("static", 6, TK_KW_RESERVED);
     keyword("struct", 6, TK_KW_RESERVED);
     keyword("switch", 6, TK_KW_SWITCH);
-    keyword("typedef", 7, TK_KW_RESERVED);
+    keyword("typedef", 7, TK_KW_TYPEDEF);
     keyword("union", 5, TK_KW_RESERVED);
     keyword("volatile", 8, TK_KW_RESERVED);
     keyword("_Bool", 5, TK_KW_RESERVED);
