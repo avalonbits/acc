@@ -100,6 +100,10 @@ static void call_rest(NameRef name)
     }
 
     expect(TK_RPAREN, "')'");
+    if ((sym_flags(fn) & SYMF_PARAMS) && nargs != sym_nparams(fn))
+        acc_error_at(tok_line, "'%s' takes %d argument%s, and this call gives "
+                               "it %d", name_text(name), sym_nparams(fn),
+                     sym_nparams(fn) == 1 ? "" : "s", nargs);
     gen_call(fn, nargs, sym_params_first(fn), sym_nparams(fn));
 }
 
@@ -1736,12 +1740,20 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
     return n;
 }
 
+/* Whether a declarator may leave its name out, as a prototype's parameter
+ * may: `int f(char *, int [4])`. */
+static int abstract_ok;
+
 static NameRef declared_name(void)
 {
     NameRef name;
 
-    if (tok != TK_IDENT)
+    if (tok != TK_IDENT) {
+        if (abstract_ok && (tok == TK_COMMA || tok == TK_RPAREN
+                            || tok == TK_LBRACKET))
+            return NAME_NONE;
         acc_error_at(tok_line, "expected a name, found %s", tok_spelling(tok));
+    }
     name = tok_name;
     next();
 
@@ -2402,6 +2414,9 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
     sym_set_count(sym, count);
 }
 
+static int  function_declarator(Type ret_type, int ret_ext, NameRef name,
+                                int line);
+
 /* `typedef`, and names for types rather than objects: each declarator names
  * the type it would have given a variable. An array type keeps its shape in
  * an extension, so that an object declared with it is that array. */
@@ -2464,6 +2479,12 @@ void declaration(void)
         NameRef name = direct_declarator(declarator_stars(base), bx, &type,
                                          &ext, &count);
 
+        if (tok == TK_LPAREN) {         /* a function declared in a block */
+            function_declarator(type, ext, name, line);
+            if (!accept(TK_COMMA))
+                break;
+            continue;
+        }
         if (count) {
             local_array(type, ext, name, count, line);
             if (!accept(TK_COMMA))
@@ -3194,7 +3215,6 @@ typedef struct {
 static StructParam *struct_params;
 static int          nstruct_params, struct_params_cap;
 
-/* A function's definition, from just past its name. */
 /* A struct parameter is copied from its slots into the array area, where
  * every local struct lives, so that the body finds it as it finds any
  * other: the slots are above the frame, and past the reach of (ix+d) once
@@ -3223,49 +3243,89 @@ static void struct_params_copy(void)
     }
 }
 
-static void function_rest(Type ret_type, int ret_ext, NameRef name)
+/* That a function declared again is declared the same way: its result, and
+ * its parameters if both declarations give them. */
+static void same_signature(int fn, Type ret_type, int ret_ext, int first,
+                           int count, int params, NameRef name, int line)
 {
-    int fn;
+    int i, prior = sym_params_first(fn);
+
+    if (sym_at(fn)->type != ret_type || sym_at(fn)->ext != ret_ext)
+        acc_error_at(line, "'%s' is declared again with another result type",
+                     name_text(name));
+    if (!params || !(sym_flags(fn) & SYMF_PARAMS))
+        return;
+    if (count != sym_nparams(fn))
+        acc_error_at(line, "'%s' is declared again with %d parameters, not %d",
+                     name_text(name), count, sym_nparams(fn));
+    for (i = 0; i < count; i++)
+        if (sym_param_type(first, i) != sym_param_type(prior, i)
+            || sym_param_ext(first, i) != sym_param_ext(prior, i))
+            acc_error_at(line, "'%s' is declared again with parameter %d of "
+                               "another type", name_text(name), i + 1);
+}
+
+/* A function's declarator, from just past its name: its parameters, and
+ * then either its body -- a definition -- or nothing more, which makes it a
+ * prototype. Returns whether it was a definition.
+ *
+ * The parameters are read the same way for both, as locals at the frame
+ * offsets their arguments arrive at; a prototype drops them again at the
+ * `)`. A prototype may leave their names out. `()` in a prototype says
+ * nothing about the parameters, as C has it, so calls convert nothing; in
+ * a definition it means there are none. */
+static int function_declarator(Type ret_type, int ret_ext, NameRef name,
+                               int line)
+{
+    int fn, declared, params = 1, unnamed = 0, mark;
     int nparams = 0, argoff, params_first;
 
     expect(TK_LPAREN, "'('");
 
     fn = sym_find(name);
-    if (fn != SYM_NONE && sym_at(fn)->kind == SYM_GLOBAL)
-        acc_error_at(tok_line, "'%s' is already a variable", name_text(name));
-    if (fn != SYM_NONE && sym_at(fn)->kind == SYM_FUNC && sym_at(fn)->val)
-        acc_error_at(tok_line, "'%s' is defined twice", name_text(name));
-    /* A call before the definition took the result to be an int, which for a
-     * struct is not something that can be put right afterwards. */
-    if (fn != SYM_NONE && type_is_struct(ret_type))
-        acc_error_at(tok_line, "'%s' returns a struct, so it has to be defined "
-                               "before it is called", name_text(name));
+    if (fn != SYM_NONE && sym_at(fn)->kind != SYM_FUNC)
+        acc_error_at(line, "'%s' is already %s", name_text(name),
+                     sym_at(fn)->kind == SYM_GLOBAL ? "a variable"
+                                                    : "declared");
+    declared = fn != SYM_NONE && (sym_flags(fn) & SYMF_DECLARED);
+
+    /* A call before any declaration took the result to be an int, which
+     * for a struct is not something that can be put right afterwards. */
+    if (fn != SYM_NONE && !declared && type_is_struct(ret_type))
+        acc_error_at(line, "'%s' returns a struct, so it has to be declared "
+                           "before it is called", name_text(name));
+
+    /* Pushed before the parameters: a file-scope symbol goes in below the
+     * locals, which would move the parameters along if it came after. */
     if (fn == SYM_NONE)
         fn = sym_push(name, SYM_FUNC, 0);
-    sym_at(fn)->type = ret_type;
-    sym_at(fn)->ext = (unsigned char) ret_ext;
 
     /* The first argument sits above the saved ix and the return address --
      * and above the hidden one, the address a struct result goes to, when
      * there is one. */
+    mark = sym_scope_begin();
     params_first = sym_params_begin();
     argoff = 2 * ACC_PTR_SIZE;
     if (type_is_struct(ret_type))
         argoff += ACC_PTR_SIZE;
     nstruct_params = 0;
-    if (tok == TK_KW_VOID) {
+    abstract_ok = 1;
+    if (tok == TK_KW_VOID && lex_rparen_follows()) {
         next();
-    } else if (tok != TK_RPAREN) {
+    } else if (tok == TK_RPAREN) {
+        params = 0;
+    } else {
         for (;;) {
-            Type pbase = base_type(), ptype;
-            int pbx = base_ext;
-            int pline = tok_line, pcount, pext;
+            Type pbase, ptype;
+            int pbx, pline = tok_line, pcount, pext;
             NameRef pname;
-            int psym;
+            int psym = SYM_NONE;
 
-            if (tok != TK_IDENT && tok != TK_STAR && tok != TK_LPAREN)
-                acc_error_at(tok_line, "expected a parameter name, found %s",
+            if (tok == TK_RPAREN || tok == TK_COMMA)
+                acc_error_at(tok_line, "expected a parameter, found %s",
                              tok_spelling(tok));
+            pbase = base_type();
+            pbx = base_ext;
             pname = direct_declarator(declarator_stars(pbase), pbx, &ptype,
                                       &pext, &pcount);
 
@@ -3281,9 +3341,13 @@ static void function_rest(Type ret_type, int ret_ext, NameRef name)
             }
             not_void(ptype, "a parameter", pline);
 
-            psym = sym_push(pname, SYM_LOCAL, argoff);
-            sym_at(psym)->type = ptype;
-            sym_at(psym)->ext = (unsigned char) pext;
+            if (pname) {
+                psym = sym_push(pname, SYM_LOCAL, argoff);
+                sym_at(psym)->type = ptype;
+                sym_at(psym)->ext = (unsigned char) pext;
+            } else {
+                unnamed = 1;
+            }
             sym_param_add(ptype, pext);
 
             /* Every argument occupies whole slots: one however narrow it is,
@@ -3312,12 +3376,43 @@ static void function_rest(Type ret_type, int ret_ext, NameRef name)
             nparams++;
             if (!accept(TK_COMMA))
                 break;
+            if (tok == TK_DOT)          /* `...` */
+                acc_error_at(tok_line, "a variable number of arguments is "
+                                       "not supported yet");
         }
     }
+    abstract_ok = 0;
     expect(TK_RPAREN, "')'");
-    expect(TK_LBRACE, "'{'");
+
+    if (declared)
+        same_signature(fn, ret_type, ret_ext, params_first, nparams, params,
+                       name, line);
+    sym_at(fn)->type = ret_type;
+    sym_at(fn)->ext = (unsigned char) ret_ext;
+
+    /* A prototype: what it said is kept -- unless an earlier one already
+     * gave the parameters and this one does not -- and the parameters are
+     * dropped. A function inside another's body can only be declared. */
+    if (tok != TK_LBRACE || in_body) {
+        sym_scope_end(mark);
+        if (!declared || !(sym_flags(fn) & SYMF_PARAMS)) {
+            sym_set_params(fn, params_first, nparams);
+            sym_set_flags(fn, params ? SYMF_DECLARED | SYMF_PARAMS
+                                     : SYMF_DECLARED);
+        }
+
+        return 0;
+    }
+
+    if (sym_at(fn)->val)
+        acc_error_at(line, "'%s' is defined twice", name_text(name));
+    if (unnamed)
+        acc_error_at(line, "a parameter of a function's definition needs a "
+                           "name");
+    next();                     /* the body's `{` */
 
     sym_set_params(fn, params_first, nparams);
+    sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED);
     gen_func_begin(fn, nparams, ret_type);
 
     if (nstruct_params)
@@ -3329,6 +3424,8 @@ static void function_rest(Type ret_type, int ret_ext, NameRef name)
     gen_func_end();
 
     sym_drop_locals();
+
+    return 1;
 }
 
 /* A global's initial value, as the bytes it starts with.
@@ -3638,7 +3735,7 @@ static void global_variable(Type type, int ext, NameRef name, int count,
  * both. */
 static void external_declaration(void)
 {
-    Type base, stars, type;
+    Type base, type;
     int line, count = 0, ext, bx;
     NameRef name;
 
@@ -3652,38 +3749,22 @@ static void external_declaration(void)
     line = tok_line;
     if (accept(TK_SEMI))
         return;
-    stars = declarator_stars(base);
-    type = stars;
-
-    /* A name and then '(' is a function; anything else is a variable, and
-     * the rest of its declarator -- dimensions, or the parentheses of a
-     * pointer to an array -- is read as a local's would be. */
-    if (tok == TK_IDENT) {
-        name = tok_name;
-        next();
-        if (tok == TK_LPAREN) {
-            function_rest(stars, bx, name);
-
-            return;
-        }
-        if (!array_dims(stars, bx, &type, &ext, &count))
-            type = stars;
-        if (type_is_array(type) && !count)
-            typedef_array(&type, &ext, &count);
-    } else if (tok == TK_LPAREN) {
-        name = direct_declarator(stars, bx, &type, &ext, &count);
-    } else {
-        acc_error_at(tok_line, "expected a name, found %s", tok_spelling(tok));
-    }
-
+    /* A name and then '(' is a function -- a prototype, or a definition if
+     * a body follows; anything else is a variable. */
     for (;;) {
-        global_variable(type, ext, name, count, line);
-        if (!accept(TK_COMMA))
-            break;
-
         line = tok_line;
         name = direct_declarator(declarator_stars(base), bx, &type, &ext,
                                  &count);
+        if (tok == TK_LPAREN) {
+            if (count)
+                acc_error_at(line, "a function cannot return an array");
+            if (function_declarator(type, ext, name, line))
+                return;
+        } else {
+            global_variable(type, ext, name, count, line);
+        }
+        if (!accept(TK_COMMA))
+            break;
     }
     expect(TK_SEMI, "';'");
 }

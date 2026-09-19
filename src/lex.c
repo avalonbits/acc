@@ -352,14 +352,24 @@ int lex_line(void)         { return line; }
  * start with the same token -- and one character is enough to look at: at
  * the start of a statement a name followed by a colon can only be a label.
  * Nothing is consumed. */
-int lex_colon_follows(void)
+static char next_char(void)
 {
     const char *p = cursor;
 
     while (is_space(*p))
         p++;
 
-    return *p == ':';
+    return *p;
+}
+
+int lex_colon_follows(void)
+{
+    return next_char() == ':';
+}
+
+int lex_rparen_follows(void)
+{
+    return next_char() == ')';
 }
 
 /* A comment, with the cursor on its opening `/`. Out of line so that

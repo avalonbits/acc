@@ -203,6 +203,7 @@ typedef union {
     struct {
         int           first;
         unsigned char count;
+        unsigned char flags;    /* SYMF_* */
     } s;
     unsigned char size[sizeof(Sym)];
 } FnSig;
@@ -230,6 +231,18 @@ void sym_set_params(int sym, int first, int count)
     fn_room((unsigned) sym);
     fn_sig(sym)->s.first = first;
     fn_sig(sym)->s.count = (unsigned char) count;
+    fn_sig(sym)->s.flags = 0;   /* whoever sets the parameters says the rest */
+}
+
+void sym_set_flags(int sym, int flags)
+{
+    fn_room((unsigned) sym);
+    fn_sig(sym)->s.flags |= (unsigned char) flags;
+}
+
+int sym_flags(int sym)
+{
+    return fn_sig(sym)->s.flags;
 }
 
 /* The reads need no room check: a symbol only has a signature because

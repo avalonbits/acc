@@ -330,6 +330,7 @@ void lex_open(const char *path);
 void lex_close(void);
 void next(void);                 /* advance to the following token */
 int  lex_colon_follows(void);    /* whether `:` comes after the current token */
+int  lex_rparen_follows(void);   /* and whether `)` does */
 int         accept_next(void);          /* next(), returning 1, for accept */
 
 /* The current token if it is `token`, stepping past it; 0 and nothing done if
@@ -425,6 +426,21 @@ int  sym_param_ext(int first, int index);
 void sym_set_params(int sym, int first, int count);
 int  sym_params_first(int sym);
 int  sym_nparams(int sym);
+
+/* What is known about a file-scope symbol beyond its type, kept beside its
+ * signature. */
+enum {
+    SYMF_DECLARED = 1,          /* a function: its type is declared, by a
+                                 * prototype or its definition, and not
+                                 * assumed from a call */
+    SYMF_DEFINED  = 2,          /* a function: its body has been read; a
+                                 * variable: its initial value has */
+    SYMF_PARAMS   = 4           /* a function: its parameters are declared,
+                                 * where `()` in a declaration says nothing
+                                 * about them */
+};
+void sym_set_flags(int sym, int flags);
+int  sym_flags(int sym);
 
 /* How many elements an array symbol has, kept where a function's signature
  * would be: `&a` needs it to say what it points at. */

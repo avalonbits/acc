@@ -1155,6 +1155,7 @@ typedef struct {
     int fn;                 /* index, not a pointer: see sym.c */
     int at;
     int line;               /* where the call was, for the diagnostic below */
+    unsigned char declared; /* whether the call knew the function's type */
 } Fixup;
 
 static Fixup *fixups;
@@ -1171,6 +1172,7 @@ static void fixup_add(int fn, int at)
     fixups[nfixups].fn = fn;
     fixups[nfixups].at = at;
     fixups[nfixups].line = tok_line;
+    fixups[nfixups].declared = (unsigned char) (sym_flags(fn) & SYMF_DECLARED);
     nfixups++;
 }
 
@@ -2193,7 +2195,13 @@ void gen_finish(void)
          * cannot know. There are no prototypes yet, so the only honest thing
          * is to say so. */
         /* And a void one conflicts with that int outright, as agondev
-         * says: it is the same function declared two ways. */
+         * says: it is the same function declared two ways. A call that had
+         * a prototype to go by knew the type, and read the answer from
+         * where it is. */
+        if (fixups[i].declared) {
+            out_patch24(fixups[i].at, fn->val);
+            continue;
+        }
         if (fn->type == TY_VOID)
             acc_error_at(fixups[i].line,
                          "'%s' returns void and is called before it is "
