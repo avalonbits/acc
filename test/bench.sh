@@ -154,6 +154,13 @@ check_form "&variable" '(^|[^&])&[A-Za-z_]' \
 check_form "hex" '0[xX][0-9a-fA-F]' "int main(void) { return 0x2a; }"
 check_form "octal" '(^|[^0-9A-Za-z_.])0[0-7]+([^0-9A-Za-z_.]|$)' \
     "int main(void) { return 052; }"
+check_form "strings" '"[^"]*"' \
+    'int main(void) { char *s = "x"; return s[0]; }'
+check_form "chars" "'[^']+'" \
+    "int main(void) { return 'a'; }"
+# A declaration indented past a function's own, which is one in an inner block.
+check_form "block-declarations" '^        +(int|char|short|long|unsigned|float|double) [A-Za-z_]' \
+    "int main(void) { { int x = 1; return x; } }"
 set +f
 
 [ -z "$missing" ] || echo "note: no benchmark input uses:$missing" >&2
