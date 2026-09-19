@@ -65,6 +65,7 @@ $(BIN):
 # consistently wrong agrees with itself everywhere.
 test: all unit $(BIN)/acc-asan
 	@test/abi.sh || [ $$? -eq 77 ]
+	@test/helpers.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh
 	@ACC=$(BIN)/acc-asan test/errors.sh
 	@ACC=$(BIN)/acc-asan test/run.sh

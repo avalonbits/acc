@@ -348,7 +348,7 @@ static void prefix_step(void)
         while (accept(TK_STAR))
             stars++;
         primary();
-        while (--stars > 0)
+        while (--stars != 0)
             vderef();
         vprefix_indirect(op);
 
@@ -375,7 +375,7 @@ int paren_deref_step(void)
     while (accept(TK_STAR))
         stars++;
     primary();
-    while (--stars > 0)
+    while (--stars != 0)
         vderef();
 
     if (tok == TK_RPAREN) {
@@ -988,7 +988,7 @@ static void assignment(void)
         while (accept(TK_STAR))
             stars++;
         primary();
-        while (--stars > 0)
+        while (--stars != 0)
             vderef();
         deref_rest();
 

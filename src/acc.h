@@ -577,11 +577,15 @@ void name_set_global(NameRef ref, int sym)
 }
 
 /* An opcode and the 24-bit operand that follows it, which is the shape of a
- * call, a jump and every load of a constant. Four bytes, one bounds check. */
+ * call, a jump and every load of a constant. Four bytes, one bounds check.
+ *
+ * The room left is compared unsigned, as in the two below: it is never
+ * negative, and a signed compare is a helper call on this target, in front
+ * of every byte the compiler emits. */
 static inline __attribute__((always_inline))
 void out_opcode24(int opcode, int value)
 {
-    if (out_limit - out_put < 4)
+    if ((unsigned) (out_limit - out_put) < 4)
         out_grow();
     out_put[0] = (unsigned char) opcode;
     put24(out_put + 1, value);
@@ -597,7 +601,7 @@ static inline __attribute__((always_inline)) void out_byte(int byte)
 
 static inline __attribute__((always_inline)) void out_byte2(int first, int second)
 {
-    if (out_limit - out_put < 2)
+    if ((unsigned) (out_limit - out_put) < 2)
         out_grow();
     out_put[0] = (unsigned char) first;
     out_put[1] = (unsigned char) second;
@@ -606,7 +610,7 @@ static inline __attribute__((always_inline)) void out_byte2(int first, int secon
 
 static inline __attribute__((always_inline)) void out_byte3(int first, int second, int third)
 {
-    if (out_limit - out_put < 3)
+    if ((unsigned) (out_limit - out_put) < 3)
         out_grow();
     out_put[0] = (unsigned char) first;
     out_put[1] = (unsigned char) second;

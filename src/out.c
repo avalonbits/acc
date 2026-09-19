@@ -115,7 +115,7 @@ void out_word24(int value)
     /* One bounds check and three stores, rather than three calls that each
      * check. Every call instruction and every loaded constant emits one of
      * these, so it is a third of the output path. */
-    if (out_limit - out_put < 3)
+    if ((unsigned) (out_limit - out_put) < 3)
         out_grow();
     put24(out_put, value);
     out_put += 3;

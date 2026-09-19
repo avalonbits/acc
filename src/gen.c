@@ -273,6 +273,10 @@ static Type return_type = TY_INT;
 #define VSTACK_MAX 64
 
 static Value vstack[VSTACK_MAX];
+/* Never negative, and compared as if unsigned -- `vtop == 0`, `(unsigned)
+ * vtop < 2` -- because a signed compare is a helper call on this target, and
+ * these are in front of every value pushed and popped. test/helpers.sh holds
+ * the hot ones to it. */
 static int   vtop;               /* number of live entries */
 
 /* One past the top, kept in step with vtop.
@@ -350,7 +354,7 @@ static void vcheck(void)
     if (vsp != vstack + vtop)
         acc_error("internal: the value stack pointer and its count disagree");
 #endif
-    if (vtop >= VSTACK_MAX)
+    if ((unsigned) vtop >= VSTACK_MAX)
         acc_error("expression is nested too deeply");
 }
 
@@ -391,7 +395,7 @@ void vconvert(Type to)
 {
     Value *top = vsp - 1;
 
-    if (vtop <= 0)
+    if (vtop == 0)
         acc_error("internal: nothing to convert");
     if (top->kind == VAL_VOID)
         void_used();
@@ -472,7 +476,7 @@ void vconvert(Type to)
 
 Type vtype(void)
 {
-    if (vtop <= 0)
+    if (vtop == 0)
         acc_error("internal: asked the type of nothing");
 
     return (vsp - 1)->type;
@@ -480,7 +484,7 @@ Type vtype(void)
 
 Type vtype_at(int depth)
 {
-    if (vtop <= depth)
+    if ((unsigned) vtop <= (unsigned) depth)
         acc_error("internal: asked the type of nothing");
 
     return (vsp - 1 - depth)->type;
@@ -508,7 +512,7 @@ int vconst_top(int *val, Type *type)
 {
     const Value *top = vsp - 1;
 
-    if (vtop <= 0 || top->kind != VAL_CONST)
+    if (vtop == 0 || top->kind != VAL_CONST)
         return 0;
     *val = top->val;
     *type = top->type;
@@ -518,7 +522,7 @@ int vconst_top(int *val, Type *type)
 
 void vdrop(void)
 {
-    if (vtop <= 0)
+    if (vtop == 0)
         acc_error("internal: value stack underflow");
     vtop--;
     vsp--;
@@ -890,7 +894,7 @@ static void vbinop(int op)
     int folded, right;
     Type result, lhs_type;
 
-    if (vtop < 2)
+    if ((unsigned) vtop < 2)
         acc_error("internal: binary operator with nothing to work on");
 
     /* Both sides known: the answer is known, and nothing is emitted. */
@@ -1236,7 +1240,7 @@ static int vnarrow_ready(int op, Type to)
      * dearer than the int, and all of that difference is the widening on load
      * and the truncation on store, which C requires for a two-byte object.
      * None of it is arithmetic this could make cheaper. */
-    if (vtop < 2 || type_size(to) != 1)
+    if ((unsigned) vtop < 2 || type_size(to) != 1)
         return 0;
     if (tok_pair(op, TK_SHL)) {
         /* Only a constant count, unrolled. A variable one is a loop, which is
@@ -1374,7 +1378,7 @@ static void vcmp(int op)
     Value *rhs = vsp - 1;
     int folded, right, is_unsigned;
 
-    if (vtop < 2)
+    if ((unsigned) vtop < 2)
         acc_error("internal: a comparison with nothing to compare");
 
     is_unsigned = either_unsigned(lhs, rhs);
@@ -2718,7 +2722,7 @@ void vapply(int op, Type narrow)
 {
     Type left, right;
 
-    if (vtop < 2)
+    if ((unsigned) vtop < 2)
         acc_error("internal: an operator with nothing to apply it to");
 
     left  = (vsp - 2)->type;
@@ -2837,7 +2841,7 @@ void vderef(void)
     Type to;
     int deref_ext = 0;
 
-    if (vtop <= 0)
+    if (vtop == 0)
         acc_error("internal: nothing to dereference");
     if (!type_pointer(top->type))
         acc_error_at(tok_line, "'*' takes a pointer, and this is %s",
@@ -2929,7 +2933,7 @@ void vstore_indirect(void)
     Type to;
     int addr;
 
-    if (vtop < 2)
+    if ((unsigned) vtop < 2)
         acc_error("internal: a store through nothing");
     if (!type_pointer((vsp - 2)->type))
         acc_error_at(tok_line, "'*' takes a pointer");
@@ -3010,7 +3014,7 @@ void vdup(void)
 {
     Value *top = vsp - 1;
 
-    if (vtop <= 0)
+    if (vtop == 0)
         acc_error("internal: nothing to duplicate");
     if (top->kind == VAL_ACC)
         force_reg(vsp - 1);
