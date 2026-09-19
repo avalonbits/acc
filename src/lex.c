@@ -616,6 +616,10 @@ static void lex_number(void)
         while (is_alnum((unsigned char) *cursor)) {
             int digit = *cursor;
 
+            /* A suffix, which the loop used to read as a digit and refuse:
+             * 0xffu and 0x10L were errors. No hex digit is u or l. */
+            if ((digit | 0x20) == 'u' || (digit | 0x20) == 'l')
+                break;
             if (is_digit(digit))                     digit -= '0';
             else if (digit >= 'a' && digit <= 'f')   digit -= 'a' - 10;
             else if (digit >= 'A' && digit <= 'F')   digit -= 'A' - 10;
