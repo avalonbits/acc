@@ -2,7 +2,8 @@
 """Writes the benchmark inputs that cover what the older ones do not.
 
     test/bench/generate.py            # rewrites pointers.c, operators.c,
-                                      # data.c, jumps.c, matrix.c and text.c
+                                      # data.c, jumps.c, matrix.c, text.c
+                                      # and records.c
 
 The eight older inputs were written before acc had pointers, the logical
 operators, ++ and --, ?:, compound assignment, hex and octal constants,
@@ -678,6 +679,166 @@ int find_{noun}(char *key) {{
     return parts, main_head, calls, "total"
 
 
+# ---------------------------------------------------------------- records
+
+def records(fn_count):
+    parts = []
+    calls = []
+    for i, noun in enumerate(names(fn_count)):
+        k = i % 7
+        kind = i % 5
+        if kind == 0:
+            parts.append(f"""typedef struct {{
+    int count;
+    unsigned char flags;
+    long weight;
+    char label[6];
+}} {noun}_t;
+
+{noun}_t {noun}_table[4] = {{
+    {{ 1, 2, 30000, "one" }},
+    {{ 2, 4, 40000, "two" }},
+    {{ 3 }},
+    {{ 4, 8 }}
+}};
+
+int weigh_{noun}({noun}_t *entry, int scale) {{
+    int total = 0;
+
+    for (int i = 0; i < sizeof {noun}_table / sizeof {noun}_table[0]; i++) {{
+        entry[i].count += scale;
+        entry[i].flags |= {k};
+        total += entry[i].count + entry[i].flags + (entry[i].weight > 35000);
+        total += entry[i].label[0] == 't';
+    }}
+
+    return total;
+}}
+""")
+            calls.append(f"    total = total + weigh_{noun}({noun}_table, {k});")
+        elif kind == 1:
+            parts.append(f"""enum shape_{noun} {{ CIRCLE_{noun}, SQUARE_{noun}, TRIANGLE_{noun} = 5 }};
+
+struct figure_{noun} {{
+    enum shape_{noun} shape;
+    union {{
+        int radius;
+        struct {{ short width, height; }} box;
+        char sides[3];
+    }} size;
+}};
+
+int area_{noun}(struct figure_{noun} *figure) {{
+    switch (figure->shape) {{
+    case CIRCLE_{noun}:
+        return 3 * figure->size.radius * figure->size.radius;
+    case SQUARE_{noun}:
+        return figure->size.box.width * figure->size.box.height;
+    case TRIANGLE_{noun}:
+        return figure->size.sides[0] + figure->size.sides[1] + figure->size.sides[2];
+    }}
+
+    return {k};
+}}
+
+int shapes_{noun}(int n) {{
+    struct figure_{noun} figures[3];
+
+    figures[0].shape = CIRCLE_{noun};
+    figures[0].size.radius = n;
+    figures[1].shape = SQUARE_{noun};
+    figures[1].size.box.width = n + 1;
+    figures[1].size.box.height = {k + 2};
+    figures[2].shape = TRIANGLE_{noun};
+    figures[2].size.sides[0] = 3;
+    figures[2].size.sides[1] = 4;
+    figures[2].size.sides[2] = n;
+
+    return area_{noun}(&figures[0]) + area_{noun}(&figures[1])
+           + area_{noun}(figures + 2);
+}}
+""")
+            calls.append(f"    total = total + shapes_{noun}({k + 1});")
+        elif kind == 2:
+            parts.append(f"""struct span_{noun} {{ int start, end; char open; }};
+
+struct span_{noun} widen_{noun}(struct span_{noun} span, int by) {{
+    span.start -= by;
+    span.end += by;
+    span.open = span.end - span.start > {k + 5};
+
+    return span;
+}}
+
+int measure_{noun}(struct span_{noun} span) {{
+    return span.end - span.start + span.open;
+}}
+
+int spans_{noun}(int first) {{
+    struct span_{noun} span = {{ first, first + {k} }};
+    struct span_{noun} copy;
+
+    span = widen_{noun}(span, 2);
+    copy = span;
+    copy.end++;
+
+    return measure_{noun}(widen_{noun}(copy, 1)) + measure_{noun}(span);
+}}
+""")
+            calls.append(f"    total = total + spans_{noun}({k});")
+        elif kind == 3:
+            parts.append(f"""struct link_{noun} {{
+    int value;
+    struct link_{noun} *next;
+    struct {{ int hits; char seen; }} stats;
+}};
+
+struct link_{noun} chain_{noun}[5];
+
+int walk_{noun}(int start) {{
+    struct link_{noun} *at;
+    int sum = 0;
+
+    for (int i = 0; i < 5; i++) {{
+        chain_{noun}[i].value = start + i;
+        chain_{noun}[i].next = i < 4 ? &chain_{noun}[i + 1] : 0;
+    }}
+    for (at = chain_{noun}; at; at = at->next) {{
+        at->stats.hits++;
+        at->stats.seen = 1;
+        sum += at->value * at->stats.seen;
+    }}
+
+    return sum + chain_{noun}[0].next->next->value;
+}}
+""")
+            calls.append(f"    total = total + walk_{noun}({k});")
+        else:
+            parts.append(f"""typedef unsigned char byte_{noun};
+typedef short half_{noun};
+typedef byte_{noun} *cursor_{noun};
+
+int pack_{noun}(int value) {{
+    byte_{noun} bytes[4];
+    cursor_{noun} at = bytes;
+    half_{noun} low = (half_{noun}) (value * {k + 3});
+
+    bytes[0] = (byte_{noun}) value;
+    bytes[1] = (byte_{noun}) (value + 1);
+    bytes[2] = (byte_{noun}) low;
+    bytes[3] = (byte_{noun}) sizeof(byte_{noun});
+
+    return at[0] + at[1] + at[2] + at[3] + (int) (long) low;
+}}
+""")
+            calls.append(f"    total = total + pack_{noun}({k + 10});")
+
+    main_head = """int main(void) {
+    int total = 0;
+"""
+    return parts, main_head, calls, "total"
+
+
 HEADERS = {
     "pointers.c": """/* The pointer benchmark input.
  *
@@ -729,6 +890,17 @@ HEADERS = {
  * as the initial values of char arrays, scanning and comparing through char
  * pointers, a table of words in a 2-D char array, and declarations inside
  * nested blocks: what acc gained after the other inputs were written.
+ *
+ * Generated by generate.py and committed, so that a number from today can
+ * be compared with one from last week. Returns 42.
+ */
+""",
+    "records.c": """/* The records benchmark input.
+ *
+ * Structs and unions -- nested, anonymous, in arrays, initialised at file
+ * scope, reached through pointers and passed and returned by value -- with
+ * enums as their tags and switch labels, typedefs for them and for scalars,
+ * casts and sizeof: what acc gained after the other inputs were written.
  *
  * Generated by generate.py and committed, so that a number from today can
  * be compared with one from last week. Returns 42.
@@ -796,3 +968,4 @@ if __name__ == "__main__":
     write("jumps.c", jumps)
     write("matrix.c", matrix)
     write("text.c", text)
+    write("records.c", records)

@@ -161,6 +161,11 @@ check_form "chars" "'[^']+'" \
 # A declaration indented past a function's own, which is one in an inner block.
 check_form "block-declarations" '^        +(int|char|short|long|unsigned|float|double) [A-Za-z_]' \
     "int main(void) { { int x = 1; return x; } }"
+check_op '->' "struct s { int m; }; int main(void) { struct s v, *p = &v; p->m = 1; return p->m; }"
+check_form "members" '[A-Za-z_0-9)]\.[A-Za-z_]' \
+    "struct s { int m; }; int main(void) { struct s v; v.m = 1; return v.m; }"
+check_form "casts" '\((unsigned |signed )?(char|short|int|long|float|double|void) *\**\) *[A-Za-z_(0-9]' \
+    "int main(void) { long a = 1; return (int) a; }"
 set +f
 
 [ -z "$missing" ] || echo "note: no benchmark input uses:$missing" >&2
