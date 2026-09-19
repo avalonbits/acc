@@ -98,6 +98,7 @@ int sym_push(NameRef name, int kind, int val)
         sym->kind = (unsigned char) kind;
         sym->val = val;
         sym->type = TY_INT;     /* until the declaration says otherwise */
+        sym->ext = 0;
         nsyms += sizeof *sym;
 
         return at;
@@ -116,6 +117,7 @@ int sym_push(NameRef name, int kind, int val)
     sym->val = val;
     sym->type = TY_INT;         /* a function called before it is defined is
                                  * assumed to return int, as C says */
+    sym->ext = 0;
     sym_set_params(at, 0, 0);   /* and to take nothing known */
     nsyms += sizeof *sym;
     nglobals += sizeof *sym;
@@ -268,65 +270,65 @@ int sym_count(int sym)
 }
 
 /* ------------------------------------------------------------------ */
-/* array types                                                         */
+/* extended types                                                      */
 
-/* The type codes no scalar uses. A scalar's code is its width in the low
- * three bits, 0x08 for unsigned and 0x10 for floating: void, the four signed
- * widths, the four unsigned ones and float. Everything else is free. */
-static const unsigned char array_codes[] = {
-    5, 6, 7, 8, 13, 14, 15, 16, 17, 18, 19,
-    21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
-};
-
-#define NARRAY_TYPES ((int) sizeof array_codes)
-
-unsigned char array_slot[32];
+/* The table TY_EXT's extension indexes, from 1; 0 is no extension. Arrays
+ * only, for now: an element type with its own extension, a count, and the
+ * size, worked out once. */
+#define NEXT_TYPES 255
 
 static struct {
-    Type elem;
-    int  count;
-} array_types[NARRAY_TYPES];
+    Type          elem;
+    unsigned char elem_x;
+    int           count;
+    int           bytes;
+} ext_types[NEXT_TYPES + 1];
 
-static int array_bytes[NARRAY_TYPES + 1];
+static int next_types;
 
-static int narray_types;
-
-Type type_array(Type elem, int count)
+int ext_array(Type elem, int elem_x, int count)
 {
     int i;
 
-    for (i = 0; i < narray_types; i++)
-        if (array_types[i].elem == elem && array_types[i].count == count)
-            return array_codes[i];
+    for (i = 1; i <= next_types; i++)
+        if (ext_types[i].elem == elem && ext_types[i].elem_x == elem_x
+            && ext_types[i].count == count)
+            return i;
 
-    if (narray_types == NARRAY_TYPES)
+    if (next_types == NEXT_TYPES)
         acc_error_at(tok_line, "this program has more than %d different "
                                "array shapes, which acc cannot tell apart yet",
-                     NARRAY_TYPES);
-    if ((long) count * type_bytes(elem) > 0x7fffff)
+                     NEXT_TYPES);
+    if ((long) count * type_bytes(elem, elem_x) > 0x7fffff)
         acc_error_at(tok_line, "an array this large does not fit in memory");
 
-    array_types[narray_types].elem = elem;
-    array_types[narray_types].count = count;
-    array_bytes[narray_types + 1] = count * type_bytes(elem);
-    array_slot[array_codes[narray_types]] = (unsigned char) (narray_types + 1);
+    next_types++;
+    ext_types[next_types].elem = elem;
+    ext_types[next_types].elem_x = (unsigned char) elem_x;
+    ext_types[next_types].count = count;
+    ext_types[next_types].bytes = count * type_bytes(elem, elem_x);
 
-    return array_codes[narray_types++];
+    return next_types;
 }
 
-Type type_elem(Type array)
+Type ext_elem(int x)
 {
-    return array_types[array_slot[array] - 1].elem;
+    return ext_types[x].elem;
 }
 
-int type_count(Type array)
+int ext_elem_x(int x)
 {
-    return array_types[array_slot[array] - 1].count;
+    return ext_types[x].elem_x;
 }
 
-int array_type_bytes(Type array)
+int ext_count(int x)
 {
-    return array_bytes[array_slot[array]];
+    return ext_types[x].count;
+}
+
+int ext_bytes(int x)
+{
+    return ext_types[x].bytes;
 }
 
 void sym_drop_locals(void)

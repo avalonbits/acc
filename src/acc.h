@@ -113,39 +113,44 @@ typedef unsigned char Type;
  * for the same reason. */
 #define type_unsigned(ty) ((ty) & (TY_PTR_MASK | TY_UNSIGNED))
 
+/* Extended types: arrays as types, and later structs.
+ *
+ * A type is one byte, and has to stay one: every value the compiler handles
+ * carries one, and the tests on it -- its width, its sign, whether it is a
+ * pointer -- run constantly. Widening it to 16 bits measured 1.5-4% slower
+ * on every program, and to 24 bits 2.5-5.4%, whether or not the program had
+ * anything a byte could not say.
+ *
+ * So the byte stays, and one code in it, TY_EXT, means "look at the other
+ * byte": an extension, carried beside the type in a Sym and a Value, that
+ * indexes a table of what the byte cannot say. The hot code only ever sees
+ * the first byte, which is why this costs nothing where it is not used. The
+ * pointer depth still sits on top, so a pointer to a row is a pointer like
+ * any other, and a value's extension always describes the TY_EXT at the
+ * bottom of its chain of pointers: taking an address or reading through one
+ * changes the depth and leaves the extension alone.
+ *
+ * An array is not a type a value ever has -- it becomes the address of its
+ * first element wherever it is used -- so a one-dimensional array needs no
+ * extension: its symbol records the element type. What needs one is an
+ * array of arrays, whose elements are rows, and a pointer to a whole array,
+ * which steps by one. The table has 255 entries. */
+#define TY_EXT      ((Type) 7)          /* a width no scalar has */
+
+#define type_is_array(ty)   ((Type) (ty) == TY_EXT)
+
+/* The size of any type, arrays included, given its extension. */
+#define type_bytes(ty, x)   (type_is_array(ty) ? ext_bytes(x) : type_size(ty))
+
 /* What `p + 1` moves by, which is the width of what p points at -- a whole
  * row, when that is an array. */
-#define type_step(ty)     type_bytes(type_deref(ty))
+#define type_step(ty, x)    type_bytes(type_deref(ty), x)
 
-/* Array types.
- *
- * An array is not a type a value has -- it becomes the address of its first
- * element wherever it is used -- so a one-dimensional array needs none: its
- * symbol records the element type, and that is enough. What does need one is
- * an array of arrays, whose elements are rows, and a pointer to a whole
- * array, which steps by one. Those are interned in a table, and named by the
- * values of the type byte no scalar type uses: 22 of them, with the pointer
- * depth still on top, so `int (*)[4]` is a pointer to one like any other.
- * That is a limit on how many different row shapes a program may have,
- * refused by name when it is reached; a type of more than one byte would
- * have lifted it at a cost on every value the compiler handles. */
-extern unsigned char array_slot[32];     /* by type code: its entry + 1, or 0 */
-
-/* No pointer depth, and a code the table has an entry for. The depth is
- * tested with a mask rather than as `ty < 32`, which is a signed compare and
- * so a call on this target to repair the flags. */
-#define type_is_array(ty)  (!type_pointer(ty) && array_slot[(Type) (ty)])
-
-/* The size of any type, arrays included. The test inline and the table
- * behind a call: every subscript's step asks, and only one through a pointer
- * to an array gets past the test -- where indexing a table of ints inline
- * would have been a multiply, which is another call. */
-#define type_bytes(ty)     (type_is_array(ty) ? array_type_bytes(ty) : type_size(ty))
-
-Type type_array(Type elem, int count);   /* the type `elem[count]` */
-Type type_elem(Type array);
-int  type_count(Type array);
-int  array_type_bytes(Type array);
+int  ext_array(Type elem, int elem_x, int count);   /* elem[count]: its extension */
+Type ext_elem(int x);           /* an array's element type */
+int  ext_elem_x(int x);         /* and its extension */
+int  ext_count(int x);
+int  ext_bytes(int x);
 
 /* C promotes anything narrower than int to int before doing arithmetic on it,
  * so a value in a register is always int-wide. Only loads, stores and casts
@@ -335,14 +340,17 @@ enum {
  * rather than to file scope. */
 #define sym_kind_local(kind) ((unsigned) (kind) <= SYM_LOCAL_ARRAY)
 
-/* Eight bytes on the target: a name, a kind, one number whose meaning the
- * kind decides, and a type. tinycc's equivalent is 31, and at four hundred
- * lines of input that difference was 40 KB of a 206 KB budget. */
+/* Nine bytes on the target: a name, a kind, one number whose meaning the
+ * kind decides, and a type with its extension. tinycc's equivalent is 31, and
+ * at four hundred lines of input that difference was 40 KB of a 206 KB
+ * budget. Nine rather than eight costs no multiply: a symbol is found by its
+ * byte offset into the table, not its position. */
 typedef struct {
     NameRef       name;
     unsigned char kind;
     int           val;
     Type          type;         /* fits in what was the pad byte */
+    unsigned char ext;          /* the type's extension, when it has one */
 } Sym;
 
 /* A function's parameter types, kept beside the symbols. A call converts each
@@ -404,7 +412,8 @@ typedef struct {
     unsigned char kind;
     Type          type;
     int           val;
-    unsigned char pad[3];       /* eight bytes: see the note on Sym */
+    unsigned char ext;          /* the type's extension, when it has one */
+    unsigned char pad[2];       /* eight bytes: see the note on Sym */
 } Value;
 
 /* ------------------------------------------------------------------ */
@@ -430,7 +439,8 @@ void vpush_const_float(float val);
 void vconvert(Type to);               /* narrow the top, then widen it back */
 Type vtype(void);                     /* the type of the top */
 int  vconst_top(int *val, Type *type);  /* whether the top is a constant */
-void vset_type(Type type);            /* the same address, another pointer type */
+void vset_type(Type type, int ext);   /* the same address, another pointer type */
+void vset_ext(int ext);               /* the top's type's extension */
 Type vtype_at(int depth);             /* 0 is the top, 1 the one below */
 void vpush_local(int offset, Type type);
 void vpush_reg(int reg);
@@ -476,13 +486,14 @@ int  gen_logic_left(int settles);     /* && and ||: after the left operand */
 void gen_logic_right(int settles, int early);  /* and after the right */
 void vtruth(int op);                  /* compare the top with zero: TK_NE, TK_EQ */
 void vdup(void);                      /* the top twice */
-void vprefix_local(int offset, Type type, int op);   /* ++x, --x */
-void vpostfix_local(int offset, Type type, int op);  /* x++, x-- */
+void vprefix_local(int offset, Type type, int ext, int op);   /* ++x, --x */
+void vpostfix_local(int offset, Type type, int ext, int op);  /* x++, x-- */
 void vprefix_indirect(int op);        /* ++*p, with p on the stack */
 void vpostfix_indirect(int op);       /* (*p)++, with p on the stack */
 int  gen_cond_begin(int *slot);       /* ?: after the condition */
-int  gen_cond_middle(int slot, Type *middle, int *middle_null);
-void gen_cond_end(int to_stub, int slot, Type middle, int middle_null);
+int  gen_cond_middle(int slot, Type *middle, int *middle_ext, int *middle_null);
+void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
+                  int middle_null);
 void gen_label(int hole);             /* fill a hole in with here */
 void gen_return(int line);            /* `return`, at the line it is on */
 void gen_finish(void);          /* resolve calls to functions defined later */

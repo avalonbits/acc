@@ -125,6 +125,8 @@ static void global_address(const Sym *global)
         acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                      TY_PTR_MAX);
     vpush_const(global->val, type_ptr_to(global->type));
+    if (global->ext)
+        vset_ext(global->ext);
 }
 
 /* The object whose address is on the stack, as an operand: its value, or --
@@ -191,6 +193,7 @@ static int name_operand(int sym, NameRef name)
         if (tok != TK_LBRACKET)
             return NAME_LOCAL;
         vpush_local(s->val, s->type);
+        vset_ext(s->ext);
         break;
     case SYM_GLOBAL:
         global_address(s);
@@ -200,6 +203,7 @@ static int name_operand(int sym, NameRef name)
         break;
     case SYM_LOCAL_ARRAY:
         vaddr_array(s->val, s->type);
+        vset_ext(s->ext);
         if (tok != TK_LBRACKET)
             return NAME_VALUE;
         break;
@@ -208,6 +212,7 @@ static int name_operand(int sym, NameRef name)
             acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                          TY_PTR_MAX);
         vpush_const(s->val, type_ptr_to(s->type));
+        vset_ext(s->ext);
         if (tok != TK_LBRACKET)
             return NAME_VALUE;
         break;
@@ -282,7 +287,7 @@ void symbol_value(int sym, NameRef name)
 
             return;
         }
-        vpostfix_local(local->val, local->type,
+        vpostfix_local(local->val, local->type, local->ext,
                        tok == TK_INC ? TK_PLUS : TK_MINUS);
         next();
 
@@ -290,6 +295,8 @@ void symbol_value(int sym, NameRef name)
     }
 
     vpush_local(local->val, local->type);
+    if (local->ext)
+        vset_ext(local->ext);
 }
 
 static void local_value(NameRef name)
@@ -322,7 +329,7 @@ static void prefix_step(void)
         case NAME_LOCAL: {
             const Sym *local = sym_at(sym);
 
-            vprefix_local(local->val, local->type, op);
+            vprefix_local(local->val, local->type, local->ext, op);
 
             return;
         }
@@ -419,6 +426,7 @@ static void address_of(void)
         const Sym *local = sym_at(sym);
 
         vaddr_local(local->val, local->type);
+        vset_ext(local->ext);
 
         return;
     }
@@ -429,12 +437,10 @@ static void address_of(void)
     /* A whole array: the same address as its first element, as a pointer to
      * the array, which steps over all of it at once. */
     {
-        Type whole = type_array(sym_at(sym)->type, sym_count(sym));
+        const Sym *array = sym_at(sym);
 
-        if (type_ptr_depth(whole) == TY_PTR_MAX)
-            acc_error_at(line, "a pointer can be %d deep and this is deeper",
-                         TY_PTR_MAX);
-        vset_type(type_ptr_to(whole));
+        vset_type(type_ptr_to(TY_EXT),
+                  ext_array(array->type, array->ext, sym_count(sym)));
     }
 }
 
@@ -739,7 +745,7 @@ static void compound_local(NameRef name)
     int sym = sym_find(name);
     Type outer = narrow_dest;
     Type type;
-    int off;
+    int off, ext;
 
     if (sym == SYM_NONE)
         acc_error_at(tok_line, "'%s' is not declared", name_text(name));
@@ -754,10 +760,12 @@ static void compound_local(NameRef name)
 
         type = local->type;
         off = local->val;
+        ext = local->ext;
     }
     next();
 
     vpush_local(off, type);
+    vset_ext(ext);
     narrow_dest = 0;
     expr();
     narrow_dest = outer;
@@ -1018,7 +1026,7 @@ static void conditional_rest(void)
 {
     Type outer = narrow_dest;
     Type middle;
-    int slot, to_third, to_stub, middle_null;
+    int slot, to_third, to_stub, middle_null, middle_ext;
 
     next();
     to_third = gen_cond_begin(&slot);
@@ -1026,11 +1034,11 @@ static void conditional_rest(void)
     narrow_dest = 0;
     expr();
     expect(TK_COLON, "':'");
-    to_stub = gen_cond_middle(slot, &middle, &middle_null);
+    to_stub = gen_cond_middle(slot, &middle, &middle_ext, &middle_null);
 
     gen_label(to_third);
     conditional();
-    gen_cond_end(to_stub, slot, middle, middle_null);
+    gen_cond_end(to_stub, slot, middle, middle_ext, middle_null);
     narrow_dest = outer;
 }
 
@@ -1219,7 +1227,7 @@ static int constant_int(const char *what, int line)
  * of elements -- -1 for `[]`, which only the first may be -- and *elem their
  * type, which for an array of arrays is itself an array type: `int m[3][4]`
  * is three elements of int[4]. */
-static int array_dims(Type base, Type *elem, int *count)
+static int array_dims(Type base, Type *elem, int *elem_x, int *count)
 {
     int dims[8], n = 0, i;
 
@@ -1246,10 +1254,13 @@ static int array_dims(Type base, Type *elem, int *count)
     if (base == TY_VOID)
         acc_error_at(tok_line, "an array of void has no elements to hold");
     *elem = base;
-    for (i = n - 1; i >= 1; i--)
-        *elem = type_array(*elem, dims[i]);
+    *elem_x = 0;
+    for (i = n - 1; i >= 1; i--) {
+        *elem_x = ext_array(*elem, *elem_x, dims[i]);
+        *elem = TY_EXT;
+    }
     *count = dims[0];
-    if (*count > 0 && (long) *count * type_bytes(*elem) > 0x7fffff)
+    if (*count > 0 && (long) *count * type_bytes(*elem, *elem_x) > 0x7fffff)
         acc_error_at(tok_line, "an array this large does not fit in memory");
 
     return n;
@@ -1277,14 +1288,14 @@ static NameRef declared_name(void)
  * where `int *p[4]` is four pointers. Functions are not declared this way,
  * since acc has no pointers to them. */
 __attribute__((noinline))
-static NameRef paren_declarator(Type t, Type *type, int *count)
+static NameRef paren_declarator(Type t, Type *type, int *ext, int *count)
 {
     NameRef name;
     int inner = 0;
 
     if (accept(TK_LPAREN)) {
         Type elem;
-        int n;
+        int n, elem_x, x = 0;
 
         while (accept(TK_STAR))
             inner++;
@@ -1293,11 +1304,12 @@ static NameRef paren_declarator(Type t, Type *type, int *count)
                                    "around a pointer, as in (*p)[4]");
         name = declared_name();
         expect(TK_RPAREN, "')'");
-        if (array_dims(t, &elem, &n)) {
+        if (array_dims(t, &elem, &elem_x, &n)) {
             if (n < 0)
                 acc_error_at(tok_line, "a pointer to an array needs the "
                                        "array's size");
-            t = type_array(elem, n);
+            x = ext_array(elem, elem_x, n);
+            t = TY_EXT;
         }
         while (inner--) {
             if (type_ptr_depth(t) == TY_PTR_MAX)
@@ -1306,14 +1318,16 @@ static NameRef paren_declarator(Type t, Type *type, int *count)
             t = type_ptr_to(t);
         }
         *type = t;
+        *ext = x;
         *count = 0;
 
         return name;
     }
 
     name = declared_name();
-    if (!array_dims(t, type, count)) {
+    if (!array_dims(t, type, ext, count)) {
         *type = t;
+        *ext = 0;
         *count = 0;
     }
 
@@ -1325,18 +1339,19 @@ static NameRef paren_declarator(Type t, Type *type, int *count)
  * dimensions were three more on every parameter and local in the program,
  * which cost 1.8% of a compile. */
 static inline __attribute__((always_inline))
-NameRef direct_declarator(Type t, Type *type, int *count)
+NameRef direct_declarator(Type t, Type *type, int *ext, int *count)
 {
     NameRef name;
 
     if (tok != TK_IDENT)
-        return paren_declarator(t, type, count);
+        return paren_declarator(t, type, ext, count);
     name = tok_name;
     next();
     *type = t;
+    *ext = 0;
     *count = 0;
     if (tok == TK_LBRACKET)
-        array_dims(t, type, count);
+        array_dims(t, type, ext, count);
 
     return name;
 }
@@ -1350,19 +1365,20 @@ NameRef direct_declarator(Type t, Type *type, int *count)
  * as many values as it has room for. A scalar may have braces of its own. */
 typedef void (*InitPut)(Type scalar, int offset);
 
-static void init_element(Type type, int offset, InitPut put);
+static void init_element(Type type, int x, int offset, InitPut put);
 
 /* The elements of a braced list, the brace already read. Returns how many.
- * `count` is how many there may be, or -1 for no limit. */
-static int init_list(Type elem, int count, int offset, InitPut put)
+ * `count` is how many there may be, or -1 for no limit. `elem_x` is the
+ * element type's extension, when it is a row. */
+static int init_list(Type elem, int elem_x, int count, int offset, InitPut put)
 {
-    int n = 0, step = type_bytes(elem);
+    int n = 0, step = type_bytes(elem, elem_x);
 
     while (tok != TK_RBRACE) {
         if (n == count)
             acc_error_at(tok_line, "more initial values than the array has "
                                    "elements");
-        init_element(elem, offset + n * step, put);
+        init_element(elem, elem_x, offset + n * step, put);
         n++;
         if (!accept(TK_COMMA))
             break;
@@ -1374,11 +1390,13 @@ static int init_list(Type elem, int count, int offset, InitPut put)
 
 /* A row with its braces left out: it takes values from the list it is in,
  * until it is full or the list ends. The comma after its last value is left
- * for the list, unless the list ends straight after it. */
-static void init_elided(Type array, int offset, InitPut put)
+ * for the list, unless the list ends straight after it. `x` is the row's
+ * extension. */
+static void init_elided(int x, int offset, InitPut put)
 {
-    Type elem = type_elem(array);
-    int count = type_count(array), step = type_bytes(elem), i;
+    Type elem = ext_elem(x);
+    int elem_x = ext_elem_x(x);
+    int count = ext_count(x), step = type_bytes(elem, elem_x), i;
 
     for (i = 0; i < count; i++) {
         if (i) {
@@ -1388,17 +1406,17 @@ static void init_elided(Type array, int offset, InitPut put)
             if (tok == TK_RBRACE)
                 return;
         }
-        init_element(elem, offset + i * step, put);
+        init_element(elem, elem_x, offset + i * step, put);
     }
 }
 
-static void init_element(Type type, int offset, InitPut put)
+static void init_element(Type type, int x, int offset, InitPut put)
 {
     if (type_is_array(type)) {
         if (accept(TK_LBRACE))
-            init_list(type_elem(type), type_count(type), offset, put);
+            init_list(ext_elem(x), ext_elem_x(x), ext_count(x), offset, put);
         else
-            init_elided(type, offset, put);
+            init_elided(x, offset, put);
 
         return;
     }
@@ -1413,10 +1431,12 @@ static void init_element(Type type, int offset, InitPut put)
 }
 
 /* The scalar type an array is made of, however many dimensions it has. */
-static Type innermost(Type type)
+static Type innermost(Type type, int x)
 {
-    while (type_is_array(type))
-        type = type_elem(type);
+    while (type_is_array(type)) {
+        type = ext_elem(x);
+        x = ext_elem_x(x);
+    }
 
     return type;
 }
@@ -1470,10 +1490,11 @@ static void local_put(Type scalar, int offset)
  * elements having been stored against an address that is only filled in
  * when the function ends. */
 __attribute__((noinline))
-static void local_array(Type elem, NameRef name, int count, int line)
+static void local_array(Type elem, int elem_x, NameRef name, int count,
+                        int line)
 {
     int array = gen_local_array();
-    int step = type_bytes(elem), sym;
+    int step = type_bytes(elem, elem_x), sym;
 
     if (count > 0)
         gen_local_array_size(array, count * step);
@@ -1489,7 +1510,7 @@ static void local_array(Type elem, NameRef name, int count, int line)
             if (n == count)
                 acc_error_at(tok_line, "more initial values than the array has "
                                        "elements");
-            init_element(elem, n * step, local_put);
+            init_element(elem, elem_x, n * step, local_put);
             n++;
             if (!accept(TK_COMMA))
                 break;
@@ -1504,7 +1525,7 @@ static void local_array(Type elem, NameRef name, int count, int line)
             gen_zero_array(array, n * step, (count - n) * step);
         }
     } else if (accept(TK_ASSIGN)) {
-        Type scalar = innermost(elem);
+        Type scalar = innermost(elem, elem_x);
         int each = type_size(scalar), slots, i, run;
 
         expect(TK_LBRACE, "'{'");
@@ -1512,7 +1533,7 @@ static void local_array(Type elem, NameRef name, int count, int line)
         if (init_given_cap)
             memset(init_given, 0, (size_t) init_given_cap);
         {
-            int n = init_list(elem, count, 0, local_put);
+            int n = init_list(elem, elem_x, count, 0, local_put);
 
             if (count < 0) {
                 if (n == 0)
@@ -1539,6 +1560,7 @@ static void local_array(Type elem, NameRef name, int count, int line)
 
     sym = sym_push(name, SYM_LOCAL_ARRAY, array);
     sym_at(sym)->type = elem;
+    sym_at(sym)->ext = (unsigned char) elem_x;
     sym_set_count(sym, count);
 }
 
@@ -1551,12 +1573,13 @@ void declaration(void)
     Type base = base_type();
 
     for (;;) {
-        int line = tok_line, count, off, sym;
+        int line = tok_line, count, ext, off, sym;
         Type type;
-        NameRef name = direct_declarator(declarator_stars(base), &type, &count);
+        NameRef name = direct_declarator(declarator_stars(base), &type, &ext,
+                                         &count);
 
         if (count) {
-            local_array(type, name, count, line);
+            local_array(type, ext, name, count, line);
             if (!accept(TK_COMMA))
                 break;
             continue;
@@ -1576,6 +1599,7 @@ void declaration(void)
         /* Pushed after the initialiser, so `int x = x;` does not see itself. */
         sym = sym_push(name, SYM_LOCAL, off);
         sym_at(sym)->type = type;
+        sym_at(sym)->ext = (unsigned char) ext;
 
         if (!accept(TK_COMMA))
             break;
@@ -2289,14 +2313,15 @@ static void function_rest(Type ret_type, NameRef name)
     } else if (tok != TK_RPAREN) {
         for (;;) {
             Type pbase = base_type(), ptype;
-            int pline = tok_line, pcount;
+            int pline = tok_line, pcount, pext;
             NameRef pname;
             int psym;
 
             if (tok != TK_IDENT && tok != TK_STAR && tok != TK_LPAREN)
                 acc_error_at(tok_line, "expected a parameter name, found %s",
                              tok_spelling(tok));
-            pname = direct_declarator(declarator_stars(pbase), &ptype, &pcount);
+            pname = direct_declarator(declarator_stars(pbase), &ptype, &pext,
+                                      &pcount);
 
             /* `int a[]`, `int a[10]` and `int m[][4]` declare a parameter
              * that is a pointer, as C says: an array is passed as the address
@@ -2312,6 +2337,7 @@ static void function_rest(Type ret_type, NameRef name)
 
             psym = sym_push(pname, SYM_LOCAL, argoff);
             sym_at(psym)->type = ptype;
+            sym_at(psym)->ext = (unsigned char) pext;
             sym_param_add(ptype);
 
             /* Every argument occupies whole slots: one however narrow it is,
@@ -2471,9 +2497,10 @@ static void global_put(Type scalar, int offset)
 /* A file-scope array, from just past its declarator: its bytes, each value a
  * constant as a global's value has to be and zeros for the rest, written into
  * the image. A `[]` array is as long as its initialiser. */
-static void global_array(Type elem, NameRef name, int count, int line)
+static void global_array(Type elem, int elem_x, NameRef name, int count,
+                         int line)
 {
-    int step = type_bytes(elem), total, at, sym, i;
+    int step = type_bytes(elem, elem_x), total, at, sym, i;
 
     /* One dimension, which is most arrays, needs none of the walk: its values
      * arrive in order, each written as it is read, and zeros follow. As the
@@ -2519,6 +2546,7 @@ static void global_array(Type elem, NameRef name, int count, int line)
 
         sym = sym_push(name, SYM_GLOBAL_ARRAY, at);
         sym_at(sym)->type = elem;
+        sym_at(sym)->ext = (unsigned char) elem_x;
         sym_set_count(sym, count);
 
         return;
@@ -2530,7 +2558,7 @@ static void global_array(Type elem, NameRef name, int count, int line)
         int n;
 
         expect(TK_LBRACE, "'{'");
-        n = init_list(elem, count, 0, global_put);
+        n = init_list(elem, elem_x, count, 0, global_put);
         if (count < 0) {
             if (n == 0)
                 acc_error_at(line, "an array needs at least one element");
@@ -2549,6 +2577,7 @@ static void global_array(Type elem, NameRef name, int count, int line)
 
     sym = sym_push(name, SYM_GLOBAL_ARRAY, at);
     sym_at(sym)->type = elem;
+    sym_at(sym)->ext = (unsigned char) elem_x;
     sym_set_count(sym, count);
 }
 
@@ -2560,7 +2589,8 @@ static void global_array(Type elem, NameRef name, int count, int line)
  * it is written, so nothing that refers to it ever needs patching. A global
  * with no initial value is zero, as C says, and takes its bytes in the image
  * like any other -- there is no separate zeroed area yet. */
-static void global_variable(Type type, NameRef name, int count, int line)
+static void global_variable(Type type, int ext, NameRef name, int count,
+                            int line)
 {
     unsigned char bytes[ACC_LONG_SIZE] = { 0 };
     int size = type_size(type), sym, i, at;
@@ -2576,7 +2606,7 @@ static void global_variable(Type type, NameRef name, int count, int line)
                      name_text(name));
 
     if (count) {
-        global_array(type, name, count, line);
+        global_array(type, ext, name, count, line);
 
         return;
     }
@@ -2591,6 +2621,7 @@ static void global_variable(Type type, NameRef name, int count, int line)
 
     sym = sym_push(name, SYM_GLOBAL, at);
     sym_at(sym)->type = type;
+    sym_at(sym)->ext = (unsigned char) ext;
 }
 
 /* What is at file scope: a function's definition, or a list of variables.
@@ -2600,7 +2631,7 @@ static void global_variable(Type type, NameRef name, int count, int line)
 static void external_declaration(void)
 {
     Type base = base_type();
-    int line = tok_line, count = 0;
+    int line = tok_line, count = 0, ext = 0;
     Type stars = declarator_stars(base), type = stars;
     NameRef name;
 
@@ -2615,21 +2646,21 @@ static void external_declaration(void)
 
             return;
         }
-        if (!array_dims(stars, &type, &count))
+        if (!array_dims(stars, &type, &ext, &count))
             type = stars;
     } else if (tok == TK_LPAREN) {
-        name = direct_declarator(stars, &type, &count);
+        name = direct_declarator(stars, &type, &ext, &count);
     } else {
         acc_error_at(tok_line, "expected a name, found %s", tok_spelling(tok));
     }
 
     for (;;) {
-        global_variable(type, name, count, line);
+        global_variable(type, ext, name, count, line);
         if (!accept(TK_COMMA))
             break;
 
         line = tok_line;
-        name = direct_declarator(declarator_stars(base), &type, &count);
+        name = direct_declarator(declarator_stars(base), &type, &ext, &count);
     }
     expect(TK_SEMI, "';'");
 }

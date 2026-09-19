@@ -365,6 +365,7 @@ void vpush(int kind, Type type, int val)
     vsp->kind = (unsigned char) kind;
     vsp->type = type;
     vsp->val = val;
+    vsp->ext = 0;
     vsp++;
     vtop++;
 }
@@ -487,9 +488,18 @@ Type vtype_at(int depth)
 
 /* The top, a pointer, as a pointer of another type to the same address: what
  * `&a` makes of an array, which is already its first element's address. */
-void vset_type(Type type)
+void vset_type(Type type, int ext)
 {
     (vsp - 1)->type = type;
+    (vsp - 1)->ext = (unsigned char) ext;
+}
+
+/* The extension of the top's type, which a push leaves at none: set by the
+ * parser after pushing something whose type came from a declaration that
+ * had one. */
+void vset_ext(int ext)
+{
+    (vsp - 1)->ext = (unsigned char) ext;
 }
 
 /* Whether the top of the stack is a constant, and if so its value and type.
@@ -2552,18 +2562,19 @@ static void vbinop_pointer(int op, Type left, Type right)
 {
     int both = type_pointer(left) && type_pointer(right);
     Type ptr = type_pointer(left) ? left : right;
+    int ext = type_pointer(left) ? (vsp - 2)->ext : (vsp - 1)->ext;
     int step;
 
     if (type_deref(ptr) == TY_VOID)
         acc_error_at(tok_line, "a 'void *' does not say what it points at, so "
                                "arithmetic on it has no step to take");
-    step = type_step(ptr);
+    step = type_step(ptr, ext);
 
     if (both) {
         if (op != TK_MINUS)
             acc_error_at(tok_line, "%s does not take two pointers",
                          tok_spelling(op));
-        if (left != right)
+        if (left != right || (vsp - 2)->ext != (vsp - 1)->ext)
             acc_error_at(tok_line, "these are pointers to different types");
 
         vbinop(TK_MINUS);
@@ -2594,6 +2605,7 @@ static void vbinop_pointer(int op, Type left, Type right)
     }
     vbinop(op);
     (vsp - 1)->type = ptr;
+    (vsp - 1)->ext = (unsigned char) ext;
 }
 
 /* The type two operands meet at when either is four bytes wide: C's usual
@@ -2771,6 +2783,7 @@ void vderef(void)
 {
     Value *top = vsp - 1;
     Type to;
+    int deref_ext = 0;
 
     if (vtop <= 0)
         acc_error("internal: nothing to dereference");
@@ -2788,15 +2801,22 @@ void vderef(void)
      * address of its first element: the same address, as a pointer to the
      * element. Nothing is read. */
     if (type_is_array(to)) {
-        Type elem = type_elem(to);
+        int x = top->ext;
+        Type elem = ext_elem(x);
 
         if (type_ptr_depth(elem) == TY_PTR_MAX)
             acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                          TY_PTR_MAX);
         top->type = type_ptr_to(elem);
+        top->ext = (unsigned char) ext_elem_x(x);
 
         return;
     }
+
+    /* A pointer read through a pointer keeps its extension: the chain is
+     * one level shorter, and its bottom is the same. */
+    if (type_pointer(to))
+        deref_ext = top->ext;
 
     force_into(top, R_HL);
 
@@ -2845,6 +2865,8 @@ void vderef(void)
     vdrop();
     vpush_reg(R_HL);
     (vsp - 1)->type = type_promote(to);
+    if (type_pointer(to))
+        (vsp - 1)->ext = (unsigned char) deref_ext;
 }
 
 /* *p = v, with the pointer under the value on the stack. The value is left
@@ -2924,6 +2946,7 @@ void vstore_indirect(void)
         vdrop();
         vdrop();
         vpush(kept.kind, kept.type, kept.val);
+        (vsp - 1)->ext = kept.ext;
     }
 }
 
@@ -2944,6 +2967,7 @@ void vdup(void)
 
     top = vsp - 1;
     vpush(top->kind, top->type, top->val);
+    (vsp - 1)->ext = top->ext;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2990,19 +3014,21 @@ static void vstep(int op, Type type)
 }
 
 /* ++x and --x on a local: x changed, and the answer is its new value. */
-void vprefix_local(int offset, Type type, int op)
+void vprefix_local(int offset, Type type, int ext, int op)
 {
     vpush_local(offset, type);
+    vset_ext(ext);
     vstep(op, type);
     vstore_local(offset, type);
 }
 
 /* x++ and x-- on a local: x changed, and the answer is its old value. */
-void vpostfix_local(int offset, Type type, int op)
+void vpostfix_local(int offset, Type type, int ext, int op)
 {
     vpush_local(offset, type);
     vsnapshot();
     vpush_local(offset, type);
+    vset_ext(ext);
     vstep(op, type);
     vstore_local(offset, type);
     vdrop();
@@ -3107,11 +3133,12 @@ int gen_cond_begin(int *slot)
  * stub that does not exist yet. What the answer's type is depends on the
  * third operand, which has not been parsed, so converting now would be
  * guessing. */
-int gen_cond_middle(int slot, Type *middle, int *middle_null)
+int gen_cond_middle(int slot, Type *middle, int *middle_ext, int *middle_null)
 {
     Value *top = vsp - 1;
 
     *middle = top->type;
+    *middle_ext = top->ext;
     *middle_null = (top->kind == VAL_CONST && top->val == 0);
     cond_park(slot);
 
@@ -3123,11 +3150,13 @@ int gen_cond_middle(int slot, Type *middle, int *middle_null)
  * it finds the middle's value exactly where it was left -- nothing between
  * the jump and here ran on that path -- converts it the same way, and parks
  * it in the same place. */
-void gen_cond_end(int to_stub, int slot, Type middle, int middle_null)
+void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
+                  int middle_null)
 {
     Value *top = vsp - 1;
     int third_null = (top->kind == VAL_CONST && top->val == 0);
     Type result = cond_type(middle, middle_null, top->type, third_null);
+    int ext = third_null ? middle_ext : top->ext;   /* the side that is not 0 */
     int done;
 
     vconvert(result);
@@ -3147,4 +3176,5 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_null)
         vpush(VAL_LOCAL, result, slot);
     else
         vpush(VAL_REG, result, R_HL);
+    (vsp - 1)->ext = (unsigned char) ext;
 }
