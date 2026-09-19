@@ -337,6 +337,21 @@ void lex_close(void)
 const char *lex_path(void) { return src_path; }
 int lex_line(void)         { return line; }
 
+/* Whether the next character that is not white space is a colon. That is all
+ * that tells a label from an expression statement -- `done:` and `done = 1;`
+ * start with the same token -- and one character is enough to look at: at
+ * the start of a statement a name followed by a colon can only be a label.
+ * Nothing is consumed. */
+int lex_colon_follows(void)
+{
+    const char *p = cursor;
+
+    while (is_space(*p))
+        p++;
+
+    return *p == ':';
+}
+
 /* A comment, with the cursor on its opening `/`. Out of line so that
  * skip_space, which is inlined into next(), carries nothing but the cursor
  * and the line count: the comment scan's own state, the line a block comment
@@ -441,7 +456,7 @@ static void keywords_init(void)
     keyword("do", 2, TK_KW_DO);
     keyword("enum", 4, TK_KW_RESERVED);
     keyword("extern", 6, TK_KW_RESERVED);
-    keyword("goto", 4, TK_KW_RESERVED);
+    keyword("goto", 4, TK_KW_GOTO);
     keyword("inline", 6, TK_KW_RESERVED);
     keyword("register", 8, TK_KW_RESERVED);
     keyword("restrict", 8, TK_KW_RESERVED);
@@ -899,6 +914,7 @@ const char *tok_spelling(int token)
     case TK_KW_FLOAT:  return "'float'";
     case TK_KW_DOUBLE: return "'double'";
     case TK_KW_FOR:    return "'for'";
+    case TK_KW_GOTO:   return "'goto'";
     case TK_KW_BREAK:  return "'break'";
     case TK_KW_CONTINUE: return "'continue'";
     case TK_KW_DO:     return "'do'";

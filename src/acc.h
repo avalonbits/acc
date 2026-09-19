@@ -215,6 +215,7 @@ enum {
     TK_RBRACKET,
     TK_KW_BREAK, TK_KW_CONTINUE, TK_KW_DO, TK_KW_SWITCH, TK_KW_CASE,
     TK_KW_DEFAULT,
+    TK_KW_GOTO,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -255,6 +256,7 @@ void lex_init(void);
 void lex_open(const char *path);
 void lex_close(void);
 void next(void);                 /* advance to the following token */
+int  lex_colon_follows(void);    /* whether `:` comes after the current token */
 int         accept_next(void);          /* next(), returning 1, for accept */
 
 /* The current token if it is `token`, stepping past it; 0 and nothing done if

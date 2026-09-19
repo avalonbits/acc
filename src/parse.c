@@ -1640,6 +1640,116 @@ static void switch_statement(void)
     jumps_pop();
 }
 
+/* ------------------------------------------------------------------ */
+/* goto and labels                                                     */
+
+/* The labels of the function being compiled. They are a namespace of their
+ * own -- a label may share its name with a variable -- and they belong to the
+ * whole function, so a goto may name one further down. That one is not known
+ * yet, so its jump is left as a hole and filled in when the label is
+ * reached; a label never reached is an error once the function ends, blamed
+ * on the first goto that named it. */
+typedef struct {
+    NameRef name;
+    int     at;             /* its address, or -1 until it is reached */
+    int     line;           /* where it was first named */
+} Label;
+
+static Label *labels;
+static int    nlabels, labels_cap;
+
+/* The gotos still waiting for their label: the hole, and which label. */
+static int *goto_hole, *goto_label;
+static int  ngotos, gotos_cap;
+
+static int label_find(NameRef name, int line)
+{
+    int i;
+
+    for (i = 0; i < nlabels; i++)
+        if (labels[i].name == name)
+            return i;
+
+    if (nlabels == labels_cap) {
+        labels_cap = labels_cap ? labels_cap * 2 : 8;
+        labels = realloc(labels, (size_t) labels_cap * sizeof *labels);
+        if (!labels)
+            acc_error("out of memory for labels");
+    }
+    labels[nlabels].name = name;
+    labels[nlabels].at = -1;
+    labels[nlabels].line = line;
+
+    return nlabels++;
+}
+
+__attribute__((noinline))
+static void goto_statement(void)
+{
+    int line = tok_line, label;
+
+    next();
+    if (tok != TK_IDENT)
+        acc_error_at(tok_line, "'goto' needs a label, and this is %s",
+                     tok_spelling(tok));
+    label = label_find(tok_name, line);
+    next();
+    expect(TK_SEMI, "';'");
+
+    if (labels[label].at >= 0) {
+        gen_jump_to(labels[label].at);
+
+        return;
+    }
+    if (ngotos == gotos_cap) {
+        gotos_cap = gotos_cap ? gotos_cap * 2 : 8;
+        goto_hole = realloc(goto_hole, (size_t) gotos_cap * sizeof *goto_hole);
+        goto_label = realloc(goto_label, (size_t) gotos_cap * sizeof *goto_label);
+        if (!goto_hole || !goto_label)
+            acc_error("out of memory for gotos");
+    }
+    goto_hole[ngotos] = gen_jump();
+    goto_label[ngotos] = label;
+    ngotos++;
+}
+
+/* `name: statement` -- the label is here, and every goto that was waiting for
+ * it lands here too. */
+__attribute__((noinline))
+static void label_statement(void)
+{
+    int line = tok_line, label = label_find(tok_name, line), i, kept = 0;
+
+    if (labels[label].at >= 0)
+        acc_error_at(line, "the label '%s' is defined twice",
+                     name_text(tok_name));
+    next();
+    expect(TK_COLON, "':'");
+    labels[label].at = gen_here();
+
+    for (i = 0; i < ngotos; i++) {
+        if (goto_label[i] == label) {
+            gen_label(goto_hole[i]);
+            continue;
+        }
+        goto_hole[kept] = goto_hole[i];
+        goto_label[kept] = goto_label[i];
+        kept++;
+    }
+    ngotos = kept;
+
+    statement();
+}
+
+/* The end of a function: every goto has to have found its label. */
+static void labels_end(void)
+{
+    if (ngotos)
+        acc_error_at(labels[goto_label[0]].line, "the label '%s' is used but "
+                     "never defined", name_text(labels[goto_label[0]].name));
+    nlabels = 0;
+}
+
 /* `for (init; condition; step) body`.
  *
  * One pass, so the code comes out in the order it is read, and the step --
@@ -1856,7 +1966,17 @@ static void statement(void)
 
         return;
 
+    case TK_KW_GOTO:
+        goto_statement();
+
+        return;
+
     default:
+        if (tok == TK_IDENT && lex_colon_follows()) {
+            label_statement();
+
+            return;
+        }
         expr();
         vdrop();                /* the value of a statement is discarded */
         expect(TK_SEMI, "';'");
@@ -1931,6 +2051,7 @@ static void function_rest(Type ret_type, NameRef name)
     while (starts_type(tok))
         declaration();
     block();
+    labels_end();
     gen_func_end();
 
     sym_drop_locals();
