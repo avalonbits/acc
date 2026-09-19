@@ -951,6 +951,8 @@ static void object_statement(int sym, NameRef name)
  * subscripts it is an ordinary value, and the rest of the expression
  * follows. */
 __attribute__((noinline))
+static void postfix_statement(void);
+
 static void paren_statement(void)
 {
     Type outer = narrow_dest;
@@ -969,6 +971,14 @@ static void paren_statement(void)
     }
     narrow_dest = outer;
 
+    postfix_statement();
+}
+
+/* After a value at the start of an expression -- a parenthesis, a call --
+ * the subscripts and members that make it an object, and then what may
+ * follow an object: a store, a step, or a read and the rest. */
+static void postfix_statement(void)
+{
     if (!tok_postfix()) {
         binary_rest(PREC_LOWEST);
 
@@ -1001,7 +1011,7 @@ static void assignment(void)
         next();
         if (accept(TK_LPAREN)) {
             call_rest(name);
-            binary_rest(PREC_LOWEST);
+            postfix_statement();
 
             return;
         }
@@ -3180,15 +3190,20 @@ static void statement(void)
     }
 }
 
-/* A function's definition, from just past its name. */
-static void function_rest(Type ret_type, NameRef name)
-{
-    int fn;
-    int nparams = 0, argoff, params_first;
+/* The struct parameters of the function being defined, which are copied
+ * into its frame once the prologue has been emitted: see function_rest. */
+typedef struct {
+    int sym, argoff;
+} StructParam;
 
-    if (type_is_struct(ret_type))
-        acc_error_at(tok_line, "a struct or union returned by value is not "
-                               "supported yet");
+static StructParam *struct_params;
+static int          nstruct_params, struct_params_cap;
+
+/* A function's definition, from just past its name. */
+static void function_rest(Type ret_type, int ret_ext, NameRef name)
+{
+    int fn, i;
+    int nparams = 0, argoff, params_first;
 
     expect(TK_LPAREN, "'('");
 
@@ -3197,13 +3212,24 @@ static void function_rest(Type ret_type, NameRef name)
         acc_error_at(tok_line, "'%s' is already a variable", name_text(name));
     if (fn != SYM_NONE && sym_at(fn)->kind == SYM_FUNC && sym_at(fn)->val)
         acc_error_at(tok_line, "'%s' is defined twice", name_text(name));
+    /* A call before the definition took the result to be an int, which for a
+     * struct is not something that can be put right afterwards. */
+    if (fn != SYM_NONE && type_is_struct(ret_type))
+        acc_error_at(tok_line, "'%s' returns a struct, so it has to be defined "
+                               "before it is called", name_text(name));
     if (fn == SYM_NONE)
         fn = sym_push(name, SYM_FUNC, 0);
     sym_at(fn)->type = ret_type;
+    sym_at(fn)->ext = (unsigned char) ret_ext;
 
-    /* The first argument sits above the saved ix and the return address. */
+    /* The first argument sits above the saved ix and the return address --
+     * and above the hidden one, the address a struct result goes to, when
+     * there is one. */
     params_first = sym_params_begin();
     argoff = 2 * ACC_PTR_SIZE;
+    if (type_is_struct(ret_type))
+        argoff += ACC_PTR_SIZE;
+    nstruct_params = 0;
     if (tok == TK_KW_VOID) {
         next();
     } else if (tok != TK_RPAREN) {
@@ -3231,19 +3257,35 @@ static void function_rest(Type ret_type, NameRef name)
                 ptype = type_ptr_to(ptype);
             }
             not_void(ptype, "a parameter", pline);
-            if (type_is_struct(ptype))
-                acc_error_at(pline, "a struct or union passed by value is not "
-                                    "supported yet");
 
             psym = sym_push(pname, SYM_LOCAL, argoff);
             sym_at(psym)->type = ptype;
             sym_at(psym)->ext = (unsigned char) pext;
-            sym_param_add(ptype);
+            sym_param_add(ptype, pext);
 
             /* Every argument occupies whole slots: one however narrow it is,
-             * two for a long. That is what agondev does, and the narrow ones
-             * are read from the low bytes of their slot. */
-            argoff += type_wide(ptype) ? 2 * ACC_INT_SIZE : ACC_INT_SIZE;
+             * two for a long, and as many as a struct fills. That is what
+             * agondev does, and the narrow ones are read from the low bytes
+             * of their slot. */
+            if (type_is_struct(ptype)) {
+                record_complete(pext, pline);
+                if (nstruct_params == struct_params_cap) {
+                    struct_params_cap = struct_params_cap
+                                        ? struct_params_cap * 2 : 8;
+                    struct_params = realloc(struct_params,
+                                            (size_t) struct_params_cap
+                                            * sizeof *struct_params);
+                    if (!struct_params)
+                        acc_error("out of memory for parameters");
+                }
+                struct_params[nstruct_params].sym = psym;
+                struct_params[nstruct_params].argoff = argoff;
+                nstruct_params++;
+                argoff += (ext_bytes(pext) + ACC_INT_SIZE - 1) / ACC_INT_SIZE
+                          * ACC_INT_SIZE;
+            } else {
+                argoff += type_wide(ptype) ? 2 * ACC_INT_SIZE : ACC_INT_SIZE;
+            }
             nparams++;
             if (!accept(TK_COMMA))
                 break;
@@ -3254,6 +3296,27 @@ static void function_rest(Type ret_type, NameRef name)
 
     sym_set_params(fn, params_first, nparams);
     gen_func_begin(fn, nparams, ret_type);
+
+    /* A struct parameter is copied from its slots into the array area, where
+     * every local struct lives, so that the body finds it as it finds any
+     * other: the slots are above the frame, and past the reach of (ix+d)
+     * once there are a few of them. */
+    for (i = 0; i < nstruct_params; i++) {
+        Sym *param = sym_at(struct_params[i].sym);
+        int array = gen_local_array(), x = param->ext;
+
+        gen_local_array_size(array, ext_bytes(x));
+        vaddr_array(array, TY_STRUCT);
+        vset_ext(x);
+        vaddr_local(struct_params[i].argoff, TY_STRUCT);
+        vset_ext(x);
+        vderef();
+        vstore_indirect();
+        vdrop();
+        param = sym_at(struct_params[i].sym);
+        param->kind = SYM_LOCAL_STRUCT;
+        param->val = array;
+    }
     in_body = 1;
     block();
     in_body = 0;
@@ -3594,7 +3657,7 @@ static void external_declaration(void)
         name = tok_name;
         next();
         if (tok == TK_LPAREN) {
-            function_rest(stars, name);
+            function_rest(stars, bx, name);
 
             return;
         }

@@ -185,7 +185,12 @@ int sym_find(NameRef name)
  * Kept beside the symbols rather than in them: a Sym is eight bytes, and two
  * more fields would make it twelve for every local as well as every
  * function. */
-static Type    *param_type;
+typedef struct {
+    Type          type;
+    unsigned char ext;          /* a struct's, which says how big it is */
+} Param;
+
+static Param   *param_type;
 static unsigned param_used, param_cap;
 
 /* Where each function's run starts and how long it is, indexed by its symbol.
@@ -247,7 +252,7 @@ int sym_params_begin(void)
     return (int) param_used;
 }
 
-void sym_param_add(Type type)
+void sym_param_add(Type type, int ext)
 {
     if (param_used == param_cap) {
         param_cap = param_cap ? param_cap * 2 : 64;
@@ -255,12 +260,19 @@ void sym_param_add(Type type)
         if (!param_type)
             acc_error("out of memory for the parameter types");
     }
-    param_type[param_used++] = type;
+    param_type[param_used].type = type;
+    param_type[param_used].ext = (unsigned char) ext;
+    param_used++;
 }
 
 Type sym_param_type(int first, int index)
 {
-    return param_type[first + index];
+    return param_type[first + index].type;
+}
+
+int sym_param_ext(int first, int index)
+{
+    return param_type[first + index].ext;
 }
 
 /* The mark is a count of bytes above the file-scope symbols rather than a

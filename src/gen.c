@@ -270,6 +270,7 @@ static void convert_in_hl(Type to)
 /* The type this function was declared to return, so that `char f()` giving
  * back 300 gives back 44 as C says it must. */
 static Type return_type = TY_INT;
+static int  return_ext;         /* the struct it returns, when it does */
 
 /* agondev hands a one-byte result back in A and everything else in HL, and
  * acc matches it -- not as a courtesy but because acc exists so that code can
@@ -2416,6 +2417,7 @@ static int spill_slot(void)
 void gen_func_begin(int fn, int nparams, Type returns)
 {
     return_type = returns;
+    return_ext = sym_at(fn)->ext;
 
     (void) nparams;
 
@@ -2478,6 +2480,29 @@ void gen_return(int line)
         acc_error_at(line, "this function returns a value, so 'return' needs "
                            "one");
 
+    /* A struct is copied to where the caller asked for it, which is the
+     * hidden first argument, and that address is the answer in HL -- as
+     * agondev does it. */
+    if (type_is_struct(return_type)) {
+        Value *top = vsp - 1;
+
+        if (!type_is_struct(top->type) || top->ext != return_ext)
+            acc_error_at(line, "this function returns a struct, and 'return' "
+                               "has to give it one of the same type");
+        top->type = type_ptr_to(TY_CHAR);
+        force_into(top, R_HL);
+        ld_rr_ix(R_DE, 2 * ACC_PTR_SIZE);
+        ld_rr_imm(R_BC, ext_bytes(return_ext));
+        out_byte2(0xed, 0xb0);          /* ldir */
+        ld_rr_ix(R_HL, 2 * ACC_PTR_SIZE);
+        vdrop();
+        out_byte2(0xdd, 0xf9);          /* ld sp, ix */
+        out_byte2(0xdd, 0xe1);          /* pop ix */
+        out_byte(0xc9);                 /* ret */
+
+        return;
+    }
+
     /* The result goes in HL, which is where agondev returns an int as well --
      * worth matching even with nothing to link against, because it is what
      * lets the two be mixed later. */
@@ -2518,6 +2543,41 @@ void gen_return(int line)
     out_byte(0xc9);                              /* ret */
 }
 
+/* That a struct argument and its parameter are the same struct: a struct
+ * cannot be converted to anything, nor anything to one. */
+static void struct_argument(Type param, int param_ext, int which)
+{
+    if (!type_is_struct(param) || !type_is_struct(vtype())
+        || (vsp - 1)->ext != param_ext)
+        acc_error_at(tok_line, "argument %d has to be %s", which + 1,
+                     type_is_struct(param) ? "a struct of the parameter's type"
+                                           : "a number, not a struct");
+}
+
+/* A struct argument, from the address on top: its bytes copied onto the
+ * stack, in as many whole slots as they fill, the struct at the lowest
+ * address -- as agondev passes one. Returns the slots it took. */
+static int push_struct(void)
+{
+    int bytes = ext_bytes((vsp - 1)->ext);
+    int slots = (bytes + ACC_INT_SIZE - 1) / ACC_INT_SIZE;
+
+    /* ldir takes all three registers, and the arguments still to go may be
+     * in them. */
+    save_regs_below(1);
+    (vsp - 1)->type = type_ptr_to(TY_CHAR);
+    force_into(vsp - 1, R_HL);
+    ex_de_hl();                             /* DE: the struct */
+    ld_rr_imm(R_HL, -slots * ACC_INT_SIZE);
+    out_byte2(0x39, 0xf9);                  /* add hl, sp; ld sp, hl */
+    ex_de_hl();                             /* HL: the struct, DE: its copy */
+    ld_rr_imm(R_BC, bytes);
+    out_byte2(0xed, 0xb0);                  /* ldir */
+    vdrop();
+
+    return slots;
+}
+
 /* Arguments are pushed right to left, each in a whole three-byte slot, and
  * the caller takes them off again -- which is agondev's convention. */
 void gen_call(int fn, int nargs, int params_first, int nparams)
@@ -2538,8 +2598,20 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
          * parameter that many from the end. */
         int which = nargs - 1 - i;
 
-        if (which < nparams)
-            vconvert(sym_param_type(params_first, which));
+        if (which < nparams) {
+            Type param = sym_param_type(params_first, which);
+
+            if (type_is_struct(param) || type_is_struct(vtype()))
+                struct_argument(param, sym_param_ext(params_first, which),
+                                which);
+            else
+                vconvert(param);
+        }
+
+        if (type_is_struct(vtype())) {
+            argslots += push_struct();
+            continue;
+        }
 
         if (type_wide(vtype())) {
             /* Two slots, six bytes, which is what agondev gives a long. The
@@ -2570,6 +2642,18 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
      * symbol, so the pointer stays good. */
     callee = sym_at(fn);
 
+    /* A struct comes back in a temporary the caller provides, in the array
+     * area, whose address is passed ahead of the arguments. */
+    if (type_is_struct(callee->type)) {
+        int temp = gen_local_array(), x = callee->ext;
+
+        gen_local_array_size(temp, ext_bytes(x));
+        vaddr_array(temp, TY_CHAR);
+        push_rr(vpop_reg());
+        argslots++;
+        callee = sym_at(fn);
+    }
+
     if (callee->val) {
         out_opcode24(0xcd, callee->val);         /* call nn */
     } else {
@@ -2597,6 +2681,15 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
         return;
     }
 
+    /* The temporary's address, which the callee hands back in HL: the
+     * struct, as a value. */
+    if (type_is_struct(callee->type)) {
+        vpush(VAL_REG, TY_STRUCT, R_HL);
+        (vsp - 1)->ext = callee->ext;
+
+        return;
+    }
+
     /* A void function gives back nothing, and a value of kind VAL_VOID says
      * so: dropping it, as a statement does, is all it is good for. */
     if (callee->type == TY_VOID) {
@@ -2617,6 +2710,7 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
     }
     vpush_reg(R_HL);
     (vsp - 1)->type = type_promote(callee->type);
+    (vsp - 1)->ext = callee->ext;
 }
 
 /* What an operator means when a pointer is one of its operands.

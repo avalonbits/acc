@@ -408,8 +408,9 @@ typedef struct {
  * argument to the type the parameter was declared with, which matters because
  * a long takes two argument slots where everything else takes one. */
 int  sym_params_begin(void);
-void sym_param_add(Type type);
+void sym_param_add(Type type, int ext);
 Type sym_param_type(int first, int index);
+int  sym_param_ext(int first, int index);
 void sym_set_params(int sym, int first, int count);
 int  sym_params_first(int sym);
 int  sym_nparams(int sym);
