@@ -2262,6 +2262,13 @@ static NameRef direct_declarator_out(Type t, int tx, Type *type, int *ext,
 typedef void (*InitPut)(Type scalar, int offset, int value);
 
 static void init_element(Type type, int x, int offset, InitPut put);
+static void local_put(Type scalar, int offset, int value);
+static int  local_struct_value(int x, int offset);
+
+/* A value an initialiser has already parsed and left on the stack, for the
+ * next scalar it gives to take instead of parsing one: see
+ * local_struct_value. */
+static int init_pending;
 static void init_record(int x, int offset, InitPut put, int braced);
 static int  init_string(int count, int offset, InitPut put);
 
@@ -2316,12 +2323,19 @@ static void init_elided(int x, int offset, InitPut put)
 static void init_element(Type type, int x, int offset, InitPut put)
 {
     if (type_is_struct(type)) {
-        init_record(x, offset, put, accept(TK_LBRACE));
+        if (accept(TK_LBRACE)) {
+            init_record(x, offset, put, 1);
+
+            return;
+        }
+        if (put == local_put && !init_pending && local_struct_value(x, offset))
+            return;
+        init_record(x, offset, put, 0);
 
         return;
     }
     if (type_is_array(type)) {
-        if (tok == TK_STRING && type_is_char(ext_elem(x))) {
+        if (tok == TK_STRING && !init_pending && type_is_char(ext_elem(x))) {
             init_string(ext_count(x), offset, put);
 
             return;
@@ -2403,24 +2417,11 @@ static int            init_array;
 static unsigned char *init_given;
 static int            init_given_cap;
 
-static void local_put(Type scalar, int offset, int value)
+/* That the bytes from offset for size were given by the initialiser, so
+ * the zeroing after it leaves them. */
+static void init_mark(int offset, int size)
 {
-    Type outer = narrow_dest;
-    int size = type_size(scalar), end = offset + size;
-
-    /* By the byte: a struct's members are not at multiples of their own
-     * width. */
-    vaddr_array(init_array, TY_CHAR);
-    vmember(offset, scalar, 0, 0);     /* an initialiser writes const too */
-    narrow_dest = type_narrow(scalar);
-    if (value >= 0)
-        vpush_const(value, TY_INT);
-    else
-        expr();
-    narrow_dest = outer;
-    vstore_indirect();
-    vdrop();
-    gen_stmt_end();
+    int end = offset + size;
 
     if (end > init_given_cap) {
         int cap = init_given_cap ? init_given_cap : 64;
@@ -2434,6 +2435,31 @@ static void local_put(Type scalar, int offset, int value)
         init_given_cap = cap;
     }
     memset(init_given + offset, 1, (size_t) size);
+}
+
+static void local_put(Type scalar, int offset, int value)
+{
+    Type outer = narrow_dest;
+
+    /* By the byte: a struct's members are not at multiples of their own
+     * width. */
+    vaddr_array(init_array, TY_CHAR);
+    vmember(offset, scalar, 0, 0);     /* an initialiser writes const too */
+    if (init_pending) {
+        vswap();                        /* the address under the value */
+        init_pending = 0;
+    } else {
+        narrow_dest = type_narrow(scalar);
+        if (value >= 0)
+            vpush_const(value, TY_INT);
+        else
+            expr();
+        narrow_dest = outer;
+    }
+    vstore_indirect();
+    vdrop();
+    gen_stmt_end();
+    init_mark(offset, type_size(scalar));
 }
 
 /* Zeroes the bytes of the first `total` of a local array or struct that its
@@ -2484,6 +2510,39 @@ static void local_struct(int x, NameRef name, int line)
     sym = sym_push(name, SYM_LOCAL_STRUCT, array);
     sym_at(sym)->type = TY_STRUCT;
     sym_at(sym)->ext = (unsigned char) x;
+}
+
+/* A struct member or element of a local's initialiser, given without
+ * braces. C says that an expression of the struct's own type initialises it
+ * whole, and anything else is the first of its members' values with the
+ * braces left out -- which only the expression's type can tell, so it is
+ * parsed first. A struct is copied in, and returns 1; anything else is left
+ * for the first member to take, and returns 0. */
+__attribute__((noinline))
+static int local_struct_value(int x, int offset)
+{
+    Type outer = narrow_dest;
+
+    narrow_dest = 0;
+    expr();
+    narrow_dest = outer;
+    if (!type_is_struct(vtype())) {
+        init_pending = 1;
+
+        return 0;
+    }
+    if (vext() != x)
+        acc_error_at(tok_line, "a struct can only be assigned a struct of the "
+                               "same type");
+    vaddr_array(init_array, TY_CHAR);
+    vmember(offset, TY_STRUCT, x, 0);
+    vswap();
+    vstore_indirect();
+    vdrop();
+    gen_stmt_end();
+    init_mark(offset, ext_bytes(x));
+
+    return 1;
 }
 
 /* A local array, from just past its declarator.

@@ -115,7 +115,6 @@ static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
 static void vunary_long(int which, Type type);
-static void vswap(void);
 static Type common_wide(Type left, Type right);
 static int  is_comparison(int op);
 static void vcmp_pointer_check(Type left, Type right);
@@ -2857,7 +2856,7 @@ static Type common_wide(Type left, Type right)
 /* The top two values exchanged. Nothing is emitted: a Value says where a
  * value is, not where it is on this stack, so swapping two of them is a
  * swap of two descriptors. */
-static void vswap(void)
+void vswap(void)
 {
     Value held = *(vsp - 1);
 
