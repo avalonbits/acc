@@ -1,8 +1,8 @@
-/* expect: 6: error: the address of a whole array is not supported yet; &a[0] is the address of its first element */
-/* &a is a pointer to the whole array, a type acc cannot say yet. */
+/* expect: 6: error: an array cannot be assigned to as a whole */
+/* A row of an array of arrays is an array, and C has no assignment for one. */
 int main(void) {
-    int a[3];
-    int *p;
-    p = &a;
+    int m[2][3];
+    int *p = m[1];
+    m[0] = p;
     return 0;
 }

@@ -485,6 +485,13 @@ Type vtype_at(int depth)
     return (vsp - 1 - depth)->type;
 }
 
+/* The top, a pointer, as a pointer of another type to the same address: what
+ * `&a` makes of an array, which is already its first element's address. */
+void vset_type(Type type)
+{
+    (vsp - 1)->type = type;
+}
+
 /* Whether the top of the stack is a constant, and if so its value and type.
  * What a global's initial value has to come to. */
 int vconst_top(int *val, Type *type)
@@ -2560,7 +2567,7 @@ static void vbinop_pointer(int op, Type left, Type right)
             acc_error_at(tok_line, "these are pointers to different types");
 
         vbinop(TK_MINUS);
-        if (step > 1) {
+        if ((unsigned) step > 1u) {
             vpush_const(step, TY_INT);
             vbinop(TK_SLASH);
         }
@@ -2581,7 +2588,7 @@ static void vbinop_pointer(int op, Type left, Type right)
         vswap();
     }
 
-    if (step > 1) {
+    if ((unsigned) step > 1u) {
         vpush_const(step, TY_INT);
         vbinop(TK_STAR);
     }
@@ -2777,6 +2784,20 @@ void vderef(void)
         acc_error_at(tok_line, "a 'void *' does not say what it points at, so "
                                "it cannot be read through");
 
+    /* What a pointer to an array points at is an array, and an array is the
+     * address of its first element: the same address, as a pointer to the
+     * element. Nothing is read. */
+    if (type_is_array(to)) {
+        Type elem = type_elem(to);
+
+        if (type_ptr_depth(elem) == TY_PTR_MAX)
+            acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
+                         TY_PTR_MAX);
+        top->type = type_ptr_to(elem);
+
+        return;
+    }
+
     force_into(top, R_HL);
 
     if (type_wide(to)) {
@@ -2843,6 +2864,8 @@ void vstore_indirect(void)
     if (to == TY_VOID)
         acc_error_at(tok_line, "a 'void *' does not say what it points at, so "
                                "it cannot be written through");
+    if (type_is_array(to))
+        acc_error_at(tok_line, "an array cannot be assigned to as a whole");
 
     vconvert(to);
 

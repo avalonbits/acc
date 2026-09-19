@@ -72,13 +72,11 @@ typedef unsigned char Type;
 #define TY_FLOAT    ((Type) (ACC_LONG_SIZE | TY_FLOATING))
 
 /* A pointer is never a floating type, however floating the thing it points
- * at. Written as one mask and one compare rather than as "not a pointer and
- * floating", because the two-part form makes the compiler normalise both
- * sides of every `type_float(a) != type_float(b)` to 0 or 1, and on this
- * target that is a shift, and a shift is a call. The depth bits sit directly
- * above the floating bit, so the two together are equal to TY_FLOATING alone
- * exactly when the depth is zero and the bit is set. */
-#define type_float(ty)    (((ty) & (TY_PTR_MASK | TY_FLOATING)) == TY_FLOATING)
+ * at, and an array type is never one either, although some of the codes
+ * arrays are given have the floating bit set. So it is the whole byte that is
+ * compared: float is one type, and nothing else is equal to it. One compare,
+ * as the mask it replaces was. */
+#define type_float(ty)    ((Type) (ty) == TY_FLOAT)
 #define TY_VOID     ((Type) 0)
 
 /* How many times a type is a pointer, in the top three bits.
@@ -115,8 +113,39 @@ typedef unsigned char Type;
  * for the same reason. */
 #define type_unsigned(ty) ((ty) & (TY_PTR_MASK | TY_UNSIGNED))
 
-/* What `p + 1` moves by, which is the width of what p points at. */
-#define type_step(ty)     type_size(type_deref(ty))
+/* What `p + 1` moves by, which is the width of what p points at -- a whole
+ * row, when that is an array. */
+#define type_step(ty)     type_bytes(type_deref(ty))
+
+/* Array types.
+ *
+ * An array is not a type a value has -- it becomes the address of its first
+ * element wherever it is used -- so a one-dimensional array needs none: its
+ * symbol records the element type, and that is enough. What does need one is
+ * an array of arrays, whose elements are rows, and a pointer to a whole
+ * array, which steps by one. Those are interned in a table, and named by the
+ * values of the type byte no scalar type uses: 22 of them, with the pointer
+ * depth still on top, so `int (*)[4]` is a pointer to one like any other.
+ * That is a limit on how many different row shapes a program may have,
+ * refused by name when it is reached; a type of more than one byte would
+ * have lifted it at a cost on every value the compiler handles. */
+extern unsigned char array_slot[32];     /* by type code: its entry + 1, or 0 */
+
+/* No pointer depth, and a code the table has an entry for. The depth is
+ * tested with a mask rather than as `ty < 32`, which is a signed compare and
+ * so a call on this target to repair the flags. */
+#define type_is_array(ty)  (!type_pointer(ty) && array_slot[(Type) (ty)])
+
+/* The size of any type, arrays included. The test inline and the table
+ * behind a call: every subscript's step asks, and only one through a pointer
+ * to an array gets past the test -- where indexing a table of ints inline
+ * would have been a multiply, which is another call. */
+#define type_bytes(ty)     (type_is_array(ty) ? array_type_bytes(ty) : type_size(ty))
+
+Type type_array(Type elem, int count);   /* the type `elem[count]` */
+Type type_elem(Type array);
+int  type_count(Type array);
+int  array_type_bytes(Type array);
 
 /* C promotes anything narrower than int to int before doing arithmetic on it,
  * so a value in a register is always int-wide. Only loads, stores and casts
@@ -326,6 +355,11 @@ void sym_set_params(int sym, int first, int count);
 int  sym_params_first(int sym);
 int  sym_nparams(int sym);
 
+/* How many elements an array symbol has, kept where a function's signature
+ * would be: `&a` needs it to say what it points at. */
+void sym_set_count(int sym, int count);
+int  sym_count(int sym);
+
 void sym_init(void);
 /* Symbols are referred to by index. A Sym * is only good until the next push,
  * because the table is grown with realloc; see sym.c. */
@@ -396,6 +430,7 @@ void vpush_const_float(float val);
 void vconvert(Type to);               /* narrow the top, then widen it back */
 Type vtype(void);                     /* the type of the top */
 int  vconst_top(int *val, Type *type);  /* whether the top is a constant */
+void vset_type(Type type);            /* the same address, another pointer type */
 Type vtype_at(int depth);             /* 0 is the top, 1 the one below */
 void vpush_local(int offset, Type type);
 void vpush_reg(int reg);

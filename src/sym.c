@@ -256,6 +256,79 @@ void sym_scope_end(int mark)
     nsyms = nglobals + mark;
 }
 
+void sym_set_count(int sym, int count)
+{
+    fn_room((unsigned) sym);
+    fn_sig(sym)->s.first = count;
+}
+
+int sym_count(int sym)
+{
+    return fn_sig(sym)->s.first;
+}
+
+/* ------------------------------------------------------------------ */
+/* array types                                                         */
+
+/* The type codes no scalar uses. A scalar's code is its width in the low
+ * three bits, 0x08 for unsigned and 0x10 for floating: void, the four signed
+ * widths, the four unsigned ones and float. Everything else is free. */
+static const unsigned char array_codes[] = {
+    5, 6, 7, 8, 13, 14, 15, 16, 17, 18, 19,
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+};
+
+#define NARRAY_TYPES ((int) sizeof array_codes)
+
+unsigned char array_slot[32];
+
+static struct {
+    Type elem;
+    int  count;
+} array_types[NARRAY_TYPES];
+
+static int array_bytes[NARRAY_TYPES + 1];
+
+static int narray_types;
+
+Type type_array(Type elem, int count)
+{
+    int i;
+
+    for (i = 0; i < narray_types; i++)
+        if (array_types[i].elem == elem && array_types[i].count == count)
+            return array_codes[i];
+
+    if (narray_types == NARRAY_TYPES)
+        acc_error_at(tok_line, "this program has more than %d different "
+                               "array shapes, which acc cannot tell apart yet",
+                     NARRAY_TYPES);
+    if ((long) count * type_bytes(elem) > 0x7fffff)
+        acc_error_at(tok_line, "an array this large does not fit in memory");
+
+    array_types[narray_types].elem = elem;
+    array_types[narray_types].count = count;
+    array_bytes[narray_types + 1] = count * type_bytes(elem);
+    array_slot[array_codes[narray_types]] = (unsigned char) (narray_types + 1);
+
+    return array_codes[narray_types++];
+}
+
+Type type_elem(Type array)
+{
+    return array_types[array_slot[array] - 1].elem;
+}
+
+int type_count(Type array)
+{
+    return array_types[array_slot[array] - 1].count;
+}
+
+int array_type_bytes(Type array)
+{
+    return array_bytes[array_slot[array]];
+}
+
 void sym_drop_locals(void)
 {
     nsyms = nglobals;
