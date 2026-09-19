@@ -2291,6 +2291,56 @@ void vaddr_array(int array, Type elem)
     vpush(VAL_REG, type_ptr_to(elem), R_HL);
 }
 
+/* A string literal's bytes, and the terminator, somewhere in the image:
+ * returns where. Its address is known the moment it is written, which is
+ * what lets a string be an ordinary constant pointer.
+ *
+ * At file scope nothing runs between the declarations, so the bytes go where
+ * the output is. Inside a function the code is running through here, so
+ * they are jumped over: four bytes of code and a jump taken each time, which
+ * is what writing them where they are read costs -- the alternative, a pool
+ * after the code with every use patched, makes the address unknown until the
+ * end and a string no longer a constant. */
+int gen_data_bytes;
+static int in_function;
+
+int gen_data(const char *bytes, int len)
+{
+    int over = in_function ? gen_jump() : -1, at, i;
+
+    at = out_here();
+    for (i = 0; i < len; i++)
+        out_byte((unsigned char) bytes[i]);
+    out_byte(0);
+    gen_data_bytes += len + 1;
+    if (over >= 0)
+        gen_label(over);
+
+    return at;
+}
+
+/* `count` bytes from address `from` to a local array at `offset`: a string
+ * copied into the char array it initialises. Only at a declaration, where no
+ * value is being held anywhere.
+ *
+ *   (the array's address in HL) / ex de, hl / ld hl, from / ld bc, count / ldir */
+void gen_copy_to_array(int array, int offset, int from, int count)
+{
+    vaddr_array(array, TY_CHAR);
+    vdrop();
+    if (offset) {
+        out_byte(0x11);                  /* ld de, offset */
+        out_word24(offset);
+        out_byte(0x19);                  /* add hl, de */
+    }
+    out_byte(0xeb);                      /* ex de, hl */
+    out_byte(0x21);                      /* ld hl, from */
+    out_word24(from);
+    out_byte(0x01);                      /* ld bc, count */
+    out_word24(count);
+    out_byte2(0xed, 0xb0);               /* ldir */
+}
+
 /* Bytes [from, from + size) of a local array set to zero, which is what the
  * elements an initialiser does not mention start as: the first byte cleared,
  * and ldir copying it along the rest. Only at a declaration, where no value
@@ -2350,6 +2400,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
     arrays_size = 0;
     narrays = 0;
     narray_patches = 0;
+    in_function = 1;
 
     /* push ix / ld ix, 0 / add ix, sp -- the frame agondev's __frameset
      * builds, written out rather than called, because there is nothing to
@@ -2377,6 +2428,7 @@ void gen_func_end(void)
     out_byte(0xc9);                              /* ret */
 
     out_patch24(frame_patch, -frame_size());
+    in_function = 0;
 
     {
         int above = locals_size + spill_peak, i;

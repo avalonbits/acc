@@ -444,6 +444,45 @@ static void address_of(void)
     }
 }
 
+/* Adjacent string literals, joined as C joins them: "ab" "cd" is "abcd".
+ * The lexer's buffer is its own and reused for each token, so they are
+ * gathered here. */
+static char *str_joined;
+static int   str_joined_cap;
+
+static int string_gather(void)
+{
+    int len = 0;
+
+    while (tok == TK_STRING) {
+        if (len + tok_str_len >= str_joined_cap) {
+            while (len + tok_str_len >= str_joined_cap)
+                str_joined_cap = str_joined_cap ? str_joined_cap * 2 : 128;
+            str_joined = realloc(str_joined, (size_t) str_joined_cap);
+            if (!str_joined)
+                acc_error("out of memory for a string");
+        }
+        memcpy(str_joined + len, tok_str, (size_t) tok_str_len);
+        len += tok_str_len;
+        next();
+    }
+
+    return len;
+}
+
+/* A string literal as an operand: an array of char, somewhere in the image,
+ * which is the address of its first character -- a constant pointer, since
+ * where it went is known the moment it is written. */
+__attribute__((noinline))
+static void string_value(void)
+{
+    int len = string_gather();
+
+    vpush_const(gen_data(str_joined, len), type_ptr_to(TY_CHAR));
+    if (tok == TK_LBRACKET)
+        subscript_value();
+}
+
 /* A name used as a value: a local read, or a call. */
 static void primary(void)
 {
@@ -562,6 +601,12 @@ static void primary(void)
         }
 
         local_value(name);
+
+        return;
+    }
+
+    if (tok == TK_STRING) {
+        string_value();
 
         return;
     }
@@ -1363,9 +1408,17 @@ NameRef direct_declarator(Type t, Type *type, int *ext, int *count)
  * Braces nest as the array does, `{{1, 2}, {3, 4}}`, and may be left out, as
  * C allows: `{1, 2, 3, 4}` fills a 2x2 array the same way, each row taking
  * as many values as it has room for. A scalar may have braces of its own. */
-typedef void (*InitPut)(Type scalar, int offset);
+/* `value` is the scalar's value when the initialiser gave it as part of a
+ * string -- a byte -- and -1 when it is an expression still to be parsed. */
+typedef void (*InitPut)(Type scalar, int offset, int value);
 
 static void init_element(Type type, int x, int offset, InitPut put);
+static int  init_string(int count, int offset, InitPut put);
+
+/* Whether `type`, an element type, is one of the three chars a string can
+ * initialise an array of. */
+#define type_is_char(ty)  (type_size(ty) == 1 && !type_pointer(ty) \
+                           && !type_is_array(ty))
 
 /* The elements of a braced list, the brace already read. Returns how many.
  * `count` is how many there may be, or -1 for no limit. `elem_x` is the
@@ -1413,6 +1466,11 @@ static void init_elided(int x, int offset, InitPut put)
 static void init_element(Type type, int x, int offset, InitPut put)
 {
     if (type_is_array(type)) {
+        if (tok == TK_STRING && type_is_char(ext_elem(x))) {
+            init_string(ext_count(x), offset, put);
+
+            return;
+        }
         if (accept(TK_LBRACE))
             init_list(ext_elem(x), ext_elem_x(x), ext_count(x), offset, put);
         else
@@ -1421,13 +1479,34 @@ static void init_element(Type type, int x, int offset, InitPut put)
         return;
     }
     if (accept(TK_LBRACE)) {
-        put(type, offset);
+        put(type, offset, -1);
         accept(TK_COMMA);
         expect(TK_RBRACE, "'}'");
 
         return;
     }
-    put(type, offset);
+    put(type, offset, -1);
+}
+
+/* A char array initialised from a string: its characters, and the
+ * terminator if there is room for it -- C lets a string exactly as long as
+ * the array leave it out. Returns how many elements it filled; `count` is
+ * how many there are, -1 when that is for the string to say. */
+static int init_string(int count, int offset, InitPut put)
+{
+    int len = string_gather(), i;
+
+    if (count >= 0 && len > count)
+        acc_error_at(tok_line, "this string is longer than the array it "
+                               "initialises");
+    for (i = 0; i < len; i++)
+        put(TY_CHAR, offset + i, (unsigned char) str_joined[i]);
+    if (count < 0 || len < count) {
+        put(TY_CHAR, offset + len, 0);
+        len++;
+    }
+
+    return len;
 }
 
 /* The scalar type an array is made of, however many dimensions it has. */
@@ -1447,7 +1526,7 @@ static int            init_array;
 static unsigned char *init_given;
 static int            init_given_cap;
 
-static void local_put(Type scalar, int offset)
+static void local_put(Type scalar, int offset, int value)
 {
     Type outer = narrow_dest;
     int slot = offset / type_size(scalar);
@@ -1458,7 +1537,10 @@ static void local_put(Type scalar, int offset)
         vapply(TK_PLUS, 0);
     }
     narrow_dest = (type_size(scalar) < ACC_INT_SIZE) ? scalar : 0;
-    expr();
+    if (value >= 0)
+        vpush_const(value, TY_INT);
+    else
+        expr();
     narrow_dest = outer;
     vstore_indirect();
     vdrop();
@@ -1495,13 +1577,33 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
 {
     int array = gen_local_array();
     int step = type_bytes(elem, elem_x), sym;
+    int init = accept(TK_ASSIGN);
 
     if (count > 0)
         gen_local_array_size(array, count * step);
 
-    /* One dimension: the values in order, each stored as it is read, and the
-     * rest zeroed after them in one run, as before arrays of arrays. */
-    if (!type_is_array(elem) && accept(TK_ASSIGN)) {
+    /* A string for a char array: its bytes written into the image, where a
+     * string constant goes, and copied into the array with ldir, the rest
+     * zeroed after. */
+    if (init && tok == TK_STRING && type_is_char(elem)) {
+        int len = string_gather(), from, n;
+
+        if (count >= 0 && len > count)
+            acc_error_at(line, "this string is longer than the array it "
+                               "initialises");
+        from = gen_data(str_joined, len);
+        n = (count < 0 || len < count) ? len + 1 : len;   /* the terminator */
+        if (count < 0) {
+            count = n;
+            gen_local_array_size(array, count);
+        }
+        gen_copy_to_array(array, 0, from, n);
+        if (n < count)
+            gen_zero_array(array, n, count - n);
+    } else if (init && !type_is_array(elem)) {
+        /* One dimension: the values in order, each stored as it is read, and
+         * the rest zeroed after them in one run, as before arrays of
+         * arrays. */
         int n = 0;
 
         expect(TK_LBRACE, "'{'");
@@ -1524,7 +1626,7 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
         } else if (n < count) {
             gen_zero_array(array, n * step, (count - n) * step);
         }
-    } else if (accept(TK_ASSIGN)) {
+    } else if (init) {
         Type scalar = innermost(elem, elem_x);
         int each = type_size(scalar), slots, i, run;
 
@@ -2128,20 +2230,23 @@ static void for_statement(void)
     sym_scope_end(mark);
 }
 
-/* `{ ... }` where a statement is expected. Declarations are not allowed in
- * one: sym_drop_locals drops every local a function has, so there is nothing
- * yet that could give an inner block a scope of its own, and a name declared
- * in one would outlive it. Saying so is better than letting it through and
- * being wrong about where the name ends. */
+/* `{ ... }`: declarations and statements in any order, as C99 has them, and
+ * what is declared in it ends with it -- an inner name shadows an outer one
+ * of the same spelling until the brace closes. The frame bytes are not
+ * reused; the scope is only which names mean what. The body of a function is
+ * one of these too. */
 static void block(void)
 {
+    int mark = sym_scope_begin();
+
     while (tok != TK_RBRACE && tok != TK_EOF) {
         if (starts_type(tok))
-            acc_error_at(tok_line,
-                         "a declaration has to be at the start of the function");
-        statement();
+            declaration();
+        else
+            statement();
     }
     expect(TK_RBRACE, "'}'");
+    sym_scope_end(mark);
 }
 
 static void condition(void)
@@ -2354,8 +2459,6 @@ static void function_rest(Type ret_type, NameRef name)
 
     sym_set_params(fn, params_first, nparams);
     gen_func_begin(fn, nparams, ret_type);
-    while (starts_type(tok))
-        declaration();
     block();
     labels_end();
     gen_func_end();
@@ -2488,10 +2591,13 @@ static inline __attribute__((always_inline)) void init_room(int end)
         init_grow(end);
 }
 
-static void global_put(Type scalar, int offset)
+static void global_put(Type scalar, int offset, int value)
 {
     init_room(offset + type_size(scalar));
-    global_initializer(scalar, init_bytes + offset, tok_line);
+    if (value >= 0)
+        init_bytes[offset] = (unsigned char) value;     /* a char of a string */
+    else
+        global_initializer(scalar, init_bytes + offset, tok_line);
 }
 
 /* A file-scope array, from just past its declarator: its bytes, each value a
@@ -2501,16 +2607,18 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
                          int line)
 {
     int step = type_bytes(elem, elem_x), total, at, sym, i;
+    int init = accept(TK_ASSIGN);
 
     /* One dimension, which is most arrays, needs none of the walk: its values
      * arrive in order, each written as it is read, and zeros follow. As the
      * walk, with a buffer, it cost 1% of a compile of a program with a few
-     * dozen small ones. */
-    if (!type_is_array(elem)) {
+     * dozen small ones. A string for a char array goes the walk's way, which
+     * already knows strings. */
+    if (!type_is_array(elem) && !(init && tok == TK_STRING)) {
         int n = 0;
 
         at = out_here();
-        if (accept(TK_ASSIGN)) {
+        if (init) {
             expect(TK_LBRACE, "'{'");
             while (tok != TK_RBRACE) {
                 unsigned char bytes[ACC_LONG_SIZE] = { 0 };
@@ -2554,7 +2662,12 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
 
     init_bytes_len = 0;
 
-    if (accept(TK_ASSIGN)) {
+    if (init && tok == TK_STRING && type_is_char(elem)) {
+        int n = init_string(count, 0, global_put);
+
+        if (count < 0)
+            count = n;
+    } else if (init) {
         int n;
 
         expect(TK_LBRACE, "'{'");

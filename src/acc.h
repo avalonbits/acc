@@ -250,6 +250,7 @@ enum {
     TK_KW_BREAK, TK_KW_CONTINUE, TK_KW_DO, TK_KW_SWITCH, TK_KW_CASE,
     TK_KW_DEFAULT,
     TK_KW_GOTO,
+    TK_STRING,                  /* a string literal; tok_str holds its bytes */
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -280,6 +281,8 @@ typedef char tok_pairs_are_adjacent[(TK_SHR == TK_SHL + 1
                                      && TK_OROR == TK_ANDAND + 1) ? 1 : -1];
 
 extern long     tok_val;    /* its value, when TK_INT */
+extern const char *tok_str; /* its bytes, when TK_STRING, escapes undone */
+extern int      tok_str_len; /* and how many, without a terminator */
 extern Type     tok_type;   /* and its type, which C99 fixes by its size */
 extern float    tok_fval;   /* its value, when TK_FLOAT */
 extern NameRef  tok_name;   /* its name, when TK_IDENT */
@@ -432,6 +435,9 @@ int  gen_local_array(void);           /* a new local array; returns its number *
 void gen_local_array_size(int array, int size);  /* and how big, once known */
 void vaddr_array(int array, Type elem);  /* its first element's address */
 void gen_zero_array(int array, int from, int size);  /* zero part of one */
+int  gen_data(const char *bytes, int len);  /* a string's bytes: its address */
+extern int gen_data_bytes;                  /* how many gen_data has written */
+void gen_copy_to_array(int array, int offset, int from, int count);
 
 void vpush_const(int val, Type type);
 void vpush_const_long(long val, Type type);  /* four bytes, so it goes to the frame */

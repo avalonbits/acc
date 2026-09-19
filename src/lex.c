@@ -765,6 +765,127 @@ static void punct_error(int c)
     acc_error_at(tok_line, "stray '%c' in the source", c);
 }
 
+/* ------------------------------------------------------------------ */
+/* character and string literals                                       */
+
+const char *tok_str;
+int         tok_str_len;
+
+static char *str_buf;
+static int   str_cap;
+
+#define is_hexdigit(c) (is_digit(c) || ((unsigned) (((c) | 0x20) - 'a') < 6u))
+
+/* One character of a literal, the backslash of an escape read already: the
+ * byte it stands for. Octal takes up to three digits and hex as many as
+ * there are, which is what C says; a value past a byte is refused. */
+static int escape(void)
+{
+    int c = (unsigned char) *cursor++, value, digits;
+
+    switch (c) {
+    case 'n':  return '\n';
+    case 't':  return '\t';
+    case 'r':  return '\r';
+    case 'a':  return 7;
+    case 'b':  return 8;
+    case 'f':  return 12;
+    case 'v':  return 11;
+    case '\\': case '\'': case '"': case '?':
+        return c;
+    case 'x':
+        if (!is_hexdigit((unsigned char) *cursor))
+            acc_error_at(tok_line, "'\\x' needs a hex digit after it");
+        value = 0;
+        while (is_hexdigit((unsigned char) *cursor)) {
+            int d = *cursor++;
+
+            d = is_digit(d) ? d - '0' : (d | 0x20) - 'a' + 10;
+            value = value * 16 + d;
+            if (value > 255)
+                acc_error_at(tok_line, "a '\\x' escape past 0xff does not "
+                                       "fit in a char");
+        }
+
+        return value;
+    }
+    if (c >= '0' && c <= '7') {
+        value = c - '0';
+        for (digits = 1; digits < 3 && *cursor >= '0' && *cursor <= '7'; digits++)
+            value = value * 8 + (*cursor++ - '0');
+        if (value > 255)
+            acc_error_at(tok_line, "an octal escape past \\377 does not fit "
+                                   "in a char");
+
+        return value;
+    }
+    acc_error_at(tok_line, "'\\%c' is not an escape C has", c);
+}
+
+/* A character of a literal: an escape, or itself. A newline ends the line
+ * the literal was meant to finish on, and the end of the file it all. */
+static int literal_char(int quote)
+{
+    int c = (unsigned char) *cursor;
+
+    if (c == '\0' || c == '\n')
+        acc_error_at(tok_line, "a %s is not closed on the line it starts on",
+                     quote == '"' ? "string" : "character constant");
+    cursor++;
+
+    return c == '\\' ? escape() : c;
+}
+
+/* What next() does not recognise as punctuation, the quote or the stray
+ * character already consumed: a character constant, which is an int -- and
+ * a char's value, so '\377' is -1 where char is signed, as it is here -- a
+ * string, or a character that begins nothing. Out of line, where the
+ * refusal of a stray character already was, so that punctuation pays
+ * nothing for literals it is not. */
+__attribute__((noinline))
+static void lex_quoted(int c)
+{
+    int n = 0;
+
+    if (c == '\'') {
+        int value;
+
+        if (*cursor == '\'')
+            acc_error_at(tok_line, "a character constant needs a character");
+        value = literal_char(c);
+        if (*cursor != '\'')
+            acc_error_at(tok_line, *cursor == '\n' || *cursor == '\0'
+                         ? "a character constant is not closed on the line it "
+                           "starts on"
+                         : "a character constant holds one character; for "
+                           "more, use a string");
+        cursor++;
+        tok = TK_INT;
+        tok_type = TY_INT;
+        tok_val = (signed char) value;
+
+        return;
+    }
+    if (c != '"')
+        punct_error(c);
+
+    while (*cursor != '"') {
+        int ch = literal_char(c);
+
+        if (n + 1 >= str_cap) {
+            str_cap = str_cap ? str_cap * 2 : 128;
+            str_buf = realloc(str_buf, (size_t) str_cap);
+            if (!str_buf)
+                acc_error("out of memory for a string");
+        }
+        str_buf[n++] = (char) ch;
+    }
+    cursor++;
+    tok = TK_STRING;
+    tok_str = str_buf;
+    tok_str_len = n;
+}
+
 void next(void)
 {
     int c;
@@ -810,8 +931,11 @@ void next(void)
 
     cursor++;
     tok = punct[(unsigned char) c];
-    if (tok == TK_EOF)
-        punct_error(c);
+    if (tok == TK_EOF) {
+        lex_quoted(c);
+
+        return;
+    }
 
     /* Most punctuation can be the first of two or three characters: an
      * operator doubled (`<<`, `&&`, `++`), followed by `=` (`<=`, `+=`), or
@@ -915,6 +1039,7 @@ const char *tok_spelling(int token)
     case TK_KW_DOUBLE: return "'double'";
     case TK_KW_FOR:    return "'for'";
     case TK_KW_GOTO:   return "'goto'";
+    case TK_STRING:    return "a string";
     case TK_KW_BREAK:  return "'break'";
     case TK_KW_CONTINUE: return "'continue'";
     case TK_KW_DO:     return "'do'";

@@ -1,9 +1,9 @@
-/* expect: 5: error: a declaration has to be at the start of the function */
+/* expect: 8: error: 'inner' is not declared */
+/* A name declared in a block ends with the block. */
 int main(void) {
     int n = 1;
     if (n) {
         int inner = 2;
-        n = inner;
     }
-    return n;
+    return inner;
 }
