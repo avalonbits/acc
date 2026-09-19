@@ -475,13 +475,13 @@ static void keywords_init(void)
     keyword("default", 7, TK_KW_DEFAULT);
     keyword("do", 2, TK_KW_DO);
     keyword("enum", 4, TK_KW_ENUM);
-    keyword("extern", 6, TK_KW_RESERVED);
+    keyword("extern", 6, TK_KW_EXTERN);
     keyword("goto", 4, TK_KW_GOTO);
     keyword("inline", 6, TK_KW_RESERVED);
     keyword("register", 8, TK_KW_RESERVED);
     keyword("restrict", 8, TK_KW_RESERVED);
     keyword("sizeof", 6, TK_KW_SIZEOF);
-    keyword("static", 6, TK_KW_RESERVED);
+    keyword("static", 6, TK_KW_STATIC);
     keyword("struct", 6, TK_KW_STRUCT);
     keyword("switch", 6, TK_KW_SWITCH);
     keyword("typedef", 7, TK_KW_TYPEDEF);
@@ -1078,6 +1078,8 @@ const char *tok_spelling(int token)
     case TK_KW_STRUCT: return "'struct'";
     case TK_KW_UNION:  return "'union'";
     case TK_KW_TYPEDEF: return "'typedef'";
+    case TK_KW_STATIC: return "'static'";
+    case TK_KW_EXTERN: return "'extern'";
     case TK_DOT:       return "'.'";
     case TK_ARROW:     return "'->'";
     case TK_STRING:    return "a string";

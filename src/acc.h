@@ -287,6 +287,7 @@ enum {
     TK_STRING,                  /* a string literal; tok_str holds its bytes */
     TK_KW_SIZEOF,
     TK_KW_ENUM, TK_KW_STRUCT, TK_KW_UNION, TK_KW_TYPEDEF,
+    TK_KW_STATIC, TK_KW_EXTERN,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };

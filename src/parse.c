@@ -1612,7 +1612,7 @@ static unsigned char decl_start[TK_COUNT] = {
     [TK_KW_SIGNED] = 1, [TK_KW_UNSIGNED] = 1, [TK_KW_LONG] = 1,
     [TK_KW_FLOAT] = 1, [TK_KW_DOUBLE] = 1,
     [TK_KW_ENUM] = 1, [TK_KW_STRUCT] = 1, [TK_KW_UNION] = 1,
-    [TK_KW_TYPEDEF] = 1
+    [TK_KW_TYPEDEF] = 1, [TK_KW_STATIC] = 1, [TK_KW_EXTERN] = 1
 };
 
 __attribute__((noinline))
@@ -2416,6 +2416,13 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
 
 static int  function_declarator(Type ret_type, int ret_ext, NameRef name,
                                 int line);
+static void global_variable(Type type, int ext, NameRef name, int count,
+                            int line);
+static int  global_again(int sym, Type type, int ext, int count, int line);
+
+/* How the variable being declared at file scope is bound: see push_global. */
+static int static_local;
+static int redefining = SYM_NONE;
 
 /* `typedef`, and names for types rather than objects: each declarator names
  * the type it would have given a variable. An array type keeps its shape in
@@ -2452,6 +2459,82 @@ static void typedef_declaration(void)
     expect(TK_SEMI, "';'");
 }
 
+/* `extern name;` in a block: the file-scope variable of that name, declared
+ * there now if it is not yet, and the block's name for it. */
+static void block_extern(Type type, int ext, NameRef name, int count,
+                         int line)
+{
+    int g = name_global(name), sym;
+    const Sym *global;
+
+    if (tok == TK_ASSIGN)
+        acc_error_at(line, "an extern in a block cannot give a value");
+    if (g == SYM_NONE) {
+        int hole = gen_jump();          /* its bytes go here, jumped over */
+
+        global_variable(type, ext, name, count, line);
+        gen_label(hole);
+        g = name_global(name);
+    } else {
+        global_again(g, type, ext, count, line);
+    }
+    global = sym_at(g);
+    sym = sym_push_local(name, global->kind, global->val);
+    global = sym_at(g);
+    sym_at(sym)->type = global->type;
+    sym_at(sym)->ext = global->ext;
+    if (count)
+        sym_set_count(sym, sym_count(g));
+}
+
+/* A declaration in a block that begins with typedef, static or extern.
+ *
+ * A block's static variable is a file-scope one in all but its name: its
+ * bytes are in the image, written here and jumped over, initialised once
+ * from constants, and kept from one call to the next. */
+__attribute__((noinline))
+static void storage_declaration(void)
+{
+    int storage = tok;
+    Type base;
+    int bx;
+
+    if (storage == TK_KW_TYPEDEF) {
+        typedef_declaration();
+
+        return;
+    }
+    next();
+    base = base_type();
+    bx = base_ext;
+    if (accept(TK_SEMI))
+        return;
+    for (;;) {
+        int line = tok_line, count, ext;
+        Type type;
+        NameRef name = direct_declarator(declarator_stars(base), bx, &type,
+                                         &ext, &count);
+
+        if (tok == TK_LPAREN) {
+            function_declarator(type, ext, name, line);
+        } else if (storage == TK_KW_EXTERN) {
+            not_redeclared(name, line);
+            block_extern(type, ext, name, count, line);
+        } else {
+            int hole = gen_jump();
+
+            not_redeclared(name, line);
+            static_local = 1;
+            global_variable(type, ext, name, count, line);
+            static_local = 0;
+            gen_label(hole);
+        }
+        if (!accept(TK_COMMA))
+            break;
+    }
+    expect(TK_SEMI, "';'");
+}
+
 /* Inlined into both callers, the function body and a for's first clause:
  * it was inlined into the first when it had only that one, and as a call it
  * is one more on every declaration in the program. */
@@ -2461,8 +2544,9 @@ void declaration(void)
     Type base;
     int bx;
 
-    if (tok == TK_KW_TYPEDEF) {
-        typedef_declaration();
+    /* typedef, static and extern, one range. */
+    if ((unsigned char) (tok_low - TK_KW_TYPEDEF) < 3u) {
+        storage_declaration();
 
         return;
     }
@@ -3428,6 +3512,23 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     return 1;
 }
 
+/* How the variable being declared at file scope is bound to its name.
+ *
+ * A block's `static` is one too -- its bytes in the image, where they last
+ * as long as the program -- but its name is the block's: static_local says
+ * so. And a variable declared once already has its storage, allocated when
+ * it was first declared: a later definition writes its initial value over
+ * those bytes, with the output rewound to them, and binds nothing new --
+ * redefining says which symbol it is. */
+static int push_global(NameRef name, int kind, int at)
+{
+    if (redefining != SYM_NONE)
+        return redefining;
+
+    return static_local ? sym_push_local(name, kind, at)
+                        : sym_push(name, kind, at);
+}
+
 /* A global's initial value, as the bytes it starts with.
  *
  * It has to be known now, because it is written into the image here, so it
@@ -3615,7 +3716,7 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
         for (i = n * step; i < count * step; i++)
             out_byte(0);
 
-        sym = sym_push(name, SYM_GLOBAL_ARRAY, at);
+        sym = push_global(name, SYM_GLOBAL_ARRAY, at);
         sym_at(sym)->type = elem;
         sym_at(sym)->ext = (unsigned char) elem_x;
         sym_set_count(sym, count);
@@ -3651,7 +3752,7 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
     for (i = 0; i < total; i++)
         out_byte(init_bytes[i]);
 
-    sym = sym_push(name, SYM_GLOBAL_ARRAY, at);
+    sym = push_global(name, SYM_GLOBAL_ARRAY, at);
     sym_at(sym)->type = elem;
     sym_at(sym)->ext = (unsigned char) elem_x;
     sym_set_count(sym, count);
@@ -3676,34 +3777,47 @@ static void global_struct(int x, NameRef name, int line)
     for (i = 0; i < total; i++)
         out_byte(init_bytes[i]);
 
-    sym = sym_push(name, SYM_GLOBAL, at);
+    sym = push_global(name, SYM_GLOBAL, at);
     sym_at(sym)->type = TY_STRUCT;
     sym_at(sym)->ext = (unsigned char) x;
 }
 
-/* One file-scope variable: its bytes written into the image where it is
- * declared, and its name bound to where they went.
+/* That a variable declared again at file scope is declared the same way,
+ * and whether this declaration gives it its value -- which it may only do
+ * once. */
+static int global_again(int sym, Type type, int ext, int count, int line)
+{
+    const Sym *g = sym_at(sym);
+    NameRef name = g->name;
+
+    if (g->kind == SYM_FUNC)
+        acc_error_at(line, "'%s' is already a function", name_text(name));
+    if (g->kind != (count ? SYM_GLOBAL_ARRAY : SYM_GLOBAL)
+        || g->type != type || g->ext != ext
+        || (count && count != sym_count(sym)))
+        acc_error_at(line, "'%s' is declared again with another type",
+                     name_text(name));
+    if (tok != TK_ASSIGN)
+        return 0;
+    if (sym_flags(sym) & SYMF_DEFINED)
+        acc_error_at(line, "'%s' is defined twice", name_text(name));
+
+    return 1;
+}
+
+/* A file-scope variable's bytes, from its initialiser if it has one, and
+ * its name bound to them -- or, when redefining, written over the bytes it
+ * already has.
  *
  * Between two functions is as good a place as any: nothing runs into it,
  * since every function ends in a return, and the address is known the moment
  * it is written, so nothing that refers to it ever needs patching. A global
  * with no initial value is zero, as C says, and takes its bytes in the image
  * like any other -- there is no separate zeroed area yet. */
-static void global_variable(Type type, int ext, NameRef name, int count,
-                            int line)
+static void global_emit(Type type, int ext, NameRef name, int count, int line)
 {
     unsigned char bytes[ACC_LONG_SIZE] = { 0 };
     int size = type_size(type), sym, i, at;
-
-    /* C lets `int x;` be said twice at file scope, as long as at most one of
-     * them gives a value. acc takes one declaration of a global for now. */
-    sym = sym_find(name);
-    if (sym != SYM_NONE)
-        acc_error_at(line, sym_at(sym)->kind == SYM_FUNC
-                           ? "'%s' is already a function"
-                           : "'%s' is already declared, and a second "
-                             "declaration of a global is not supported yet",
-                     name_text(name));
 
     if (count) {
         global_array(type, ext, name, count, line);
@@ -3724,9 +3838,43 @@ static void global_variable(Type type, int ext, NameRef name, int count,
     for (i = 0; i < size; i++)
         out_byte(bytes[i]);
 
-    sym = sym_push(name, SYM_GLOBAL, at);
+    sym = push_global(name, SYM_GLOBAL, at);
     sym_at(sym)->type = type;
     sym_at(sym)->ext = (unsigned char) ext;
+}
+
+/* One file-scope variable, or a block's `static` one.
+ *
+ * C lets `int x;` be said twice at file scope -- and `extern int x;` as
+ * often as it likes -- as long as at most one of them gives a value. The
+ * first allocates the bytes, zero, which is what a variable no declaration
+ * gives a value has; the one that gives it writes it there, with the output
+ * rewound to them. So a use between the two finds the address the variable
+ * will always have. */
+static void global_variable(Type type, int ext, NameRef name, int count,
+                            int line)
+{
+    int sym, init = (tok == TK_ASSIGN);
+
+    if (!static_local && (sym = name_global(name)) != SYM_NONE) {
+        int saved;
+
+        if (!global_again(sym, type, ext, count, line))
+            return;
+        saved = out_here();
+        out_rewind(sym_at(sym)->val);
+        redefining = sym;
+        global_emit(type, ext, name, count, line);
+        redefining = SYM_NONE;
+        out_rewind(saved);
+        sym_set_flags(sym, SYMF_DEFINED);
+
+        return;
+    }
+
+    global_emit(type, ext, name, count, line);
+    if (init && !static_local)
+        sym_set_flags(name_global(name), SYMF_DEFINED);
 }
 
 /* What is at file scope: a function's definition, or a list of variables.
@@ -3744,6 +3892,12 @@ static void external_declaration(void)
 
         return;
     }
+
+    /* At file scope static changes nothing for a program that is one file,
+     * and extern declares what any declaration here does: storage that the
+     * one that gives the value, if any does, fills in. */
+    if (tok == TK_KW_STATIC || tok == TK_KW_EXTERN)
+        next();
     base = base_type();
     bx = ext = base_ext;
     line = tok_line;
