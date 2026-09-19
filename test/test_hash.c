@@ -16,7 +16,7 @@
 
 #include "acc.h"
 
-extern unsigned long name_probes;
+extern unsigned long name_probes, name_rehashes;
 
 static int failures = 0;
 static int checks = 0;
@@ -76,7 +76,8 @@ int main(void)
      * the three that hold a name's symbol -- fill the first 1024 bytes of the
      * arena exactly, which is its first allocation, and the long name after
      * them is one whose probe passes through the end -- found by search, and
-     * the probe count below says whether it still does. Under the address
+     * the probe count below says whether it still does. The search has to be
+     * run again whenever the hash or the table's first size changes. Under the address
      * sanitizer the over-read is a crash. */
     {
         char fill[16];
@@ -88,7 +89,7 @@ int main(void)
         }
         is("the short name ends the arena", (long) name_intern("s000000", 7) + 8, 1024);
         before = name_probes;
-        name_intern("a_longer_name_30", 16);
+        name_intern("a_longer_name_1059", 18);
         is("and a longer one's probe passes it", name_probes - before >= 2, 1);
         interned = 94;
     }
@@ -100,6 +101,11 @@ int main(void)
     for (i = 0; i < N; i++) {
         sprintf(text[i], "%s%d", (i & 1) ? "f" : "var_", i);
         refs[i] = name_intern(text[i], (int) strlen(text[i]));
+
+        /* Four hundred names, a program of a few hundred lines, fit in the
+         * table as it starts: the one rehash is name_init's. */
+        if (interned + i + 1 == 400)
+            is("400 names need no rehash", (long) name_rehashes, 1);
     }
 
     for (i = 0; i < N; i++) {

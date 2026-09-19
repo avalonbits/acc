@@ -69,10 +69,12 @@ static unsigned char mask_lo, mask_hi;
  * not -- both give correct answers, and only one of them is fast. Compiled
  * only when the test asks for it: in the compiler this would be an increment
  * on the hottest loop there is. */
-unsigned long name_probes;
+unsigned long name_probes, name_rehashes;
 #define PROBE() (name_probes++)
+#define REHASHED() (name_rehashes++)
 #else
 #define PROBE() ((void) 0)
+#define REHASHED() ((void) 0)
 #endif
 
 /* Pearson hashing: one table lookup per character, and nothing else.
@@ -198,6 +200,7 @@ static void buckets_rehash(unsigned newn)
 
     if (newn * sizeof *buckets > 65536)
         acc_error("too many names: the limit is %u", 65536 / sizeof *buckets / 2 - 1);
+    REHASHED();
     buckets = calloc(newn, sizeof *buckets);
     if (!buckets)
         acc_error("out of memory for the name table");
@@ -229,7 +232,12 @@ void name_init(void)
         acc_error("out of memory for names");
     name_arena[0] = '\0';     /* so offset 0 is never a real name */
     names_len = 1;
-    buckets_rehash(256);
+
+    /* 1024 slots, which hold 511 names before the table grows: enough for a
+     * program of a few hundred lines without a rehash, each of which moves
+     * every name. Starting at 256, the two a benchmark input needed were 2%
+     * of its compile. Four KB. */
+    buckets_rehash(1024);
 }
 
 NameRef name_intern(const char *text, int len)
