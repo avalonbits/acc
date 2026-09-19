@@ -113,6 +113,7 @@ static int  long_scratch(void);
 static void bool_from(void);
 static void bitfield_read(void);
 static void bitfield_write(void);
+static void call_through(void);
 static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
@@ -2637,9 +2638,92 @@ static int push_struct(void)
 
 /* Arguments are pushed right to left, each in a whole three-byte slot, and
  * the caller takes them off again -- which is agondev's convention. */
+/* What a call calls: a function by name, or whatever a pointer below the
+ * arguments points at -- with the type it returns either way. */
+typedef struct {
+    Type type;
+    int  ext, quals;
+    int  fn;                    /* the function, or SYM_NONE for a pointer */
+} Callee;
+
+static void call_to(const Callee *callee, int nargs, int params_first,
+                    int nparams);
+
 void gen_call(int fn, int nargs, int params_first, int nparams)
 {
-    const Sym *callee;
+    Callee callee;
+    const Sym *f = sym_at(fn);
+
+    callee.type = f->type;
+    callee.ext = f->ext;
+    callee.quals = f->quals & SQ_CONST ? VQ_CONST : 0;
+    callee.fn = fn;
+    call_to(&callee, nargs, params_first, nparams);
+}
+
+/* A function's address, as a pointer to it: a constant when it is already
+ * defined, and otherwise loaded with a hole that gen_finish fills in, as a
+ * call to it would be. */
+int gen_data_context;
+int gen_pending_fn = SYM_NONE;
+
+void vpush_function(int fn)
+{
+    const Sym *f = sym_at(fn);
+
+    if (f->val) {
+        vpush_const(f->val, type_ptr_to(TY_FUNC));
+
+        return;
+    }
+
+    /* In a global's initial value there is no code to put the hole in: the
+     * value is 0 for now, and the caller fills its bytes in once it knows
+     * where they went -- see gen_data_fixup. */
+    if (gen_data_context) {
+        if (gen_pending_fn != SYM_NONE)
+            acc_error_at(tok_line, "one function not yet defined in each "
+                                   "initial value, at most");
+        gen_pending_fn = fn;
+        vpush_const(0, type_ptr_to(TY_FUNC));
+
+        return;
+    }
+    vpush_const(0, type_ptr_to(TY_FUNC));
+    force_reg(vsp - 1);
+    fixup_add(fn, out_here() - ACC_INT_SIZE);
+    fixups[nfixups - 1].declared = 1;   /* an address: the type is no matter */
+}
+
+/* The three bytes at `at`, in the image, are a function's address, which
+ * gen_finish writes there once the function is defined. */
+void gen_data_fixup(int fn, int at)
+{
+    fixup_add(fn, at);
+    fixups[nfixups - 1].declared = 1;
+}
+
+/* A call through the pointer to a function under the arguments. */
+void gen_call_indirect(int nargs)
+{
+    Value *fp = vsp - 1 - nargs;
+    Callee callee;
+    int x = fp->ext;
+
+    if (fp->type != type_ptr_to(TY_FUNC))
+        acc_error_at(tok_line, "only a function or a pointer to one can be "
+                               "called");
+    callee.type = ext_elem(x);
+    callee.ext = ext_elem_x(x);
+    callee.quals = 0;
+    callee.fn = SYM_NONE;
+    call_to(&callee, nargs, ext_func_first(x),
+            ext_func_declared(x) ? ext_func_count(x) : 0);
+}
+
+static void call_to(const Callee *callee, int nargs, int params_first,
+                    int nparams)
+{
     int i, argslots = 0;
 
     /* Anything still live in a register has to come out before the call.
@@ -2697,11 +2781,6 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
         }
     }
 
-    /* The callee fetched once rather than at each of the six places below
-     * that want something from it; nothing between here and the end pushes a
-     * symbol, so the pointer stays good. */
-    callee = sym_at(fn);
-
     /* A struct comes back in a temporary the caller provides, in the array
      * area, whose address is passed ahead of the arguments. */
     if (type_is_struct(callee->type)) {
@@ -2711,17 +2790,18 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
         vaddr_array(temp, TY_CHAR);
         push_rr(vpop_reg());
         argslots++;
-        callee = sym_at(fn);
     }
 
-    if (callee->val) {
-        out_opcode24(0xcd, callee->val);         /* call nn */
+    if (callee->fn == SYM_NONE) {
+        call_through();
+    } else if (sym_at(callee->fn)->val) {
+        out_opcode24(0xcd, sym_at(callee->fn)->val);    /* call nn */
     } else {
         /* Defined further down the file, or not at all. The site is recorded
          * and filled in once the whole file has been read; gen_finish says so
          * if it never was. */
         out_opcode24(0xcd, 0);
-        fixup_add(fn, out_here() - ACC_INT_SIZE);
+        fixup_add(callee->fn, out_here() - ACC_INT_SIZE);
     }
 
     for (i = 0; i < argslots; i++)
@@ -2737,6 +2817,7 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
         out_byte(0x7b);                          /* ld a, e */
         ld_ix_a(slot + ACC_INT_SIZE);
         vpush(VAL_LOCAL, callee->type, slot);
+        (vsp - 1)->ext = (unsigned char) callee->ext;
 
         return;
     }
@@ -2770,9 +2851,36 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
     }
     vpush_reg(R_HL);
     (vsp - 1)->type = type_promote(callee->type);
-    (vsp - 1)->ext = callee->ext;
-    if (callee->quals & SQ_CONST)
-        (vsp - 1)->quals = VQ_CONST;
+    (vsp - 1)->ext = (unsigned char) callee->ext;
+    (vsp - 1)->quals = (unsigned char) callee->quals;
+}
+
+/* The call itself, through the pointer now on top of the stack -- the
+ * arguments are pushed. There is no `call (iy)`: the return address is
+ * pushed by hand and the jump taken, which is what agondev's __indcallhl
+ * does in a routine of its own. The pointer has been put in the frame or
+ * is a constant, since everything below the arguments was saved from the
+ * registers the arguments needed. */
+static void call_through(void)
+{
+    Value *fp = vsp - 1;
+
+    if (fp->kind == VAL_CONST) {
+        out_byte2(0xfd, 0x21);                  /* ld iy, nn */
+        out_word24(fp->val);
+    } else if (fp->kind == VAL_LOCAL) {
+        need_disp(fp->val);
+        out_byte3(0xdd, 0x31, fp->val);         /* ld iy, (ix+d) */
+    } else {
+        int reg = force_reg(fp);
+
+        push_rr(reg);
+        out_byte2(0xfd, 0xe1);                  /* pop iy */
+    }
+    vdrop();
+    out_opcode24(0x21, out_here() + 7);         /* ld hl, back */
+    push_rr(R_HL);
+    out_byte2(0xfd, 0xe9);                      /* jp (iy) */
 }
 
 /* What an operator means when a pointer is one of its operands.
@@ -2805,6 +2913,8 @@ static void vbinop_pointer(int op, Type left, Type right)
     if (type_deref(ptr) == TY_VOID)
         acc_error_at(tok_line, "a 'void *' does not say what it points at, so "
                                "arithmetic on it has no step to take");
+    if (type_is_func(type_deref(ptr)))
+        acc_error_at(tok_line, "a pointer to a function has no step to take");
     step = type_step(ptr, ext);
 
     if (both) {
@@ -3030,6 +3140,10 @@ void vderef(void)
 
         return;
     }
+
+    /* `*fp` is the function fp points at, which is its address again. */
+    if (top->type == type_ptr_to(TY_FUNC))
+        return;
     if (!type_pointer(top->type))
         acc_error_at(tok_line, "'*' takes a pointer, and this is %s",
                      type_float(top->type) ? "a floating-point value"

@@ -362,7 +362,7 @@ static struct {
 } ext_types[NEXT_TYPES + 1];
 
 enum { EXT_ARRAY = 0, EXT_STRUCT = 1, EXT_UNION = 2, EXT_COMPLETE = 4,
-       EXT_BITS = 8 };
+       EXT_BITS = 8, EXT_FUNC = 16 };
 
 static unsigned char ext_what[NEXT_TYPES + 1];      /* the kind, and whether
                                                      * a record is complete */
@@ -385,7 +385,8 @@ int ext_array(Type elem, int elem_x, int count)
     int i;
 
     for (i = 1; i <= next_types; i++)
-        if (!(ext_what[i] & (EXT_STRUCT | EXT_UNION)) && ext_types[i].elem == elem
+        if (!(ext_what[i] & (EXT_STRUCT | EXT_UNION | EXT_FUNC))
+            && ext_types[i].elem == elem
             && ext_types[i].elem_x == elem_x && ext_types[i].count == count)
             return i;
 
@@ -400,6 +401,50 @@ int ext_array(Type elem, int elem_x, int count)
     ext_types[i].bytes = count * type_bytes(elem, elem_x);
 
     return i;
+}
+
+/* A function type: its result, and its parameters as a run of the
+ * parameter table -- `count` of them from `first`, `declared` whether they
+ * were given at all. Interned by what they are, not where the run is. */
+int ext_func(Type ret, int ret_x, int first, int count, int declared)
+{
+    int i, j;
+
+    for (i = 1; i <= next_types; i++) {
+        if (!(ext_what[i] & EXT_FUNC) || ext_types[i].elem != ret
+            || ext_types[i].elem_x != ret_x
+            || ext_types[i].bytes != (count | declared << 8))
+            continue;
+        for (j = 0; j < count; j++)
+            if (param_type[ext_types[i].count + j] != param_type[first + j]
+                || param_ext[ext_types[i].count + j] != param_ext[first + j])
+                break;
+        if (j == count)
+            return i;
+    }
+    i = ext_new();
+    ext_types[i].elem = ret;
+    ext_types[i].elem_x = (unsigned char) ret_x;
+    ext_types[i].count = first;
+    ext_types[i].bytes = count | declared << 8;
+    ext_what[i] = EXT_FUNC | EXT_COMPLETE;
+
+    return i;
+}
+
+int ext_func_first(int x)
+{
+    return ext_types[x].count;
+}
+
+int ext_func_count(int x)
+{
+    return ext_types[x].bytes & 0xff;
+}
+
+int ext_func_declared(int x)
+{
+    return ext_types[x].bytes >> 8;
 }
 
 Type ext_elem(int x)

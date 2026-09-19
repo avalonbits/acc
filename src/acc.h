@@ -162,6 +162,13 @@ typedef unsigned int NameRef;
 
 #define type_is_struct(ty)  ((Type) (ty) == TY_STRUCT)
 
+/* A function, as a type: what a function's name is before it becomes the
+ * address it always becomes, and what a pointer to a function points at.
+ * Its extension says what it returns and takes. No value ever has it: a
+ * function's name is its address, a pointer, straight away. */
+#define TY_FUNC     ((Type) (TY_FLOATING | 5))
+#define type_is_func(ty)    ((Type) (ty) == TY_FUNC)
+
 /* The size of any type, arrays and structs included, given its extension. */
 #define type_bytes(ty, x)   (type_is_array(ty) || type_is_struct(ty) \
                              ? ext_bytes(x) : type_size(ty))
@@ -177,6 +184,10 @@ int  ext_count(int x);
 int  ext_bytes(int x);
 
 int     ext_record(int is_union, NameRef tag);   /* a new, incomplete record */
+int     ext_func(Type ret, int ret_x, int first, int count, int declared);
+int     ext_func_first(int x);          /* its parameters' run */
+int     ext_func_count(int x);
+int     ext_func_declared(int x);       /* whether it gives them */
 void    ext_record_done(int x, int first, int bytes);
 int     ext_is_union(int x);
 int     ext_complete(int x);
@@ -611,6 +622,11 @@ void vdrop(void);
 void gen_stmt_end(void);              /* the scratch area is free again */
 
 void gen_call(int fn, int nargs, int params_first, int nparams);
+void gen_call_indirect(int nargs);      /* through the pointer under them */
+void vpush_function(int fn);          /* a function's address */
+void gen_data_fixup(int fn, int at);  /* and one in a global's bytes */
+extern int gen_data_context;          /* a global's initial value is being read */
+extern int gen_pending_fn;            /* whose address it needs, not yet known */
 
 /* A cast: the top converted to `to`, as an assignment to an object of that
  * type would convert it, or thrown away for `(void)`. */

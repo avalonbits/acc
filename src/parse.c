@@ -72,17 +72,13 @@ static Type narrow_dest;
  * already long. They are here once. Measured on the Agon it is neither
  * faster nor slower than the two copies were.
  */
-static void call_rest(NameRef name)
-{
-    int fn = sym_find(name);
-    int nargs = 0, nparams;
+static void global_address(const Sym *global);
 
-    /* Not seen yet: assumed to be a function defined further down the file.
-     * gen_finish reports it if it never is. */
-    if (fn == SYM_NONE)
-        fn = sym_push(name, SYM_FUNC, 0);
-    else if (sym_at(fn)->kind != SYM_FUNC)
-        acc_error_at(tok_line, "'%s' is not a function", name_text(name));
+/* A call's arguments, from just past its `(` to just past its `)`: pushed
+ * in order. Returns how many. */
+static int call_args(void)
+{
+    int nargs = 0;
 
     if (tok != TK_RPAREN) {
         Type outer = narrow_dest;
@@ -98,14 +94,83 @@ static void call_rest(NameRef name)
         }
         narrow_dest = outer;
     }
-
     expect(TK_RPAREN, "')'");
+
+    return nargs;
+}
+
+/* A call through the pointer to a function on the stack, from just past
+ * its `(`. */
+__attribute__((noinline))
+static void call_value(void)
+{
+    int x = vext(), nargs;
+
+    if (vtype() != type_ptr_to(TY_FUNC))
+        acc_error_at(tok_line, "only a function or a pointer to one can be "
+                               "called");
+    nargs = call_args();
+    if (ext_func_declared(x) && nargs != ext_func_count(x))
+        acc_error_at(tok_line, "this function takes %d argument%s, and this "
+                               "call gives it %d", ext_func_count(x),
+                     ext_func_count(x) == 1 ? "" : "s", nargs);
+    gen_call_indirect(nargs);
+}
+
+/* A variable's value, for a call through it: `fp(3)`. */
+__attribute__((noinline))
+static void call_variable(int sym, NameRef name)
+{
+    const Sym *v = sym_at(sym);
+
+    switch (v->kind) {
+    case SYM_LOCAL:
+    case SYM_LOCAL_CONST:
+        vpush_local(v->val, v->type);
+        break;
+    case SYM_GLOBAL:
+    case SYM_GLOBAL_CONST:
+        global_address(v);
+        vderef();
+        break;
+    default:
+        acc_error_at(tok_line, "'%s' is not a function", name_text(name));
+    }
+    vset_ext(sym_at(sym)->ext);
+    call_value();
+}
+
+static void call_rest(NameRef name)
+{
+    int fn = sym_find(name);
+    int nargs, nparams;
+
+    /* Not seen yet: assumed to be a function defined further down the file.
+     * gen_finish reports it if it never is. */
+    if (fn == SYM_NONE) {
+        fn = sym_push(name, SYM_FUNC, 0);
+    } else if (sym_at(fn)->kind != SYM_FUNC) {
+        call_variable(fn, name);
+
+        return;
+    }
+
+    nargs = call_args();
     nparams = sym_nparams(fn);
     if (nargs != nparams && (sym_flags(fn) & SYMF_PARAMS))
         acc_error_at(tok_line, "'%s' takes %d argument%s, and this call gives "
                                "it %d", name_text(name), nparams,
                      nparams == 1 ? "" : "s", nargs);
     gen_call(fn, nargs, sym_params_first(fn), nparams);
+}
+
+/* A function's own type, as the extension its address carries. */
+static int function_ext(int fn)
+{
+    const Sym *f = sym_at(fn);
+
+    return ext_func(f->type, f->ext, sym_params_first(fn), sym_nparams(fn),
+                    (sym_flags(fn) & SYMF_PARAMS) != 0);
 }
 
 /* A word C99 reserves and acc has not implemented. Named rather than
@@ -177,11 +242,14 @@ enum {
     NAME_VALUE,     /* a value that is not an object: an array, which is the
                      * address of its first element */
     NAME_CONST,     /* an enum constant, as a constant int */
-    NAME_READONLY   /* a const variable's value, which is not an object:
+    NAME_READONLY,  /* a const variable's value, which is not an object:
                      * nothing can be stored to it */
+    NAME_RESULT,    /* what a call through a pointer came to: a value */
+    NAME_FUNC       /* a function's name alone: its address */
 };
 
 static const char *record_name(int x);
+static void        func_suffix(Type *type, int *ext);
 static void        late_address(const Sym *s);
 static void        record_complete(int x, int line);
 
@@ -219,30 +287,41 @@ static void member(void)
  * whether the address has to be read first to have a pointer: `p[i]` on a
  * global p reads p, and on an array does not. Each of them leaves an object.
  * Returns whether what is on the stack is one. */
+enum { POST_VALUE, POST_OBJECT, POST_CALL };
+
 static int postfix_chain(int object)
 {
     for (;;) {
         if (tok == TK_LBRACKET) {
-            if (object)
+            if (object == POST_OBJECT)
                 vderef();
             subscript();
         } else if (tok == TK_DOT) {
             /* A struct as a value -- what a call returned, or `(*p)` -- is
              * its address, which is the object's. */
-            if (!object) {
+            if (object != POST_OBJECT) {
                 if (!type_is_struct(vtype()))
                     acc_error_at(tok_line, "'.' needs a struct or union");
                 vset_type(type_ptr_to(TY_STRUCT), vext());
             }
             member();
         } else if (tok == TK_ARROW) {
-            if (object)
+            if (object == POST_OBJECT)
                 vderef();
             member();
+        } else if (tok == TK_LPAREN) {
+            /* A call through a pointer to a function: `s.op(1)`,
+             * `table[i](2)`, `get()(3)`. Its result is a value. */
+            if (object == POST_OBJECT)
+                vderef();
+            next();
+            call_value();
+            object = POST_CALL;
+            continue;
         } else {
             return object;
         }
-        object = 1;
+        object = POST_OBJECT;
     }
 }
 
@@ -310,6 +389,13 @@ static int name_operand(int sym, NameRef name)
         vpush_const(s->val, TY_INT);
 
         return NAME_CONST;
+    case SYM_FUNC:
+        vpush_function(sym);
+        vset_ext(function_ext(sym));
+        if (!tok_postfix() && tok != TK_LPAREN)
+            return NAME_FUNC;
+        object = POST_VALUE;
+        break;
     case SYM_LOCAL_CONST:
         vpush_local(s->val, s->type);
         vset_ext(s->ext);
@@ -331,7 +417,10 @@ static int name_operand(int sym, NameRef name)
         acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
     }
 
-    return postfix_chain(object) ? NAME_OBJECT : NAME_VALUE;
+    object = postfix_chain(object);
+
+    return object == POST_OBJECT ? NAME_OBJECT
+         : object == POST_CALL ? NAME_RESULT : NAME_VALUE;
 }
 
 /* Subscripts and members after a value that is not a name -- `(p + 1)[i]`,
@@ -339,8 +428,8 @@ static int name_operand(int sym, NameRef name)
 __attribute__((noinline))
 static void subscript_value(void)
 {
-    postfix_chain(0);
-    object_value();
+    if (postfix_chain(POST_VALUE) == POST_OBJECT)
+        object_value();
 }
 
 /* Anything but a plain local, as an operand. Out of line, like the other path
@@ -554,9 +643,6 @@ static void address_of(void)
     name = tok_name;
     line = tok_line;
     sym = sym_find(name);
-    if (sym != SYM_NONE && sym_at(sym)->kind == SYM_FUNC)
-        acc_error_at(line, "'%s' is not a variable, so it has no address to "
-                           "take", name_text(name));
     next();
     switch (name_operand(sym, name)) {
     case NAME_LOCAL: {
@@ -584,6 +670,10 @@ static void address_of(void)
         readonly_address(sym);
 
         return;
+    case NAME_FUNC:
+        return;                 /* `&f` is f's address, as `f` is */
+    case NAME_RESULT:
+        acc_error_at(line, "what a call comes to has no address to take");
     }
 
     /* A whole array: the same address as its first element, as a pointer to
@@ -680,7 +770,7 @@ static void primary(void)
         narrow_dest = 0;
         if (tok == TK_STAR && paren_deref_step()) {
             narrow_dest = outer;
-            if (tok == TK_LBRACKET)     /* (*p)[i], p a pointer to an array */
+            if (tok_postfix() || tok == TK_LPAREN)  /* (*p)[i], (*fp)(x) */
                 subscript_value();
 
             return;
@@ -688,7 +778,7 @@ static void primary(void)
         expr();
         narrow_dest = outer;
         expect(TK_RPAREN, "')'");
-        if (tok_postfix())
+        if (tok_postfix() || tok == TK_LPAREN)
             subscript_value();
 
         return;
@@ -759,7 +849,7 @@ static void primary(void)
 
         if (accept(TK_LPAREN)) {
             call_rest(name);
-            if (tok_postfix())
+            if (tok_postfix() || tok == TK_LPAREN)
                 subscript_value();
 
             return;
@@ -1068,12 +1158,12 @@ static void paren_statement(void)
  * follow an object: a store, a step, or a read and the rest. */
 static void postfix_statement(void)
 {
-    if (!tok_postfix()) {
+    if ((!tok_postfix() && tok != TK_LPAREN)
+        || postfix_chain(POST_VALUE) != POST_OBJECT) {
         binary_rest(PREC_LOWEST);
 
         return;
     }
-    postfix_chain(0);
     if (tok == TK_INC || tok == TK_DEC) {
         object_value();
         binary_rest(PREC_LOWEST);
@@ -1627,6 +1717,11 @@ static void record_members(int x, int is_union, int line)
             if (tok != TK_COLON)        /* `int : 3` has no name */
                 name = direct_declarator_out(declarator_stars_out(base),
                                              bx, &type, &ext, &count);
+            if (!count)
+                func_suffix(&type, &ext);
+            if (type_is_func(type))
+                acc_error_at(mline, "a member cannot be a function; a pointer "
+                                    "to one can");
             if (accept(TK_COLON))
                 width = bitfield_width(type, name, mline);
             if (count < 0)
@@ -2018,42 +2113,24 @@ static NameRef declared_name(void)
  * `int [4]`, `int (*)[4]`. *x is its extension. */
 static Type type_name(int *x)
 {
-    Type t = declarator_stars(base_type()), elem;
-    int tx = base_ext, elem_x, n;
+    Type t = declarator_stars(base_type()), type;
+    int tx = base_ext, saved = abstract_ok, count;
 
-    *x = tx;
-    if (accept(TK_LPAREN)) {
-        int inner = 0;
-
-        while (accept(TK_STAR))
-            inner++;
-        if (!inner)
-            acc_error_at(tok_line, "acc takes parentheses in a type name only "
-                                   "around a pointer, as in (*)[4]");
-        expect(TK_RPAREN, "')'");
-        if (!array_dims(t, tx, &elem, &elem_x, &n) || n < 0)
-            acc_error_at(tok_line, "a pointer to an array needs the array's "
-                                   "size");
-        *x = ext_array(elem, elem_x, n);
-        t = TY_EXT;
-        while (inner--) {
-            if (type_ptr_depth(t) == TY_PTR_MAX)
-                acc_error_at(tok_line, "a pointer can be %d deep and this is "
-                                       "deeper", TY_PTR_MAX);
-            t = type_ptr_to(t);
-        }
-
-        return t;
-    }
-    if (array_dims(t, tx, &elem, &elem_x, &n)) {
-        if (n < 0)
-            acc_error_at(tok_line, "an array type here needs its size");
-        *x = ext_array(elem, elem_x, n);
+    abstract_ok = 1;
+    if (tok == TK_IDENT)
+        acc_error_at(tok_line, "a type name has no name in it, and this has "
+                               "'%s'", name_text(tok_name));
+    direct_declarator_out(t, tx, &type, x, &count);
+    abstract_ok = saved;
+    if (count < 0)
+        acc_error_at(tok_line, "an array type here needs its size");
+    if (count) {
+        *x = ext_array(type, *x, count);
 
         return TY_EXT;
     }
 
-    return t;
+    return type;
 }
 
 /* `(type) operand`, from just past the parenthesis. A cast binds as the
@@ -2093,8 +2170,9 @@ static int sizeof_unary(void);
  * any `++` or `--`, which do not change the type. */
 static int sizeof_postfix(int what)
 {
-    if (tok_postfix() && postfix_chain(what == SIZEOF_OBJECT))
-        what = SIZEOF_OBJECT;
+    if (tok_postfix() || tok == TK_LPAREN)
+        what = postfix_chain(what == SIZEOF_OBJECT ? POST_OBJECT : POST_VALUE)
+               == POST_OBJECT ? SIZEOF_OBJECT : SIZEOF_VALUE;
     while (tok == TK_INC || tok == TK_DEC)
         next();
 
@@ -2246,39 +2324,280 @@ static void sizeof_value(void)
  * whole array: `int (*p)[4]` is one pointer, stepping four ints at a time,
  * where `int *p[4]` is four pointers. Functions are not declared this way,
  * since acc has no pointers to them. */
+/* A declarator with parentheses in it, the general case: `int (*fp)(int)`,
+ * `char (*table[4])[8]`, `int (*get(void))(int)`. What it says is a list of
+ * derivations -- pointer to, array of, function returning -- to apply to
+ * the type at its head, and C's grammar gives them inside out: the stars
+ * in front of a name first, then what follows it, then whatever encloses
+ * it. So each level is read into a list, in that order, and the list is
+ * applied once the whole declarator is read. */
+enum { DECL_PTR, DECL_ARRAY, DECL_FUNC };
+
+typedef struct {
+    unsigned char op;
+    int a, b, c;        /* an array's count; a function's parameter run,
+                         * its length, and whether it was given */
+} DeclOp;
+
+static DeclOp decl_ops[32];
+static int    ndecl_ops;
+
+static void decl_push(int op, int a, int b, int c)
+{
+    if (ndecl_ops == 32)
+        acc_error_at(tok_line, "a declarator this deep is more than acc takes");
+    decl_ops[ndecl_ops].op = (unsigned char) op;
+    decl_ops[ndecl_ops].a = a;
+    decl_ops[ndecl_ops].b = b;
+    decl_ops[ndecl_ops].c = c;
+    ndecl_ops++;
+}
+
+static void decl_apply(const DeclOp *op, Type *t, int *x)
+{
+    switch (op->op) {
+    case DECL_PTR:
+        if (type_ptr_depth(*t) == TY_PTR_MAX)
+            acc_error_at(tok_line, "a pointer can be %d deep and this is "
+                                   "deeper", TY_PTR_MAX);
+        *t = type_ptr_to(*t);
+        break;
+    case DECL_ARRAY:
+        if (op->a < 0)
+            acc_error_at(tok_line, "only an array's first dimension may be "
+                                   "left out");
+        if (type_is_func(*t))
+            acc_error_at(tok_line, "an array of functions is not a thing C "
+                                   "has; an array of pointers to them is");
+        if (type_is_struct(*t))
+            record_complete(*x, tok_line);
+        *x = ext_array(*t, *x, op->a);
+        *t = TY_EXT;
+        break;
+    case DECL_FUNC:
+        if (type_is_array(*t) || type_is_func(*t))
+            acc_error_at(tok_line, "a function cannot return an %s",
+                         type_is_array(*t) ? "array" : "function");
+        *x = ext_func(*t, *x, op->a, op->b, op->c);
+        *t = TY_FUNC;
+        break;
+    }
+}
+
+static int  param_types(int *first, int *count);
+
+/* The names of the parameters param_types read, by their place in the
+ * parameter table: a function declared as `int (*get(int a))(int)` and
+ * then defined has only these to name its parameters by. */
+static NameRef *param_names;
+static int      param_names_cap;
+
+static void param_name_set(int at, NameRef name)
+{
+    if (at >= param_names_cap) {
+        int cap = param_names_cap ? param_names_cap : 64;
+
+        while (cap <= at)
+            cap *= 2;
+        param_names = realloc(param_names, (size_t) cap * sizeof *param_names);
+        if (!param_names)
+            acc_error("out of memory for parameters");
+        param_names_cap = cap;
+    }
+    param_names[at] = name;
+}
+static NameRef decl_full(void);
+
+/* A declarator's direct part, from a `(`, a name or nothing: the
+ * parenthesised declarator inside, or the name, and the dimensions and
+ * parameter lists after it -- its derivations appended in the order they
+ * apply. */
+static NameRef decl_direct(void)
+{
+    NameRef name = NAME_NONE;
+    int inner = -1, inner_end = 0, suffix, i, j;
+
+    if (tok == TK_LPAREN) {
+        /* A parenthesised declarator, or -- in a type name -- the parameter
+         * list of a function type with no name at all. */
+        next();
+        if (tok == TK_STAR || tok == TK_LPAREN || tok == TK_LBRACKET
+            || (tok == TK_IDENT && !is_typedef_name(tok_name))) {
+            inner = ndecl_ops;
+            name = decl_full();
+            inner_end = ndecl_ops;
+            expect(TK_RPAREN, "')'");
+        } else {
+            int first, count, given = param_types(&first, &count);
+
+            decl_push(DECL_FUNC, first, count, given);
+        }
+    } else if (tok == TK_IDENT) {
+        name = tok_name;
+        next();
+    } else if (!abstract_ok) {
+        acc_error_at(tok_line, "expected a name, found %s", tok_spelling(tok));
+    }
+
+    suffix = ndecl_ops;
+    for (;;) {
+        if (accept(TK_LBRACKET)) {
+            int n = -1, line = tok_line;
+
+            if (tok != TK_RBRACKET) {
+                n = constant_int("an array's size", line);
+                if (n <= 0)
+                    acc_error_at(line, "an array needs at least one element");
+            }
+            expect(TK_RBRACKET, "']'");
+            decl_push(DECL_ARRAY, n, 0, 0);
+        } else if (accept(TK_LPAREN)) {
+            int first, count, given = param_types(&first, &count);
+
+            decl_push(DECL_FUNC, first, count, given);
+        } else {
+            break;
+        }
+    }
+
+    /* In parse order the list is [inner..., suffixes...]; applied it has to
+     * be [suffixes, last first..., inner...]. */
+    if (inner >= 0 || ndecl_ops - suffix > 1) {
+        DeclOp tmp[32];
+        int n = 0;
+
+        for (j = ndecl_ops - 1; j >= suffix; j--)
+            tmp[n++] = decl_ops[j];
+        for (i = inner < 0 ? suffix : inner; i < (inner < 0 ? suffix : inner_end); i++)
+            tmp[n++] = decl_ops[i];
+        memcpy(&decl_ops[inner < 0 ? suffix : inner], tmp, n * sizeof *tmp);
+    }
+
+    return name;
+}
+
+/* A whole declarator: its stars, which apply first, then its direct part. */
+static NameRef decl_full(void)
+{
+    int stars = 0;
+
+    while (accept(TK_STAR)) {
+        stars++;
+        if (tok_qualifier())
+            star_qualifiers();
+    }
+    while (stars--)
+        decl_push(DECL_PTR, 0, 0, 0);
+
+    return decl_direct();
+}
+
+/* The parameter types of a function type in a declarator, from just past
+ * its `(`: added to the parameter table as a run, with their names, if they
+ * have them, read and put aside. Returns whether the parameters were given:
+ * `()` does not give them. */
+static int param_types(int *first, int *count)
+{
+    int saved_abstract = abstract_ok;
+
+    *first = sym_params_begin();
+    *count = 0;
+    if (accept(TK_RPAREN))
+        return 0;
+    if (tok == TK_KW_VOID && lex_rparen_follows()) {
+        next();
+        expect(TK_RPAREN, "')'");
+
+        return 1;
+    }
+    abstract_ok = 1;
+    for (;;) {
+        Type base, type;
+        int bx, ext, n;
+        NameRef pname;
+
+        accept(TK_KW_REGISTER);
+        base = base_type();
+        bx = base_ext;
+        pname = direct_declarator_out(declarator_stars_out(base), bx, &type,
+                                      &ext, &n);
+        if (!n)
+            func_suffix(&type, &ext);
+        if (n || type_is_func(type)) {  /* adjusted to a pointer, as C says */
+            if (type_ptr_depth(type) == TY_PTR_MAX)
+                acc_error_at(tok_line, "a pointer can be %d deep and this is "
+                                       "deeper", TY_PTR_MAX);
+            type = type_ptr_to(type);
+        }
+        not_void(type, "a parameter", tok_line);
+        param_name_set(*first + *count, pname);
+        sym_param_add(type, ext);
+        (*count)++;
+        if (!accept(TK_COMMA))
+            break;
+        if (tok == TK_DOT)
+            acc_error_at(tok_line, "a variable number of arguments is not "
+                                   "supported yet");
+    }
+    abstract_ok = saved_abstract;
+    expect(TK_RPAREN, "')'");
+
+    return 1;
+}
+
+/* A parameter list after a plain name, where it makes a function type:
+ * `typedef int binary(int, int)`, a parameter `int g(int)`. Where a
+ * function is being declared the caller reads the list itself. */
+static void func_suffix(Type *type, int *ext)
+{
+    int first, count, given;
+
+    if (!accept(TK_LPAREN))
+        return;
+    if (type_is_array(*type) || type_is_func(*type))
+        acc_error_at(tok_line, "a function cannot return an %s",
+                     type_is_array(*type) ? "array" : "function");
+    given = param_types(&first, &count);
+    *ext = ext_func(*type, *ext, first, count, given);
+    *type = TY_FUNC;
+}
+
 __attribute__((noinline))
 static NameRef paren_declarator(Type t, int tx, Type *type, int *ext,
                                 int *count)
 {
     NameRef name;
-    int inner = 0;
 
-    if (accept(TK_LPAREN)) {
-        Type elem;
-        int n, elem_x, x = tx;
+    if (tok == TK_LPAREN) {
+        int first = ndecl_ops, i;
 
-        while (accept(TK_STAR))
-            inner++;
-        if (!inner)
-            acc_error_at(tok_line, "acc takes parentheses in a declarator only "
-                                   "around a pointer, as in (*p)[4]");
-        name = declared_name();
-        expect(TK_RPAREN, "')'");
-        if (array_dims(t, tx, &elem, &elem_x, &n)) {
-            if (n < 0)
+        name = decl_direct();
+        for (i = first; i < ndecl_ops; i++) {
+            DeclOp *op = &decl_ops[i];
+
+            /* The last applied, when it is an array, makes the object an
+             * array, which callers take as its element type and count. */
+            if (op->op == DECL_ARRAY && op->a < 0 && i < ndecl_ops - 1
+                && decl_ops[i + 1].op == DECL_PTR)
                 acc_error_at(tok_line, "a pointer to an array needs the "
                                        "array's size");
-            x = ext_array(elem, elem_x, n);
-            t = TY_EXT;
+            if (op->op == DECL_ARRAY && i == ndecl_ops - 1) {
+                if (type_is_func(t))
+                    acc_error_at(tok_line, "an array of functions is not a "
+                                           "thing C has; an array of pointers "
+                                           "to them is");
+                ndecl_ops = first;
+                *type = t;
+                *ext = tx;
+                *count = op->a;
+
+                return name;
+            }
+            decl_apply(op, &t, &tx);
         }
-        while (inner--) {
-            if (type_ptr_depth(t) == TY_PTR_MAX)
-                acc_error_at(tok_line, "a pointer can be %d deep and this is "
-                                       "deeper", TY_PTR_MAX);
-            t = type_ptr_to(t);
-        }
+        ndecl_ops = first;
         *type = t;
-        *ext = x;
+        *ext = tx;
         *count = 0;
 
         return name;
@@ -2759,6 +3078,7 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
 
 static int  function_declarator(Type ret_type, int ret_ext, NameRef name,
                                 int line);
+static int  function_from_type(int x, NameRef name, int line);
 static void global_variable(Type type, int ext, NameRef name, int count,
                             int line);
 static int  global_again(int sym, Type type, int ext, int count, int line);
@@ -2789,6 +3109,8 @@ static void typedef_declaration(void)
         NameRef name = direct_declarator(declarator_stars(base), bx, &type,
                                          &ext, &count);
 
+        if (!count)
+            func_suffix(&type, &ext);
         if (count < 0)
             acc_error_at(line, "a typedef of an array needs the array's size");
         if (count) {
@@ -2933,6 +3255,12 @@ void declaration(void)
         Type type, stars = declarator_stars(base);
         NameRef name = direct_declarator(stars, bx, &type, &ext, &count);
 
+        if (type_is_func(type)) {
+            function_from_type(ext, name, line);
+            if (!accept(TK_COMMA))
+                break;
+            continue;
+        }
         if (tok == TK_LPAREN) {         /* a function declared in a block */
             decl_bottom_const = bc ? SQ_CONST : 0;
             function_declarator(type, ext, name, line);
@@ -3795,6 +4123,10 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
             pname = direct_declarator(pstars, pbx, &ptype, &pext, &pcount);
             if (pstars != pbase)
                 pconst = stars_const;
+            if (!pcount)
+                func_suffix(&ptype, &pext);
+            if (type_is_func(ptype))        /* a function is its address */
+                ptype = type_ptr_to(ptype);
 
             /* `int a[]`, `int a[10]` and `int m[][4]` declare a parameter
              * that is a pointer, as C says: an array is passed as the address
@@ -3975,7 +4307,10 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
     }
 
 expression:
+    gen_pending_fn = SYM_NONE;
+    gen_data_context = 1;
     binary(PREC_LOWEST);
+    gen_data_context = 0;
 
 folded:
     {
@@ -4045,6 +4380,30 @@ static inline __attribute__((always_inline)) void init_room(int end)
         init_grow(end);
 }
 
+/* A function's address in a global's bytes, where the function is not yet
+ * defined: the fixup that fills it in, once the bytes' address is known.
+ * For a value written straight into the image, at `at`; for one built in
+ * the initialiser's buffer, at its offset from where the buffer goes. */
+static struct { int fn, offset; } walk_fns[16];
+static int nwalk_fns;
+
+static void data_fn_at(int at)
+{
+    if (gen_pending_fn == SYM_NONE)
+        return;
+    gen_data_fixup(gen_pending_fn, at);
+    gen_pending_fn = SYM_NONE;
+}
+
+static void walk_fns_at(int at)
+{
+    int i;
+
+    for (i = 0; i < nwalk_fns; i++)
+        gen_data_fixup(walk_fns[i].fn, at + walk_fns[i].offset);
+    nwalk_fns = 0;
+}
+
 /* A bit-field's value in a global's bytes: the constant, cut to the width,
  * put in at its bits. */
 __attribute__((noinline))
@@ -4079,6 +4438,15 @@ static void global_put(Type scalar, int offset, int value)
         init_bytes[offset] = (unsigned char) value;     /* a char of a string */
     else
         global_initializer(scalar, init_bytes + offset, tok_line);
+    if (gen_pending_fn != SYM_NONE) {
+        if (nwalk_fns == 16)
+            acc_error_at(tok_line, "more than 16 functions not yet defined in "
+                                   "one initialiser");
+        walk_fns[nwalk_fns].fn = gen_pending_fn;
+        walk_fns[nwalk_fns].offset = offset;
+        nwalk_fns++;
+        gen_pending_fn = SYM_NONE;
+    }
 }
 
 /* A file-scope array, from just past its declarator: its bytes, each value a
@@ -4115,6 +4483,7 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
                 } else {
                     global_initializer(elem, bytes, tok_line);
                 }
+                data_fn_at(out_here());
                 for (i = 0; i < step; i++)
                     out_byte(bytes[i]);
                 n++;
@@ -4167,6 +4536,7 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
     total = count * step;
     init_room(total);
     at = out_here();
+    walk_fns_at(at);
     for (i = 0; i < total; i++)
         out_byte(init_bytes[i]);
 
@@ -4192,6 +4562,7 @@ static void global_struct(int x, NameRef name, int line)
     }
     init_room(total);
     at = out_here();
+    walk_fns_at(at);
     for (i = 0; i < total; i++)
         out_byte(init_bytes[i]);
 
@@ -4318,6 +4689,7 @@ static void global_emit(Type type, int ext, NameRef name, int count, int line)
         global_initializer(type, bytes, line);
 
     at = out_here();
+    data_fn_at(at);
     for (i = 0; i < size; i++)
         out_byte(bytes[i]);
 
@@ -4372,6 +4744,81 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         sym_set_flags(name_global(name), SYMF_DEFINED);
 }
 
+/* A function declared by a declarator whose type came out a function --
+ * `int (*get(void))(int)`, or `op f;` with op a typedef for a function
+ * type -- rather than by a name and a parameter list. It is declared as
+ * any function is, and defined, when a body follows, with the parameters
+ * its type's parameter list named. Returns whether it was defined. */
+__attribute__((noinline))
+static int function_from_type(int x, NameRef name, int line)
+{
+    Type ret = ext_elem(x);
+    int ret_x = ext_elem_x(x), first = ext_func_first(x);
+    int count = ext_func_count(x), params = ext_func_declared(x);
+    int fn = sym_find(name), i, argoff;
+
+    if (fn != SYM_NONE && sym_at(fn)->kind != SYM_FUNC)
+        acc_error_at(line, "'%s' is already declared", name_text(name));
+    if (fn != SYM_NONE && (sym_flags(fn) & SYMF_DECLARED))
+        same_signature(fn, ret, ret_x, first, count, params, name, line);
+    if (fn == SYM_NONE)
+        fn = sym_push(name, SYM_FUNC, 0);
+    sym_at(fn)->type = ret;
+    sym_at(fn)->ext = (unsigned char) ret_x;
+    if (tok != TK_LBRACE || in_body) {
+        sym_set_params(fn, first, count);
+        sym_set_flags(fn, params ? SYMF_DECLARED | SYMF_PARAMS : SYMF_DECLARED);
+
+        return 0;
+    }
+
+    if (sym_at(fn)->val)
+        acc_error_at(line, "'%s' is defined twice", name_text(name));
+    argoff = 2 * ACC_PTR_SIZE + (type_is_struct(ret) ? ACC_PTR_SIZE : 0);
+    nstruct_params = 0;
+    for (i = 0; i < count; i++) {
+        Type t = sym_param_type(first, i);
+        int e = sym_param_ext(first, i), psym;
+
+        if (i >= param_names_cap || !param_names[first + i])
+            acc_error_at(line, "a parameter of a function's definition needs "
+                               "a name");
+        psym = sym_push(param_names[first + i], SYM_LOCAL, argoff);
+        sym_at(psym)->type = t;
+        sym_at(psym)->ext = (unsigned char) e;
+        if (type_is_struct(t)) {
+            if (nstruct_params == struct_params_cap) {
+                struct_params_cap = struct_params_cap ? struct_params_cap * 2 : 8;
+                struct_params = realloc(struct_params, (size_t) struct_params_cap
+                                                       * sizeof *struct_params);
+                if (!struct_params)
+                    acc_error("out of memory for parameters");
+            }
+            struct_params[nstruct_params].sym = psym;
+            struct_params[nstruct_params].argoff = argoff;
+            nstruct_params++;
+            argoff += (ext_bytes(e) + ACC_INT_SIZE - 1) / ACC_INT_SIZE
+                      * ACC_INT_SIZE;
+        } else {
+            argoff += type_wide(t) ? 2 * ACC_INT_SIZE : ACC_INT_SIZE;
+        }
+    }
+    next();                     /* the body's `{` */
+    sym_set_params(fn, first, count);
+    sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED);
+    gen_func_begin(fn, count, ret);
+    if (nstruct_params)
+        struct_params_copy();
+    in_body = 1;
+    block();
+    in_body = 0;
+    labels_end();
+    gen_func_end();
+    sym_drop_locals();
+
+    return 1;
+}
+
 /* What is at file scope: a function's definition, or a list of variables.
  * Which one shows only once the name has been read, by whether a '(' comes
  * next -- the type and the stars in front of the name are the same for
@@ -4419,6 +4866,9 @@ static void external_declaration(void)
             if (count)
                 acc_error_at(line, "a function cannot return an array");
             if (function_declarator(type, ext, name, line))
+                return;
+        } else if (type_is_func(type)) {
+            if (function_from_type(ext, name, line))
                 return;
         } else {
             global_variable(type, ext, name, count, line);
