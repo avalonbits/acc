@@ -31,7 +31,7 @@ sanitizer_tripped() {
 pass=0; fail=0; skip=0
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-for src in test/cases/*.c; do
+for src in ${CASES:-test/cases/*.c}; do
     name=$(basename "$src" .c)
 
     if ! err=$("$ACC" "$src" -o "$tmp/acc.bin" -x 2>&1); then

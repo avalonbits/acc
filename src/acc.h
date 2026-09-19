@@ -251,6 +251,7 @@ enum {
     TK_KW_DEFAULT,
     TK_KW_GOTO,
     TK_STRING,                  /* a string literal; tok_str holds its bytes */
+    TK_KW_SIZEOF,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -444,6 +445,7 @@ void vpush_const_long(long val, Type type);  /* four bytes, so it goes to the fr
 void vpush_const_float(float val);
 void vconvert(Type to);               /* narrow the top, then widen it back */
 Type vtype(void);                     /* the type of the top */
+int  vext(void);                      /* and its extension */
 int  vconst_top(int *val, Type *type);  /* whether the top is a constant */
 void vset_type(Type type, int ext);   /* the same address, another pointer type */
 void vset_ext(int ext);               /* the top's type's extension */
@@ -473,6 +475,26 @@ void vdrop(void);
 void gen_stmt_end(void);              /* the scratch area is free again */
 
 void gen_call(int fn, int nargs, int params_first, int nparams);
+
+/* A cast: the top converted to `to`, as an assignment to an object of that
+ * type would convert it, or thrown away for `(void)`. */
+void vcast(Type to, int ext);
+
+/* A point the output can be taken back to, and everything the generator
+ * knows about what it emitted since: sizeof has to parse its operand to
+ * learn its type, and C says the operand is not evaluated, so the code it
+ * produced -- and any call or array address waiting to be patched in it --
+ * is undone afterwards. The values below the operand are put back as they
+ * were too, since making room for it may have moved them out of registers
+ * by code that no longer exists. */
+typedef struct {
+    int    at, nfixups, nrt_fixups, narray_patches, spill_used, vtop;
+    int    rt_any_used;
+    Value *saved;
+} GenMark;
+
+void gen_mark(GenMark *m);
+void gen_rollback(GenMark *m);
 
 /* Branches. A jump whose target is not known yet is emitted with a hole and
  * filled in by gen_label once the target is reached; one going backwards is
@@ -619,6 +641,7 @@ static inline __attribute__((always_inline)) void out_byte3(int first, int secon
 }
 void out_word24(int v);
 int  out_here(void);                  /* the address the next byte will have */
+void out_rewind(int here);            /* forget what came after out_here() was here */
 void out_patch24(int at, int v);
 
 #endif /* ACC_H */

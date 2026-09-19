@@ -127,6 +127,11 @@ int out_here(void)
     return LOAD_ADDR + OUT_LEN;
 }
 
+void out_rewind(int here)
+{
+    out_put = img + (here - LOAD_ADDR);
+}
+
 void out_patch24(int at, int value)
 {
     int off = at - LOAD_ADDR;

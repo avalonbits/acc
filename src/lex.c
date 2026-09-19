@@ -460,7 +460,7 @@ static void keywords_init(void)
     keyword("inline", 6, TK_KW_RESERVED);
     keyword("register", 8, TK_KW_RESERVED);
     keyword("restrict", 8, TK_KW_RESERVED);
-    keyword("sizeof", 6, TK_KW_RESERVED);
+    keyword("sizeof", 6, TK_KW_SIZEOF);
     keyword("static", 6, TK_KW_RESERVED);
     keyword("struct", 6, TK_KW_RESERVED);
     keyword("switch", 6, TK_KW_SWITCH);
@@ -1039,6 +1039,7 @@ const char *tok_spelling(int token)
     case TK_KW_DOUBLE: return "'double'";
     case TK_KW_FOR:    return "'for'";
     case TK_KW_GOTO:   return "'goto'";
+    case TK_KW_SIZEOF: return "'sizeof'";
     case TK_STRING:    return "a string";
     case TK_KW_BREAK:  return "'break'";
     case TK_KW_CONTINUE: return "'continue'";

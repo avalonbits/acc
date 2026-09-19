@@ -483,6 +483,10 @@ static void string_value(void)
         subscript_value();
 }
 
+static void cast_rest(void);
+static void sizeof_value(void);
+static int  starts_type(int token);
+
 /* A name used as a value: a local read, or a call. */
 static void primary(void)
 {
@@ -512,6 +516,11 @@ static void primary(void)
         Type outer = narrow_dest;
 
         next();
+        if (starts_type(tok)) {
+            cast_rest();
+
+            return;
+        }
         narrow_dest = 0;
         if (tok == TK_STAR && paren_deref_step()) {
             narrow_dest = outer;
@@ -607,6 +616,12 @@ static void primary(void)
 
     if (tok == TK_STRING) {
         string_value();
+
+        return;
+    }
+
+    if (tok == TK_KW_SIZEOF) {
+        sizeof_value();
 
         return;
     }
@@ -868,6 +883,12 @@ static void paren_statement(void)
     Type outer = narrow_dest;
 
     next();
+    if (starts_type(tok)) {
+        cast_rest();
+        binary_rest(PREC_LOWEST);
+
+        return;
+    }
     narrow_dest = 0;
     if (!(tok == TK_STAR && paren_deref_step())) {
         expr();
@@ -1321,6 +1342,223 @@ static NameRef declared_name(void)
     next();
 
     return name;
+}
+
+/* ------------------------------------------------------------------ */
+/* type names, casts and sizeof                                        */
+
+/* A type with no name in it, as a cast and sizeof take one: `int`, `char *`,
+ * `int [4]`, `int (*)[4]`. *x is its extension. */
+static Type type_name(int *x)
+{
+    Type t = declarator_stars(base_type()), elem;
+    int elem_x, n;
+
+    *x = 0;
+    if (accept(TK_LPAREN)) {
+        int inner = 0;
+
+        while (accept(TK_STAR))
+            inner++;
+        if (!inner)
+            acc_error_at(tok_line, "acc takes parentheses in a type name only "
+                                   "around a pointer, as in (*)[4]");
+        expect(TK_RPAREN, "')'");
+        if (!array_dims(t, &elem, &elem_x, &n) || n < 0)
+            acc_error_at(tok_line, "a pointer to an array needs the array's "
+                                   "size");
+        *x = ext_array(elem, elem_x, n);
+        t = TY_EXT;
+        while (inner--) {
+            if (type_ptr_depth(t) == TY_PTR_MAX)
+                acc_error_at(tok_line, "a pointer can be %d deep and this is "
+                                       "deeper", TY_PTR_MAX);
+            t = type_ptr_to(t);
+        }
+
+        return t;
+    }
+    if (array_dims(t, &elem, &elem_x, &n)) {
+        if (n < 0)
+            acc_error_at(tok_line, "an array type here needs its size");
+        *x = ext_array(elem, elem_x, n);
+
+        return TY_EXT;
+    }
+
+    return t;
+}
+
+/* `(type) operand`, from just past the parenthesis. A cast binds as the
+ * unary operators do, so its operand is one of those or a postfix
+ * expression, which is what primary() reads. */
+__attribute__((noinline))
+static void cast_rest(void)
+{
+    int x, line = tok_line;
+    Type to = type_name(&x), outer = narrow_dest;
+
+    expect(TK_RPAREN, "')'");
+    if (type_is_array(to))
+        acc_error_at(line, "a cast cannot make an array");
+    narrow_dest = 0;
+    primary();
+    narrow_dest = outer;
+    vcast(to, x);
+}
+
+/* sizeof's operand, which is parsed as any expression is -- code and all --
+ * to learn its type, and then taken back. What it leaves is either an
+ * object, as its address, or a value.
+ *
+ * The difference is arrays. An array is the address of its first element
+ * wherever it is used, and parsed as a value it would have the size of a
+ * pointer; `sizeof a` wants all of it. So a name, a subscript and a `*` are
+ * left as the object they designate -- the address and its type, which for
+ * an array is a pointer to the whole array -- and the size is of what that
+ * points at. */
+enum { SIZEOF_OBJECT, SIZEOF_VALUE };
+
+static int sizeof_unary(void);
+
+/* The subscripts after an operand, each of which designates an element, and
+ * any `++` or `--`, which do not change the type. */
+static int sizeof_postfix(int what)
+{
+    while (tok == TK_LBRACKET) {
+        if (what == SIZEOF_OBJECT)
+            vderef();
+        subscript();
+        what = SIZEOF_OBJECT;
+    }
+    while (tok == TK_INC || tok == TK_DEC)
+        next();
+
+    return what;
+}
+
+/* The rest of a parenthesis sizeof's operand opens, from just past it. */
+static int sizeof_paren(void)
+{
+    Type outer = narrow_dest;
+    int what;
+
+    narrow_dest = 0;
+    what = sizeof_unary();
+    if (tok != TK_RPAREN) {
+        if (what == SIZEOF_OBJECT)
+            vderef();
+        binary_rest(PREC_LOWEST);
+        if (tok == TK_QUESTION)
+            conditional_rest();
+        what = SIZEOF_VALUE;
+    }
+    narrow_dest = outer;
+    expect(TK_RPAREN, "')'");
+
+    return sizeof_postfix(what);
+}
+
+static int sizeof_unary(void)
+{
+    if (accept(TK_STAR)) {
+        if (sizeof_unary() == SIZEOF_OBJECT)
+            vderef();
+        if (!type_pointer(vtype()))
+            acc_error_at(tok_line, "'*' takes a pointer, and this is %s",
+                         type_float(vtype()) ? "a floating-point value"
+                                             : "an integer");
+
+        return sizeof_postfix(SIZEOF_OBJECT);
+    }
+
+    if (tok == TK_IDENT) {
+        NameRef name = tok_name;
+        int sym;
+
+        next();
+        if (accept(TK_LPAREN)) {
+            call_rest(name);
+
+            return sizeof_postfix(SIZEOF_VALUE);
+        }
+        sym = sym_find(name);
+        if (sym != SYM_NONE && sym_at(sym)->kind == SYM_FUNC)
+            acc_error_at(tok_line, "'%s' is a function, which has no size",
+                         name_text(name));
+        switch (name_operand(sym, name)) {
+        case NAME_LOCAL: {
+            const Sym *local = sym_at(sym);
+
+            vaddr_local(local->val, local->type);
+            vset_ext(local->ext);
+            break;
+        }
+        case NAME_VALUE: {
+            const Sym *array = sym_at(sym);
+
+            vset_type(type_ptr_to(TY_EXT),
+                      ext_array(array->type, array->ext, sym_count(sym)));
+            break;
+        }
+        }
+
+        return sizeof_postfix(SIZEOF_OBJECT);
+    }
+
+    if (tok == TK_STRING) {
+        int len = string_gather();
+
+        vpush_const(0, type_ptr_to(TY_EXT));
+        vset_ext(ext_array(TY_CHAR, 0, len + 1));
+
+        return sizeof_postfix(SIZEOF_OBJECT);
+    }
+
+    if (accept(TK_LPAREN)) {
+        if (starts_type(tok)) {
+            cast_rest();
+
+            return SIZEOF_VALUE;
+        }
+
+        return sizeof_paren();
+    }
+
+    primary();
+
+    return SIZEOF_VALUE;
+}
+
+/* `sizeof operand` and `sizeof (type)`, as a constant of type size_t, which
+ * is unsigned int here as it is in agondev. */
+__attribute__((noinline))
+static void sizeof_value(void)
+{
+    int line = tok_line, paren, x;
+    Type type;
+
+    next();
+    paren = accept(TK_LPAREN);
+    if (paren && starts_type(tok)) {
+        type = type_name(&x);
+        expect(TK_RPAREN, "')'");
+    } else {
+        GenMark mark;
+        int what;
+
+        gen_mark(&mark);
+        what = paren ? sizeof_paren() : sizeof_unary();
+        type = vtype();
+        x = vext();
+        if (what == SIZEOF_OBJECT)
+            type = type_deref(type);
+        gen_rollback(&mark);
+    }
+
+    if (type == TY_VOID)
+        acc_error_at(line, "'void' has no size");
+    vpush_const(type_bytes(type, x), TY_UINT);
 }
 
 /* What follows a declarator's stars: a name and its dimensions, or `(*name)`

@@ -482,6 +482,11 @@ Type vtype(void)
     return (vsp - 1)->type;
 }
 
+int vext(void)
+{
+    return (vsp - 1)->ext;
+}
+
 Type vtype_at(int depth)
 {
     if ((unsigned) vtop <= (unsigned) depth)
@@ -3233,4 +3238,56 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
     else
         vpush(VAL_REG, result, R_HL);
     (vsp - 1)->ext = (unsigned char) ext;
+}
+
+/* ------------------------------------------------------------------ */
+/* taking code back                                                    */
+
+void gen_mark(GenMark *m)
+{
+    m->at = out_here();
+    m->nfixups = nfixups;
+    m->nrt_fixups = nrt_fixups;
+    m->narray_patches = narray_patches;
+    m->spill_used = spill_used;
+    m->vtop = vtop;
+    m->rt_any_used = rt_any_used;
+    m->saved = NULL;
+    if (vtop) {
+        m->saved = malloc((size_t) vtop * sizeof *m->saved);
+        if (!m->saved)
+            acc_error("out of memory for sizeof");
+        memcpy(m->saved, vstack, (size_t) vtop * sizeof *m->saved);
+    }
+}
+
+void gen_rollback(GenMark *m)
+{
+    out_rewind(m->at);
+    nfixups = m->nfixups;
+    nrt_fixups = m->nrt_fixups;
+    narray_patches = m->narray_patches;
+    spill_used = m->spill_used;
+    vtop = m->vtop;
+    vsp = vstack + vtop;
+    rt_any_used = m->rt_any_used;
+    if (m->saved) {
+        memcpy(vstack, m->saved, (size_t) vtop * sizeof *m->saved);
+        free(m->saved);
+    }
+}
+
+void vcast(Type to, int ext)
+{
+    if (to == TY_VOID) {
+        vdrop();
+        vpush(VAL_VOID, TY_VOID, 0);
+
+        return;
+    }
+    if (vsp[-1].kind == VAL_VOID)
+        void_used();
+    vconvert(to);
+    if (type_pointer(to))
+        vsp[-1].ext = (unsigned char) ext;
 }
