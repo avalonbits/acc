@@ -209,6 +209,8 @@ static void member(void)
                      name_text(name));
     next();
     vmember(member_offset(m), member_type(m), member_ext(m), member_quals(m));
+    if (member_bits(m))
+        vset_bits(member_bits(m));
 }
 
 /* The subscripts and members after an operand: `a[i]`, `s.m`, `p->m`, in any
@@ -570,6 +572,9 @@ static void address_of(void)
         return;
     }
     case NAME_OBJECT:
+        if (vbits())
+            acc_error_at(line, "a bit-field has no address to take");
+
         return;                 /* the address is what is wanted */
     case NAME_CONST:
         acc_error_at(line, "'%s' is a constant, which has no address",
@@ -1580,9 +1585,31 @@ static void record_complete(int x, int line)
  * ended, with no padding: every type on this machine is aligned to a byte,
  * which is how agondev lays them out too. A union's are all at its start,
  * and it is as big as the biggest. */
+/* A bit-field's width, from just past its `:`: an integer type, and no more
+ * bits than it has -- one for a _Bool. Zero, which ends the byte the last
+ * was in, only without a name. */
+static int bitfield_width(Type type, NameRef name, int line)
+{
+    int width = constant_int("a bit-field's width", line);
+    int most = type == TY_BOOL ? 1 : type_size(type) * 8;
+
+    if (type_pointer(type) || type_float(type) || type_is_struct(type)
+        || type_is_array(type) || type == TY_VOID)
+        acc_error_at(line, "a bit-field has to have an integer type");
+    if (width < 0 || width > most)
+        acc_error_at(line, "a bit-field of this type is 0 to %d bits wide",
+                     most);
+    if (!width && name)
+        acc_error_at(line, "a bit-field of no bits cannot have a name");
+
+    return width;
+}
+
 static void record_members(int x, int is_union, int line)
 {
-    int first = -1, last = -1, size = 0;
+    /* Where the next member goes: a byte, and a bit within it, for a
+     * bit-field to continue from. */
+    int first = -1, last = -1, size = 0, bit = 0, has_bits = 0;
 
     while (tok != TK_RBRACE) {
         Type base = base_type();
@@ -1592,13 +1619,16 @@ static void record_members(int x, int is_union, int line)
         if (accept(TK_SEMI))
             continue;               /* a nested struct declared, nothing more */
         for (;;) {
-            int mline = tok_line, count, ext, bytes, m;
-            Type type;
-            NameRef name = direct_declarator_out(declarator_stars_out(base),
-                                                 bx, &type, &ext, &count);
+            int mline = tok_line, count = 0, ext = bx, bytes, m, width = -1;
+            int at, pos;
+            Type type = base;
+            NameRef name = NAME_NONE;
 
-            if (tok == TK_COLON)
-                acc_error_at(mline, "bit-fields are not supported yet");
+            if (tok != TK_COLON)        /* `int : 3` has no name */
+                name = direct_declarator_out(declarator_stars_out(base),
+                                             bx, &type, &ext, &count);
+            if (accept(TK_COLON))
+                width = bitfield_width(type, name, mline);
             if (count < 0)
                 acc_error_at(mline, "a member that is an array needs its size");
             if (count) {
@@ -1609,25 +1639,59 @@ static void record_members(int x, int is_union, int line)
                 acc_error_at(mline, "'void' is not a type a member can have");
             if (type_is_struct(type))
                 record_complete(ext, mline);
-            for (m = first; m >= 0; m = member_next(m))
+            for (m = first; name && m >= 0; m = member_next(m))
                 if (member_name(m) == name)
                     acc_error_at(mline, "'%s' is already a member of '%s'",
                                  name_text(name), record_name(x));
 
-            bytes = type_bytes(type, ext);
-            m = member_add(name, type, ext, is_union ? 0 : size,
-                           bc ? SQ_CONST : 0);
+            if (width >= 0) {
+                /* A bit-field: where the last ended, if it fits in a unit
+                 * of its type from the byte that is in, and from the next
+                 * byte if not -- every type is aligned to a byte, so a
+                 * unit can start at any of them. Measured against agondev
+                 * on a thousand and a half structs made at random. */
+                int unit = type == TY_BOOL ? 8 : type_size(type) * 8;
+
+                has_bits = 1;
+                if (is_union) {
+                    size = (width + 7) / 8 > size ? (width + 7) / 8 : size;
+                } else if (!width || bit + width > unit) {
+                    size += bit ? 1 : 0;        /* the next byte */
+                    bit = 0;
+                }
+                at = is_union ? 0 : size;
+                pos = is_union ? 0 : bit;
+                if (!is_union) {
+                    bit += width;
+                    size += bit / 8;
+                    bit %= 8;
+                }
+                if (!name)
+                    goto placed;                /* padding, and nothing else */
+                m = member_add(name, type, ext, at, bc ? SQ_CONST : 0);
+                member_set_bits(m, bitfield_intern(pos, width,
+                                                   !type_unsigned(type)));
+            } else {
+                if (!is_union && bit) {         /* after bit-fields */
+                    size++;
+                    bit = 0;
+                }
+                bytes = type_bytes(type, ext);
+                m = member_add(name, type, ext, is_union ? 0 : size,
+                               bc ? SQ_CONST : 0);
+                if (is_union) {
+                    if (bytes > size)
+                        size = bytes;
+                } else {
+                    size += bytes;
+                }
+            }
             if (last >= 0)
                 member_link(last, m);
             else
                 first = m;
             last = m;
-            if (is_union) {
-                if (bytes > size)
-                    size = bytes;
-            } else {
-                size += bytes;
-            }
+          placed:
             if (size > 0x7fffff)
                 acc_error_at(mline, "a struct this large does not fit in "
                                     "memory");
@@ -1636,9 +1700,13 @@ static void record_members(int x, int is_union, int line)
         }
         expect(TK_SEMI, "';'");
     }
+    if (bit)
+        size++;
     if (first < 0)
         acc_error_at(line, "a struct or union needs at least one member");
     ext_record_done(x, first, size);
+    if (has_bits)
+        ext_set_bits(x);
 }
 
 /* `struct` or `union`, and a tag, a list of members or both. A tag with no
@@ -2157,6 +2225,8 @@ static void sizeof_value(void)
         what = paren ? sizeof_paren() : sizeof_unary();
         type = vtype();
         x = vext();
+        if (what == SIZEOF_OBJECT && vbits())
+            acc_error_at(line, "a bit-field has no size of its own");
         if (what == SIZEOF_OBJECT)
             type = type_deref(type);
         gen_rollback(&mark);
@@ -2295,6 +2365,9 @@ static int  local_struct_value(int x, int offset);
  * next scalar it gives to take instead of parsing one: see
  * local_struct_value. */
 static int init_pending;
+
+/* The bit-field the scalar being initialised is, 0 if it is not one. */
+static int init_bits;
 static void init_record(int x, int offset, InitPut put, int braced);
 static int  init_string(int count, int offset, InitPut put);
 
@@ -2423,8 +2496,10 @@ static void init_record(int x, int offset, InitPut put, int braced)
             if (tok == TK_RBRACE)
                 return;
         }
+        init_bits = member_bits(m);
         init_element(member_type(m), member_ext(m),
                      offset + member_offset(m), put);
+        init_bits = 0;
         m = ext_is_union(x) ? -1 : member_next(m);
         if (braced && !accept(TK_COMMA))
             break;
@@ -2471,6 +2546,8 @@ static void local_put(Type scalar, int offset, int value)
      * width. */
     vaddr_array(init_array, TY_CHAR);
     vmember(offset, scalar, 0, 0);     /* an initialiser writes const too */
+    if (init_bits)
+        vset_bits(init_bits);
     if (init_pending) {
         vswap();                        /* the address under the value */
         init_pending = 0;
@@ -2485,7 +2562,8 @@ static void local_put(Type scalar, int offset, int value)
     vstore_indirect();
     vdrop();
     gen_stmt_end();
-    init_mark(offset, type_size(scalar));
+    init_mark(offset, init_bits ? bitfield_at(init_bits)->bytes
+                                : type_size(scalar));
 }
 
 /* Zeroes the bytes of the first `total` of a local array or struct that its
@@ -2505,6 +2583,17 @@ static void zero_gaps(int array, int total)
     }
 }
 
+/* A local with bit-fields in it, zeroed before its initialiser runs: a
+ * bit-field is written by reading its bytes and putting its bits in among
+ * the others', and those have to be zero, not whatever the stack held. */
+static void bits_zeroed(int array, int x, int bytes)
+{
+    if (!ext_has_bits(x))
+        return;
+    gen_zero_array(array, 0, bytes);
+    init_mark(0, bytes);
+}
+
 /* A local struct or union, from just past its declarator: in the array area,
  * where it is reached by its address as an array is. Its initialiser is a
  * braced list, the members not given zeroed, or a struct of the same type,
@@ -2521,6 +2610,7 @@ static void local_struct(int x, NameRef name, int line)
             init_array = array;
             if (init_given_cap)
                 memset(init_given, 0, (size_t) init_given_cap);
+            bits_zeroed(array, x, ext_bytes(x));
             init_record(x, 0, local_put, 1);
             zero_gaps(array, ext_bytes(x));
         } else {
@@ -2642,6 +2732,8 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
         init_array = array;
         if (init_given_cap)
             memset(init_given, 0, (size_t) init_given_cap);
+        if (type_is_struct(elem) && count > 0)
+            bits_zeroed(array, elem_x, count * step);
         {
             int n = init_list(elem, elem_x, count, 0, local_put);
 
@@ -3953,8 +4045,35 @@ static inline __attribute__((always_inline)) void init_room(int end)
         init_grow(end);
 }
 
+/* A bit-field's value in a global's bytes: the constant, cut to the width,
+ * put in at its bits. */
+__attribute__((noinline))
+static void global_bits(Type scalar, int offset)
+{
+    const BitField *bf = bitfield_at(init_bits);
+    unsigned char bytes[ACC_LONG_SIZE] = { 0 };
+    uint32_t value = 0;
+    int i;
+
+    global_initializer(scalar == TY_BOOL ? TY_BOOL : TY_ULONG, bytes, tok_line);
+    for (i = ACC_LONG_SIZE - 1; i >= 0; i--)
+        value = value << 8 | bytes[i];
+    if (bf->width < 32)
+        value &= (1UL << bf->width) - 1;
+    init_room(offset + bf->bytes);
+    for (i = 0; i < bf->width; i++)
+        if (value >> i & 1)
+            init_bytes[offset + (bf->pos + i) / 8] |=
+                (unsigned char) (1 << (bf->pos + i) % 8);
+}
+
 static void global_put(Type scalar, int offset, int value)
 {
+    if (init_bits) {
+        global_bits(scalar, offset);
+
+        return;
+    }
     init_room(offset + type_size(scalar));
     if (value >= 0)
         init_bytes[offset] = (unsigned char) value;     /* a char of a string */

@@ -111,6 +111,8 @@ static void struct_used(void)
 
 static int  long_scratch(void);
 static void bool_from(void);
+static void bitfield_read(void);
+static void bitfield_write(void);
 static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
@@ -384,6 +386,7 @@ void vpush(int kind, Type type, int val)
     vsp->val = val;
     vsp->ext = 0;
     vsp->quals = 0;
+    vsp->bits = 0;
     vsp++;
     vtop++;
 }
@@ -541,6 +544,16 @@ void vset_ext(int ext)
 void vset_quals(int quals)
 {
     (vsp - 1)->quals = (unsigned char) quals;
+}
+
+void vset_bits(int bits)
+{
+    (vsp - 1)->bits = (unsigned char) bits;
+}
+
+int vbits(void)
+{
+    return (vsp - 1)->bits;
 }
 
 int vquals(void)
@@ -3012,6 +3025,11 @@ void vderef(void)
 
     if (vtop == 0)
         acc_error("internal: nothing to dereference");
+    if (top->bits) {
+        bitfield_read();
+
+        return;
+    }
     if (!type_pointer(top->type))
         acc_error_at(tok_line, "'*' takes a pointer, and this is %s",
                      type_float(top->type) ? "a floating-point value"
@@ -3185,6 +3203,11 @@ void vstore_indirect(void)
      * and this store is to it rather than to a pointer on the way. */
     if (((vsp - 2)->quals & VQ_CONST) && type_ptr_depth((vsp - 2)->type) == 1)
         acc_error_at(tok_line, "this is const, so it cannot be changed");
+    if ((vsp - 2)->bits) {
+        bitfield_write();
+
+        return;
+    }
     if (type_is_struct(to)) {
         vcopy_struct();
 
@@ -3253,6 +3276,154 @@ void vstore_indirect(void)
     }
 }
 
+/* A copy of the value `depth` below the top, pushed: vdup, from further
+ * down. A register is moved to the frame first, for vdup's reason. */
+static void vpick(int depth)
+{
+    Value *from = vsp - 1 - depth;
+
+    if (from->kind == VAL_ACC || from->kind == VAL_REG) {
+        int off = spill_slot();
+
+        if (from->kind == VAL_ACC)
+            force_reg(from);
+        need_disp(off);
+        ld_ix_rr(off, from->val);
+        from->kind = VAL_LOCAL;
+        from->val = off;
+    }
+    vpush(from->kind, from->type, from->val);
+    (vsp - 1)->ext = from->ext;
+}
+
+/* The unit a bit-field is read from and written to: its bytes, as the
+ * unsigned type that many bytes are. */
+static Type bitfield_unit(const BitField *bf)
+{
+    static const Type units[5] = { 0, TY_UCHAR, TY_USHORT, TY_UINT, TY_ULONG };
+
+    return units[bf->bytes];
+}
+
+/* A bit-field's value, from its address on the stack: its unit read, shifted
+ * down and masked -- and, for a signed one, the top bit it has spread up
+ * through the rest. Narrower than an int, it is an int, as C promotes it. */
+static void bitfield_read(void)
+{
+    const BitField *bf = bitfield_at((vsp - 1)->bits);
+    Type unit = bitfield_unit(bf);
+    unsigned long mask = bf->width >= 32 ? 0xffffffffUL
+                                         : (1UL << bf->width) - 1;
+
+    (vsp - 1)->bits = 0;
+    (vsp - 1)->type = type_ptr_to(unit);
+    vderef();
+    if (bf->pos) {
+        vpush_const(bf->pos, TY_INT);
+        vapply(TK_SHR, 0);
+    }
+    if (bf->pos + bf->width < bf->bytes * 8) {
+        if (unit == TY_ULONG)
+            vpush_const_long((long) mask, TY_ULONG);
+        else
+            vpush_const((int) mask, TY_UINT);
+        vapply(TK_AMP, 0);
+    }
+    if (unit == TY_ULONG && bf->width <= ACC_INT_SIZE * 8)
+        vconvert(TY_UINT);
+    if (bf->is_signed && bf->width < (unit == TY_ULONG ? 32 : ACC_INT_SIZE * 8)) {
+        /* (v ^ sign) - sign: the sign bit's weight made negative. */
+        Type t = type_wide(vtype()) ? TY_LONG : TY_INT;
+        long sign = 1L << (bf->width - 1);
+
+        if (t == TY_LONG) {
+            vpush_const_long(sign, TY_LONG);
+            vapply(TK_CARET, 0);
+            vpush_const_long(sign, TY_LONG);
+        } else {
+            vpush_const((int) sign, TY_INT);
+            vapply(TK_CARET, 0);
+            vpush_const((int) sign, TY_INT);
+        }
+        vapply(TK_MINUS, 0);
+    }
+    if (!type_wide(vtype()))
+        (vsp - 1)->type = bf->width < ACC_INT_SIZE * 8 || bf->is_signed
+                          ? TY_INT : TY_UINT;
+}
+
+/* `f = v` for a bit-field f, with its address under v: its unit read, its
+ * bits cleared and v's put there, and the unit written back. The answer is
+ * v as the bit-field holds it -- cut to its width, and read back signed if
+ * it is. */
+static void bitfield_write(void)
+{
+    const BitField *bf = bitfield_at((vsp - 2)->bits);
+    Type unit = bitfield_unit(bf);
+    int wide = unit == TY_ULONG;
+    unsigned long mask = bf->width >= 32 ? 0xffffffffUL
+                                         : (1UL << bf->width) - 1;
+    unsigned long keep = ~(mask << bf->pos)
+                         & (bf->bytes >= 4 ? 0xffffffffUL
+                                           : (1UL << bf->bytes * 8) - 1);
+
+    /* The value, cut to the width: [addr, v]. A _Bool field is 0 or 1
+     * first, as any _Bool is. */
+    if (type_deref((vsp - 2)->type) == TY_BOOL)
+        vconvert(TY_BOOL);
+    vconvert(wide ? TY_ULONG : TY_UINT);
+    if (wide)
+        vpush_const_long((long) mask, TY_ULONG);
+    else
+        vpush_const((int) mask, TY_UINT);
+    vapply(TK_AMP, 0);
+
+    /* Two copies of the address, to read the unit through and to write it
+     * back through, and the unit read with the field's bits cleared:
+     * [addr, v, addr, old]. */
+    vpick(1);
+    (vsp - 1)->bits = 0;
+    (vsp - 1)->type = type_ptr_to(unit);
+    vdup();
+    vderef();
+    if (wide)
+        vpush_const_long((long) keep, TY_ULONG);
+    else
+        vpush_const((int) keep, TY_UINT);
+    vapply(TK_AMP, 0);
+
+    /* v moved into place and put in, [addr, v, addr, new], and written
+     * back: [addr, v]. */
+    vpick(2);
+    if (bf->pos) {
+        vpush_const(bf->pos, TY_INT);
+        vapply(TK_SHL, 0);
+    }
+    vapply(TK_PIPE, 0);
+    vstore_indirect();
+    vdrop();
+
+    /* The answer, v as the field reads: signed, when it is. [v]. */
+    vswap();
+    vdrop();
+    if (bf->is_signed && bf->width < (wide ? 32 : ACC_INT_SIZE * 8)) {
+        long sign = 1L << (bf->width - 1);
+
+        if (wide) {
+            vpush_const_long(sign, TY_LONG);
+            vapply(TK_CARET, 0);
+            vpush_const_long(sign, TY_LONG);
+        } else {
+            vpush_const((int) sign, TY_INT);
+            vapply(TK_CARET, 0);
+            vpush_const((int) sign, TY_INT);
+        }
+        vapply(TK_MINUS, 0);
+    }
+    if (wide && bf->width <= ACC_INT_SIZE * 8)
+        vconvert(bf->is_signed ? TY_INT : TY_UINT);
+}
+
 /* The top twice. A value in a register goes to the frame first: two
  * descriptors naming one register would be two owners of it, and the first
  * to be used would overwrite what the second still expects to find there. A
@@ -3272,6 +3443,7 @@ void vdup(void)
     vpush(top->kind, top->type, top->val);
     (vsp - 1)->ext = top->ext;
     (vsp - 1)->quals = top->quals;
+    (vsp - 1)->bits = top->bits;
 }
 
 /* ------------------------------------------------------------------ */

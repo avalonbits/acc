@@ -180,12 +180,25 @@ int     ext_record(int is_union, NameRef tag);   /* a new, incomplete record */
 void    ext_record_done(int x, int first, int bytes);
 int     ext_is_union(int x);
 int     ext_complete(int x);
+void    ext_set_bits(int x);            /* it has bit-fields */
+int     ext_has_bits(int x);
 NameRef ext_tag(int x);                 /* NAME_NONE when it has none */
 
 /* A record's members, in the order they were declared: member_first, then
  * member_next until -1. */
 int     member_add(NameRef name, Type type, int ext, int offset, int quals);
 int     member_quals(int member);
+void    member_set_bits(int member, int bits);
+int     member_bits(int member);
+
+/* A bit-field: `width` bits from bit `pos` of the `bytes` bytes at its
+ * member's offset. */
+typedef struct {
+    unsigned char pos, width, bytes, is_signed;
+} BitField;
+
+int             bitfield_intern(int pos, int width, int is_signed);
+const BitField *bitfield_at(int i);
 void    member_link(int member, int next);
 int     member_first(int x);
 int     member_next(int member);
@@ -529,7 +542,8 @@ typedef struct {
     unsigned char ext;          /* the type's extension, when it has one */
     unsigned char quals;        /* VQ_*: of what is at the bottom of the
                                  * chain of pointers, as ext is */
-    unsigned char pad[1];       /* eight bytes: see the note on Sym */
+    unsigned char bits;         /* the address of a bit-field: which one, as
+                                 * bitfield_at has it; 0 for anything else */
 } Value;
 
 enum {
@@ -567,6 +581,8 @@ int  vconst_top(int *val, Type *type);  /* whether the top is a constant */
 void vset_type(Type type, int ext);   /* the same address, another pointer type */
 void vset_ext(int ext);               /* the top's type's extension */
 void vset_quals(int quals);           /* and its VQ_* */
+void vset_bits(int bits);             /* it is a bit-field's address */
+int  vbits(void);
 int  vquals(void);
 Type vtype_at(int depth);             /* 0 is the top, 1 the one below */
 void vpush_local(int offset, Type type);

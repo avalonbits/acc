@@ -361,7 +361,8 @@ static struct {
     int           bytes;
 } ext_types[NEXT_TYPES + 1];
 
-enum { EXT_ARRAY = 0, EXT_STRUCT = 1, EXT_UNION = 2, EXT_COMPLETE = 4 };
+enum { EXT_ARRAY = 0, EXT_STRUCT = 1, EXT_UNION = 2, EXT_COMPLETE = 4,
+       EXT_BITS = 8 };
 
 static unsigned char ext_what[NEXT_TYPES + 1];      /* the kind, and whether
                                                      * a record is complete */
@@ -434,6 +435,8 @@ typedef struct {
     Type          type;
     unsigned char ext;
     unsigned char quals;        /* SQ_CONST, when the member's type is */
+    unsigned char bits;         /* a bit-field's descriptor, 0 if it is not
+                                 * one: see bitfield_at */
 } Member;
 
 static Member *members;
@@ -456,6 +459,16 @@ int ext_record(int is_union, NameRef tag)
 int ext_is_union(int x)
 {
     return (ext_what[x] & EXT_UNION) != 0;
+}
+
+void ext_set_bits(int x)
+{
+    ext_what[x] |= EXT_BITS;
+}
+
+int ext_has_bits(int x)
+{
+    return (ext_what[x] & EXT_BITS) != 0;
 }
 
 int ext_complete(int x)
@@ -493,6 +506,7 @@ int member_add(NameRef name, Type type, int ext, int offset, int quals)
     m->type = type;
     m->ext = (unsigned char) ext;
     m->quals = (unsigned char) quals;
+    m->bits = 0;
     members_used += sizeof *m;
 
     return at;
@@ -537,6 +551,52 @@ Type member_type(int member)
 int member_ext(int member)
 {
     return member_at(member)->ext;
+}
+
+void member_set_bits(int member, int bits)
+{
+    member_at(member)->bits = (unsigned char) bits;
+}
+
+int member_bits(int member)
+{
+    return member_at(member)->bits;
+}
+
+/* ------------------------------------------------------------------ */
+/* bit-fields                                                          */
+
+/* Every distinct bit-field shape, from 1: where in its bytes it starts,
+ * how wide it is, how many bytes hold it, and whether it is signed. A value
+ * that is a bit-field's address carries its index, as it carries an
+ * extension. */
+#define NBITFIELDS 255
+
+static BitField bitfields[NBITFIELDS + 1];
+static int      nbitfields;
+
+int bitfield_intern(int pos, int width, int is_signed)
+{
+    int i, bytes = (pos + width + 7) / 8;
+
+    for (i = 1; i <= nbitfields; i++)
+        if (bitfields[i].pos == pos && bitfields[i].width == width
+            && bitfields[i].is_signed == is_signed)
+            return i;
+    if (nbitfields == NBITFIELDS)
+        acc_error_at(tok_line, "more than %d different bit-fields", NBITFIELDS);
+    nbitfields++;
+    bitfields[nbitfields].pos = (unsigned char) pos;
+    bitfields[nbitfields].width = (unsigned char) width;
+    bitfields[nbitfields].bytes = (unsigned char) bytes;
+    bitfields[nbitfields].is_signed = (unsigned char) is_signed;
+
+    return nbitfields;
+}
+
+const BitField *bitfield_at(int i)
+{
+    return &bitfields[i];
 }
 
 int member_quals(int member)
