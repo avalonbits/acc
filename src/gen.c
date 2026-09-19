@@ -3383,6 +3383,10 @@ void vpostfix_indirect(int op)
  * conversions, promoted to at least int; two pointers only if they agree about
  * what they point at, and a pointer with a literal 0, which is the null
  * pointer spelled the way C spells it. */
+/* In the middle's extension word, beside its extension and qualifiers:
+ * that it was a struct. */
+#define COND_STRUCT 0x10000
+
 static Type cond_type(Type a, int a_null, Type b, int b_null)
 {
     if (type_pointer(a) || type_pointer(b)) {
@@ -3442,8 +3446,15 @@ int gen_cond_middle(int slot, Type *middle, int *middle_ext, int *middle_null)
 {
     Value *top = vsp - 1;
 
+    /* A struct goes through the join as its address, which is its value:
+     * relabelled as a pointer so that it can be parked in HL, and marked
+     * so that the end can relabel it back. */
+    int was_struct = type_is_struct(top->type) ? COND_STRUCT : 0;
+
+    if (was_struct)
+        top->type = type_ptr_to(TY_STRUCT);
     *middle = top->type;
-    *middle_ext = top->ext | top->quals << 8;   /* both, in one */
+    *middle_ext = top->ext | top->quals << 8 | was_struct;  /* all, in one */
     *middle_null = (top->kind == VAL_CONST && top->val == 0);
     cond_park(slot);
 
@@ -3459,10 +3470,19 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
                   int middle_null)
 {
     Value *top = vsp - 1;
-    int third_null = (top->kind == VAL_CONST && top->val == 0);
+    int was_struct = middle_ext & COND_STRUCT;
+    int third_null;
+
+    if (type_is_struct(top->type) != (was_struct != 0)
+        || (was_struct && top->ext != (middle_ext & 0xff)))
+        acc_error_at(tok_line, "the two sides of ?: have to be the same struct "
+                               "or union, or neither be one");
+    if (was_struct)
+        top->type = type_ptr_to(TY_STRUCT);
+    third_null = (top->kind == VAL_CONST && top->val == 0);
     Type result = cond_type(middle, middle_null, top->type, third_null);
     int ext = third_null ? middle_ext & 0xff : top->ext; /* the side not 0 */
-    int quals = middle_ext >> 8 | top->quals;
+    int quals = (middle_ext >> 8 | top->quals) & 0xff;
     int done;
 
     vconvert(result);
@@ -3484,6 +3504,8 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
         vpush(VAL_REG, result, R_HL);
     (vsp - 1)->ext = (unsigned char) ext;
     (vsp - 1)->quals = (unsigned char) quals;
+    if (was_struct)
+        (vsp - 1)->type = TY_STRUCT;
 }
 
 /* ------------------------------------------------------------------ */
