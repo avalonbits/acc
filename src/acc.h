@@ -407,6 +407,9 @@ enum {
     SYM_GLOBAL_ARRAY,   /* a file-scope array: val is its address */
     SYM_GLOBAL_CONST,   /* a const file-scope variable: as SYM_GLOBAL, read
                          * as a value */
+    SYM_GLOBAL_LATE,    /* an array declared with no size, `extern int a[];`:
+                         * val is the address of a cell that will hold its
+                         * address, once a definition gives it one */
 
     /* These three are at file scope or in a block, as they are declared:
      * see sym_push_local. */

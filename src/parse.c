@@ -182,6 +182,7 @@ enum {
 };
 
 static const char *record_name(int x);
+static void        late_address(const Sym *s);
 static void        record_complete(int x, int line);
 
 /* `.name` or `->name`, with the struct's address on the stack and the
@@ -297,6 +298,10 @@ static int name_operand(int sym, NameRef name)
         vpush_const(s->val, type_ptr_to(s->type));
         vset_ext(s->ext);
         vset_quals(s->quals);
+        object = 0;
+        break;
+    case SYM_GLOBAL_LATE:
+        late_address(s);
         object = 0;
         break;
     case SYM_CONST:
@@ -498,6 +503,20 @@ int paren_deref_step(void)
     return 1;
 }
 
+/* An array declared with no size and not yet defined, as the address of its
+ * first element: read from its cell. */
+__attribute__((noinline))
+static void late_address(const Sym *s)
+{
+    Type elem = s->type;
+    int ext = s->ext, quals = s->quals;
+
+    vpush_const(s->val, type_ptr_to(type_ptr_to(elem)));
+    vderef();
+    vset_ext(ext);
+    vset_quals(quals);
+}
+
 /* A const variable's address, which its name alone does not give: it reads
  * as its value. */
 __attribute__((noinline))
@@ -566,6 +585,10 @@ static void address_of(void)
      * the array, which steps over all of it at once. */
     {
         const Sym *array = sym_at(sym);
+
+        if (sym_count(sym) < 0)
+            acc_error_at(line, "'%s' has no size yet, so there is no whole "
+                               "array to take the address of", name_text(name));
 
         vset_type(type_ptr_to(TY_EXT),
                   ext_array(array->type, array->ext, sym_count(sym)));
@@ -2077,6 +2100,9 @@ static int sizeof_unary(void)
         case NAME_VALUE: {
             const Sym *array = sym_at(sym);
 
+            if (sym_count(sym) < 0)
+                acc_error_at(tok_line, "'%s' has no size yet",
+                             name_text(name));
             vset_type(type_ptr_to(TY_EXT),
                       ext_array(array->type, array->ext, sym_count(sym)));
             break;
@@ -4065,6 +4091,15 @@ static int global_again(int sym, Type type, int ext, int count, int line)
 
     if (g->kind == SYM_FUNC)
         acc_error_at(line, "'%s' is already a function", name_text(name));
+    if (g->kind == SYM_GLOBAL_LATE) {
+        if (!count || g->type != type || g->ext != ext)
+            acc_error_at(line, "'%s' is declared again with another type",
+                         name_text(name));
+
+        return count > 0 || tok == TK_ASSIGN ? 2 : 0;
+    }
+    if (count < 0 && g->kind == SYM_GLOBAL_ARRAY)
+        count = sym_count(sym);         /* `int a[] = ...` after `int a[4]` */
     if (g->kind != (count ? SYM_GLOBAL_ARRAY
                           : decl_const && !type_is_struct(type) ? SYM_GLOBAL_CONST
                           : SYM_GLOBAL)
@@ -4078,6 +4113,60 @@ static int global_again(int sym, Type type, int ext, int count, int line)
         acc_error_at(line, "'%s' is defined twice", name_text(name));
 
     return 1;
+}
+
+/* `extern int a[];`: an array with no size yet, so nowhere to put it. A
+ * cell of three bytes is put here instead, to hold its address once a
+ * definition gives it one, and a use until then reads the address from the
+ * cell as the program runs. The definition writes it there, and from then
+ * on the array is an ordinary one, used directly. */
+static void global_emit(Type type, int ext, NameRef name, int count, int line);
+
+static int  late_arrays[32];
+static int  nlate_arrays;
+
+static void global_late(Type type, int ext, NameRef name)
+{
+    int sym, i;
+
+    if (nlate_arrays == 32)
+        acc_error_at(tok_line, "more than 32 arrays declared with no size");
+    sym = sym_push(name, SYM_GLOBAL_LATE, out_here());
+    for (i = 0; i < ACC_INT_SIZE; i++)
+        out_byte(0);
+    sym_at(sym)->type = type;
+    sym_at(sym)->ext = (unsigned char) ext;
+    sym_at(sym)->quals = decl_bottom_const;
+    sym_set_count(sym, -1);
+    late_arrays[nlate_arrays++] = sym;
+}
+
+/* Its definition: the array's bytes, where they are declared, and their
+ * address into the cell. */
+static void global_late_define(int sym, Type type, int ext, NameRef name,
+                               int count, int line)
+{
+    int cell = sym_at(sym)->val, at = out_here();
+
+    redefining = sym;
+    global_emit(type, ext, name, count, line);
+    redefining = SYM_NONE;
+    out_patch24(cell, at);
+    sym_at(sym)->kind = SYM_GLOBAL_ARRAY;
+    sym_at(sym)->val = at;
+    sym_set_flags(sym, SYMF_DEFINED);
+}
+
+/* At the end: an array declared with no size and never defined has nothing
+ * behind its name, which a program of one file cannot mean. */
+static void late_arrays_end(void)
+{
+    int i;
+
+    for (i = 0; i < nlate_arrays; i++)
+        if (sym_at(late_arrays[i])->kind == SYM_GLOBAL_LATE)
+            acc_error("'%s' is declared with no size and never defined",
+                      name_text(sym_at(late_arrays[i])->name));
 }
 
 /* A file-scope variable's bytes, from its initialiser if it has one, and
@@ -4132,10 +4221,17 @@ static void global_variable(Type type, int ext, NameRef name, int count,
     int sym, init = (tok == TK_ASSIGN);
 
     if (!static_local && (sym = name_global(name)) != SYM_NONE) {
-        int saved;
+        int saved, again = global_again(sym, type, ext, count, line);
 
-        if (!global_again(sym, type, ext, count, line))
+        if (!again)
             return;
+        if (again == 2) {
+            global_late_define(sym, type, ext, name, count, line);
+
+            return;
+        }
+        if (count < 0)
+            count = sym_count(sym);
         saved = out_here();
         out_rewind(sym_at(sym)->val);
         redefining = sym;
@@ -4147,6 +4243,11 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         return;
     }
 
+    if (count < 0 && !init && !static_local) {
+        global_late(type, ext, name);
+
+        return;
+    }
     global_emit(type, ext, name, count, line);
     if (init && !static_local)
         sym_set_flags(name_global(name), SYMF_DEFINED);
@@ -4304,6 +4405,7 @@ int main(int argc, char **argv)
     gen_startup(by_exit);
     lex_open(in);
     translation_unit();
+    late_arrays_end();
     gen_finish();
     lex_close();
     out_close();
