@@ -383,6 +383,7 @@ void vpush(int kind, Type type, int val)
     vsp->type = type;
     vsp->val = val;
     vsp->ext = 0;
+    vsp->quals = 0;
     vsp++;
     vtop++;
 }
@@ -528,6 +529,16 @@ void vset_type(Type type, int ext)
 void vset_ext(int ext)
 {
     (vsp - 1)->ext = (unsigned char) ext;
+}
+
+void vset_quals(int quals)
+{
+    (vsp - 1)->quals = (unsigned char) quals;
+}
+
+int vquals(void)
+{
+    return (vsp - 1)->quals;
 }
 
 /* Whether the top of the stack is a constant, and if so its value and type.
@@ -2731,6 +2742,8 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
     vpush_reg(R_HL);
     (vsp - 1)->type = type_promote(callee->type);
     (vsp - 1)->ext = callee->ext;
+    if (callee->quals & SQ_CONST)
+        (vsp - 1)->quals = VQ_CONST;
 }
 
 /* What an operator means when a pointer is one of its operands.
@@ -2757,6 +2770,7 @@ static void vbinop_pointer(int op, Type left, Type right)
     int both = type_pointer(left) && type_pointer(right);
     Type ptr = type_pointer(left) ? left : right;
     int ext = type_pointer(left) ? (vsp - 2)->ext : (vsp - 1)->ext;
+    int quals = type_pointer(left) ? (vsp - 2)->quals : (vsp - 1)->quals;
     int step;
 
     if (type_deref(ptr) == TY_VOID)
@@ -2800,6 +2814,7 @@ static void vbinop_pointer(int op, Type left, Type right)
     vbinop(op);
     (vsp - 1)->type = ptr;
     (vsp - 1)->ext = (unsigned char) ext;
+    (vsp - 1)->quals = (unsigned char) quals;
 }
 
 /* The type two operands meet at when either is four bytes wide: C's usual
@@ -2977,7 +2992,7 @@ void vderef(void)
 {
     Value *top = vsp - 1;
     Type to;
-    int deref_ext = 0;
+    int deref_ext = 0, deref_quals = 0;
 
     if (vtop == 0)
         acc_error("internal: nothing to dereference");
@@ -3021,8 +3036,10 @@ void vderef(void)
 
     /* A pointer read through a pointer keeps its extension: the chain is
      * one level shorter, and its bottom is the same. */
-    if (type_pointer(to))
+    if (type_pointer(to)) {
         deref_ext = top->ext;
+        deref_quals = top->quals;
+    }
 
     force_into(top, R_HL);
 
@@ -3071,15 +3088,18 @@ void vderef(void)
     vdrop();
     vpush_reg(R_HL);
     (vsp - 1)->type = type_promote(to);
-    if (type_pointer(to))
+    if (type_pointer(to)) {
         (vsp - 1)->ext = (unsigned char) deref_ext;
+        (vsp - 1)->quals = (unsigned char) deref_quals;
+    }
 }
 
 /* A member's address from its struct's: the offset added, as bytes, and the
  * member's type put on it. A member that is itself an array or a struct is
  * an object like any other, reached the same way. */
-void vmember(int offset, Type type, int ext)
+void vmember(int offset, Type type, int ext, int quals)
 {
+    quals |= (vsp - 1)->quals;          /* a const struct's members are */
     if (type_ptr_depth(type) == TY_PTR_MAX)
         acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                      TY_PTR_MAX);
@@ -3090,6 +3110,7 @@ void vmember(int offset, Type type, int ext)
     }
     (vsp - 1)->type = type_ptr_to(type);
     (vsp - 1)->ext = (unsigned char) ext;
+    (vsp - 1)->quals = (unsigned char) quals;
 }
 
 /* `a = b` for structs: the bytes copied with ldir, from b's address in HL to
@@ -3142,6 +3163,12 @@ void vstore_indirect(void)
                                "it cannot be written through");
     if (type_is_array(to))
         acc_error_at(tok_line, "an array cannot be assigned to as a whole");
+
+    /* The object at the bottom of the chain is const -- what a pointer to
+     * const points at, a const array's element, a const struct's member --
+     * and this store is to it rather than to a pointer on the way. */
+    if (((vsp - 2)->quals & VQ_CONST) && type_ptr_depth((vsp - 2)->type) == 1)
+        acc_error_at(tok_line, "this is const, so it cannot be changed");
     if (type_is_struct(to)) {
         vcopy_struct();
 
@@ -3206,6 +3233,7 @@ void vstore_indirect(void)
         vdrop();
         vpush(kept.kind, kept.type, kept.val);
         (vsp - 1)->ext = kept.ext;
+        (vsp - 1)->quals = kept.quals;
     }
 }
 
@@ -3227,6 +3255,7 @@ void vdup(void)
     top = vsp - 1;
     vpush(top->kind, top->type, top->val);
     (vsp - 1)->ext = top->ext;
+    (vsp - 1)->quals = top->quals;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3397,7 +3426,7 @@ int gen_cond_middle(int slot, Type *middle, int *middle_ext, int *middle_null)
     Value *top = vsp - 1;
 
     *middle = top->type;
-    *middle_ext = top->ext;
+    *middle_ext = top->ext | top->quals << 8;   /* both, in one */
     *middle_null = (top->kind == VAL_CONST && top->val == 0);
     cond_park(slot);
 
@@ -3415,7 +3444,8 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
     Value *top = vsp - 1;
     int third_null = (top->kind == VAL_CONST && top->val == 0);
     Type result = cond_type(middle, middle_null, top->type, third_null);
-    int ext = third_null ? middle_ext : top->ext;   /* the side that is not 0 */
+    int ext = third_null ? middle_ext & 0xff : top->ext; /* the side not 0 */
+    int quals = middle_ext >> 8 | top->quals;
     int done;
 
     vconvert(result);
@@ -3436,6 +3466,7 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
     else
         vpush(VAL_REG, result, R_HL);
     (vsp - 1)->ext = (unsigned char) ext;
+    (vsp - 1)->quals = (unsigned char) quals;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3475,7 +3506,7 @@ void gen_rollback(GenMark *m)
     }
 }
 
-void vcast(Type to, int ext)
+void vcast(Type to, int ext, int quals)
 {
     if (to == TY_VOID) {
         vdrop();
@@ -3486,6 +3517,8 @@ void vcast(Type to, int ext)
     if (vsp[-1].kind == VAL_VOID)
         void_used();
     vconvert(to);
-    if (type_pointer(to))
+    if (type_pointer(to)) {
         vsp[-1].ext = (unsigned char) ext;
+        vsp[-1].quals = (unsigned char) quals;
+    }
 }

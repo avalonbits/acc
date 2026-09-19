@@ -179,7 +179,8 @@ NameRef ext_tag(int x);                 /* NAME_NONE when it has none */
 
 /* A record's members, in the order they were declared: member_first, then
  * member_next until -1. */
-int     member_add(NameRef name, Type type, int ext, int offset);
+int     member_add(NameRef name, Type type, int ext, int offset, int quals);
+int     member_quals(int member);
 void    member_link(int member, int next);
 int     member_first(int x);
 int     member_next(int member);
@@ -427,10 +428,11 @@ typedef struct {
 
 /* What a symbol's declaration said beyond its type. */
 enum {
-    SQ_REGISTER = 1,            /* `register`: its address cannot be taken */
-    SQ_CONST    = 2             /* what is at the bottom of its type is const:
+    SQ_CONST    = 1,            /* what is at the bottom of its type is const:
                                  * a pointer's target, an array's elements,
-                                 * a struct's members */
+                                 * a struct's members. The same bit as
+                                 * VQ_CONST, so a value takes it as it is */
+    SQ_REGISTER = 2             /* `register`: its address cannot be taken */
 };
 
 /* A function's parameter types, kept beside the symbols. A call converts each
@@ -511,8 +513,15 @@ typedef struct {
     Type          type;
     int           val;
     unsigned char ext;          /* the type's extension, when it has one */
-    unsigned char pad[2];       /* eight bytes: see the note on Sym */
+    unsigned char quals;        /* VQ_*: of what is at the bottom of the
+                                 * chain of pointers, as ext is */
+    unsigned char pad[1];       /* eight bytes: see the note on Sym */
 } Value;
+
+enum {
+    VQ_CONST = 1                /* what the value leads to is const: a store
+                                 * through it is refused */
+};
 
 /* ------------------------------------------------------------------ */
 /* code generation                                                     */
@@ -543,6 +552,8 @@ int  vext(void);                      /* and its extension */
 int  vconst_top(int *val, Type *type);  /* whether the top is a constant */
 void vset_type(Type type, int ext);   /* the same address, another pointer type */
 void vset_ext(int ext);               /* the top's type's extension */
+void vset_quals(int quals);           /* and its VQ_* */
+int  vquals(void);
 Type vtype_at(int depth);             /* 0 is the top, 1 the one below */
 void vpush_local(int offset, Type type);
 void vpush_reg(int reg);
@@ -561,7 +572,7 @@ void vstore_local(int offset, Type type); /* pop the top into a local */
 void vapply(int op, Type narrow);
 void vaddr_local(int offset, Type type);  /* &local */
 void vderef(void);                    /* *p, replacing the pointer */
-void vmember(int offset, Type type, int ext);  /* p->m, from p, as an address */
+void vmember(int offset, Type type, int ext, int quals);  /* p->m, from p */
 void vstore_indirect(void);           /* *p = v, with p under v */
 void vneg(void);
 void vnot(void);
@@ -573,7 +584,7 @@ void gen_call(int fn, int nargs, int params_first, int nparams);
 
 /* A cast: the top converted to `to`, as an assignment to an object of that
  * type would convert it, or thrown away for `(void)`. */
-void vcast(Type to, int ext);
+void vcast(Type to, int ext, int quals);
 
 /* A point the output can be taken back to, and everything the generator
  * knows about what it emitted since: sizeof has to parse its operand to

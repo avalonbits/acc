@@ -433,6 +433,7 @@ typedef struct {
     int           next;         /* the record's next member, or -1 */
     Type          type;
     unsigned char ext;
+    unsigned char quals;        /* SQ_CONST, when the member's type is */
 } Member;
 
 static Member *members;
@@ -474,7 +475,7 @@ void ext_record_done(int x, int first, int bytes)
     ext_what[x] |= EXT_COMPLETE;
 }
 
-int member_add(NameRef name, Type type, int ext, int offset)
+int member_add(NameRef name, Type type, int ext, int offset, int quals)
 {
     Member *m;
     int at = members_used;
@@ -491,6 +492,7 @@ int member_add(NameRef name, Type type, int ext, int offset)
     m->next = -1;
     m->type = type;
     m->ext = (unsigned char) ext;
+    m->quals = (unsigned char) quals;
     members_used += sizeof *m;
 
     return at;
@@ -535,6 +537,11 @@ Type member_type(int member)
 int member_ext(int member)
 {
     return member_at(member)->ext;
+}
+
+int member_quals(int member)
+{
+    return member_at(member)->quals;
 }
 
 int member_offset(int member)

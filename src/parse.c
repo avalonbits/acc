@@ -132,6 +132,8 @@ static void global_address(const Sym *global)
     vpush_const(global->val, type_ptr_to(global->type));
     if (global->ext)
         vset_ext(global->ext);
+    if (global->quals)
+        vset_quals(global->quals);
 }
 
 /* The object whose address is on the stack, as an operand: its value, or --
@@ -205,7 +207,7 @@ static void member(void)
         acc_error_at(tok_line, "'%s' has no member '%s'", record_name(x),
                      name_text(name));
     next();
-    vmember(member_offset(m), member_type(m), member_ext(m));
+    vmember(member_offset(m), member_type(m), member_ext(m), member_quals(m));
 }
 
 /* The subscripts and members after an operand: `a[i]`, `s.m`, `p->m`, in any
@@ -269,6 +271,7 @@ static int name_operand(int sym, NameRef name)
             return NAME_LOCAL;
         vpush_local(s->val, s->type);
         vset_ext(s->ext);
+        vset_quals(s->quals);
         object = 0;
         break;
     case SYM_GLOBAL:
@@ -278,11 +281,13 @@ static int name_operand(int sym, NameRef name)
     case SYM_LOCAL_ARRAY:
         vaddr_array(s->val, s->type);
         vset_ext(s->ext);
+        vset_quals(s->quals);
         object = 0;
         break;
     case SYM_LOCAL_STRUCT:
         vaddr_array(s->val, TY_STRUCT);
         vset_ext(s->ext);
+        vset_quals(s->quals);
         object = 1;
         break;
     case SYM_GLOBAL_ARRAY:
@@ -291,6 +296,7 @@ static int name_operand(int sym, NameRef name)
                          TY_PTR_MAX);
         vpush_const(s->val, type_ptr_to(s->type));
         vset_ext(s->ext);
+        vset_quals(s->quals);
         object = 0;
         break;
     case SYM_CONST:
@@ -300,6 +306,7 @@ static int name_operand(int sym, NameRef name)
     case SYM_LOCAL_CONST:
         vpush_local(s->val, s->type);
         vset_ext(s->ext);
+        vset_quals(s->quals);
         if (!tok_postfix())
             return NAME_READONLY;
         object = 0;
@@ -377,6 +384,7 @@ void symbol_value(int sym, NameRef name)
         }
         vpostfix_local(local->val, local->type, local->ext,
                        tok == TK_INC ? TK_PLUS : TK_MINUS);
+        vset_quals(local->quals);
         next();
 
         return;
@@ -384,6 +392,8 @@ void symbol_value(int sym, NameRef name)
     vpush_local(local->val, local->type);
     if (local->ext)
         vset_ext(local->ext);
+    if (local->quals)
+        vset_quals(local->quals);
 }
 
 static void local_value(NameRef name)
@@ -495,13 +505,16 @@ static void readonly_address(int sym)
 {
     const Sym *v = sym_at(sym);
 
+    /* The variable is const, so what its address points at is. */
     if (v->kind == SYM_GLOBAL_CONST) {
         global_address(v);
+        vset_quals(VQ_CONST);
 
         return;
     }
     vaddr_local(v->val, v->type);
     vset_ext(v->ext);
+    vset_quals(VQ_CONST);
 }
 
 /* `&name`, `&name[i]`: the address of a variable or an element. Out of line:
@@ -533,6 +546,7 @@ static void address_of(void)
                                "address to take", name_text(name));
         vaddr_local(local->val, local->type);
         vset_ext(local->ext);
+        vset_quals(local->quals);
 
         return;
     }
@@ -1542,6 +1556,7 @@ static void record_members(int x, int is_union, int line)
     while (tok != TK_RBRACE) {
         Type base = base_type();
         int bx = base_ext;
+        unsigned char bc = base_const;
 
         if (accept(TK_SEMI))
             continue;               /* a nested struct declared, nothing more */
@@ -1569,7 +1584,8 @@ static void record_members(int x, int is_union, int line)
                                  name_text(name), record_name(x));
 
             bytes = type_bytes(type, ext);
-            m = member_add(name, type, ext, is_union ? 0 : size);
+            m = member_add(name, type, ext, is_union ? 0 : size,
+                           bc ? SQ_CONST : 0);
             if (last >= 0)
                 member_link(last, m);
             else
@@ -1695,6 +1711,7 @@ static Type base_type_other(void)
             break;
         next();
         base_ext = sym_at(sym)->ext;
+        base_const = sym_at(sym)->quals & SQ_CONST;
         qualifiers();
 
         return sym_at(sym)->type;
@@ -1948,6 +1965,7 @@ static void cast_rest(void)
 {
     int x, line = tok_line;
     Type to = type_name(&x), outer = narrow_dest;
+    int quals = base_const ? VQ_CONST : 0;
 
     expect(TK_RPAREN, "')'");
     if (type_is_array(to))
@@ -1955,7 +1973,7 @@ static void cast_rest(void)
     narrow_dest = 0;
     primary();
     narrow_dest = outer;
-    vcast(to, x);
+    vcast(to, x, quals);
 }
 
 /* sizeof's operand, which is parsed as any expression is -- code and all --
@@ -2385,7 +2403,7 @@ static void local_put(Type scalar, int offset, int value)
     /* By the byte: a struct's members are not at multiples of their own
      * width. */
     vaddr_array(init_array, TY_CHAR);
-    vmember(offset, scalar, 0);
+    vmember(offset, scalar, 0, 0);     /* an initialiser writes const too */
     narrow_dest = (type_size(scalar) < ACC_INT_SIZE) ? scalar : 0;
     if (value >= 0)
         vpush_const(value, TY_INT);
@@ -2564,6 +2582,7 @@ static int  global_again(int sym, Type type, int ext, int count, int line);
 static int static_local;
 static int redefining = SYM_NONE;
 static unsigned char decl_const;    /* the variable being declared is const */
+static unsigned char decl_bottom_const; /* and SQ_CONST, when its type is */
 
 /* `typedef`, and names for types rather than objects: each declarator names
  * the type it would have given a variable. An array type keeps its shape in
@@ -2573,10 +2592,12 @@ static void typedef_declaration(void)
 {
     Type base;
     int bx;
+    unsigned char bc;
 
     next();
     base = base_type();
     bx = base_ext;
+    bc = base_const;
     for (;;) {
         int line = tok_line, count, ext, sym;
         Type type;
@@ -2593,6 +2614,7 @@ static void typedef_declaration(void)
         sym = push_here(name, SYM_TYPEDEF, 0);
         sym_at(sym)->type = type;
         sym_at(sym)->ext = (unsigned char) ext;
+        sym_at(sym)->quals = bc ? SQ_CONST : 0;
         decl_start[TK_IDENT] = 1;
         if (!accept(TK_COMMA))
             break;
@@ -2624,6 +2646,7 @@ static void block_extern(Type type, int ext, NameRef name, int count,
     global = sym_at(g);
     sym_at(sym)->type = global->type;
     sym_at(sym)->ext = global->ext;
+    sym_at(sym)->quals = global->quals;
     if (count)
         sym_set_count(sym, sym_count(g));
 }
@@ -2675,6 +2698,7 @@ static void storage_declaration(void)
         NameRef name = direct_declarator(stars, bx, &type, &ext, &count);
 
         decl_const = stars != base ? stars_const : bc;
+        decl_bottom_const = bc ? SQ_CONST : 0;
         if (tok == TK_LPAREN) {
             function_declarator(type, ext, name, line);
         } else if (storage == TK_KW_EXTERN) {
@@ -2725,6 +2749,7 @@ void declaration(void)
         NameRef name = direct_declarator(stars, bx, &type, &ext, &count);
 
         if (tok == TK_LPAREN) {         /* a function declared in a block */
+            decl_bottom_const = bc ? SQ_CONST : 0;
             function_declarator(type, ext, name, line);
             if (!accept(TK_COMMA))
                 break;
@@ -2732,12 +2757,16 @@ void declaration(void)
         }
         if (count) {
             local_array(type, ext, name, count, line);
+            if (bc)
+                sym_at(sym_find(name))->quals |= SQ_CONST;
             if (!accept(TK_COMMA))
                 break;
             continue;
         }
         if (type_is_struct(type)) {
             local_struct(ext, name, line);
+            if (bc)
+                sym_at(sym_find(name))->quals |= SQ_CONST;
             if (!accept(TK_COMMA))
                 break;
             continue;
@@ -2758,7 +2787,7 @@ void declaration(void)
         sym = sym_push(name, SYM_LOCAL, off);
         sym_at(sym)->type = type;
         sym_at(sym)->ext = (unsigned char) ext;
-        sym_at(sym)->quals = decl_quals;
+        sym_at(sym)->quals = decl_quals | (bc ? SQ_CONST : 0);
         if (stars != base ? stars_const : bc)
             sym_at(sym)->kind = SYM_LOCAL_CONST;
 
@@ -3575,6 +3604,8 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
             pbase = base_type();
             pbx = base_ext;
             pconst = base_const;
+            if (pconst)
+                pquals |= SQ_CONST;
             pstars = declarator_stars(pbase);
             pname = direct_declarator(pstars, pbx, &ptype, &pext, &pcount);
             if (pstars != pbase)
@@ -3643,6 +3674,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                        name, line);
     sym_at(fn)->type = ret_type;
     sym_at(fn)->ext = (unsigned char) ret_ext;
+    sym_at(fn)->quals = decl_bottom_const;
 
     /* A prototype: what it said is kept -- unless an earlier one already
      * gave the parameters and this one does not -- and the parameters are
@@ -3692,11 +3724,15 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
  * redefining says which symbol it is. */
 static int push_global(NameRef name, int kind, int at)
 {
+    int sym;
+
     if (redefining != SYM_NONE)
         return redefining;
+    sym = static_local ? sym_push_local(name, kind, at)
+                       : sym_push(name, kind, at);
+    sym_at(sym)->quals = decl_bottom_const;
 
-    return static_local ? sym_push_local(name, kind, at)
-                        : sym_push(name, kind, at);
+    return sym;
 }
 
 /* A global's initial value, as the bytes it starts with.
@@ -4091,6 +4127,7 @@ static void external_declaration(void)
         stars = declarator_stars(base);
         name = direct_declarator(stars, bx, &type, &ext, &count);
         decl_const = stars != base ? stars_const : bc;
+        decl_bottom_const = bc ? SQ_CONST : 0;
         if (tok == TK_LPAREN) {
             if (count)
                 acc_error_at(line, "a function cannot return an array");
