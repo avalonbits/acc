@@ -1834,14 +1834,17 @@ static void statement(void)
 
         return;
 
-    case TK_KW_RETURN:
+    case TK_KW_RETURN: {
+        int line = tok_line;
+
         next();
         if (tok != TK_SEMI)
             expr();
         expect(TK_SEMI, "';'");
-        gen_return();
+        gen_return(line);
 
         return;
+    }
 
     case TK_SEMI:
         next();
@@ -2120,7 +2123,6 @@ static void external_declaration(void)
     next();
 
     if (tok == TK_LPAREN) {
-        not_void(type, "a function", line);
         function_rest(type, name);
 
         return;

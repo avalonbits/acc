@@ -86,6 +86,17 @@ static void disp_too_far(int d)
 
 static int  spill_slot(void);
 static int  force_reg(Value *val);
+
+/* The result of a void function, used as though it were a value. Found where
+ * a value is loaded or converted -- the paths any use of it ends up on --
+ * and on the branches of them that read from the frame, which the common
+ * cases have already left, so that it costs them nothing. */
+__attribute__((noinline, noreturn))
+static void void_used(void)
+{
+    acc_error_at(tok_line, "a void function returns nothing, so its result "
+                           "cannot be used");
+}
 static int  long_scratch(void);
 static void check_no_float_mix(Type to, const Value *from);
 static void materialise_long(int disp, Type type);
@@ -381,6 +392,8 @@ void vconvert(Type to)
 
     if (vtop <= 0)
         acc_error("internal: nothing to convert");
+    if (top->kind == VAL_VOID)
+        void_used();
 
     /* Converting to the type it already has is nothing at all, and that is
      * the common case now that every argument of every call comes through
@@ -655,6 +668,8 @@ static int force_reg(Value *val)
     if (val->kind == VAL_CONST) {
         ld_rr_imm(reg, val->val);
     } else {
+        if (val->kind == VAL_VOID)
+            void_used();
         need_disp(val->val);
         if (type_size(val->type) < ACC_INT_SIZE)
             load_narrow_into(reg, val->val, val->type);
@@ -750,6 +765,8 @@ static void force_into(Value *target, int want)
     } else if (target->kind == VAL_CONST) {
         ld_rr_imm(want, target->val);
     } else {
+        if (target->kind == VAL_VOID)
+            void_used();
         need_disp(target->val);
         if (type_size(target->type) < ACC_INT_SIZE)
             load_narrow_into(want, target->val, target->type);
@@ -2122,6 +2139,13 @@ void gen_finish(void)
          * from HL. A one-byte return comes back in A instead, which that call
          * cannot know. There are no prototypes yet, so the only honest thing
          * is to say so. */
+        /* And a void one conflicts with that int outright, as agondev
+         * says: it is the same function declared two ways. */
+        if (fn->type == TY_VOID)
+            acc_error_at(fixups[i].line,
+                         "'%s' returns void and is called before it is "
+                         "defined, which declares it as returning int; move "
+                         "its definition above the call", name_text(fn->name));
         if (RETURNS_IN_A(fn->type))
             acc_error_at(fixups[i].line,
                          "'%s' returns a one-byte type and is called before it "
@@ -2346,8 +2370,17 @@ void gen_func_end(void)
     }
 }
 
-void gen_return(void)
+void gen_return(int line)
 {
+    /* C99 has a return with a value only in a function that returns one, and
+     * one without only in a function that does not. */
+    if (return_type == TY_VOID && vtop > 0)
+        acc_error_at(line, "this function returns void, so 'return' cannot "
+                           "give it a value");
+    if (return_type != TY_VOID && vtop == 0)
+        acc_error_at(line, "this function returns a value, so 'return' needs "
+                           "one");
+
     /* The result goes in HL, which is where agondev returns an int as well --
      * worth matching even with nothing to link against, because it is what
      * lets the two be mixed later. */
@@ -2463,6 +2496,14 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
         out_byte(0x7b);                          /* ld a, e */
         ld_ix_a(slot + ACC_INT_SIZE);
         vpush(VAL_LOCAL, callee->type, slot);
+
+        return;
+    }
+
+    /* A void function gives back nothing, and a value of kind VAL_VOID says
+     * so: dropping it, as a statement does, is all it is good for. */
+    if (callee->type == TY_VOID) {
+        vpush(VAL_VOID, TY_VOID, 0);
 
         return;
     }

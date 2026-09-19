@@ -357,7 +357,8 @@ enum {
     VAL_CONST,      /* a literal; val holds it */
     VAL_LOCAL,      /* a local at frame offset val */
     VAL_REG,        /* already in register val */
-    VAL_ACC         /* in A, still narrow: see the note on byte arithmetic */
+    VAL_ACC,        /* in A, still narrow: see the note on byte arithmetic */
+    VAL_VOID        /* what a void function returned, which is nothing */
 };
 
 /* What the parser knows about a value it has not had to emit yet: a constant,
@@ -446,7 +447,7 @@ int  gen_cond_begin(int *slot);       /* ?: after the condition */
 int  gen_cond_middle(int slot, Type *middle, int *middle_null);
 void gen_cond_end(int to_stub, int slot, Type middle, int middle_null);
 void gen_label(int hole);             /* fill a hole in with here */
-void gen_return(void);
+void gen_return(int line);            /* `return`, at the line it is on */
 void gen_finish(void);          /* resolve calls to functions defined later */
 void gen_startup(int report_by_exit);  /* the entry stub MOS lands on */
 
