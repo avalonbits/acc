@@ -889,6 +889,83 @@ static void lex_quoted(int c)
     tok_str_len = n;
 }
 
+/* The second character of a two- or three-character operator, the first
+ * having been read as `c` and its one-character token set. Out of line, so
+ * that next() -- which runs for every token -- needs no frame: its locals
+ * were only for this, and the frame was a call on every token. */
+__attribute__((noinline))
+static void lex_two(int c)
+{
+    int assign = (*cursor == '=');
+
+    switch (c) {
+    case '+':
+        cursor++;
+        tok = assign ? TK_ADD_ASSIGN : TK_INC;
+        break;
+    case '-':
+        cursor++;
+        tok = assign ? TK_SUB_ASSIGN : TK_DEC;
+        break;
+    case '*':
+        if (assign) { cursor++; tok = TK_MUL_ASSIGN; }
+        break;
+    case '/':
+        if (assign) { cursor++; tok = TK_DIV_ASSIGN; }
+        break;
+    case '%':
+        if (assign) { cursor++; tok = TK_MOD_ASSIGN; }
+        break;
+    case '^':
+        if (assign) { cursor++; tok = TK_XOR_ASSIGN; }
+        break;
+    case '&':
+        cursor++;
+        if (assign) {
+            tok = TK_AND_ASSIGN;
+            break;
+        }
+        tok = TK_ANDAND;
+        if (*cursor == '=')
+            punct_error('&');
+        break;
+    case '|':
+        cursor++;
+        if (assign) {
+            tok = TK_OR_ASSIGN;
+            break;
+        }
+        tok = TK_OROR;
+        if (*cursor == '=')
+            punct_error('|');
+        break;
+    case '<':
+        cursor++;
+        if (assign) {
+            tok = TK_LE;
+            break;
+        }
+        tok = TK_SHL;
+        if (*cursor == '=') { cursor++; tok = TK_SHL_ASSIGN; }
+        break;
+    case '>':
+        cursor++;
+        if (assign) {
+            tok = TK_GE;
+            break;
+        }
+        tok = TK_SHR;
+        if (*cursor == '=') { cursor++; tok = TK_SHR_ASSIGN; }
+        break;
+    case '=':
+        if (assign) { cursor++; tok = TK_EQ; }
+        break;
+    case '!':
+        if (assign) { cursor++; tok = TK_NE; }
+        break;
+    }
+}
+
 void next(void)
 {
     int c;
@@ -950,74 +1027,7 @@ void next(void)
      * misread: `a && b` becomes a bitwise and of a with the address of b, and
      * `a ++ b` becomes `a + +b`, and neither says a word about it. */
     if (*cursor == '=' || *cursor == c) {
-        int assign = (*cursor == '=');
-
-        switch (c) {
-        case '+':
-            cursor++;
-            tok = assign ? TK_ADD_ASSIGN : TK_INC;
-            break;
-        case '-':
-            cursor++;
-            tok = assign ? TK_SUB_ASSIGN : TK_DEC;
-            break;
-        case '*':
-            if (assign) { cursor++; tok = TK_MUL_ASSIGN; }
-            break;
-        case '/':
-            if (assign) { cursor++; tok = TK_DIV_ASSIGN; }
-            break;
-        case '%':
-            if (assign) { cursor++; tok = TK_MOD_ASSIGN; }
-            break;
-        case '^':
-            if (assign) { cursor++; tok = TK_XOR_ASSIGN; }
-            break;
-        case '&':
-            cursor++;
-            if (assign) {
-                tok = TK_AND_ASSIGN;
-                break;
-            }
-            tok = TK_ANDAND;
-            if (*cursor == '=')
-                punct_error('&');
-            break;
-        case '|':
-            cursor++;
-            if (assign) {
-                tok = TK_OR_ASSIGN;
-                break;
-            }
-            tok = TK_OROR;
-            if (*cursor == '=')
-                punct_error('|');
-            break;
-        case '<':
-            cursor++;
-            if (assign) {
-                tok = TK_LE;
-                break;
-            }
-            tok = TK_SHL;
-            if (*cursor == '=') { cursor++; tok = TK_SHL_ASSIGN; }
-            break;
-        case '>':
-            cursor++;
-            if (assign) {
-                tok = TK_GE;
-                break;
-            }
-            tok = TK_SHR;
-            if (*cursor == '=') { cursor++; tok = TK_SHR_ASSIGN; }
-            break;
-        case '=':
-            if (assign) { cursor++; tok = TK_EQ; }
-            break;
-        case '!':
-            if (assign) { cursor++; tok = TK_NE; }
-            break;
-        }
+        lex_two(c);
     } else if (c == '-' && *cursor == '>') {
         cursor++;
         tok = TK_ARROW;
