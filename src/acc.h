@@ -288,6 +288,7 @@ enum {
     TK_KW_SIZEOF,
     TK_KW_ENUM, TK_KW_STRUCT, TK_KW_UNION, TK_KW_TYPEDEF,
     TK_KW_STATIC, TK_KW_EXTERN,
+    TK_KW_CONST,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -386,9 +387,13 @@ enum {
     SYM_LOCAL_ARRAY,    /* a local array: val is its number */
     SYM_LOCAL_STRUCT,   /* a local struct or union: val is its number in the
                          * array area, where it lives as an array does */
+    SYM_LOCAL_CONST,    /* a const local or parameter: as SYM_LOCAL, but it
+                         * reads as a value, which cannot be assigned to */
     SYM_FUNC,           /* a function: val is its address in the image */
     SYM_GLOBAL,         /* a file-scope variable: val is its address */
     SYM_GLOBAL_ARRAY,   /* a file-scope array: val is its address */
+    SYM_GLOBAL_CONST,   /* a const file-scope variable: as SYM_GLOBAL, read
+                         * as a value */
 
     /* These three are at file scope or in a block, as they are declared:
      * see sym_push_local. */
@@ -402,7 +407,7 @@ enum {
 
 /* Whether a symbol of this kind belongs to the function being compiled
  * rather than to file scope. */
-#define sym_kind_local(kind) ((unsigned) (kind) <= SYM_LOCAL_STRUCT)
+#define sym_kind_local(kind) ((unsigned) (kind) <= SYM_LOCAL_CONST)
 
 /* Nine bytes on the target: a name, a kind, one number whose meaning the
  * kind decides, and a type with its extension. tinycc's equivalent is 31, and

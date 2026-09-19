@@ -470,7 +470,7 @@ static void keywords_init(void)
     keyword("auto", 4, TK_KW_RESERVED);
     keyword("break", 5, TK_KW_BREAK);
     keyword("case", 4, TK_KW_CASE);
-    keyword("const", 5, TK_KW_RESERVED);
+    keyword("const", 5, TK_KW_CONST);
     keyword("continue", 8, TK_KW_CONTINUE);
     keyword("default", 7, TK_KW_DEFAULT);
     keyword("do", 2, TK_KW_DO);
@@ -1080,6 +1080,7 @@ const char *tok_spelling(int token)
     case TK_KW_TYPEDEF: return "'typedef'";
     case TK_KW_STATIC: return "'static'";
     case TK_KW_EXTERN: return "'extern'";
+    case TK_KW_CONST:  return "'const'";
     case TK_DOT:       return "'.'";
     case TK_ARROW:     return "'->'";
     case TK_STRING:    return "a string";

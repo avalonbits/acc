@@ -173,7 +173,9 @@ enum {
                      * global, or an element */
     NAME_VALUE,     /* a value that is not an object: an array, which is the
                      * address of its first element */
-    NAME_CONST      /* an enum constant, as a constant int */
+    NAME_CONST,     /* an enum constant, as a constant int */
+    NAME_READONLY   /* a const variable's value, which is not an object:
+                     * nothing can be stored to it */
 };
 
 static const char *record_name(int x);
@@ -294,6 +296,22 @@ static int name_operand(int sym, NameRef name)
         vpush_const(s->val, TY_INT);
 
         return NAME_CONST;
+    case SYM_LOCAL_CONST:
+        vpush_local(s->val, s->type);
+        vset_ext(s->ext);
+        if (!tok_postfix())
+            return NAME_READONLY;
+        object = 0;
+        break;
+    case SYM_GLOBAL_CONST:
+        global_address(s);
+        if (!tok_postfix()) {
+            vderef();
+
+            return NAME_READONLY;
+        }
+        object = 1;
+        break;
     default:
         acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
     }
@@ -469,6 +487,22 @@ int paren_deref_step(void)
     return 1;
 }
 
+/* A const variable's address, which its name alone does not give: it reads
+ * as its value. */
+__attribute__((noinline))
+static void readonly_address(int sym)
+{
+    const Sym *v = sym_at(sym);
+
+    if (v->kind == SYM_GLOBAL_CONST) {
+        global_address(v);
+
+        return;
+    }
+    vaddr_local(v->val, v->type);
+    vset_ext(v->ext);
+}
+
 /* `&name`, `&name[i]`: the address of a variable or an element. Out of line:
  * inlined, its locals gave primary() -- which every operand goes through -- a
  * larger frame. */
@@ -503,6 +537,11 @@ static void address_of(void)
     case NAME_CONST:
         acc_error_at(line, "'%s' is a constant, which has no address",
                      name_text(name));
+    case NAME_READONLY:
+        vdrop();
+        readonly_address(sym);
+
+        return;
     }
 
     /* A whole array: the same address as its first element, as a pointer to
@@ -928,7 +967,13 @@ static void compound_indirect(void)
 __attribute__((noinline))
 static void object_statement(int sym, NameRef name)
 {
-    if (name_operand(sym, name) != NAME_OBJECT) {
+    int what = name_operand(sym, name);
+
+    if (what != NAME_OBJECT) {
+        if (what == NAME_READONLY && (tok == TK_ASSIGN || compound_op[tok]
+                                      || tok == TK_INC || tok == TK_DEC))
+            acc_error_at(tok_line, "'%s' is const, so it cannot be changed",
+                         name_text(name));
         binary_rest(PREC_LOWEST);
 
         return;
@@ -1565,17 +1610,52 @@ static Type struct_specifier(void)
  * result because nearly every caller wants only the type -- and it is
  * overwritten by the next type read, which may be inside the declaration
  * (a cast in an initialiser), so a caller that wants it copies it at once. */
+/* Whether the type base_type last read was const. Kept for the variable a
+ * declaration names, which is refused as the target of an assignment; what
+ * a pointer points at being const is taken and not checked. */
+static int base_const;
+
+/* `const`s, as many as there are, with the base_type's marked: see
+ * base_const. `volatile` and `restrict` are not here yet. */
+__attribute__((noinline))
+static void qualifiers(void)
+{
+    while (accept(TK_KW_CONST))
+        base_const = 1;
+}
+
+static Type base_type(void);
+
 __attribute__((noinline))
 static Type base_type_other(void)
 {
     int line = tok_line;
 
     switch (tok) {
-    case TK_KW_ENUM:
-        return enum_specifier();
+    case TK_KW_CONST: {                 /* `const int`, `const struct s` */
+        Type t;
+
+        qualifiers();
+        t = base_type();
+        base_const = 1;
+
+        return t;
+    }
+    case TK_KW_ENUM: {
+        Type t = enum_specifier();
+
+        qualifiers();
+
+        return t;
+    }
     case TK_KW_STRUCT:
-    case TK_KW_UNION:
-        return struct_specifier();
+    case TK_KW_UNION: {
+        Type t = struct_specifier();
+
+        qualifiers();
+
+        return t;
+    }
     case TK_IDENT: {
         int sym = sym_find(tok_name);
 
@@ -1583,6 +1663,7 @@ static Type base_type_other(void)
             break;
         next();
         base_ext = sym_at(sym)->ext;
+        qualifiers();
 
         return sym_at(sym)->type;
     }
@@ -1594,11 +1675,17 @@ static Type base_type_other(void)
 
 static Type base_type(void)
 {
-    base_ext = 0;
-    if (starts_type(tok))
-        return type_specifier();        /* the keywords, which is most */
+    Type t;
 
-    return base_type_other();
+    base_ext = 0;
+    base_const = 0;
+    if (!starts_type(tok))
+        return base_type_other();
+    t = type_specifier();               /* the keywords, which is most */
+    if (tok == TK_KW_CONST)
+        qualifiers();                   /* `int const` */
+
+    return t;
 }
 
 /* Whether the current token begins a declaration: a specifier keyword, or
@@ -1612,7 +1699,8 @@ static unsigned char decl_start[TK_COUNT] = {
     [TK_KW_SIGNED] = 1, [TK_KW_UNSIGNED] = 1, [TK_KW_LONG] = 1,
     [TK_KW_FLOAT] = 1, [TK_KW_DOUBLE] = 1,
     [TK_KW_ENUM] = 1, [TK_KW_STRUCT] = 1, [TK_KW_UNION] = 1,
-    [TK_KW_TYPEDEF] = 1, [TK_KW_STATIC] = 1, [TK_KW_EXTERN] = 1
+    [TK_KW_TYPEDEF] = 1, [TK_KW_STATIC] = 1, [TK_KW_EXTERN] = 1,
+    [TK_KW_CONST] = 1
 };
 
 __attribute__((noinline))
@@ -1634,6 +1722,19 @@ int starts_decl(void)
     return tok != TK_IDENT || is_typedef_name(tok_name);
 }
 
+/* Whether the last star read was followed by `const`: `int *const p`, which
+ * makes p itself const, where `const int *p` does not. */
+static int stars_const;
+
+__attribute__((noinline))
+static int star_qualifiers(void)
+{
+    while (accept(TK_KW_CONST))
+        ;
+
+    return 1;
+}
+
 /* The stars in front of one name. Inlined, as not_void is: they were one
  * function before the split, and as two calls each they cost 1% of a compile
  * of a program that declares a lot of names. */
@@ -1642,11 +1743,13 @@ Type declarator_stars(Type base)
 {
     int line = tok_line;
 
+    stars_const = 0;
     while (accept(TK_STAR)) {
         if (type_ptr_depth(base) == TY_PTR_MAX)
             acc_error_at(line, "a pointer can be %d deep and this is deeper",
                          TY_PTR_MAX);
         base = type_ptr_to(base);
+        stars_const = (tok == TK_KW_CONST) && star_qualifiers();
     }
 
     return base;
@@ -1901,6 +2004,11 @@ static int sizeof_unary(void)
         switch (name_operand(sym, name)) {
         case NAME_CONST:
             return SIZEOF_VALUE;
+        case NAME_READONLY:
+            vdrop();
+            readonly_address(sym);
+
+            return sizeof_postfix(SIZEOF_OBJECT);
         case NAME_LOCAL: {
             const Sym *local = sym_at(sym);
 
@@ -2423,6 +2531,7 @@ static int  global_again(int sym, Type type, int ext, int count, int line);
 /* How the variable being declared at file scope is bound: see push_global. */
 static int static_local;
 static int redefining = SYM_NONE;
+static int decl_const;          /* the variable being declared is const */
 
 /* `typedef`, and names for types rather than objects: each declarator names
  * the type it would have given a variable. An array type keeps its shape in
@@ -2497,7 +2606,7 @@ static void storage_declaration(void)
 {
     int storage = tok;
     Type base;
-    int bx;
+    int bx, bc;
 
     if (storage == TK_KW_TYPEDEF) {
         typedef_declaration();
@@ -2507,14 +2616,15 @@ static void storage_declaration(void)
     next();
     base = base_type();
     bx = base_ext;
+    bc = base_const;
     if (accept(TK_SEMI))
         return;
     for (;;) {
         int line = tok_line, count, ext;
-        Type type;
-        NameRef name = direct_declarator(declarator_stars(base), bx, &type,
-                                         &ext, &count);
+        Type type, stars = declarator_stars(base);
+        NameRef name = direct_declarator(stars, bx, &type, &ext, &count);
 
+        decl_const = stars != base ? stars_const : bc;
         if (tok == TK_LPAREN) {
             function_declarator(type, ext, name, line);
         } else if (storage == TK_KW_EXTERN) {
@@ -2542,7 +2652,7 @@ static inline __attribute__((always_inline))
 void declaration(void)
 {
     Type base;
-    int bx;
+    int bx, bc;
 
     /* typedef, static and extern, one range. */
     if ((unsigned char) (tok_low - TK_KW_TYPEDEF) < 3u) {
@@ -2552,6 +2662,7 @@ void declaration(void)
     }
     base = base_type();
     bx = base_ext;
+    bc = base_const;
 
     /* Nothing but the type: `enum e { A, B };`, declaring what is in it. */
     if (accept(TK_SEMI))
@@ -2559,9 +2670,8 @@ void declaration(void)
 
     for (;;) {
         int line = tok_line, count, ext, off, sym;
-        Type type;
-        NameRef name = direct_declarator(declarator_stars(base), bx, &type,
-                                         &ext, &count);
+        Type type, stars = declarator_stars(base);
+        NameRef name = direct_declarator(stars, bx, &type, &ext, &count);
 
         if (tok == TK_LPAREN) {         /* a function declared in a block */
             function_declarator(type, ext, name, line);
@@ -2597,6 +2707,8 @@ void declaration(void)
         sym = sym_push(name, SYM_LOCAL, off);
         sym_at(sym)->type = type;
         sym_at(sym)->ext = (unsigned char) ext;
+        if (stars != base ? stars_const : bc)
+            sym_at(sym)->kind = SYM_LOCAL_CONST;
 
         if (!accept(TK_COMMA))
             break;
@@ -3400,8 +3512,8 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
         params = 0;
     } else {
         for (;;) {
-            Type pbase, ptype;
-            int pbx, pline = tok_line, pcount, pext;
+            Type pbase, ptype, pstars;
+            int pbx, pconst, pline = tok_line, pcount, pext;
             NameRef pname;
             int psym = SYM_NONE;
 
@@ -3410,8 +3522,11 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                              tok_spelling(tok));
             pbase = base_type();
             pbx = base_ext;
-            pname = direct_declarator(declarator_stars(pbase), pbx, &ptype,
-                                      &pext, &pcount);
+            pconst = base_const;
+            pstars = declarator_stars(pbase);
+            pname = direct_declarator(pstars, pbx, &ptype, &pext, &pcount);
+            if (pstars != pbase)
+                pconst = stars_const;
 
             /* `int a[]`, `int a[10]` and `int m[][4]` declare a parameter
              * that is a pointer, as C says: an array is passed as the address
@@ -3429,6 +3544,8 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                 psym = sym_push(pname, SYM_LOCAL, argoff);
                 sym_at(psym)->type = ptype;
                 sym_at(psym)->ext = (unsigned char) pext;
+                if (pconst && !pcount && !type_is_struct(ptype))
+                    sym_at(psym)->kind = SYM_LOCAL_CONST;
             } else {
                 unnamed = 1;
             }
@@ -3792,7 +3909,9 @@ static int global_again(int sym, Type type, int ext, int count, int line)
 
     if (g->kind == SYM_FUNC)
         acc_error_at(line, "'%s' is already a function", name_text(name));
-    if (g->kind != (count ? SYM_GLOBAL_ARRAY : SYM_GLOBAL)
+    if (g->kind != (count ? SYM_GLOBAL_ARRAY
+                          : decl_const && !type_is_struct(type) ? SYM_GLOBAL_CONST
+                          : SYM_GLOBAL)
         || g->type != type || g->ext != ext
         || (count && count != sym_count(sym)))
         acc_error_at(line, "'%s' is declared again with another type",
@@ -3838,7 +3957,7 @@ static void global_emit(Type type, int ext, NameRef name, int count, int line)
     for (i = 0; i < size; i++)
         out_byte(bytes[i]);
 
-    sym = push_global(name, SYM_GLOBAL, at);
+    sym = push_global(name, decl_const ? SYM_GLOBAL_CONST : SYM_GLOBAL, at);
     sym_at(sym)->type = type;
     sym_at(sym)->ext = (unsigned char) ext;
 }
@@ -3884,7 +4003,7 @@ static void global_variable(Type type, int ext, NameRef name, int count,
 static void external_declaration(void)
 {
     Type base, type;
-    int line, count = 0, ext, bx;
+    int line, count = 0, ext, bx, bc;
     NameRef name;
 
     if (tok == TK_KW_TYPEDEF) {
@@ -3900,15 +4019,19 @@ static void external_declaration(void)
         next();
     base = base_type();
     bx = ext = base_ext;
+    bc = base_const;
     line = tok_line;
     if (accept(TK_SEMI))
         return;
     /* A name and then '(' is a function -- a prototype, or a definition if
      * a body follows; anything else is a variable. */
     for (;;) {
+        Type stars;
+
         line = tok_line;
-        name = direct_declarator(declarator_stars(base), bx, &type, &ext,
-                                 &count);
+        stars = declarator_stars(base);
+        name = direct_declarator(stars, bx, &type, &ext, &count);
+        decl_const = stars != base ? stars_const : bc;
         if (tok == TK_LPAREN) {
             if (count)
                 acc_error_at(line, "a function cannot return an array");
