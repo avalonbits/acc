@@ -164,6 +164,8 @@ check_form "block-declarations" '^        +(int|char|short|long|unsigned|float|d
 check_op '->' "struct s { int m; }; int main(void) { struct s v, *p = &v; p->m = 1; return p->m; }"
 check_form "members" '[A-Za-z_0-9)]\.[A-Za-z_]' \
     "struct s { int m; }; int main(void) { struct s v; v.m = 1; return v.m; }"
+check_form "prototypes" '^(static |extern )?[a-z][a-z ]*[ *][a-z_0-9]+\(.*\);$' \
+    "int f(int); int main(void) { return f(1); } int f(int x) { return x; }"
 check_form "casts" '\((unsigned |signed )?(char|short|int|long|float|double|void) *\**\) *[A-Za-z_(0-9]' \
     "int main(void) { long a = 1; return (int) a; }"
 set +f
