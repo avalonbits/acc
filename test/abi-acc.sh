@@ -52,7 +52,8 @@ PY
 }
 
 echo "  --- argument slots, by where the parameter after one lands"
-for probe in "char:9" "short:9" "int:9" "unsigned int:9" "long:12"; do
+for probe in "char:9" "short:9" "int:9" "unsigned int:9" "long:12" \
+             "long long:15"; do
     type=${probe%:*}; want=${probe#*:}
     compile "int f($type a, int b) { return b; }"
     check "an argument of $type" "$(param_at)" "$want"
@@ -83,6 +84,21 @@ else:
 PY
 )
 check "a 4-byte result" "$got" "HL:E+3"
+
+# An eight-byte result is HL, DE and BC, from three slots in a row.
+compile "long long f(void) { return 0x1122334455667788LL; }"
+got=$(python3 - "$tmp/p.bin" <<'PY'
+import re, sys
+data = open(sys.argv[1], 'rb').read()
+m = re.search(rb'\xdd\x27(.)\xdd\x17(.)\xdd\x07(.)\xdd\xf9\xdd\xe1\xc9', data, re.S)
+if not m:
+    print("not HL:DE:BC")
+else:
+    lo, mid, hi = (g[0] for g in m.groups())
+    print("HL:DE+%d:BC+%d" % ((mid - lo) & 0xff, (hi - lo) & 0xff))
+PY
+)
+check "an 8-byte result" "$got" "HL:DE+3:BC+6"
 
 # Everything else comes back in HL, so there is no ld a,l before the epilogue.
 for type in short int "unsigned int"; do

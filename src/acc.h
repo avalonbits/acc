@@ -74,6 +74,15 @@ typedef unsigned int NameRef;
 #define TY_LONG     ((Type) ACC_LONG_SIZE)
 #define TY_ULONG    ((Type) (ACC_LONG_SIZE | TY_UNSIGNED))
 
+/* long long: eight bytes, which the three bits of the width cannot say. So
+ * it has a width no other type has, 6, and type_bytes turns that into the
+ * eight it stores as. type_size is left alone: it is on every path for every
+ * other type, and a long long never needs its answer except where it is
+ * stored, which is what type_bytes and type_wide_bytes are for. */
+#define TY_LLONG    ((Type) 6)
+#define TY_ULLONG   ((Type) (6 | TY_UNSIGNED))
+#define type_eight(ty)     (type_size(ty) == 6)
+
 /* float and double are one type here: agondev makes both four-byte IEEE 754
  * single precision, and compiles double arithmetic to the same routines. So
  * there is one floating type, four bytes wide, and the flag that marks it has
@@ -81,6 +90,19 @@ typedef unsigned int NameRef;
  * size the width could be confused with. */
 #define TY_FLOATING 0x10
 #define TY_FLOAT    ((Type) (ACC_LONG_SIZE | TY_FLOATING))
+
+/* long double, which agondev makes an eight-byte IEEE 754 double -- and
+ * gives no arithmetic at all: libagon has __ltod and __dtol and nothing that
+ * adds, multiplies or compares one, and no conversion to or from a float
+ * either. So acc has the type, holds it, moves it, passes it, returns it and
+ * converts it to and from the integers, and refuses the arithmetic for the
+ * same reason an agondev program that tries it does not link.
+ *
+ * Its width is the long long's, 6 for the eight bytes it stores as, with the
+ * floating bit on top -- which makes it a code of its own that no path for
+ * float or for long long picks up by accident. */
+#define TY_LDOUBLE  ((Type) (TY_FLOATING | 6))
+#define type_ldouble(ty)  ((Type) (ty) == TY_LDOUBLE)
 
 /* A pointer is never a floating type, however floating the thing it points
  * at, and an array type is never one either, although some of the codes
@@ -117,6 +139,10 @@ typedef unsigned int NameRef;
  * values that applies to. A pointer never does, however wide the thing it
  * points at. */
 #define type_wide(ty)     (type_size(ty) > ACC_INT_SIZE)
+
+/* The bytes a wide value takes in the frame: four, or eight for a long
+ * long. */
+#define type_wide_bytes(ty) (type_eight(ty) ? 8 : ACC_LONG_SIZE)
 
 #define type_size(ty)     (type_pointer(ty) ? ACC_INT_SIZE \
                                             : (int) ((ty) & TY_SIZE_MASK))
@@ -171,7 +197,8 @@ typedef unsigned int NameRef;
 
 /* The size of any type, arrays and structs included, given its extension. */
 #define type_bytes(ty, x)   (type_is_array(ty) || type_is_struct(ty) \
-                             ? ext_bytes(x) : type_size(ty))
+                             ? ext_bytes(x) : type_scalar_bytes(ty))
+#define type_scalar_bytes(ty) (type_eight(ty) ? 8 : type_size(ty))
 
 /* What `p + 1` moves by, which is the width of what p points at -- a whole
  * row, when that is an array. */
@@ -261,6 +288,8 @@ extern char *name_arena;    /* for name_global, further down */
  * it ends, which is s if it has no digits. In float.c. */
 const char *float_literal(const char *s, uint32_t *bits);
 uint32_t    float_from_int(uint32_t magnitude, int negative);
+const char *double_literal(const char *s, uint64_t *bits);
+uint64_t    double_from_int(uint64_t magnitude, int negative);
 
 /* ------------------------------------------------------------------ */
 /* tokens                                                              */
@@ -359,10 +388,12 @@ typedef char tok_pairs_are_adjacent[(TK_SHR == TK_SHL + 1
                                      && TK_OROR == TK_ANDAND + 1) ? 1 : -1];
 
 extern long     tok_val;    /* its value, when TK_INT */
+extern uint32_t tok_val_hi; /* and its high half, when a long long */
 extern const char *tok_str; /* its bytes, when TK_STRING, escapes undone */
 extern int      tok_str_len; /* and how many, without a terminator */
 extern Type     tok_type;   /* and its type, which C99 fixes by its size */
 extern float    tok_fval;   /* its value, when TK_FLOAT */
+extern uint64_t tok_dval;   /* or its bits, when that is a long double */
 extern NameRef  tok_name;   /* its name, when TK_IDENT */
 extern int      tok_line;   /* the line it started on */
 extern int      tok_prev_line; /* where the token before it ended */
@@ -588,6 +619,8 @@ void gen_copy_to_array(int array, int offset, int from, int count);
 
 void vpush_const(int val, Type type);
 void vpush_const_long(long val, Type type);  /* four bytes, so it goes to the frame */
+void vpush_const_wide(uint32_t low, uint32_t high, Type type);   /* eight */
+void vpush_const_double(uint64_t bits);         /* a long double's bits */
 void vpush_const_float(float val);
 void vconvert(Type to);               /* narrow the top, then widen it back */
 Type vtype(void);                     /* the type of the top */
@@ -665,7 +698,8 @@ void gen_jump_if_true_to(int target); /* pop the top, jump back when it is not *
  * begins, loaded once where the cases are tested, and compared with each
  * case's constant in turn. */
 void gen_switch_load(int slot, Type type);
-void gen_switch_case(long value, Type type, int target);
+void gen_switch_case(long value, uint32_t high, Type type, int target,
+                     int slot);
 int  gen_logic_left(int settles);     /* && and ||: after the left operand */
 void gen_logic_right(int settles, int early);  /* and after the right */
 void vtruth(int op);                  /* compare the top with zero: TK_NE, TK_EQ */
@@ -676,7 +710,7 @@ void vpostfix_local(int offset, Type type, int ext, int op);  /* x++, x-- */
 void vprefix_indirect(int op);        /* ++*p, with p on the stack */
 void vpostfix_indirect(int op);       /* (*p)++, with p on the stack */
 int  gen_cond_begin(int *slot);       /* ?: after the condition */
-int  gen_cond_middle(int slot, Type *middle, int *middle_ext, int *middle_null);
+int  gen_cond_middle(int *slot, Type *middle, int *middle_ext, int *middle_null);
 void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
                   int middle_null);
 void gen_label(int hole);             /* fill a hole in with here */

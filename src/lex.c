@@ -307,6 +307,8 @@ static int   line;
 
 int      tok;
 long     tok_val;
+uint32_t tok_val_hi;
+uint64_t tok_dval;
 float    tok_fval;
 typedef char float_is_four_bytes[sizeof(float) == 4 ? 1 : -1];
 NameRef  tok_name;
@@ -537,12 +539,60 @@ static void lex_floating(void)
 
     if (end == cursor)
         acc_error_at(tok_line, "a floating-point number with no digits");
+
+    /* An l suffix makes it a long double, which is eight bytes and not four:
+     * the literal is read again, to the double's own precision. Reading it
+     * twice costs nothing that matters -- a long double literal is rare --
+     * and keeps the common one on the path it has. */
+    if (*end == 'l' || *end == 'L') {
+        double_literal(cursor, &tok_dval);
+        cursor = (char *) end + 1;
+        tok = TK_FLOAT;
+        tok_type = TY_LDOUBLE;
+
+        return;
+    }
+
     memcpy(&tok_fval, &bits, sizeof tok_fval);
     cursor = (char *) end;
     if (*cursor == 'f' || *cursor == 'F')
         cursor++;
     tok = TK_FLOAT;
     tok_type = TY_FLOAT;
+}
+
+/* A constant past 32 bits, read again from its start as the long long it
+ * is: its high half returned and its low half in *low. Out of line, and
+ * rare, because its 64-bit steps are calls into the runtime on the Agon. */
+__attribute__((noinline))
+static uint32_t wide_constant(const char *p, uint32_t *low)
+{
+    uint64_t value = 0, limit;
+    unsigned base = 10;
+
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        base = 16;
+        p += 2;
+    } else if (p[0] == '0') {
+        base = 8;
+    }
+    limit = UINT64_MAX / base;
+    for (;; p++) {
+        int c = (unsigned char) *p, digit;
+
+        if (is_digit(c))
+            digit = c - '0';
+        else if (base == 16 && (c | 0x20) >= 'a' && (c | 0x20) <= 'f')
+            digit = (c | 0x20) - 'a' + 10;
+        else
+            break;
+        if (value > limit || value * base > UINT64_MAX - (unsigned) digit)
+            acc_error_at(tok_line, "the constant does not fit in 64 bits");
+        value = value * base + (unsigned) digit;
+    }
+    *low = (uint32_t) value;
+
+    return (uint32_t) (value >> 32);
 }
 
 /* Out of line, and the attribute is load-bearing -- there is one caller, so
@@ -608,7 +658,7 @@ static void lex_number(void)
      * the ladder decide, while the Agon build wrapped and refused it. The
      * width the answer has to fit in is a fact about the language acc
      * compiles, not about the machine acc is running on. */
-    uint32_t value = 0;
+    uint32_t value = 0, high = 0;
     int not_decimal = 0;        /* hex or octal: may be typed unsigned */
     int bad_digit = 0;
     int overflowed = 0;
@@ -634,9 +684,9 @@ static void lex_number(void)
             else if (digit >= 'A' && digit <= 'F')   digit -= 'A' - 10;
             else acc_error_at(tok_line, "bad digit '%c' in a hex constant", digit);
             if (value > 0xfffffffUL)
-                acc_error_at(tok_line, "the constant does not fit in %d bits",
-                             ACC_LONG_SIZE * 8);
-            value = value * 16 + digit;
+                overflowed = 1;         /* a long long: wide_constant */
+            else
+                value = value * 16 + digit;
             cursor++;
         }
     } else {
@@ -713,8 +763,7 @@ static void lex_number(void)
         acc_error_at(tok_line, "'%c' is not an octal digit, and a constant that "
                            "starts with 0 is octal", bad_digit);
     if (overflowed)
-        acc_error_at(tok_line, "the constant does not fit in %d bits",
-                     ACC_LONG_SIZE * 8);
+        high = wide_constant(start, &value);
 
     /* The suffix, which narrows the list before the value is measured
      * against it: u takes the signed types out, l takes int out. Either
@@ -734,10 +783,11 @@ static void lex_number(void)
 
         if (suffix_l)
             acc_error_at(tok_line, "the constant has more than one 'l' suffix");
-        if (cursor[1] == *cursor) {
-            acc_error_at(tok_line, "'long long' is not supported yet");
-        }
         suffix_l = 1;
+        if (cursor[1] == *cursor) {     /* ll or LL, but not lL */
+            suffix_l = 2;
+            cursor++;
+        }
         cursor++;
     }
     if (is_alnum((unsigned char) *cursor))
@@ -746,9 +796,11 @@ static void lex_number(void)
     /* C99 types a constant by the first type in that list that can hold it.
      * The unsigned types are in it when the suffix says u, and also when a
      * hex or octal constant has no suffix at all -- which is the only place
-     * the decimal and hex forms differ. acc has no long long, so past the end
-     * of long it refuses. */
-    if (suffix_u) {
+     * the decimal and hex forms differ. Past the end of long it is long
+     * long, below. */
+    if (high || suffix_l == 2) {
+        /* long long, which only the steps past long reach */
+    } else if (suffix_u) {
         if (!suffix_l && value <= 0xffffffUL)
             tok_type = TY_UINT;
         else if (value <= 0xffffffffUL)
@@ -768,9 +820,11 @@ static void lex_number(void)
         tok_type = TY_ULONG;
     }
 
+    /* The long long steps: signed if it fits and nothing says unsigned.
+     * A decimal constant past the signed range has no type in C99; it is
+     * taken as unsigned, which is what agondev does with it. */
     if (tok_type == TY_VOID)
-        acc_error_at(tok_line, "the constant is too large for a long, and "
-                           "long long is not supported yet");
+        tok_type = (!suffix_u && high <= 0x7fffffffUL) ? TY_LLONG : TY_ULLONG;
 
     /* An unsigned int is normalised to the signed pattern of the same 24
      * bits, so that acc folds it identically whether it is itself running on
@@ -780,6 +834,7 @@ static void lex_number(void)
 
     tok = TK_INT;
     tok_val = (long) value;
+    tok_val_hi = high;
 }
 
 /* The punctuation next() refuses: a character that begins no token, or the

@@ -457,8 +457,9 @@ _acc_rt_ladd:
 	push	bc
 	push	de
 	push	hl
-	or	a, a			; no carry into the low byte
 	ld	b, 4
+.ladd_n:				; b bytes: the long long one comes in here
+	or	a, a			; no carry into the low byte
 .ladd_loop:
 	ld	a, (de)
 	adc	a, (hl)
@@ -478,8 +479,9 @@ _acc_rt_lsub:
 	push	bc
 	push	de
 	push	hl
-	or	a, a
 	ld	b, 4
+.lsub_n:
+	or	a, a
 .lsub_loop:
 	ld	a, (de)
 	ld	c, a
@@ -499,6 +501,7 @@ _acc_rt_land:
 	push	de
 	push	hl
 	ld	b, 4
+.land_n:
 .land_loop:
 	ld	a, (de)
 	and	a, (hl)
@@ -516,6 +519,7 @@ _acc_rt_lor:
 	push	de
 	push	hl
 	ld	b, 4
+.lor_n:
 .lor_loop:
 	ld	a, (de)
 	or	a, (hl)
@@ -533,6 +537,7 @@ _acc_rt_lxor:
 	push	de
 	push	hl
 	ld	b, 4
+.lxor_n:
 .lxor_loop:
 	ld	a, (de)
 	xor	a, (hl)
@@ -553,6 +558,7 @@ _acc_rt_lcmpeq:
 	push	de
 	push	hl
 	ld	b, 4
+.lcmpeq_n:
 .lcmpeq_loop:
 	ld	a, (de)
 	cp	a, (hl)
@@ -578,8 +584,9 @@ _acc_rt_lcmpord:
 	push	bc
 	push	de
 	push	hl
-	or	a, a
 	ld	b, 4
+.lcmpord_n:
+	or	a, a
 .lcmpord_loop:
 	ld	a, (de)
 	ld	c, a
@@ -2457,6 +2464,7 @@ _acc_rt_ltof:
 	jr	.ltof_magnitude
 
 _acc_rt_ultof:
+.ultof_entry:
 	push	ix
 	push	iy
 	push	bc
@@ -2509,6 +2517,7 @@ _acc_rt_ultof:
 ; hl -> the float, overwritten by the long. Truncated towards zero, as C says;
 ; a value too large for a long is undefined and is left to wrap.
 _acc_rt_ftol:
+.ftol_entry:				; for calls from inside the blob
 	push	ix
 	push	iy
 	push	bc
@@ -2609,4 +2618,818 @@ _acc_rt_ftol:
 	pop	bc
 	pop	iy
 	pop	ix
+	ret
+
+; ================================================================ long long
+; Everything from here on is emitted only into a program that uses a long
+; long: acc_rt_split marks where the blob can be cut, and nothing above it
+; calls anything below. What is below may call up.
+;
+; A long long is eight bytes and lives in the frame as a long does, so these
+; take the same shape: HL points at the destination and left operand, DE at
+; the right one, and everything but the destination is preserved. Where a
+; long routine is a loop over its bytes, the long long one is the same loop
+; entered with eight in B.
+
+	.global	acc_rt_split
+acc_rt_split:
+
+	.global _acc_rt_lladd
+	.global _acc_rt_llsub
+	.global _acc_rt_lland
+	.global _acc_rt_llor
+	.global _acc_rt_llxor
+	.global _acc_rt_llcmpeq
+	.global _acc_rt_llcmpord
+	.global _acc_rt_llneg
+	.global _acc_rt_llnot
+	.global _acc_rt_llshl
+	.global _acc_rt_llshru
+	.global _acc_rt_llshrs
+	.global _acc_rt_llmul
+	.global _acc_rt_lldivu
+	.global _acc_rt_llremu
+	.global _acc_rt_lldivs
+	.global _acc_rt_llrems
+	.global _acc_rt_lltof
+	.global _acc_rt_ulltof
+	.global _acc_rt_ftoll
+
+_acc_rt_lladd:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 8
+	jp	.ladd_n
+
+_acc_rt_llsub:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 8
+	jp	.lsub_n
+
+_acc_rt_lland:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 8
+	jp	.land_n
+
+_acc_rt_llor:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 8
+	jp	.lor_n
+
+_acc_rt_llxor:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 8
+	jp	.lxor_n
+
+_acc_rt_llcmpeq:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 8
+	jp	.lcmpeq_n
+
+_acc_rt_llcmpord:
+	push	bc
+	push	de
+	push	hl
+	ld	b, 8
+	jp	.lcmpord_n
+
+; (hl) = -(hl): 0 minus each byte, the borrow chaining up. Neither `ld a, 0`
+; nor `inc hl` nor djnz touches the carry.
+_acc_rt_llneg:
+.llneg_hl:
+	push	bc
+	push	hl
+	ld	b, 8
+	or	a, a
+.llneg_loop:
+	ld	a, 0
+	sbc	a, (hl)
+	ld	(hl), a
+	inc	hl
+	djnz	.llneg_loop
+	pop	hl
+	pop	bc
+	ret
+
+_acc_rt_llnot:
+	push	bc
+	push	hl
+	ld	b, 8
+.llnot_loop:
+	ld	a, (hl)
+	cpl
+	ld	(hl), a
+	inc	hl
+	djnz	.llnot_loop
+	pop	hl
+	pop	bc
+	ret
+
+; (hl) shifted by the low byte of (de), masked to six bits. A bit at a time,
+; each a pass over the eight bytes: rl and rr through (hl) carry the bit from
+; one byte into the next, and the passes restart from the saved pointer.
+_acc_rt_llshl:
+	ld	a, (de)
+	and	a, 63
+	ret	z
+	push	bc
+	push	hl
+	ld	c, a
+.llshl_bit:
+	pop	hl
+	push	hl
+	ld	b, 8
+	or	a, a			; a zero comes in at the bottom
+.llshl_byte:
+	rl	(hl)
+	inc	hl
+	djnz	.llshl_byte
+	dec	c
+	jr	nz, .llshl_bit
+	pop	hl
+	pop	bc
+	ret
+
+; Right shifts walk down from the top byte. What comes in at the top is zero
+; for an unsigned value and the sign for a signed one, and E says which.
+_acc_rt_llshru:
+	ld	a, (de)			; the count, before E is taken over
+	push	de
+	ld	e, 0
+	jr	.llshr
+_acc_rt_llshrs:
+	ld	a, (de)
+	push	de
+	ld	e, 1
+.llshr:
+	and	a, 63
+	jr	z, .llshr_none
+	push	bc
+	push	hl
+	ld	bc, 7
+	add	hl, bc			; hl -> the top byte
+	ld	c, a
+.llshr_bit:
+	push	hl
+	ld	b, 8
+	or	a, a
+	bit	0, e			; bit leaves the carry alone
+	jr	z, .llshr_byte
+	ld	a, (hl)
+	rla				; the sign, into the carry
+.llshr_byte:
+	rr	(hl)
+	dec	hl
+	djnz	.llshr_byte
+	pop	hl
+	dec	c
+	jr	nz, .llshr_bit
+	pop	hl
+	pop	bc
+.llshr_none:
+	pop	de
+	ret
+
+; (hl) = (hl) * (de), eight bytes, wrapping.
+;
+; Shift and add, from the top bit of the right operand down: the product is
+; doubled and the left operand added in wherever the bit is set. Sixty-four
+; rounds of two passes over eight bytes -- slow next to the long multiply's
+; partial products, but a long long is rare and this is small. The left
+; operand is copied out first, to ix+0..7, because the product is built where
+; it was.
+_acc_rt_llmul:
+	push	ix
+	push	iy
+	push	bc
+	push	de
+	push	hl
+	ld	ix, -8
+	add	ix, sp
+	ld	sp, ix
+
+	push	hl
+	lea	iy, ix + 0
+	ld	b, 8
+.llmul_copy:
+	ld	a, (hl)
+	ld	(iy + 0), a
+	ld	(hl), 0
+	inc	hl
+	inc	iy
+	djnz	.llmul_copy
+
+	ex	de, hl			; hl -> the right operand's top byte
+	ld	bc, 7
+	add	hl, bc
+	ex	de, hl
+	pop	hl			; hl -> the product, now zero
+	ld	c, 8			; bytes of the right operand to go
+
+.llmul_byte:
+	ld	a, (de)
+	push	de
+	ld	e, a			; this byte's bits, top one first
+	ld	d, 8
+.llmul_bit:
+	push	hl			; product <<= 1
+	ld	b, 8
+	or	a, a
+.llmul_shl:
+	rl	(hl)
+	inc	hl
+	djnz	.llmul_shl
+	pop	hl
+
+	sla	e
+	jr	nc, .llmul_skip
+	push	hl			; product += left
+	lea	iy, ix + 0
+	ld	b, 8
+	or	a, a
+.llmul_add:
+	ld	a, (iy + 0)
+	adc	a, (hl)
+	ld	(hl), a
+	inc	hl
+	inc	iy
+	djnz	.llmul_add
+	pop	hl
+.llmul_skip:
+	dec	d
+	jr	nz, .llmul_bit
+	pop	de
+	dec	de
+	dec	c
+	jr	nz, .llmul_byte
+
+	ld	hl, 8			; the copy, dropped
+	add	hl, sp
+	ld	sp, hl
+	pop	hl
+	pop	de
+	pop	bc
+	pop	iy
+	pop	ix
+	ret
+
+; iy -> the dividend, which becomes the quotient; de -> the divisor, which is
+; overwritten by the remainder. Both unsigned. The long core's shape, with
+; the byte runs as loops: the divisor is copied to ix+0..7, the remainder
+; built at ix+8..15, and ix+16 holds the bit a shift carries out of the top
+; of the remainder, which says the trial subtract fitted whatever it borrowed.
+.lludivmod_core:
+	push	bc
+	push	de
+	push	hl
+	push	ix
+	ld	ix, -17
+	add	ix, sp
+	ld	sp, ix
+
+	ex	de, hl			; the divisor, copied
+	lea	de, ix + 0
+	ld	bc, 8
+	ldir
+	xor	a, a			; de -> ix+8: the remainder, cleared
+	ld	b, 8
+.lldiv_clear:
+	ld	(de), a
+	inc	de
+	djnz	.lldiv_clear
+
+	lea	hl, ix + 0		; a zero divisor is undefined in C:
+	ld	b, 8			; say zero rather than loop
+.lldiv_zero:
+	or	a, (hl)
+	inc	hl
+	djnz	.lldiv_zero
+	jr	nz, .lldiv_go
+	lea	hl, iy + 0
+	ld	b, 8
+.lldiv_q0:
+	ld	(hl), a
+	inc	hl
+	djnz	.lldiv_q0
+	jr	.lldiv_store
+
+.lldiv_go:
+	ld	c, 64
+.lldiv_loop:
+	lea	hl, iy + 0		; {remainder:quotient} <<= 1
+	ld	b, 8
+	or	a, a
+.lldiv_shq:
+	rl	(hl)
+	inc	hl
+	djnz	.lldiv_shq
+	lea	hl, ix + 8
+	ld	b, 8
+.lldiv_shr:
+	rl	(hl)
+	inc	hl
+	djnz	.lldiv_shr
+	sbc	a, a			; the bit out of the top
+	ld	(ix + 16), a
+
+	lea	hl, ix + 0		; remainder - divisor
+	lea	de, ix + 8
+	ld	b, 8
+	or	a, a
+.lldiv_sub:
+	ld	a, (de)
+	sbc	a, (hl)
+	ld	(de), a
+	inc	hl
+	inc	de
+	djnz	.lldiv_sub
+	jr	nc, .lldiv_fits
+	ld	a, (ix + 16)
+	or	a, a
+	jr	nz, .lldiv_fits
+
+	lea	hl, ix + 0		; it did not fit: put it back
+	lea	de, ix + 8
+	ld	b, 8
+	or	a, a
+.lldiv_add:
+	ld	a, (de)
+	adc	a, (hl)
+	ld	(de), a
+	inc	hl
+	inc	de
+	djnz	.lldiv_add
+	jr	.lldiv_next
+.lldiv_fits:
+	set	0, (iy + 0)
+.lldiv_next:
+	dec	c
+	jr	nz, .lldiv_loop
+
+.lldiv_store:
+	ld	de, (ix + 23)		; where the divisor was: the pushed de
+	lea	hl, ix + 8
+	ld	bc, 8
+	ldir
+
+	ld	hl, 17
+	add	hl, sp
+	ld	sp, hl
+	pop	ix
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+; The remainder the core left where the divisor was, moved to (iy).
+.llrem_move:
+	push	bc
+	push	de
+	push	hl
+	ex	de, hl
+	lea	de, iy + 0
+	ld	bc, 8
+	ldir
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+.llabs_iy:
+	bit	7, (iy + 7)
+	ret	z
+.llneg_iy:
+	push	hl
+	lea	hl, iy + 0
+	call	.llneg_hl
+	pop	hl
+	ret
+
+.llabs_ix:
+	bit	7, (ix + 7)
+	ret	z
+	push	hl
+	lea	hl, ix + 0
+	call	.llneg_hl
+	pop	hl
+	ret
+
+_acc_rt_lldivu:
+	push	iy
+	push	hl
+	pop	iy
+	call	.lludivmod_core
+	pop	iy
+	ret
+
+_acc_rt_llremu:
+	push	iy
+	push	hl
+	pop	iy
+	call	.lludivmod_core
+	call	.llrem_move
+	pop	iy
+	ret
+
+; Magnitudes divided and the sign put back, as for a long: the quotient is
+; negative when the operands differ in sign, the remainder takes the
+; dividend's.
+_acc_rt_lldivs:
+	push	ix
+	push	iy
+	push	bc
+	push	hl
+	pop	iy
+	push	de
+	pop	ix
+	ld	a, (iy + 7)
+	xor	a, (ix + 7)
+	ld	b, a
+	call	.llabs_iy
+	call	.llabs_ix
+	call	.lludivmod_core
+	bit	7, b
+	call	nz, .llneg_iy
+	pop	bc
+	pop	iy
+	pop	ix
+	ret
+
+_acc_rt_llrems:
+	push	ix
+	push	iy
+	push	bc
+	push	hl
+	pop	iy
+	push	de
+	pop	ix
+	ld	b, (iy + 7)
+	call	.llabs_iy
+	call	.llabs_ix
+	call	.lludivmod_core
+	call	.llrem_move
+	bit	7, b
+	call	nz, .llneg_iy
+	pop	bc
+	pop	iy
+	pop	ix
+	ret
+
+; (hl): eight bytes of integer in, a float out in the first four.
+;
+; A value that fits in 32 bits is ultof's already. A wider one is shifted
+; down until it fits, every bit shifted out kept as a sticky bit in bit 0:
+; the float keeps 24 bits and rounds on the eight below them, so a 1 there
+; for "something was below" rounds exactly as the whole value would. The
+; shift is then added back into the exponent, which cannot overflow: 2^64 is
+; far inside a float's range.
+_acc_rt_lltof:
+	push	iy
+	push	hl
+	pop	iy
+	push	bc
+	ld	b, (iy + 7)		; the sign, in bit 7
+	bit	7, b
+	call	nz, .llneg_hl		; and the magnitude
+	jr	.lltof_go
+_acc_rt_ulltof:
+	push	iy
+	push	hl
+	pop	iy
+	push	bc
+	ld	b, 0
+.lltof_go:
+	ld	c, 0			; how far it was shifted
+.lltof_fit:
+	ld	a, (iy + 4)
+	or	a, (iy + 5)
+	or	a, (iy + 6)
+	or	a, (iy + 7)
+	jr	z, .lltof_small
+	srl	(iy + 7)
+	rr	(iy + 6)
+	rr	(iy + 5)
+	rr	(iy + 4)
+	rr	(iy + 3)
+	rr	(iy + 2)
+	rr	(iy + 1)
+	rr	(iy + 0)
+	jr	nc, .lltof_kept
+	set	0, (iy + 0)		; sticky
+.lltof_kept:
+	inc	c
+	jr	.lltof_fit
+
+.lltof_small:
+	call	.ultof_entry
+	ld	a, c			; exponent += c: c << 23 is c >> 1 in
+	or	a, a			; byte 3 and c's low bit at the top of
+	jr	z, .lltof_sign		; byte 2
+	srl	a
+	ld	c, a
+	ld	a, 0
+	rra
+	add	a, (iy + 2)
+	ld	(iy + 2), a
+	ld	a, c
+	adc	a, (iy + 3)
+	ld	(iy + 3), a
+.lltof_sign:
+	ld	a, b
+	and	a, 0x80
+	or	a, (iy + 3)
+	ld	(iy + 3), a
+	pop	bc
+	pop	iy
+	ret
+
+; (hl): a float in the first four bytes in, eight bytes of integer out,
+; truncated towards zero. Below 2^31 that is ftol's answer, sign extended.
+; From there up the significand is shifted into place -- which is how an
+; unsigned long long above 2^63 comes out right too, so one routine serves
+; both. Too large for either is undefined, and is left to wrap.
+_acc_rt_ftoll:
+	push	iy
+	push	bc
+	push	hl
+	pop	iy
+	push	hl
+	ld	a, (iy + 3)		; the biased exponent
+	and	a, 0x7f
+	add	a, a
+	ld	b, a
+	ld	a, (iy + 2)
+	rlca
+	and	a, 1
+	add	a, b
+	ld	b, a
+	cp	a, 158			; 127 + 31
+	jr	nc, .ftoll_big
+
+	call	.ftol_entry
+	ld	a, (iy + 3)
+	rla
+	sbc	a, a
+	ld	(iy + 4), a
+	ld	(iy + 5), a
+	ld	(iy + 6), a
+	ld	(iy + 7), a
+	jr	.ftoll_out
+
+.ftoll_big:
+	ld	c, (iy + 3)		; the sign, in bit 7
+	set	7, (iy + 2)		; the leading 1, at bit 23
+	xor	a, a
+	ld	(iy + 3), a
+	ld	(iy + 4), a
+	ld	(iy + 5), a
+	ld	(iy + 6), a
+	ld	(iy + 7), a
+	ld	a, b
+	sub	a, 150			; the significand goes e - 150 bits
+	ld	b, a			; up: at least 8, so never zero
+.ftoll_shl:
+	sla	(iy + 0)
+	rl	(iy + 1)
+	rl	(iy + 2)
+	rl	(iy + 3)
+	rl	(iy + 4)
+	rl	(iy + 5)
+	rl	(iy + 6)
+	rl	(iy + 7)
+	djnz	.ftoll_shl
+	bit	7, c
+	call	nz, .llneg_hl
+
+.ftoll_out:
+	pop	hl
+	pop	bc
+	pop	iy
+	ret
+
+; ---------------------------------------------------------- long double
+; agondev's long double is an eight-byte IEEE 754 double, and the only thing
+; its library does with one is convert it to and from the integer types:
+; there is no __dadd, no __dmul and no __ftod anywhere in libagon. So these
+; two are all there is, and acc refuses the arithmetic for the same reason
+; agondev's programs fail to link when they try it.
+;
+;   b0..b6  mantissa 51..0, with a leading 1 that is not stored
+;   b6      exponent bits 3..0 in its top nibble
+;   b7      sign in bit 7, exponent bits 10..4 below it
+;
+; A long converts exactly: thirty-two bits fit in fifty-two with room to
+; spare, so there is nothing to round and no rounding code here.
+
+	.global _acc_rt_ltod
+	.global _acc_rt_ultod
+	.global _acc_rt_dtol
+
+; hl -> the slot: a long in its first four bytes, the double written over all
+; eight.
+_acc_rt_ltod:
+	push	iy
+	push	de
+	push	bc
+	push	hl
+	pop	iy
+	ld	a, (iy + 3)		; the sign, and nothing else: the rest
+	and	a, 0x80			; of that byte is the value's
+	ld	c, a
+	jr	z, .ltod_magnitude
+	call	.lneg_iy		; and the magnitude
+	jr	.ltod_magnitude
+
+_acc_rt_ultod:
+	push	iy
+	push	de
+	push	bc
+	push	hl
+	pop	iy
+	ld	c, 0
+
+.ltod_magnitude:
+	ld	a, (iy + 0)
+	or	a, (iy + 1)
+	or	a, (iy + 2)
+	or	a, (iy + 3)
+	jr	nz, .ltod_normal
+
+	ld	b, 8			; zero is eight zero bytes
+	push	hl
+.ltod_zero:
+	ld	(hl), 0
+	inc	hl
+	djnz	.ltod_zero
+	pop	hl
+	jp	.ltod_out		; too far for a jr
+
+.ltod_normal:
+	ld	de, 1054		; 1023 + 31: the exponent when the top
+					; bit is already bit 31
+.ltod_shift:
+	bit	7, (iy + 3)
+	jr	nz, .ltod_place
+	sla	(iy + 0)
+	rl	(iy + 1)
+	rl	(iy + 2)
+	rl	(iy + 3)
+	dec	de
+	jr	.ltod_shift
+
+	; The mantissa is the magnitude shifted up by 21, which is three bytes
+	; up and three bits back down.
+.ltod_place:
+	ld	a, (iy + 3)
+	ld	(iy + 6), a
+	ld	a, (iy + 2)
+	ld	(iy + 5), a
+	ld	a, (iy + 1)
+	ld	(iy + 4), a
+	ld	a, (iy + 0)
+	ld	(iy + 3), a
+	ld	(iy + 7), 0
+	ld	(iy + 2), 0
+	ld	(iy + 1), 0
+	ld	(iy + 0), 0
+
+	ld	b, 3
+.ltod_back:
+	srl	(iy + 7)
+	rr	(iy + 6)
+	rr	(iy + 5)
+	rr	(iy + 4)
+	rr	(iy + 3)
+	rr	(iy + 2)
+	rr	(iy + 1)
+	rr	(iy + 0)
+	djnz	.ltod_back
+
+	res	4, (iy + 6)		; the leading 1 is not stored
+	ld	a, e			; the exponent's low nibble, above it
+	and	a, 0x0f
+	rlca
+	rlca
+	rlca
+	rlca
+	or	a, (iy + 6)
+	ld	(iy + 6), a
+	ld	a, e			; and the rest of it, with the sign
+	rrca
+	rrca
+	rrca
+	rrca
+	and	a, 0x0f
+	ld	b, a
+	ld	a, d
+	rlca
+	rlca
+	rlca
+	rlca
+	and	a, 0x70
+	or	a, b
+	or	a, c
+	ld	(iy + 7), a
+
+.ltod_out:
+	pop	bc
+	pop	de
+	pop	iy
+	ret
+
+; hl -> the slot: a double in its eight bytes, the long written over its
+; first four. Truncated towards zero, as C says; a value too large for a long
+; is undefined and is left to wrap.
+_acc_rt_dtol:
+	push	iy
+	push	de
+	push	bc
+	push	hl
+	push	hl
+	pop	iy
+
+	ld	de, 0			; all three bytes: the subtract below
+					; is a 24-bit one and would read a
+					; stale DEU
+	ld	a, (iy + 7)		; the exponent, across two bytes
+	and	a, 0x7f
+	ld	d, a
+	srl	d			; d:e = the exponent << 4
+	rr	e
+	srl	d
+	rr	e
+	srl	d
+	rr	e
+	srl	d
+	rr	e			; de = (byte 7 & 0x7f) << 4
+	ld	a, (iy + 6)
+	rrca				; its low nibble is the exponent's
+	rrca
+	rrca
+	rrca
+	and	a, 0x0f
+	or	a, e
+	ld	e, a			; de = the biased exponent
+
+	ld	c, (iy + 7)		; the sign, in bit 7
+	ld	a, (iy + 6)		; the significand, with its leading 1
+	and	a, 0x0f
+	or	a, 0x10
+	ld	(iy + 6), a
+	ld	(iy + 7), 0
+
+	; The point is 1075 - e bits up. Below that the value is under one and
+	; comes out zero; far above it the answer does not fit in a long and
+	; is undefined, so anything will do.
+	ld	hl, 1075
+	or	a, a
+	sbc	hl, de
+	jr	c, .dtol_zero		; e > 1075: undefined
+	ld	a, h
+	or	a, a
+	jr	nz, .dtol_zero		; more than 255 bits down: zero
+	ld	b, l
+	or	a, b
+	jr	z, .dtol_sign
+	ld	a, b
+	cp	a, 64
+	jr	nc, .dtol_zero
+.dtol_down:
+	srl	(iy + 6)
+	rr	(iy + 5)
+	rr	(iy + 4)
+	rr	(iy + 3)
+	rr	(iy + 2)
+	rr	(iy + 1)
+	rr	(iy + 0)
+	djnz	.dtol_down
+	jr	.dtol_sign
+
+.dtol_zero:
+	ld	(iy + 0), 0
+	ld	(iy + 1), 0
+	ld	(iy + 2), 0
+	ld	(iy + 3), 0
+	jr	.dtol_out
+
+.dtol_sign:
+	bit	7, c
+	call	nz, .lneg_iy		; the low four bytes are the answer
+
+.dtol_out:
+	pop	hl
+	pop	bc
+	pop	de
+	pop	iy
 	ret

@@ -1,5 +1,5 @@
-/* expect: 3: error: 'long long' is not supported yet */
+/* expect: 3: error: 'long long long' is not a type */
 int main(void) {
-    long long n = 1;
-    return n;
+    long long long n = 1;
+    return (int) n;
 }

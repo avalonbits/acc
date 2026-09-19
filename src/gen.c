@@ -109,7 +109,7 @@ static void struct_used(void)
     acc_error_at(tok_line, "a struct or union cannot be used as a number");
 }
 
-static int  long_scratch(void);
+static int  long_scratch(Type type);
 static void bool_from(void);
 static void bitfield_read(void);
 static void bitfield_write(void);
@@ -123,6 +123,10 @@ static int  is_comparison(int op);
 static void vcmp_pointer_check(Type left, Type right);
 static void convert_int_to_float(void);
 static void convert_float_to_int(Type to);
+static void convert_to_long_double(void);
+static void convert_from_long_double(Type to);
+__attribute__((noreturn))
+static void no_long_double(const char *what);
 static void force_into(Value *target, int want);
 static int  needs_helper(int op);
 static void rt_call(int which);
@@ -431,6 +435,19 @@ void vconvert(Type to)
         return;
     }
 
+    /* A long double is neither a float nor an integer to any path below,
+     * so its conversions are taken here, before any of them. */
+    if (type_ldouble(to)) {
+        convert_to_long_double();
+
+        return;
+    }
+    if (type_ldouble(top->type)) {
+        convert_from_long_double(to);
+
+        return;
+    }
+
     /* Between a float and an integer is a conversion of the value, not of
      * the label on it. Both directions go through an int, so a narrow type
      * widens first and a long is still refused. */
@@ -454,14 +471,17 @@ void vconvert(Type to)
     if (type_wide(to)) {
         int slot;
 
-        if (top->kind == VAL_LOCAL && type_wide(top->type)) {
-            top->type = to;     /* already four bytes in the frame */
+        /* Already in the frame and at least as wide: the low bytes are
+         * where they were, so it is a relabelling. */
+        if (top->kind == VAL_LOCAL && type_wide(top->type)
+            && type_wide_bytes(top->type) >= type_wide_bytes(to)) {
+            top->type = to;
 
             return;
         }
-        slot = long_scratch();
+        slot = long_scratch(to);
         need_disp(slot);
-        need_disp(slot + ACC_LONG_SIZE - 1);
+        need_disp(slot + type_wide_bytes(to) - 1);
         materialise_long(slot, to);
         vdrop();
         vpush(VAL_LOCAL, to, slot);
@@ -1069,7 +1089,7 @@ void vstore_local(int offset, Type type)
 
     if (type_wide(type)) {
         need_disp(offset);
-        need_disp(offset + ACC_LONG_SIZE - 1);
+        need_disp(offset + type_wide_bytes(type) - 1);
         materialise_long(offset, type);
         vdrop();
         vpush(VAL_LOCAL, type, offset);
@@ -1106,10 +1126,13 @@ void vneg(void)
     Value *top = vsp - 1;
     int right;
 
+    if (type_ldouble(top->type))
+        no_long_double("negating a long double");
+
     if (type_float(top->type)) {
         /* Negating a float is its sign bit flipped and nothing else -- no
          * routine, and correct for zero and for every other value alike. */
-        int slot = long_scratch();
+        int slot = long_scratch(TY_FLOAT);
 
         save_regs_below(1);
         materialise_long(slot, top->type);
@@ -1125,7 +1148,7 @@ void vneg(void)
     }
 
     if (type_wide(top->type)) {
-        vunary_long(RT_LNEG, top->type);
+        vunary_long(type_eight(top->type) ? RT_LLNEG : RT_LNEG, top->type);
 
         return;
     }
@@ -1160,11 +1183,11 @@ void vnot(void)
     /* ~ takes an integer. C makes a float operand a constraint violation
      * rather than something to define, so it is named rather than refused as
      * unfinished work. */
-    if (type_float(top->type))
+    if (type_float(top->type) || type_ldouble(top->type))
         acc_error_at(tok_line, "'~' takes an integer, not a floating-point value");
 
     if (type_wide(top->type)) {
-        vunary_long(RT_LNOT, top->type);
+        vunary_long(type_eight(top->type) ? RT_LLNOT : RT_LNOT, top->type);
 
         return;
     }
@@ -1500,9 +1523,15 @@ static void vcmp(int op)
  * the four bytes. That is the shape the chip is good at for something wider
  * than a register, and it reuses the scratch area the allocator already has.
  *
- * On the stack a long is therefore always VAL_LOCAL. Anything that forces it
- * into a register is asking for the int it converts to, which is its low
- * three bytes -- so force_reg does exactly that and needs no special case.
+ * A long long is the same shape with eight bytes instead of four, and a long
+ * double with eight it does no arithmetic on: everything here takes the
+ * width from the type rather than assuming a long's, and the routine it
+ * calls is the eight-byte one. type_wide_bytes is that width.
+ *
+ * On the stack a wide value is therefore always VAL_LOCAL. Anything that
+ * forces it into a register is asking for the int it converts to, which is
+ * its low three bytes -- so force_reg does exactly that and needs no special
+ * case.
  */
 
 static int spill_slot_of(int size);
@@ -1517,20 +1546,29 @@ static void lea_rr_ix(int reg, int disp)
     out_byte3(0xed, lea_code[reg], disp);
 }
 
-/* Copy four bytes from one frame slot to another. */
-static void copy_long(int to, int from)
+/* Copy n bytes from one frame slot to another. */
+static void copy_long(int to, int from, int n)
 {
     int i;
 
-    for (i = 0; i < ACC_LONG_SIZE; i++) {
+    for (i = 0; i < n; i++) {
         ld_a_ix(from + i);
         ld_ix_a(to + i);
     }
 }
 
-/* Write an int-wide value, already in HL, into a long slot: three bytes and
- * then the byte the sign or the zero extension calls for. */
-static void store_int_as_long(int disp, int is_unsigned)
+/* The bytes of a slot from `from` to `to` set to A: the extension of a
+ * value that is narrower than the slot. */
+static void fill_from_a(int disp, int from, int to)
+{
+    need_disp(disp + to - 1);
+    for (; from < to; from++)
+        ld_ix_a(disp + from);
+}
+
+/* Write an int-wide value, already in HL, into a slot of n bytes: three
+ * bytes and then the ones the sign or the zero extension calls for. */
+static void store_int_as_long(int disp, int is_unsigned, int n)
 {
     need_disp(disp);
     ld_ix_rr(disp, R_HL);
@@ -1545,7 +1583,7 @@ static void store_int_as_long(int disp, int is_unsigned)
         pop_rr(R_HL);
         out_byte(0x9f);                 /* sbc a, a: 0 or 0xff */
     }
-    ld_ix_a(disp + ACC_INT_SIZE);
+    fill_from_a(disp, ACC_INT_SIZE, n);
 }
 
 /* An integer becoming a float, and a float becoming an integer. The bytes
@@ -1570,14 +1608,19 @@ static void convert_int_to_float(void)
      * where it lies, which is what the caller wants: a long and a float are
      * the same width and want the same kind of slot. */
     if (type_wide(top->type)) {
-        slot = long_scratch();
+        int eight = type_eight(top->type);
+
+        slot = long_scratch(top->type);
         materialise_long(slot, top->type);
         vdrop();
 
         need_disp(slot);
-        need_disp(slot + ACC_LONG_SIZE - 1);
+        need_disp(slot + type_wide_bytes(top->type) - 1);
         lea_rr_ix(R_HL, slot);
-        rt_call(unsign ? RT_ULTOF : RT_LTOF);
+        if (eight)
+            rt_call(unsign ? RT_ULLTOF : RT_LLTOF);
+        else
+            rt_call(unsign ? RT_ULTOF : RT_LTOF);
         vpush(VAL_LOCAL, TY_FLOAT, slot);
 
         return;
@@ -1585,7 +1628,7 @@ static void convert_int_to_float(void)
 
     force_into(top, R_HL);
 
-    slot = long_scratch();
+    slot = long_scratch(TY_FLOAT);
     need_disp(slot);
     need_disp(slot + ACC_LONG_SIZE - 1);
     lea_rr_ix(R_DE, slot);
@@ -1602,18 +1645,19 @@ static void convert_float_to_int(Type to)
 
     /* The routine takes an address, so a float that is not already in the
      * frame has to be put there. Every float is, as it happens -- four bytes
-     * do not fit in a register -- but materialise_long is what says so. */
-    slot = long_scratch();
+     * do not fit in a register -- but materialise_long is what says so. A
+     * long long's slot is eight bytes, the float in the first four. */
+    slot = type_eight(to) ? long_scratch(to) : long_scratch(TY_FLOAT);
     materialise_long(slot, TY_FLOAT);
     vdrop();
 
     need_disp(slot);
-    need_disp(slot + ACC_LONG_SIZE - 1);
+    need_disp(slot + (type_wide(to) ? type_wide_bytes(to) : ACC_LONG_SIZE) - 1);
     lea_rr_ix(R_HL, slot);
 
     /* A long stays in the frame, where the routine rewrites it in place. */
     if (type_wide(to)) {
-        rt_call(RT_FTOL);
+        rt_call(type_eight(to) ? RT_FTOLL : RT_FTOL);
         vpush(VAL_LOCAL, to, slot);
 
         return;
@@ -1637,29 +1681,115 @@ static void convert_float_to_int(Type to)
  * rather than at each of them. */
 static void check_no_float_mix(Type to, const Value *from)
 {
-    if (type_float(to) == type_float(from->type))
-        return;
     if (from->kind == VAL_CONST && from->val == 0)
         return;                 /* zero is all zero bits either way */
+    if (type_ldouble(to) != type_ldouble(from->type))
+        acc_error("internal: a long double converted as though it were not one");
+    if (type_float(to) == type_float(from->type))
+        return;
 
     acc_error_at(tok_line, "converting between floating-point and integer is "
                            "not implemented yet");
 }
 
-/* Put the top of the stack into a long slot, whatever width it arrived as. */
+/* To and from a long double, which is where its whole arithmetic is: agondev
+ * has __ltod and __dtol and nothing else, so an integer converts and a float
+ * does not. The long long is refused with them: libagon has __dtoll but no
+ * routine the other way, and half a conversion is worse than none. */
+__attribute__((noinline, noreturn))
+static void no_long_double(const char *what)
+{
+    acc_error_at(tok_line, "%s is not supported: agondev's library has no "
+                           "routine for it, and a program that asks for one "
+                           "does not link", what);
+}
+
+static void convert_to_long_double(void)
+{
+    Value *top = vsp - 1;
+    int unsign, slot;
+
+    if (type_float(top->type))
+        no_long_double("converting a float to a long double");
+    if (type_eight(top->type))
+        no_long_double("converting a long long to a long double");
+
+    /* Through a long, which is what the routine takes: everything narrower
+     * widens to one first, and the sign of what it came from says which of
+     * the two routines reads it. */
+    unsign = type_unsigned(top->type) != 0;
+    vconvert(unsign ? TY_ULONG : TY_LONG);
+    save_regs_below(1);
+
+    slot = long_scratch(TY_LDOUBLE);
+    materialise_long(slot, unsign ? TY_ULONG : TY_LONG);
+    vdrop();
+
+    need_disp(slot);
+    need_disp(slot + 7);
+    lea_rr_ix(R_HL, slot);
+    rt_call(unsign ? RT_ULTOD : RT_LTOD);
+    vpush(VAL_LOCAL, TY_LDOUBLE, slot);
+}
+
+static void convert_from_long_double(Type to)
+{
+    int slot;
+
+    if (type_float(to))
+        no_long_double("converting a long double to a float");
+    if (type_eight(to))
+        no_long_double("converting a long double to a long long");
+
+    save_regs_below(1);
+    slot = long_scratch(TY_LDOUBLE);
+    materialise_long(slot, TY_LDOUBLE);
+    vdrop();
+
+    need_disp(slot);
+    need_disp(slot + 7);
+    lea_rr_ix(R_HL, slot);
+    rt_call(RT_DTOL);
+
+    /* A long, from here on: the routine wrote one over the first four bytes,
+     * and anything narrower is the ordinary integer conversion. */
+    vpush(VAL_LOCAL, type_unsigned(to) ? TY_ULONG : TY_LONG, slot);
+    if (to != TY_LONG && to != TY_ULONG)
+        vconvert(to);
+}
+
+/* Put the top of the stack into a wide slot, whatever width it arrived as:
+ * a long into a long long's slot is extended by its sign or by zero, and a
+ * long long into a long's is its low four bytes. */
 static void materialise_long(int disp, Type type)
 {
     Value *top = vsp - 1;
+    int n = type_wide_bytes(type);
 
     check_no_float_mix(type, top);
 
     if (top->kind == VAL_LOCAL && type_wide(top->type)) {
-        copy_long(disp, top->val);
+        int from = type_wide_bytes(top->type);
+
+        if (top->val == disp && from == n)
+            return;                     /* already there */
+        if (from >= n) {
+            copy_long(disp, top->val, n);
+
+            return;
+        }
+        copy_long(disp, top->val, from);
+        if (type_unsigned(top->type)) {
+            out_byte(0xaf);                     /* xor a, a */
+        } else {
+            out_byte2(0x87, 0x9f);              /* add a, a; sbc a, a */
+        }
+        fill_from_a(disp, from, n);
 
         return;
     }
     force_into(top, R_HL);
-    store_int_as_long(disp, type_unsigned(top->type));
+    store_int_as_long(disp, type_unsigned(top->type), n);
 }
 
 /* A floating constant, laid down as the four bytes the machine reads. The
@@ -1683,27 +1813,120 @@ void vpush_const_float(float val)
 }
 
 /* A constant too wide for a register goes straight to a frame slot, which is
- * where every long lives. */
+ * where every long lives. `high` is the upper half of a long long's. */
 void vpush_const_long(long val, Type type)
 {
-    int slot = spill_slot_of(ACC_LONG_SIZE);
+    vpush_const_wide((uint32_t) val, 0, type);
+}
+
+/* A long double constant: the eight bytes of the double, which the compiler
+ * worked out, laid down in the frame where every wide value lives. */
+void vpush_const_double(uint64_t bits)
+{
+    vpush_const_wide((uint32_t) bits, (uint32_t) (bits >> 32), TY_LDOUBLE);
+}
+
+void vpush_const_wide(uint32_t low, uint32_t high, Type type)
+{
+    int n = type_wide_bytes(type);
+    int slot = spill_slot_of(n);
     int i;
 
     need_disp(slot);
-    need_disp(slot + ACC_LONG_SIZE - 1);
-    for (i = 0; i < ACC_LONG_SIZE; i++) {
+    need_disp(slot + n - 1);
+    for (i = 0; i < n; i++) {
+        uint32_t half = i < 4 ? low : high;
+
         out_byte(0x3e);                         /* ld a, n */
-        out_byte((int) ((val >> (i * 8)) & 0xff));
+        out_byte((int) ((half >> (i % 4 * 8)) & 0xff));
         ld_ix_a(slot + i);
     }
     vpush(VAL_LOCAL, type, slot);
 }
 
-/* One scratch long, for the left operand of an operation to be built in and
- * overwritten by the result. */
-static int long_scratch(void)
+/* One scratch slot as wide as the type, for the left operand of an operation
+ * to be built in and overwritten by the result. */
+static int long_scratch(Type type)
 {
-    return spill_slot_of(ACC_LONG_SIZE);
+    return spill_slot_of(type_wide_bytes(type));
+}
+
+/* Scratch reused within a statement, which is what an eight-byte value needs.
+ *
+ * The slots are a high-water mark released at the end of the statement, and
+ * that is all a four-byte long ever needed: two slots an operator, against a
+ * frame that reaches 128 bytes. Eight-byte values run it out -- `a * 3LL !=
+ * 3000000000000LL` takes forty bytes of scratch, and a handful of those is a
+ * whole frame.
+ *
+ * What an operator can give back is the scratch its own operands are in: a
+ * constant put in the frame for it, or the answer of the operator below it,
+ * is dead the moment this one has read it. So the answer is built at the
+ * lowest of those rather than on top of them, and the mark comes back to
+ * just past it. Everything else the statement is holding stays where it is:
+ * spill_floor is where the values still on the stack end, and nothing is
+ * built below that.
+ *
+ * A slot is described by where it starts in the scratch area, which is what
+ * the displacement and the width say between them. */
+static int spill_start_of(const Value *v, int *size)
+{
+    int bytes = type_wide(v->type) ? type_wide_bytes(v->type)
+                                   : type_scalar_bytes(type_promote(v->type));
+    int start;
+
+    if (v->kind != VAL_LOCAL || v->val >= -locals_size)
+        return -1;                      /* a local of its own, not scratch */
+
+    start = -v->val - locals_size - bytes;
+    if (start < 0 || start + bytes > spill_peak)
+        return -1;                      /* not the scratch area at all */
+    *size = bytes;
+
+    return start;
+}
+
+/* Where the values under the operands end: the operator builds nothing
+ * below this. */
+static int spill_floor(int operands)
+{
+    int floor = 0, size, i;
+
+    for (i = 0; i < vtop - operands; i++) {
+        int start = spill_start_of(vstack + i, &size);
+
+        if (start >= 0 && start + size > floor)
+            floor = start + size;
+    }
+
+    return floor;
+}
+
+/* The lowest place this operator may build its answer: the floor, unless an
+ * operand's own scratch starts lower. */
+static int spill_lowest(int operands)
+{
+    int low = spill_used, floor = spill_floor(operands), size, i;
+
+    for (i = vtop - operands; i < vtop; i++) {
+        int start = spill_start_of(vstack + i, &size);
+
+        if (start >= 0 && start < low)
+            low = start;
+    }
+
+    return low < floor ? floor : low;
+}
+
+/* A slot at a given place in the scratch area, which may be one an operand
+ * is still in: what materialise_long writes there is read from the same
+ * place or from above it, never from below. */
+static int slot_at(int start, int size)
+{
+    if (start + size > spill_peak)
+        spill_peak = start + size;
+
+    return -(locals_size + start + size);
 }
 
 /* Which routine applies an operator to two four-byte values. A float has its
@@ -1734,10 +1957,33 @@ static int float_helper(int op)
     return -1;
 }
 
+/* The long long routines, in the order of the operators' long ones. */
+static int long_long_helper(int op, Type type)
+{
+    switch (op) {
+    case TK_PLUS:  return RT_LLADD;
+    case TK_MINUS: return RT_LLSUB;
+    case TK_AMP:   return RT_LLAND;
+    case TK_PIPE:  return RT_LLOR;
+    case TK_CARET: return RT_LLXOR;
+    case TK_STAR:  return RT_LLMUL;
+    case TK_SHL:   return RT_LLSHL;
+    case TK_SHR:   return type_unsigned(type) ? RT_LLSHRU : RT_LLSHRS;
+    case TK_SLASH: return type_unsigned(type) ? RT_LLDIVU : RT_LLDIVS;
+    case TK_PERCENT: return type_unsigned(type) ? RT_LLREMU : RT_LLREMS;
+    }
+
+    return -1;
+}
+
 static int long_helper(int op, Type type)
 {
+    if (type_ldouble(type))
+        no_long_double("arithmetic on a long double");
     if (type_float(type))
         return float_helper(op);
+    if (type_eight(type))
+        return long_long_helper(op, type);
 
     switch (op) {
     case TK_PLUS:  return RT_LADD;
@@ -1772,12 +2018,12 @@ static void vunary_long(int which, Type type)
 
     save_regs_below(1);
 
-    slot = long_scratch();
+    slot = long_scratch(type);
     materialise_long(slot, type);
     vdrop();
 
     need_disp(slot);
-    need_disp(slot + ACC_LONG_SIZE - 1);
+    need_disp(slot + type_wide_bytes(type) - 1);
     lea_rr_ix(R_HL, slot);
     rt_call(which);
 
@@ -1796,20 +2042,31 @@ static void vbinop_long(int op, Type result)
      * was overwritten by the second of them, so `(a == 1) + (b == 2)` lost
      * the first comparison. The top two are the operands and are exempt:
      * they are about to be copied into the frame and dropped. */
+    int n = type_wide_bytes(result);
+    int low, rstart;
+
+    /* After the spills, not before: a register the call below puts in the
+     * frame is a value under the operands, and the floor has to know about
+     * it. */
     save_regs_below(2);
+    low = spill_lowest(2);
+    rstart = spill_used > low + n ? spill_used : low + n;
 
     which = long_helper(op, result);
     if (which < 0)
         acc_error_at(tok_line, "the operator %s is not implemented for %s yet",
                      tok_spelling(op), type_float(result) ? "float" : "long");
 
-    /* The right operand first, because building the left one may need HL and
-     * the right may still be an expression on the stack. */
-    right = long_scratch();
+    /* The right operand is built first, because building the left one may
+     * need HL and the right may still be an expression on the stack. The
+     * left goes where the answer is to be, which is at or below where the
+     * operands are. */
+    left = slot_at(low, n);
+    right = slot_at(rstart, n);
+    spill_used = rstart + n;
     materialise_long(right, result);
     vdrop();
 
-    left = long_scratch();
     materialise_long(left, result);
     vdrop();
 
@@ -1819,6 +2076,7 @@ static void vbinop_long(int op, Type result)
     lea_rr_ix(R_DE, right);
     rt_call(which);
 
+    spill_used = low + n;               /* the answer, and nothing else */
     vpush(VAL_LOCAL, result, left);
 }
 
@@ -1884,6 +2142,8 @@ static void cmp_from_code(int op)
 static void vcmp_wide(int op, Type operand)
 {
     int floating = type_float(operand);
+    int n = type_wide_bytes(operand);
+    int low, rstart;
     int left, right;
 
     /* Anything else live in a register has to come out first. The two lea
@@ -1894,12 +2154,15 @@ static void vcmp_wide(int op, Type operand)
      * the first comparison. The top two are the operands and are exempt:
      * they are about to be copied into the frame and dropped. */
     save_regs_below(2);
+    low = spill_lowest(2);
+    rstart = spill_used > low + n ? spill_used : low + n;
 
-    right = long_scratch();
+    left = slot_at(low, n);
+    right = slot_at(rstart, n);
+    spill_used = rstart + n;
     materialise_long(right, operand);
     vdrop();
 
-    left = long_scratch();
     materialise_long(left, operand);
     vdrop();
 
@@ -1913,6 +2176,7 @@ static void vcmp_wide(int op, Type operand)
         lea_rr_ix(R_DE, right);
         rt_call(RT_FCMP);
         cmp_from_code(op);
+        spill_used = low;               /* the answer is in HL */
         vpush_reg(R_HL);
 
         return;
@@ -1931,13 +2195,13 @@ static void vcmp_wide(int op, Type operand)
     lea_rr_ix(R_DE, right);
 
     if (tok_pair(op, TK_EQ)) {
-        rt_call(RT_LCMPEQ);
+        rt_call(type_eight(operand) ? RT_LLCMPEQ : RT_LCMPEQ);
         cmp_equal(op == TK_EQ);
     } else {
         /* The last subtract of the four leaves S, P/V and C describing the
          * whole width, so the same branch sequence the 24-bit comparisons use
          * reads them unchanged. */
-        rt_call(RT_LCMPORD);
+        rt_call(type_eight(operand) ? RT_LLCMPORD : RT_LCMPORD);
 
         /* A key is unsigned by construction: that is what makes the negative
          * floats sort below the positive ones. */
@@ -1946,6 +2210,7 @@ static void vcmp_wide(int op, Type operand)
         else
             cmp_signed(op == TK_LT);
     }
+    spill_used = low;
     vpush_reg(R_HL);
 }
 
@@ -2067,9 +2332,25 @@ void gen_switch_load(int slot, Type type)
  * subtraction set it, so the value is loaded once however many cases there
  * are. A long compares its top byte in A first and skips the rest when that
  * differs. */
-void gen_switch_case(long value, Type type, int target)
+void gen_switch_case(long value, uint32_t high, Type type, int target,
+                     int slot)
 {
-    if (type_wide(type)) {
+    /* A long long compares its top five bytes from the frame, one at a time,
+     * and the low three in HL as anything else does. Each miss jumps past
+     * the rest of the case: the groups after it, seven bytes each, and the
+     * twelve of the tail. */
+    if (type_eight(type)) {
+        int k;
+
+        need_disp(slot + 7);
+        for (k = 7; k >= ACC_INT_SIZE; k--) {
+            uint32_t half = k >= 4 ? high : (uint32_t) value;
+
+            ld_a_ix(slot + k);
+            out_byte2(0xfe, (int) (half >> (k % 4 * 8)) & 0xff);   /* cp n */
+            out_byte2(0x20, 12 + (k - ACC_INT_SIZE) * 7);   /* jr nz */
+        }
+    } else if (type_wide(type)) {
         out_byte2(0xfe, (int) ((unsigned long) value >> 24) & 0xff);  /* cp n */
         out_byte2(0x20, 12);                    /* jr nz, past the rest */
     }
@@ -2158,9 +2439,13 @@ void gen_label(int hole)
  * share code -- the four ways of dividing are one loop with four ways in --
  * and splitting them would mean four copies of that loop. A program that uses
  * any of them carries all of them, which at a few hundred bytes against the
- * Agon's 448 KB is the cheaper trade. */
+ * Agon's 448 KB is the cheaper trade.
+ *
+ * With one cut, at RT_SPLIT: the eight-byte routines are another 800 bytes
+ * and nothing above the cut calls anything below it, so a program that never
+ * uses a long long or a long double does not carry them. */
 static int rt_base = 0;                 /* where the blob landed */
-static int rt_any_used;
+static int rt_any_used;                 /* 1 for the first part, 2 for all */
 
 typedef struct {
     unsigned char which;
@@ -2191,7 +2476,12 @@ static void rt_call(int which)
         if (!rt_fixups)
             acc_error("out of memory for the runtime fixups");
     }
-    rt_any_used = 1;
+    /* The long long routines are past RT_SPLIT, and only a program that
+     * calls one of them carries them. */
+    if (rt_entry[which] >= RT_SPLIT)
+        rt_any_used = 2;
+    else if (!rt_any_used)
+        rt_any_used = 1;
 
     out_opcode24(0xcd, 0);                       /* call nn */
     rt_fixups[nrt_fixups].which = (unsigned char) which;
@@ -2201,19 +2491,21 @@ static void rt_call(int which)
 
 static void rt_emit_used(void)
 {
-    int i;
+    int i, len;
 
     if (!rt_any_used)
         return;
 
+    len = rt_any_used == 2 ? (int) sizeof rt_code : RT_SPLIT;
     rt_base = out_here();
-    for (i = 0; i < (int) sizeof rt_code; i++)
+    for (i = 0; i < len; i++)
         out_byte(rt_code[i]);
 
     /* The calls the routines make to each other, now that the blob has an
-     * address. */
+     * address -- those in the part that was laid down. */
     for (i = 0; i < RT_NFIX; i++)
-        out_patch24(rt_base + rt_fix[i].at, rt_base + rt_fix[i].to);
+        if (rt_fix[i].at < len)
+            out_patch24(rt_base + rt_fix[i].at, rt_base + rt_fix[i].to);
 
     /* And the calls the compiled program makes to them. */
     for (i = 0; i < nrt_fixups; i++)
@@ -2568,12 +2860,24 @@ void gen_return(int line)
         if (type_wide(return_type)) {
             /* HL with the high byte in E, which is where agondev puts a
              * four-byte result. The value is in the frame, so this is two
-             * loads. */
+             * loads. An eight-byte one is HL, DE and BC from the bottom up,
+             * BC's upper byte reading one past the slot, which the caller
+             * does not look at. */
+            int at;
+
             vconvert(return_type);
-            need_disp((vsp - 1)->val);
-            need_disp((vsp - 1)->val + ACC_LONG_SIZE - 1);
-            ld_rr_ix(R_HL, (vsp - 1)->val);
-            ld_e_ix((vsp - 1)->val + ACC_INT_SIZE);
+            at = (vsp - 1)->val;
+            need_disp(at);
+            if (type_eight(return_type)) {
+                need_disp(at + 2 * ACC_INT_SIZE);
+                ld_rr_ix(R_HL, at);
+                ld_rr_ix(R_DE, at + ACC_INT_SIZE);
+                ld_rr_ix(R_BC, at + 2 * ACC_INT_SIZE);
+            } else {
+                need_disp(at + ACC_LONG_SIZE - 1);
+                ld_rr_ix(R_HL, at);
+                ld_e_ix(at + ACC_INT_SIZE);
+            }
             vdrop();
             out_byte2(0xdd, 0xf9);      /* ld sp, ix */
             out_byte2(0xdd, 0xe1);      /* pop ix */
@@ -2757,7 +3061,24 @@ static void call_to(const Callee *callee, int nargs, int params_first,
             vconvert(param);
         }
 
-        if (type_wide(vtype())) {
+        if (type_eight(vtype())) {
+            /* Three slots, nine bytes, which is what agondev gives a long
+             * long: the top one first, so that the eight bytes lie in order
+             * from the lowest address. The ninth is read from past the end
+             * of the value and means nothing. */
+            int slot = (vsp - 1)->val;
+
+            need_disp(slot);
+            need_disp(slot + 2 * ACC_INT_SIZE);
+            ld_rr_ix(R_HL, slot + 2 * ACC_INT_SIZE);
+            push_rr(R_HL);
+            ld_rr_ix(R_HL, slot + ACC_INT_SIZE);
+            push_rr(R_HL);
+            ld_rr_ix(R_HL, slot);
+            push_rr(R_HL);
+            vdrop();
+            argslots += 3;
+        } else if (type_wide(vtype())) {
             /* Two slots, six bytes, which is what agondev gives a long. The
              * high half goes first because the stack grows downwards, so the
              * low bytes end up at the lower address. */
@@ -2807,6 +3128,27 @@ static void call_to(const Callee *callee, int nargs, int params_first,
     /* Discarded into DE, the cheapest form -- but for a long, whose high
      * byte comes back in E, into BC: popping DE put an argument's byte in
      * its place. */
+    if (type_eight(callee->type)) {
+        /* HL, DE and BC all hold the answer, so the arguments come off
+         * into IY. */
+        int slot = spill_slot_of(8);
+
+        for (i = 0; i < argslots; i++)
+            out_byte2(0xfd, 0xe1);              /* pop iy */
+        need_disp(slot);
+        need_disp(slot + 7);
+        ld_ix_rr(slot, R_HL);
+        ld_ix_rr(slot + ACC_INT_SIZE, R_DE);
+        out_byte(0x79);                         /* ld a, c */
+        ld_ix_a(slot + 2 * ACC_INT_SIZE);
+        out_byte(0x78);                         /* ld a, b */
+        ld_ix_a(slot + 7);
+        vpush(VAL_LOCAL, callee->type, slot);
+        (vsp - 1)->ext = (unsigned char) callee->ext;
+
+        return;
+    }
+
     for (i = 0; i < argslots; i++)
         pop_rr(type_wide(callee->type) ? R_BC : R_DE);
 
@@ -2970,8 +3312,17 @@ static void vbinop_pointer(int op, Type left, Type right)
  * than zero. Making it unsigned long made it 4294967295. */
 static Type common_wide(Type left, Type right)
 {
+    if (type_ldouble(left) || type_ldouble(right))
+        no_long_double("arithmetic on a long double");
     if (type_float(left) || type_float(right))
         return TY_FLOAT;
+
+    /* A long long holds every long and every unsigned long, so it is signed
+     * unless one of the two was an unsigned long long. */
+    if (type_eight(left) || type_eight(right))
+        return (type_eight(left) && type_unsigned(left))
+               || (type_eight(right) && type_unsigned(right))
+               ? TY_ULLONG : TY_LLONG;
     if ((type_wide(left) && type_unsigned(left))
         || (type_wide(right) && type_unsigned(right)))
         return TY_ULONG;
@@ -3195,15 +3546,16 @@ void vderef(void)
     force_into(top, R_HL);
 
     if (type_wide(to)) {
-        int slot = long_scratch();
+        int n = type_wide_bytes(to);
+        int slot = long_scratch(to);
         int i;
 
         need_disp(slot);
-        need_disp(slot + ACC_LONG_SIZE - 1);
-        for (i = 0; i < ACC_LONG_SIZE; i++) {
+        need_disp(slot + n - 1);
+        for (i = 0; i < n; i++) {
             ld_a_hl();
             ld_ix_a(slot + i);
-            if (i < ACC_LONG_SIZE - 1)
+            if (i < n - 1)
                 inc_hl();
         }
         vdrop();
@@ -3334,7 +3686,8 @@ void vstore_indirect(void)
     vconvert(to);
 
     if (type_wide(to)) {
-        int slot = long_scratch();
+        int n = type_wide_bytes(to);
+        int slot = long_scratch(to);
         int i;
 
         /* The value first, because building it may want HL, and the address
@@ -3343,11 +3696,11 @@ void vstore_indirect(void)
         vdrop();
         force_into(vsp - 1, R_HL);
         need_disp(slot);
-        need_disp(slot + ACC_LONG_SIZE - 1);
-        for (i = 0; i < ACC_LONG_SIZE; i++) {
+        need_disp(slot + n - 1);
+        for (i = 0; i < n; i++) {
             ld_a_ix(slot + i);
             ld_hl_a();
-            if (i < ACC_LONG_SIZE - 1)
+            if (i < n - 1)
                 inc_hl();
         }
         vdrop();
@@ -3583,10 +3936,10 @@ static void vsnapshot(void)
 
     if (type_wide(top->type)) {
         Type type = top->type;
-        int slot = long_scratch();
+        int slot = long_scratch(type);
 
         need_disp(slot);
-        need_disp(slot + ACC_LONG_SIZE - 1);
+        need_disp(slot + type_wide_bytes(type) - 1);
         materialise_long(slot, type);
         vdrop();
         vpush(VAL_LOCAL, type, slot);
@@ -3690,6 +4043,8 @@ static Type cond_type(Type a, int a_null, Type b, int b_null)
                          : "a pointer and a number that is not 0");
     }
 
+    if (type_ldouble(a) && a == b)
+        return a;                       /* the same type: nothing to convert */
     if (type_wide(a) || type_wide(b))
         return common_wide(a, b);
 
@@ -3718,7 +4073,7 @@ static void cond_park(int slot)
  * to the frame first, because from here the two paths diverge. */
 int gen_cond_begin(int *slot)
 {
-    *slot = long_scratch();
+    *slot = long_scratch(TY_LONG);
     need_disp(*slot);
     need_disp(*slot + ACC_LONG_SIZE - 1);
     save_regs_below(1);
@@ -3730,7 +4085,7 @@ int gen_cond_begin(int *slot)
  * stub that does not exist yet. What the answer's type is depends on the
  * third operand, which has not been parsed, so converting now would be
  * guessing. */
-int gen_cond_middle(int slot, Type *middle, int *middle_ext, int *middle_null)
+int gen_cond_middle(int *slot, Type *middle, int *middle_ext, int *middle_null)
 {
     Value *top = vsp - 1;
 
@@ -3744,7 +4099,11 @@ int gen_cond_middle(int slot, Type *middle, int *middle_ext, int *middle_null)
     *middle = top->type;
     *middle_ext = top->ext | top->quals << 8 | was_struct;  /* all, in one */
     *middle_null = (top->kind == VAL_CONST && top->val == 0);
-    cond_park(slot);
+
+    /* The slot begin made is a long's; a long long needs one of its own. */
+    if (type_eight(top->type))
+        *slot = long_scratch(top->type);
+    cond_park(*slot);
 
     return jump_op(JP_ANY);
 }
@@ -3771,10 +4130,15 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
     Type result = cond_type(middle, middle_null, top->type, third_null);
     int ext = third_null ? middle_ext & 0xff : top->ext; /* the side not 0 */
     int quals = (middle_ext >> 8 | top->quals) & 0xff;
-    int done;
+    int done, park = slot;
+
+    /* A long long answer from a middle that was not one: where the middle
+     * was parked is too small, so the answer goes somewhere new. */
+    if (type_eight(result) && !type_eight(middle))
+        park = long_scratch(result);
 
     vconvert(result);
-    cond_park(slot);
+    cond_park(park);
     done = jump_op(JP_ANY);
 
     patch_to_here(to_stub);
@@ -3783,11 +4147,11 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
     else
         vpush(VAL_REG, type_promote(middle), R_HL);
     vconvert(result);
-    cond_park(slot);
+    cond_park(park);
 
     patch_to_here(done);
     if (type_wide(result))
-        vpush(VAL_LOCAL, result, slot);
+        vpush(VAL_LOCAL, result, park);
     else
         vpush(VAL_REG, result, R_HL);
     (vsp - 1)->ext = (unsigned char) ext;

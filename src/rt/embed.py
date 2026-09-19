@@ -49,7 +49,10 @@ def main(asm, out, tools):
         fixups.append((int(at, 16), int(addend, 16)))
 
     # Global symbols only: the entry points, in address order.
+    # And acc_rt_split, where the blob may be cut: what is below it is only
+    # emitted into a program that uses it.
     entries = []
+    split = len(text)
     for line in run(tools + '/ez80-none-elf-nm', obj).splitlines():
         parts = line.split()
         if len(parts) != 3:
@@ -57,7 +60,13 @@ def main(asm, out, tools):
         addr, kind, name = parts
         if kind == 'T' and name.startswith('_acc_rt_'):
             entries.append((int(addr, 16), name[len('_acc_rt_'):]))
+        if kind == 'T' and name == 'acc_rt_split':
+            split = int(addr, 16)
     entries.sort()
+    for at, to in fixups:
+        if at < split and to >= split:
+            sys.exit('%s: a helper above acc_rt_split calls one below it, '
+                     'which may not have been emitted' % asm)
 
     with open(out, 'w') as f:
         f.write('/* Generated from %s by %s. Do not edit.\n'
@@ -86,6 +95,9 @@ def main(asm, out, tools):
         f.write('/* Calls from one routine to another: the address at `at` is the\n'
                 ' * blob\'s base plus `to`. */\n')
         f.write('typedef struct { short at, to; } RtFix;\n\n')
+        f.write('/* Where the blob may be cut: the helpers from here on are\n'
+                ' * emitted only when a program uses one of them. */\n')
+        f.write('#define RT_SPLIT %d\n\n' % split)
         f.write('#define RT_NFIX %d\n\n' % len(fixups))
         if fixups:
             f.write('static const RtFix rt_fix[RT_NFIX] = {\n')

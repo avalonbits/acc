@@ -1,5 +1,5 @@
-/* expect: 3: error: the constant is too large for a long */
+/* expect: 3: error: the constant does not fit in 64 bits */
 int main(void) {
-    long n = 3000000000;
-    return n;
+    unsigned long long n = 99999999999999999999999;
+    return (int) n;
 }

@@ -39,6 +39,15 @@
 #define DIGITS      120
 #define HEX_DIGITS  32
 
+/* And for a double, whose boundaries are longer: 767 digits is the bound a
+ * double's own boundary reaches, which no arithmetic here could hold -- the
+ * numerator would be a kilobyte. 340 is what is kept, and the digits past it
+ * say only that there is more, which is the sticky bit. So a long double
+ * literal is correctly rounded unless its first 340 significant digits land
+ * exactly on the boundary between two doubles and the ones after decide it,
+ * which no literal anybody writes does. */
+#define DIGITS_D    340
+
 /* A non-negative integer, a byte to a limb, lowest first. Bytes because a
  * byte times a byte fits in the 24 bits an int has on the Agon, so every step
  * below is native arithmetic there.
@@ -47,7 +56,7 @@
  * simply zero -- 120 digits past the 46th place, 10^166, is 552 bits -- and
  * then the 26 the division shifts it by. Static, because the frames on the
  * Agon have to stay small, and there are three. */
-#define LIMBS 88
+#define LIMBS 300
 
 typedef struct {
     unsigned char b[LIMBS];
@@ -300,23 +309,37 @@ uint32_t float_from_int(uint32_t magnitude, int negative)
  * digits with a point and a binary exponent -- an exponent is only taken if a
  * digit follows the letter, and the point needs no digits either side of it
  * so long as there is one somewhere. */
-const char *float_literal(const char *s, uint32_t *bits)
+/* What the digits of a literal came to: `num` holds the ones kept, and this
+ * says how they are to be read. Shared by the float and the double, which
+ * differ only in how many digits they keep and in what is done with them
+ * afterwards. */
+typedef struct {
+    int  hex;           /* 0x, with a binary exponent */
+    int  kept;          /* digits in num; 0 means the value is zero */
+    int  seen;          /* any digits at all: no digits is not a literal */
+    int  sticky;        /* a digit past the last kept one was not zero */
+    long scale;         /* a power of the base the kept digits are off by */
+    long power2;        /* and a power of two on top, for hex */
+} Digits;
+
+/* The literal's digits, into num and g; where the literal ends is returned.
+ * `most` is how many digits are kept -- past that they only make the value
+ * sticky, since what they can still decide is one bit. */
+static const char *literal_digits(const char *s, int most, Digits *g)
 {
     const char *p = s;
-    int hex = (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')
-               && (hex_value((unsigned char) p[2]) >= 0
-                   || (p[2] == '.' && hex_value((unsigned char) p[3]) >= 0)));
-    int base = hex ? 16 : 10, most = hex ? HEX_DIGITS : DIGITS;
-    int kept = 0, seen = 0, point = 0, sticky = 0;
-    long scale = 0;     /* a power of the base the kept digits are off by */
-    long power2 = 0;    /* and a power of two on top, for hex */
+    int base, point = 0;
     long exp;
-    int num_bits, k, i;
-    uint32_t q;
 
-    *bits = 0;
+    g->hex = (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')
+              && (hex_value((unsigned char) p[2]) >= 0
+                  || (p[2] == '.' && hex_value((unsigned char) p[3]) >= 0)));
+    g->kept = g->seen = g->sticky = 0;
+    g->scale = g->power2 = 0;
+    base = g->hex ? 16 : 10;
+
     big_set(&num, 0);
-    if (hex)
+    if (g->hex)
         p += 2;
 
     for (;; p++) {
@@ -326,46 +349,68 @@ const char *float_literal(const char *s, uint32_t *bits)
             point = 1;
             continue;
         }
-        d = hex ? hex_value((unsigned char) *p)
-                : (is_digit((unsigned char) *p) ? *p - '0' : -1);
+        d = g->hex ? hex_value((unsigned char) *p)
+                   : (is_digit((unsigned char) *p) ? *p - '0' : -1);
         if (d < 0)
             break;
-        seen = 1;
-        if (kept == 0 && d == 0) {          /* a leading zero */
+        g->seen = 1;
+        if (g->kept == 0 && d == 0) {       /* a leading zero */
             if (point)
-                scale--;
+                g->scale--;
             continue;
         }
-        if (kept < most) {
+        if (g->kept < most) {
             big_mul_add(&num, (unsigned) base, (unsigned) d);
-            kept++;
+            g->kept++;
             if (point)
-                scale--;
+                g->scale--;
         } else {
             if (d)
-                sticky = 1;
+                g->sticky = 1;
             if (!point)
-                scale++;
+                g->scale++;
         }
     }
-    if (!seen)
+    if (!g->seen)
         return s;
 
-    if (hex) {
+    if (g->hex) {
         if ((*p == 'p' || *p == 'P')
             && (is_digit((unsigned char) p[1])
                 || ((p[1] == '+' || p[1] == '-') && is_digit((unsigned char) p[2])))) {
             p = read_exponent(p + 1, &exp);
-            power2 = exp;
+            g->power2 = exp;
         }
-        power2 += scale * 4;
-        scale = 0;
+        g->power2 += g->scale * 4;
+        g->scale = 0;
     } else if ((*p == 'e' || *p == 'E')
                && (is_digit((unsigned char) p[1])
                    || ((p[1] == '+' || p[1] == '-') && is_digit((unsigned char) p[2])))) {
         p = read_exponent(p + 1, &exp);
-        scale += exp;
+        g->scale += exp;
     }
+
+    return p;
+}
+
+const char *float_literal(const char *s, uint32_t *bits)
+{
+    Digits g;
+    const char *p = literal_digits(s, (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+                                      ? HEX_DIGITS : DIGITS, &g);
+    int hex, kept, sticky;
+    long scale, power2;
+    int num_bits, k, i;
+    uint32_t q;
+
+    *bits = 0;
+    if (!g.seen)
+        return s;
+    hex = g.hex;
+    kept = g.kept;
+    sticky = g.sticky;
+    scale = g.scale;
+    power2 = g.power2;
 
     if (kept == 0)
         return p;                           /* zero, however it was written */
@@ -468,6 +513,139 @@ const char *float_literal(const char *s, uint32_t *bits)
 
     /* The value is q * 2^(power2 - k), and a little more if sticky. */
     *bits = float_pack(q, ((q >> 25) ? 25 : 24) - k + (int) power2, sticky);
+
+    return p;
+}
+
+/* ------------------------------------------------------------------ */
+/* double                                                              */
+
+/* A long double is an eight-byte IEEE 754 double, and a literal with an L
+ * suffix is one. The same rounding as a float's, at 53 bits of significand
+ * and 11 of exponent -- and only the big-integer path, because a long double
+ * literal is rare enough that a fast one would be code nothing runs. */
+static uint64_t double_pack(uint64_t q, int e, int sticky)
+{
+    int bl = (q >> 54) ? 55 : 54;
+    int p_bits = (e >= -1022) ? 53 : e + 1075;  /* bits the result can hold */
+    int drop;
+    uint64_t half, rem, m;
+
+    if (p_bits < 0)
+        return 0;                               /* under half the smallest */
+
+    drop = bl - p_bits;
+    half = (uint64_t) 1 << (drop - 1);
+    rem = q & ((half << 1) - 1);
+    m = q >> drop;
+    if (rem > half || (rem == half && (sticky || (m & 1))))
+        m++;
+
+    /* Subnormal, and a mantissa that rounded up to 2^52 is the smallest
+     * normal number, which is what those bits say without help. */
+    if (e < -1022)
+        return m;
+    if (m == (uint64_t) 1 << 53) {
+        m >>= 1;
+        e++;
+    }
+    if (e > 1023)
+        return 0x7ff0000000000000ULL;
+
+    return ((uint64_t) (e + 1023) << 52) | (m & 0xfffffffffffffULL);
+}
+
+/* The double nearest an integer, given as a magnitude and a sign: what a
+ * global's initial value is when an integer constant initialises a long
+ * double. Every value under 2^53 is exact. */
+uint64_t double_from_int(uint64_t magnitude, int negative)
+{
+    int bl = bits64(magnitude), sticky = 0;
+    uint64_t q = magnitude, sign = negative ? (uint64_t) 1 << 63 : 0;
+
+    if (magnitude == 0)
+        return sign;
+    if (bl < 55) {
+        q <<= 55 - bl;
+    } else {
+        sticky = (q & (((uint64_t) 1 << (bl - 55)) - 1)) != 0;
+        q >>= bl - 55;
+    }
+
+    return double_pack(q, bl - 1, sticky) | sign;
+}
+
+/* The literal at s: its bits as a double, and where it ends, as
+ * float_literal does it for a float. */
+const char *double_literal(const char *s, uint64_t *bits)
+{
+    Digits g;
+    const char *p = literal_digits(s, (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+                                      ? HEX_DIGITS : DIGITS_D, &g);
+    int k, i;
+    uint64_t q;
+
+    *bits = 0;
+    if (!g.seen)
+        return s;
+    if (g.kept == 0)
+        return p;                           /* zero, however it was written */
+
+    /* Out of range either way, told from where the leading digit falls, and
+     * before any of the big arithmetic: 10^310 is past the largest double,
+     * and a value below 10^-324 is less than half the smallest one. */
+    if (!g.hex) {
+        long lead = g.kept + g.scale;       /* the value is below 10^lead */
+
+        if (lead > 310) {
+            *bits = 0x7ff0000000000000ULL;
+
+            return p;
+        }
+        if (lead < -324)
+            return p;
+    } else {
+        long lead = big_bits(&num) + g.power2;  /* the value is below 2^lead */
+
+        if (lead > 1025) {
+            *bits = 0x7ff0000000000000ULL;
+
+            return p;
+        }
+        if (lead < -1080)
+            return p;
+    }
+
+    /* num / den scaled by 2^k, so that the quotient has 54 or 55 bits: the
+     * 53 a double keeps, one more to say which side of the halfway point it
+     * is on, and the remainder to say whether it is exactly on it. */
+    big_set(&den, 1);
+    for (; g.scale > 0; g.scale--)
+        big_mul_add(&num, 10, 0);
+    for (; g.scale < 0; g.scale++)
+        big_mul_add(&den, 10, 0);
+
+    k = 54 - (big_bits(&num) - big_bits(&den));
+    if (k > 0)
+        big_shl(&num, k);
+    else if (k < 0)
+        big_shl(&den, -k);
+
+    part = den;
+    big_shl(&part, 54);
+    q = 0;
+    for (i = 54; i >= 0; i--) {
+        if (big_cmp(&num, &part) >= 0) {
+            big_sub(&num, &part);
+            q |= (uint64_t) 1 << i;
+        }
+        big_shr1(&part);
+    }
+    if (num.n)
+        g.sticky = 1;
+
+    /* The value is q * 2^(power2 - k), and a little more if sticky. */
+    *bits = double_pack(q, ((q >> 54) ? 54 : 53) - k + (int) g.power2, g.sticky);
 
     return p;
 }

@@ -53,6 +53,7 @@ int size_char (void) { return (int) sizeof(char); }
 int size_short(void) { return (int) sizeof(short); }
 int size_int  (void) { return (int) sizeof(int); }
 int size_long (void) { return (int) sizeof(long); }
+int size_llong(void) { return (int) sizeof(long long); }
 int size_ptr  (void) { return (int) sizeof(void *); }
 
 /* How wide a slot each type takes: the offset of the parameter after it. */
@@ -61,6 +62,7 @@ int after_short(short a, int b) { (void)a; return b; }
 int after_int  (int a,   int b) { (void)a; return b; }
 int after_ptr  (void *a, int b) { (void)a; return b; }
 int after_long (long a,  int b) { (void)a; return b; }
+int after_llong(long long a, int b) { (void)a; return b; }
 
 /* Where a result comes back.
  *
@@ -75,6 +77,7 @@ char  ret_char (void) { return (char)  0x5a; }
 short ret_short(void) { return (short) 0x1234; }
 int   ret_int  (void) { return 0x123456; }
 long  ret_long (void) { return 0x12345678L; }
+long long ret_llong(void) { return 0x1122334455667788LL; }
 
 /* A struct result, and a struct argument. */
 Pair ret_struct(int x)   { Pair p; p.a = x; p.b = x + 1; return p; }
@@ -157,7 +160,7 @@ def constant(name):
 
 
 for name, want in (('size_char', 1), ('size_short', 2), ('size_int', 3),
-                   ('size_long', 4), ('size_ptr', 3)):
+                   ('size_long', 4), ('size_llong', 8), ('size_ptr', 3)):
     check('type sizes', constant(name) == want,
           'sizeof(%s) is %d' % (name[5:], want),
           'sizeof is %s' % constant(name), '%d' % want)
@@ -165,7 +168,7 @@ for name, want in (('size_char', 1), ('size_short', 2), ('size_int', 3),
 # A slot is the type's size rounded up to a multiple of 3, which is not the
 # same number: a long is 4 bytes in a 6-byte slot.
 for name, size, width in (('char', 1, 3), ('short', 2, 3), ('int', 3, 3),
-                          ('ptr', 3, 3), ('long', 4, 6)):
+                          ('ptr', 3, 3), ('long', 4, 6), ('llong', 8, 9)):
     want = 6 + width
     check('slot widths', slot('after_' + name) == want,
           '%s is %d byte%s and takes a %d-byte argument slot'
@@ -188,6 +191,15 @@ check('return values',
       any(re.match(r'^ld\s+e,\s*18$', t) for t in body('ret_long')),
       'a 4-byte result comes back in HL with its high byte in E',
       body('ret_long'), 'ld hl, 3430008 and ld e, 18')
+
+# 0x1122334455667788: the low three bytes in HL, the next three in DE and the
+# top two in BC -- eight bytes across three registers.
+check('return values',
+      any(re.match(r'^ld\s+hl,\s*6715272$', t) for t in body('ret_llong')) and
+      any(re.match(r'^ld\s+de,\s*3359829$', t) for t in body('ret_llong')) and
+      any(re.match(r'^ld(\.sis)?\s+bc,\s*4386$', t) for t in body('ret_llong')),
+      'an 8-byte result comes back in HL, DE and BC from the bottom up',
+      body('ret_llong'), 'ld hl, 6715272, ld de, 3359829 and ld bc, 4386')
 
 rs = body('ret_struct')
 check('struct results',

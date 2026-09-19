@@ -742,14 +742,19 @@ static inline __attribute__((always_inline)) int starts_decl(void);
 static void primary(void)
 {
     if (tok == TK_FLOAT) {
-        vpush_const_float(tok_fval);
+        if (tok_type == TY_LDOUBLE)
+            vpush_const_double(tok_dval);
+        else
+            vpush_const_float(tok_fval);
         next();
 
         return;
     }
 
     if (tok == TK_INT) {
-        if (type_wide(tok_type))
+        if (type_eight(tok_type))
+            vpush_const_wide((uint32_t) tok_val, tok_val_hi, tok_type);
+        else if (type_wide(tok_type))
             vpush_const_long(tok_val, tok_type);
         else
             vpush_const((int) tok_val, tok_type);
@@ -791,6 +796,16 @@ static void primary(void)
 
     if (tok == TK_MINUS) {
         next();
+
+        /* A negative long double literal is the literal with its sign bit
+         * set, done here: there is no routine that negates one, and `-1.5L`
+         * is a constant and not arithmetic. */
+        if (tok == TK_FLOAT && tok_type == TY_LDOUBLE) {
+            vpush_const_double(tok_dval ^ (uint64_t) 1 << 63);
+            next();
+
+            return;
+        }
         primary();
         vneg();
 
@@ -1368,7 +1383,7 @@ static void conditional_rest(void)
     narrow_dest = 0;
     expr();
     expect(TK_COLON, "':'");
-    to_stub = gen_cond_middle(slot, &middle, &middle_ext, &middle_null);
+    to_stub = gen_cond_middle(&slot, &middle, &middle_ext, &middle_null);
 
     gen_label(to_third);
     conditional();
@@ -1478,8 +1493,8 @@ static Type type_specifier_slow(int first, int line)
 
         return TY_BOOL;
     }
-    if (is_long > 1 && !is_float)
-        acc_error_at(line, "'long long' is not supported yet");
+    if (is_long > 2)
+        acc_error_at(line, "'long long long' is not a type");
     if (is_signed && is_unsigned)
         acc_error_at(line, "'signed' and 'unsigned' together");
     if (is_void && (is_char || is_short || is_int || is_long || is_signed || is_unsigned))
@@ -1493,10 +1508,15 @@ static Type type_specifier_slow(int first, int line)
         if (is_char || is_short || is_int || is_signed || is_unsigned)
             acc_error_at(line, "a floating type with an integer one");
         if (is_long)
-            acc_error_at(line, "'long double' is not supported: it is eight "
-                               "bytes and agondev has no arithmetic for it");
+            return TY_LDOUBLE;
 
         return TY_FLOAT;
+    }
+    if (is_long > 1) {
+        if (is_char || is_short)
+            acc_error_at(line, "'long long' with another width");
+
+        return is_unsigned ? TY_ULLONG : TY_LLONG;
     }
     if (is_void)
         return TY_VOID;
@@ -1702,6 +1722,11 @@ static int bitfield_width(Type type, NameRef name, int line)
 
     if (type_pointer(type) || type_float(type) || type_is_struct(type)
         || type_is_array(type) || type == TY_VOID)
+        acc_error_at(line, "a bit-field has to have an integer type");
+    if (type_eight(type))
+        acc_error_at(line, "a bit-field of 'long long' is not supported: C99 "
+                           "leaves the types past 'int' to the implementation");
+    if (type_ldouble(type))
         acc_error_at(line, "a bit-field has to have an integer type");
     if (width < 0 || width > most)
         acc_error_at(line, "a bit-field of this type is 0 to %d bits wide",
@@ -2307,6 +2332,9 @@ static int va_slot(Type type, int ext)
 {
     if (type_is_struct(type))
         return (ext_bytes(ext) + ACC_INT_SIZE - 1) / ACC_INT_SIZE * ACC_INT_SIZE;
+
+    if (type_eight(type))
+        return 3 * ACC_INT_SIZE;
 
     return type_wide(type) ? 2 * ACC_INT_SIZE : ACC_INT_SIZE;
 }
@@ -3008,7 +3036,7 @@ static void local_put(Type scalar, int offset, int value)
     vdrop();
     gen_stmt_end();
     init_mark(offset, init_bits ? bitfield_at(init_bits)->bytes
-                                : type_size(scalar));
+                                : type_scalar_bytes(scalar));
 }
 
 /* Zeroes the bytes of the first `total` of a local array or struct that its
@@ -3412,7 +3440,7 @@ void declaration(void)
         }
         not_void(type, "a variable", line);
 
-        off = gen_local(type_size(type));
+        off = gen_local(type_scalar_bytes(type));
         if (accept(TK_ASSIGN)) {
             Type outer = narrow_dest;
 
@@ -3495,7 +3523,8 @@ typedef struct {
 
 static Switch in_switch = { -1, -1, TY_INT };
 
-static long *case_value;
+static long     *case_value;
+static uint32_t *case_high;     /* the top four bytes, for a long long */
 static int  *case_at;
 static int   ncases, cases_cap;
 
@@ -3624,13 +3653,16 @@ static void do_statement(void)
  * at. A literal, with a sign or without, is read directly, which is the only
  * way to get one wider than an int -- the value stack holds constants at int
  * width; anything else has to fold to a constant, as an array's size does. */
-static long case_constant(void)
+static long case_constant(uint32_t *high)
 {
     int line = tok_line;
     long value;
 
+    *high = 0;
     if (tok == TK_INT && type_wide(tok_type)) {
         value = tok_val;
+        *high = type_eight(tok_type) ? tok_val_hi
+                                     : (uint32_t) (value < 0 ? -1 : 0);
         next();
     } else if (tok == TK_MINUS) {
         /* A sign binds to what follows it and no further, so `-3 + 2` is
@@ -3640,7 +3672,13 @@ static long case_constant(void)
 
         next();
         if (tok == TK_INT && type_wide(tok_type)) {
-            value = -tok_val;
+            uint64_t whole = (uint64_t) (uint32_t) tok_val;
+
+            if (type_eight(tok_type))
+                whole |= (uint64_t) tok_val_hi << 32;
+            whole = 0 - whole;
+            value = (long) (uint32_t) whole;
+            *high = (uint32_t) (whole >> 32);
             next();
         } else {
             Type outer = narrow_dest;
@@ -3651,13 +3689,21 @@ static long case_constant(void)
             binary_rest(PREC_LOWEST);
             narrow_dest = outer;
             value = constant_folded("a case label", line, before);
+            *high = (uint32_t) (value < 0 ? -1 : 0);
         }
     } else {
         value = constant_int("a case label", line);
+        *high = (uint32_t) (value < 0 ? -1 : 0);
     }
 
-    if (type_wide(in_switch.type))
+    if (type_eight(in_switch.type))
         return (long) (uint32_t) value;
+    if (type_wide(in_switch.type)) {
+        *high = 0;
+
+        return (long) (uint32_t) value;
+    }
+    *high = 0;
 
     return value & 0xffffff;
 }
@@ -3669,15 +3715,16 @@ static void case_label(void)
 {
     int line = tok_line, i;
     long value;
+    uint32_t high;
 
     next();
     if (in_switch.case_mark < 0)
         acc_error_at(line, "'case' is not inside a switch");
-    value = case_constant();
+    value = case_constant(&high);
     expect(TK_COLON, "':' after a case");
 
     for (i = in_switch.case_mark; i < ncases; i++)
-        if (case_value[i] == value)
+        if (case_value[i] == value && case_high[i] == high)
             acc_error_at(line, "this switch already has a case for %ld",
                          type_unsigned(in_switch.type) || type_wide(in_switch.type)
                          ? value : (long) ((value ^ 0x800000) - 0x800000));
@@ -3685,11 +3732,13 @@ static void case_label(void)
     if (ncases == cases_cap) {
         cases_cap = cases_cap ? cases_cap * 2 : 16;
         case_value = realloc(case_value, (size_t) cases_cap * sizeof *case_value);
+        case_high = realloc(case_high, (size_t) cases_cap * sizeof *case_high);
         case_at = realloc(case_at, (size_t) cases_cap * sizeof *case_at);
-        if (!case_value || !case_at)
+        if (!case_value || !case_high || !case_at)
             acc_error("out of memory for case labels");
     }
     case_value[ncases] = value;
+    case_high[ncases] = high;
     case_at[ncases] = gen_here();
     ncases++;
 }
@@ -3737,12 +3786,12 @@ static void switch_statement(void)
     expr();
     expect(TK_RPAREN, "')'");
     type = vtype();
-    if (type_pointer(type) || type_float(type))
+    if (type_pointer(type) || type_float(type) || type_ldouble(type))
         acc_error_at(line, "a switch needs an integer, and this is %s",
                      type_pointer(type) ? "a pointer" : "a floating-point value");
     type = type_promote(type);
     vconvert(type);
-    slot = gen_local(type_size(type));
+    slot = gen_local(type_scalar_bytes(type));
     vstore_local(slot, type);
     vdrop();
     to_tests = gen_jump();
@@ -3760,7 +3809,7 @@ static void switch_statement(void)
     gen_stmt_end();
     gen_switch_load(slot, type);
     for (i = in_switch.case_mark; i < ncases; i++)
-        gen_switch_case(case_value[i], type, case_at[i]);
+        gen_switch_case(case_value[i], case_high[i], type, case_at[i], slot);
     if (in_switch.default_at >= 0)
         gen_jump_to(in_switch.default_at);
     else
@@ -4299,7 +4348,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                 argoff += (ext_bytes(pext) + ACC_INT_SIZE - 1) / ACC_INT_SIZE
                           * ACC_INT_SIZE;
             } else {
-                argoff += type_wide(ptype) ? 2 * ACC_INT_SIZE : ACC_INT_SIZE;
+                argoff += va_slot(ptype, 0);
             }
             nparams++;
             if (!accept(TK_COMMA))
@@ -4396,9 +4445,9 @@ static int push_global(NameRef name, int kind, int at)
  * `&counter`. */
 static void global_initializer(Type type, unsigned char *bytes, int line)
 {
-    int size = type_size(type);
+    int size = type_scalar_bytes(type);
     int negative = 0;
-    uint32_t value;
+    uint64_t value;
     int i;
 
     if (tok == TK_MINUS || tok == TK_PLUS) {
@@ -4411,9 +4460,17 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
     if (tok == TK_FLOAT) {
         uint32_t bits;
 
-        if (!type_float(type))
+        if (type_ldouble(type) != (tok_type == TY_LDOUBLE))
+            acc_error_at(line, "a long double's initial value has to be a long "
+                               "double, and nothing else's may be one");
+        if (!type_float(type) && !type_ldouble(type))
             acc_error_at(line, "a floating-point initial value for an integer "
                                "or a pointer is not supported yet");
+        if (type_ldouble(type)) {
+            value = tok_dval ^ (negative ? (uint64_t) 1 << 63 : 0);
+            next();
+            goto store;
+        }
         memcpy(&bits, &tok_fval, sizeof bits);
         value = bits ^ (negative ? 0x80000000u : 0);
         next();
@@ -4422,10 +4479,14 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
 
     if (tok == TK_INT && type_wide(tok_type)) {
         value = (uint32_t) tok_val;
-        if (type_float(type))
-            value = float_from_int(value, negative);
+        if (type_eight(tok_type))
+            value |= (uint64_t) tok_val_hi << 32;
+        if (type_ldouble(type))
+            value = double_from_int(value, negative);
+        else if (type_float(type))
+            value = float_from_int((uint32_t) value, negative);
         else if (negative)
-            value = 0u - value;
+            value = 0 - value;
         next();
         goto store;
     }
@@ -4457,7 +4518,14 @@ folded:
             acc_error_at(line, "a global's initial value has to be a constant");
         vdrop();
 
-        if (type_float(type)) {
+        if (type_ldouble(type)) {
+            if (type_unsigned(from))
+                value = double_from_int((uint32_t) val & 0xffffff, 0);
+            else if (val < 0)
+                value = double_from_int((uint64_t) -(long) val, 1);
+            else
+                value = double_from_int((uint64_t) (long) val, 0);
+        } else if (type_float(type)) {
             if (type_unsigned(from))
                 value = float_from_int((uint32_t) val & 0xffffff, 0);
             else if (val < 0)
@@ -4467,7 +4535,7 @@ folded:
         } else if (type_unsigned(from)) {
             value = (uint32_t) val & 0xffffff;
         } else {
-            value = (uint32_t) (long) val;      /* sign-extended */
+            value = (uint64_t) (int64_t) (long) val;    /* sign-extended */
         }
     }
 
@@ -4566,7 +4634,7 @@ static void global_put(Type scalar, int offset, int value)
 
         return;
     }
-    init_room(offset + type_size(scalar));
+    init_room(offset + type_scalar_bytes(scalar));
     if (value >= 0)
         init_bytes[offset] = (unsigned char) value;     /* a char of a string */
     else
@@ -4604,7 +4672,7 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
         if (init) {
             expect(TK_LBRACE, "'{'");
             while (tok != TK_RBRACE) {
-                unsigned char bytes[ACC_LONG_SIZE] = { 0 };
+                unsigned char bytes[8] = { 0 };
 
                 if (n == count)
                     acc_error_at(tok_line, "more initial values than the array "
@@ -4803,8 +4871,8 @@ static void late_arrays_end(void)
  * like any other -- there is no separate zeroed area yet. */
 static void global_emit(Type type, int ext, NameRef name, int count, int line)
 {
-    unsigned char bytes[ACC_LONG_SIZE] = { 0 };
-    int size = type_size(type), sym, i, at;
+    unsigned char bytes[8] = { 0 };
+    int size = type_scalar_bytes(type), sym, i, at;
 
     if (count) {
         global_array(type, ext, name, count, line);
@@ -4935,7 +5003,7 @@ static int function_from_type(int x, NameRef name, int line)
             argoff += (ext_bytes(e) + ACC_INT_SIZE - 1) / ACC_INT_SIZE
                       * ACC_INT_SIZE;
         } else {
-            argoff += type_wide(t) ? 2 * ACC_INT_SIZE : ACC_INT_SIZE;
+            argoff += va_slot(t, 0);
         }
     }
     next();                     /* the body's `{` */
