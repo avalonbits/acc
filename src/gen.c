@@ -2804,8 +2804,11 @@ static void call_to(const Callee *callee, int nargs, int params_first,
         fixup_add(callee->fn, out_here() - ACC_INT_SIZE);
     }
 
+    /* Discarded into DE, the cheapest form -- but for a long, whose high
+     * byte comes back in E, into BC: popping DE put an argument's byte in
+     * its place. */
     for (i = 0; i < argslots; i++)
-        pop_rr(R_DE);                            /* discard, cheapest form */
+        pop_rr(type_wide(callee->type) ? R_BC : R_DE);
 
     if (type_wide(callee->type)) {
         /* HL with the high byte in E; put it where every long lives. */
