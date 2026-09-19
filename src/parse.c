@@ -528,6 +528,9 @@ static void address_of(void)
     case NAME_LOCAL: {
         const Sym *local = sym_at(sym);
 
+        if (local->quals & SQ_REGISTER)
+            acc_error_at(line, "'%s' is declared register, so it has no "
+                               "address to take", name_text(name));
         vaddr_local(local->val, local->type);
         vset_ext(local->ext);
 
@@ -1233,6 +1236,35 @@ static void conditional_rest(void)
 /* ------------------------------------------------------------------ */
 /* types                                                               */
 
+/* Whether the type base_type last read was const. Kept for the variable a
+ * declaration names, which is refused as the target of an assignment; what
+ * a pointer points at being const is taken and not checked. */
+static unsigned char base_const;
+
+/* Whether the token is const, volatile or restrict, which are next to each
+ * other among the tokens. */
+#define tok_qualifier()  ((unsigned char) (tok_low - TK_KW_CONST) < 3u)
+typedef char qualifiers_are_adjacent[(TK_KW_VOLATILE == TK_KW_CONST + 1
+                                      && TK_KW_RESTRICT == TK_KW_CONST + 2)
+                                     ? 1 : -1];
+
+/* The qualifiers, as many as there are, with the base_type's const marked:
+ * see base_const.
+ *
+ * volatile asks that every access in the program be made, and acc makes
+ * them all: it keeps nothing in a register from one statement to the next,
+ * and reads a variable again each time an expression names it. restrict
+ * promises something acc makes no use of. So neither changes the code. */
+__attribute__((noinline))
+static void qualifiers(void)
+{
+    while (tok_qualifier()) {
+        if (tok == TK_KW_CONST)
+            base_const = 1;
+        next();
+    }
+}
+
 /* A declaration begins with one or more specifier keywords in any order:
  * `unsigned short int` and `int short unsigned` are the same type. They are
  * counted rather than matched against a list of spellings, which is what
@@ -1285,6 +1317,8 @@ static Type type_specifier_slow(int first, int line)
         case TK_KW_FLOAT:    is_float++;    break;
         case TK_KW_DOUBLE:   is_float++;    break;
         }
+        if (tok_qualifier())
+            qualifiers();
         if (!starts_type(tok))
             break;
         token = tok;
@@ -1330,8 +1364,13 @@ static Type type_specifier(void)
     unsigned char alone = spec_alone[first];
 
     next();
-    if (!starts_type(tok))
-        return (Type) (alone - 1);      /* one keyword, which is most of them */
+    if (!starts_type(tok)) {
+        if (!tok_qualifier())
+            return (Type) (alone - 1);  /* one keyword, which is most of them */
+        qualifiers();                   /* `int const`, `unsigned const int` */
+        if (!starts_type(tok))
+            return (Type) (alone - 1);
+    }
 
     return type_specifier_slow(first, line);
 }
@@ -1612,19 +1651,6 @@ static Type struct_specifier(void)
  * result because nearly every caller wants only the type -- and it is
  * overwritten by the next type read, which may be inside the declaration
  * (a cast in an initialiser), so a caller that wants it copies it at once. */
-/* Whether the type base_type last read was const. Kept for the variable a
- * declaration names, which is refused as the target of an assignment; what
- * a pointer points at being const is taken and not checked. */
-static unsigned char base_const;
-
-/* `const`s, as many as there are, with the base_type's marked: see
- * base_const. `volatile` and `restrict` are not here yet. */
-__attribute__((noinline))
-static void qualifiers(void)
-{
-    while (accept(TK_KW_CONST))
-        base_const = 1;
-}
 
 static Type base_type(void);
 
@@ -1634,12 +1660,16 @@ static Type base_type_other(void)
     int line = tok_line;
 
     switch (tok) {
-    case TK_KW_CONST: {                 /* `const int`, `const struct s` */
+    case TK_KW_CONST:                   /* `const int`, `const struct s` */
+    case TK_KW_VOLATILE:
+    case TK_KW_RESTRICT: {
         Type t;
+        unsigned char was_const;
 
         qualifiers();
+        was_const = base_const;         /* base_type starts it afresh */
         t = base_type();
-        base_const = 1;
+        base_const |= was_const;
 
         return t;
     }
@@ -1677,17 +1707,11 @@ static Type base_type_other(void)
 
 static Type base_type(void)
 {
-    Type t;
-
     base_ext = 0;
     base_const = 0;
     if (!starts_type(tok))
         return base_type_other();
-    t = type_specifier();               /* the keywords, which is most */
-    if (tok == TK_KW_CONST)
-        qualifiers();                   /* `int const` */
-
-    return t;
+    return type_specifier();            /* the keywords, which is most */
 }
 
 /* Whether the current token begins a declaration: a specifier keyword, or
@@ -1702,7 +1726,8 @@ static unsigned char decl_start[TK_COUNT] = {
     [TK_KW_FLOAT] = 1, [TK_KW_DOUBLE] = 1,
     [TK_KW_ENUM] = 1, [TK_KW_STRUCT] = 1, [TK_KW_UNION] = 1,
     [TK_KW_TYPEDEF] = 1, [TK_KW_STATIC] = 1, [TK_KW_EXTERN] = 1,
-    [TK_KW_CONST] = 1
+    [TK_KW_AUTO] = 1, [TK_KW_REGISTER] = 1, [TK_KW_CONST] = 1,
+    [TK_KW_VOLATILE] = 1, [TK_KW_INLINE] = 1
 };
 
 __attribute__((noinline))
@@ -1729,12 +1754,17 @@ int starts_decl(void)
 static unsigned char stars_const;
 
 __attribute__((noinline))
-static int star_qualifiers(void)
+static unsigned char star_qualifiers(void)
 {
-    while (accept(TK_KW_CONST))
-        ;
+    unsigned char is_const = 0;
 
-    return 1;
+    while (tok_qualifier()) {
+        if (tok == TK_KW_CONST)
+            is_const = 1;
+        next();
+    }
+
+    return is_const;
 }
 
 /* The stars in front of one name. Inlined, as not_void is: they were one
@@ -1751,7 +1781,7 @@ Type declarator_stars(Type base)
             acc_error_at(line, "a pointer can be %d deep and this is deeper",
                          TY_PTR_MAX);
         base = type_ptr_to(base);
-        stars_const = (tok == TK_KW_CONST) && star_qualifiers();
+        stars_const = tok_qualifier() ? star_qualifiers() : 0;
     }
 
     return base;
@@ -2598,6 +2628,12 @@ static void block_extern(Type type, int ext, NameRef name, int count,
         sym_set_count(sym, sym_count(g));
 }
 
+/* The qualifiers the declaration being read gives each of its variables:
+ * SQ_REGISTER, for `register int x`. */
+static unsigned char decl_quals;
+
+static inline __attribute__((always_inline)) void declaration(void);
+
 /* A declaration in a block that begins with typedef, static or extern.
  *
  * A block's static variable is a file-scope one in all but its name: its
@@ -2613,6 +2649,17 @@ static void storage_declaration(void)
 
     if (storage == TK_KW_TYPEDEF) {
         typedef_declaration();
+
+        return;
+    }
+
+    /* auto is what a block's variable is anyway, and register only forbids
+     * taking its address: both are then an ordinary declaration. */
+    if (storage == TK_KW_AUTO || storage == TK_KW_REGISTER) {
+        next();
+        decl_quals = storage == TK_KW_REGISTER ? SQ_REGISTER : 0;
+        declaration();
+        decl_quals = 0;
 
         return;
     }
@@ -2658,8 +2705,8 @@ void declaration(void)
     int bx;
     unsigned char bc;
 
-    /* typedef, static and extern, one range. */
-    if ((unsigned char) (tok_low - TK_KW_TYPEDEF) < 3u) {
+    /* typedef, static, extern, auto and register, one range. */
+    if ((unsigned char) (tok_low - TK_KW_TYPEDEF) < 5u) {
         storage_declaration();
 
         return;
@@ -2711,6 +2758,7 @@ void declaration(void)
         sym = sym_push(name, SYM_LOCAL, off);
         sym_at(sym)->type = type;
         sym_at(sym)->ext = (unsigned char) ext;
+        sym_at(sym)->quals = decl_quals;
         if (stars != base ? stars_const : bc)
             sym_at(sym)->kind = SYM_LOCAL_CONST;
 
@@ -3517,11 +3565,13 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     } else {
         for (;;) {
             Type pbase, ptype, pstars;
-            unsigned char pconst;
+            unsigned char pconst, pquals = 0;
             int pbx, pline = tok_line, pcount, pext;
             NameRef pname;
             int psym = SYM_NONE;
 
+            if (accept(TK_KW_REGISTER))
+                pquals = SQ_REGISTER;
             pbase = base_type();
             pbx = base_ext;
             pconst = base_const;
@@ -3546,6 +3596,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                 psym = sym_push(pname, SYM_LOCAL, argoff);
                 sym_at(psym)->type = ptype;
                 sym_at(psym)->ext = (unsigned char) pext;
+                sym_at(psym)->quals = pquals;
                 if (pconst && !pcount && !type_is_struct(ptype))
                     sym_at(psym)->kind = SYM_LOCAL_CONST;
             } else {
@@ -4017,9 +4068,14 @@ static void external_declaration(void)
 
     /* At file scope static changes nothing for a program that is one file,
      * and extern declares what any declaration here does: storage that the
-     * one that gives the value, if any does, fills in. */
-    if (tok == TK_KW_STATIC || tok == TK_KW_EXTERN)
+     * one that gives the value, if any does, fills in. inline asks that
+     * calls be fast, and a call is what they are: C lets that be the
+     * answer. In any order, as C allows. */
+    while (tok == TK_KW_STATIC || tok == TK_KW_EXTERN || tok == TK_KW_INLINE)
         next();
+    if (tok == TK_KW_AUTO || tok == TK_KW_REGISTER)
+        acc_error_at(tok_line, "%s is for a variable in a block, not at file "
+                               "scope", tok_spelling(tok));
     base = base_type();
     bx = ext = base_ext;
     bc = base_const;

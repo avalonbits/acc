@@ -105,6 +105,7 @@ int push_local(NameRef name, int kind, int val)
     sym->val = val;
     sym->type = TY_INT;     /* until the declaration says otherwise */
     sym->ext = 0;
+    sym->quals = 0;
     nsyms += sizeof *sym;
 
     return at;
@@ -145,6 +146,7 @@ int sym_push(NameRef name, int kind, int val)
     sym->type = TY_INT;         /* a function called before it is defined is
                                  * assumed to return int, as C says */
     sym->ext = 0;
+    sym->quals = 0;
     sym_set_params(at, 0, 0);   /* and to take nothing known */
     nsyms += sizeof *sym;
     nglobals += sizeof *sym;

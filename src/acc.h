@@ -287,8 +287,9 @@ enum {
     TK_STRING,                  /* a string literal; tok_str holds its bytes */
     TK_KW_SIZEOF,
     TK_KW_ENUM, TK_KW_STRUCT, TK_KW_UNION, TK_KW_TYPEDEF,
-    TK_KW_STATIC, TK_KW_EXTERN,
-    TK_KW_CONST,
+    TK_KW_STATIC, TK_KW_EXTERN, TK_KW_AUTO, TK_KW_REGISTER,
+    TK_KW_CONST, TK_KW_VOLATILE, TK_KW_RESTRICT,
+    TK_KW_INLINE,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -409,18 +410,28 @@ enum {
  * rather than to file scope. */
 #define sym_kind_local(kind) ((unsigned) (kind) <= SYM_LOCAL_CONST)
 
-/* Nine bytes on the target: a name, a kind, one number whose meaning the
- * kind decides, and a type with its extension. tinycc's equivalent is 31, and
- * at four hundred lines of input that difference was 40 KB of a 206 KB
- * budget. Nine rather than eight costs no multiply: a symbol is found by its
- * byte offset into the table, not its position. */
+/* Ten bytes on the target: a name, a kind, one number whose meaning the
+ * kind decides, a type with its extension, and its qualifiers. tinycc's
+ * equivalent is 31, and at four hundred lines of input that difference was
+ * 40 KB of a 206 KB budget. A width that is not a power of two costs no
+ * multiply: a symbol is found by its byte offset into the table, not its
+ * position. */
 typedef struct {
     NameRef       name;
     unsigned char kind;
     int           val;
     Type          type;         /* fits in what was the pad byte */
     unsigned char ext;          /* the type's extension, when it has one */
+    unsigned char quals;        /* SQ_* */
 } Sym;
+
+/* What a symbol's declaration said beyond its type. */
+enum {
+    SQ_REGISTER = 1,            /* `register`: its address cannot be taken */
+    SQ_CONST    = 2             /* what is at the bottom of its type is const:
+                                 * a pointer's target, an array's elements,
+                                 * a struct's members */
+};
 
 /* A function's parameter types, kept beside the symbols. A call converts each
  * argument to the type the parameter was declared with, which matters because

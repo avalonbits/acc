@@ -467,7 +467,7 @@ static void keywords_init(void)
      * the lexer does not know becomes an identifier, and the complaint that
      * follows is about a name not being declared rather than about the
      * feature not being there. */
-    keyword("auto", 4, TK_KW_RESERVED);
+    keyword("auto", 4, TK_KW_AUTO);
     keyword("break", 5, TK_KW_BREAK);
     keyword("case", 4, TK_KW_CASE);
     keyword("const", 5, TK_KW_CONST);
@@ -477,16 +477,16 @@ static void keywords_init(void)
     keyword("enum", 4, TK_KW_ENUM);
     keyword("extern", 6, TK_KW_EXTERN);
     keyword("goto", 4, TK_KW_GOTO);
-    keyword("inline", 6, TK_KW_RESERVED);
-    keyword("register", 8, TK_KW_RESERVED);
-    keyword("restrict", 8, TK_KW_RESERVED);
+    keyword("inline", 6, TK_KW_INLINE);
+    keyword("register", 8, TK_KW_REGISTER);
+    keyword("restrict", 8, TK_KW_RESTRICT);
     keyword("sizeof", 6, TK_KW_SIZEOF);
     keyword("static", 6, TK_KW_STATIC);
     keyword("struct", 6, TK_KW_STRUCT);
     keyword("switch", 6, TK_KW_SWITCH);
     keyword("typedef", 7, TK_KW_TYPEDEF);
     keyword("union", 5, TK_KW_UNION);
-    keyword("volatile", 8, TK_KW_RESERVED);
+    keyword("volatile", 8, TK_KW_VOLATILE);
     keyword("_Bool", 5, TK_KW_RESERVED);
     keyword("_Complex", 8, TK_KW_RESERVED);
     keyword("_Imaginary", 10, TK_KW_RESERVED);
@@ -1081,6 +1081,11 @@ const char *tok_spelling(int token)
     case TK_KW_STATIC: return "'static'";
     case TK_KW_EXTERN: return "'extern'";
     case TK_KW_CONST:  return "'const'";
+    case TK_KW_AUTO:   return "'auto'";
+    case TK_KW_REGISTER: return "'register'";
+    case TK_KW_VOLATILE: return "'volatile'";
+    case TK_KW_RESTRICT: return "'restrict'";
+    case TK_KW_INLINE: return "'inline'";
     case TK_DOT:       return "'.'";
     case TK_ARROW:     return "'->'";
     case TK_STRING:    return "a string";
