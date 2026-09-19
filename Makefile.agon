@@ -11,8 +11,20 @@ TOOLS    = $(AGONDEV)/bin
 CC       = $(TOOLS)/ez80-none-elf-clang
 LD       = $(TOOLS)/ez80-none-elf-ld
 
-BIN = bin
-OBJ = obj/agon
+BIN  = bin
+OBJ  = obj/agon
+NAME = acc
+
+# `make -f Makefile.agon CYCLES=1` builds bin/acc-cycles.bin, which also
+# prints how many cycles the compile took, counted by one of the eZ80's own
+# timers: see cycles_start in parse.c. The compile itself is the same code;
+# only main differs. Its objects are kept apart so that neither build is
+# linked from the other's.
+ifdef CYCLES
+OBJ     = obj/agon-cycles
+NAME    = acc-cycles
+EXTRA   = -DACC_CYCLES
+endif
 
 # -Oz because the budget is space. The Agon gives a program 448 KB for code,
 # data, heap and stack together, and every byte acc is not is a byte left for
@@ -20,7 +32,7 @@ OBJ = obj/agon
 CFLAGS = -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
          -nostdinc -Isrc -isystem $(AGONDEV)/include \
          -target ez80-none-elf -DAGONDEV \
-         -Oz -Wa,-march=ez80+full -fno-threadsafe-statics
+         -Oz -Wa,-march=ez80+full -fno-threadsafe-statics $(EXTRA)
 
 # acc takes a command line, so it needs the argument splitting that agondev's
 # crt0 leaves to a defsym.
@@ -35,11 +47,11 @@ SRCS = src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c
 OBJS = $(patsubst src/%.c,$(OBJ)/%.o,$(SRCS))
 
 .PHONY: all clean size
-all: $(BIN)/acc.bin
+all: $(BIN)/$(NAME).bin
 
-$(BIN)/acc.bin: $(OBJS) | $(BIN)
+$(BIN)/$(NAME).bin: $(OBJS) | $(BIN)
 	@echo [linking $@]
-	$(LD) $(LDFLAGS) -Map=$(BIN)/acc.map -o $@ $(OBJS) -L$(AGONDEV)/lib -lagon
+	$(LD) $(LDFLAGS) -Map=$(BIN)/$(NAME).map -o $@ $(OBJS) -L$(AGONDEV)/lib -lagon
 	$(TOOLS)/agondev-setname $@ >/dev/null
 	@$(MAKE) -s -f Makefile.agon size
 
@@ -47,8 +59,8 @@ $(OBJ)/%.o: src/%.c src/acc.h | $(OBJ)
 	@echo [compiling $<]
 	$(CC) $(CFLAGS) -c $< -o $@
 
-size: $(BIN)/acc.bin
-	@echo "[$$(stat -c%s $(BIN)/acc.bin) bytes of image, of 458752 available]"
+size: $(BIN)/$(NAME).bin
+	@echo "[$$(stat -c%s $(BIN)/$(NAME).bin) bytes of image, of 458752 available]"
 	@$(TOOLS)/ez80-none-elf-size $(OBJS) | tail -n +2 \
 	  | awk '{t+=$$1; d+=$$2; b+=$$3} END {printf "[text %d  data %d  bss %d  = %d, leaving %d for heap and stack]\n", t, d, b, t+d+b, 458752-(t+d+b)}'
 
@@ -56,4 +68,4 @@ $(BIN) $(OBJ):
 	@mkdir -p $@
 
 clean:
-	$(RM) -r $(OBJ) $(BIN)/acc.bin $(BIN)/acc.map
+	$(RM) -r $(OBJ) $(BIN)/$(NAME).bin $(BIN)/$(NAME).map

@@ -3702,6 +3702,42 @@ static void usage(void)
     exit(2);
 }
 
+#if defined(AGONDEV) && defined(ACC_CYCLES)
+#include <ez80f92.h>
+
+/* How many cycles the compile takes, counted by the eZ80 itself: timer 1,
+ * which MOS leaves alone, counting down from 65535 once every 256 cycles.
+ * The seconds MOS reports come from a clock another thread of the emulator
+ * keeps, and wander by a few percent from one sitting to the next; the
+ * timer is stepped by the instructions the emulator runs, so the same
+ * compile counts the same, give or take the interrupts that arrive while it
+ * runs. One pass of it is 16.7 million cycles, about 0.9 s, which is longer
+ * than any benchmark compile; one that took longer says so. */
+static void cycles_start(void)
+{
+    IO(TMR1_CTL) = 0;
+    IO(TMR1_RR_L) = 0xff;
+    IO(TMR1_RR_H) = 0xff;
+    IO(TMR1_CTL) = 0x0f;        /* on, reloaded now, clock / 256, one pass */
+}
+
+static void cycles_report(void)
+{
+    unsigned char ctl = IO(TMR1_CTL);
+    unsigned lo = IO(TMR1_DR_L), hi = IO(TMR1_DR_H);
+
+    if (!(ctl & 0x01) || (ctl & 0x80)) {
+        printf("Cycles: over 16777216\r\n");
+
+        return;
+    }
+    printf("Cycles: %lu\r\n", (0xffffUL - (hi << 8 | lo)) * 256);
+}
+#else
+#define cycles_start()
+#define cycles_report()
+#endif
+
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL;
@@ -3732,6 +3768,7 @@ int main(int argc, char **argv)
         usage();
 
     begin = clock();
+    cycles_start();
 
     name_init();
     lex_init();
@@ -3750,6 +3787,7 @@ int main(int argc, char **argv)
      * arguments are checked to after the file is written: everything a
      * "how long did that take" is asking about, and nothing else. */
     cs = elapsed_cs(begin, clock());
+    cycles_report();
     printf("Done in %u.%02u seconds\r\n", cs / 100, cs % 100);
 
     return 0;

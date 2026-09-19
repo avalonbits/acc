@@ -173,6 +173,7 @@ set +f
 status=0
 total_all=0
 bytes_all=0
+cycles_all=0
 
 for SRC in $SRCS; do
     [ -f "$SRC" ] || { echo "no such input: $SRC" >&2; status=1; continue; }
@@ -215,6 +216,22 @@ for SRC in $SRCS; do
     bytes=$(stat -c%s "$SRC")
     bytes_all=$((bytes_all + bytes))
 
+    # A build made with CYCLES=1 also says how many cycles each compile took,
+    # counted by the eZ80's own timer. Where it does, that is the figure: the
+    # seconds come from a clock the emulator keeps on another thread and
+    # wander by a few percent between sittings, and the count does not.
+    cycles=$(printf '%s' "$out" | sed -n 's/.*Cycles: \([0-9][0-9]*\).*/\1/p' | head -n "$RUNS")
+    if [ "$(printf '%s\n' "$cycles" | grep -c .)" -eq "$RUNS" ]; then
+        csum=$(printf '%s\n' "$cycles" | awk '{t+=$1} END {printf "%d", t}')
+        spread=$(printf '%s\n' "$cycles" | sort -n | sed -n '1p;$p' | paste -sd' ' | awk '{print $2 - $1}')
+        cycles_all=$((cycles_all + csum))
+        printf '%-16s %-14s %2d runs  %d cycles each, spread %d  %d.%d cycles/byte\n' \
+            "$(basename "$ACC")" "$(basename "$SRC")" "$RUNS" \
+            $((csum / RUNS)) "$spread" $((csum / (RUNS * bytes))) \
+            $((csum * 10 / (RUNS * bytes) % 10))
+        continue
+    fi
+
     # Cycles per byte of source, which is the figure to compare against zap's.
     # The readings are hundredths of a second for RUNS compiles, so
     #   cycles/byte = total/100/RUNS * CLOCK / bytes
@@ -225,6 +242,14 @@ for SRC in $SRCS; do
         $((total / RUNS / 100)) $((total * 10 / RUNS % 1000)) \
         $((total * (CLOCK / 100) / (RUNS * bytes)))
 done
+
+if [ "$cycles_all" -gt 0 ]; then
+    printf '%-16s %-14s %2d runs  %*s%d.%d cycles/byte\n' \
+        "$(basename "$ACC")" "(all)" "$RUNS" 21 "" \
+        $((cycles_all / (RUNS * bytes_all))) \
+        $((cycles_all * 10 / (RUNS * bytes_all) % 10))
+    exit $status
+fi
 
 printf '%-16s %-14s %2d runs  %d.%02d s%*s%d cycles/byte\n' \
     "$(basename "$ACC")" "(all)" "$RUNS" \
