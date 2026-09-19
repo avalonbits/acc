@@ -454,7 +454,7 @@ static void keywords_init(void)
     keyword("continue", 8, TK_KW_CONTINUE);
     keyword("default", 7, TK_KW_DEFAULT);
     keyword("do", 2, TK_KW_DO);
-    keyword("enum", 4, TK_KW_RESERVED);
+    keyword("enum", 4, TK_KW_ENUM);
     keyword("extern", 6, TK_KW_RESERVED);
     keyword("goto", 4, TK_KW_GOTO);
     keyword("inline", 6, TK_KW_RESERVED);
@@ -1040,6 +1040,12 @@ const char *tok_spelling(int token)
     case TK_KW_FOR:    return "'for'";
     case TK_KW_GOTO:   return "'goto'";
     case TK_KW_SIZEOF: return "'sizeof'";
+    case TK_KW_ENUM:   return "'enum'";
+    case TK_KW_STRUCT: return "'struct'";
+    case TK_KW_UNION:  return "'union'";
+    case TK_KW_TYPEDEF: return "'typedef'";
+    case TK_DOT:       return "'.'";
+    case TK_ARROW:     return "'->'";
     case TK_STRING:    return "a string";
     case TK_KW_BREAK:  return "'break'";
     case TK_KW_CONTINUE: return "'continue'";

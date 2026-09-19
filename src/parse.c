@@ -167,8 +167,9 @@ enum {
                      * is pushed, and the caller has its own ways with one */
     NAME_OBJECT,    /* the address of something that can be assigned to: a
                      * global, or an element */
-    NAME_VALUE      /* a value that is not an object: an array, which is the
+    NAME_VALUE,     /* a value that is not an object: an array, which is the
                      * address of its first element */
+    NAME_CONST      /* an enum constant, as a constant int */
 };
 
 /* A name that has been looked up and read, and the subscripts after it.
@@ -216,6 +217,10 @@ static int name_operand(int sym, NameRef name)
         if (tok != TK_LBRACKET)
             return NAME_VALUE;
         break;
+    case SYM_CONST:
+        vpush_const(s->val, TY_INT);
+
+        return NAME_CONST;
     default:
         acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
     }
@@ -432,6 +437,9 @@ static void address_of(void)
     }
     case NAME_OBJECT:
         return;                 /* the address is what is wanted */
+    case NAME_CONST:
+        acc_error_at(line, "'%s' is a constant, which has no address",
+                     name_text(name));
     }
 
     /* A whole array: the same address as its first element, as a pointer to
@@ -485,7 +493,7 @@ static void string_value(void)
 
 static void cast_rest(void);
 static void sizeof_value(void);
-static int  starts_type(int token);
+static int  starts_decl(void);
 
 /* A name used as a value: a local read, or a call. */
 static void primary(void)
@@ -516,7 +524,7 @@ static void primary(void)
         Type outer = narrow_dest;
 
         next();
-        if (starts_type(tok)) {
+        if (starts_decl()) {
             cast_rest();
 
             return;
@@ -883,7 +891,7 @@ static void paren_statement(void)
     Type outer = narrow_dest;
 
     next();
-    if (starts_type(tok)) {
+    if (starts_decl()) {
         cast_rest();
         binary_rest(PREC_LOWEST);
 
@@ -1213,20 +1221,179 @@ static Type type_specifier(void)
     return type_specifier_slow(first, line);
 }
 
+/* ------------------------------------------------------------------ */
+/* enums, tags and scopes                                              */
+
+/* Whether the parser is inside a function body, where an enum constant, a
+ * typedef or a tag belongs to the block it is declared in. */
+static int in_body;
+
+static NameRef declared_name(void);
+static int     constant_int(const char *what, int line);
+
+/* The mark of the innermost block, for telling a redeclaration in the same
+ * scope -- an error -- from one that shadows an outer name. -1 at file
+ * scope. */
+static int scope_mark = -1;
+
+static int push_here(NameRef name, int kind, int val)
+{
+    return in_body ? sym_push_local(name, kind, val) : sym_push(name, kind, val);
+}
+
+/* That `name` is not already declared in the scope being declared into. */
+static void not_redeclared(NameRef name, int line)
+{
+    int sym = sym_find(name);
+
+    if (sym != SYM_NONE && sym_declared_in(sym, scope_mark))
+        acc_error_at(line, "'%s' is already declared", name_text(name));
+}
+
+/* A tag, as the name it is looked up by: the tag's text behind a `{`, which
+ * no identifier can begin with. `struct s` and a variable `s` are different
+ * things in C, and this keeps them apart with the one symbol table. */
+static char *tag_text;
+static int   tag_text_cap;
+
+static NameRef tag_name(NameRef name)
+{
+    const char *text = name_text(name);
+    int len = (int) strlen(text);
+
+    if (len + 1 > tag_text_cap) {
+        tag_text_cap = len + 32;
+        tag_text = realloc(tag_text, (size_t) tag_text_cap);
+        if (!tag_text)
+            acc_error("out of memory for a tag");
+    }
+    tag_text[0] = '{';
+    memcpy(tag_text + 1, text, (size_t) len);   /* copied: interning may move
+                                                 * the arena it came from */
+
+    return name_intern(tag_text, len + 1);
+}
+
+enum { TAG_ENUM, TAG_STRUCT, TAG_UNION };
+
+static const char *const tag_keyword[] = { "enum", "struct", "union" };
+
+/* The tag's symbol, if it is visible, checked to be the kind the keyword
+ * said; SYM_NONE if it is not declared at all. */
+static int tag_find(NameRef tag, int kind, NameRef name, int line)
+{
+    int sym = sym_find(tag);
+
+    if (sym != SYM_NONE && sym_at(sym)->val != kind)
+        acc_error_at(line, "'%s' is declared as a %s tag, not a %s one",
+                     name_text(name), tag_keyword[sym_at(sym)->val],
+                     tag_keyword[kind]);
+
+    return sym;
+}
+
+/* `enum`, and a tag, a list of constants or both. Each constant is an int,
+ * declared from the moment its name has been read, so a later one may be
+ * defined in terms of an earlier. The type is unsigned int when none of them
+ * is negative and int otherwise, which is what agondev makes of it. */
+__attribute__((noinline))
+static Type enum_specifier(void)
+{
+    int line = tok_line, negative = 0, val = 0, sym;
+    NameRef name = NAME_NONE, tag = NAME_NONE;
+    Type type;
+
+    next();
+    if (tok == TK_IDENT) {
+        name = tok_name;
+        tag = tag_name(name);
+        next();
+    }
+    if (!accept(TK_LBRACE)) {
+        if (!tag)
+            acc_error_at(line, "'enum' needs a name or a list of constants");
+        sym = tag_find(tag, TAG_ENUM, name, line);
+        if (sym == SYM_NONE)
+            acc_error_at(line, "'enum %s' is not defined", name_text(name));
+
+        return sym_at(sym)->type;
+    }
+
+    while (tok != TK_RBRACE) {
+        int cline = tok_line;
+        NameRef constant = declared_name();
+
+        if (accept(TK_ASSIGN))
+            val = constant_int("an enum constant's value", cline);
+        if (val > 0x7fffff)
+            acc_error_at(cline, "an enum constant has to fit in an int");
+        not_redeclared(constant, cline);
+        sym_at(push_here(constant, SYM_CONST, val))->type = TY_INT;
+        if (val < 0)
+            negative = 1;
+        val++;
+        if (!accept(TK_COMMA))
+            break;
+    }
+    expect(TK_RBRACE, "'}'");
+
+    type = negative ? TY_INT : TY_UINT;
+    if (tag) {
+        not_redeclared(tag, line);
+        sym = push_here(tag, SYM_TAG, TAG_ENUM);
+        sym_at(sym)->type = type;
+    }
+
+    return type;
+}
+
 /* The keywords at the front of a declaration, which say what the type is
  * before any star has narrowed it down. `int *p, q;` has one of these and two
  * declarators, and q is an int: a star belongs to the name it is written next
- * to and not to the type at the head of the line. */
-static Type base_type(void)
+ * to and not to the type at the head of the line.
+ *
+ * base_ext is the type's extension. It is a global rather than a second
+ * result because nearly every caller wants only the type -- and it is
+ * overwritten by the next type read, which may be inside the declaration
+ * (a cast in an initialiser), so a caller that wants it copies it at once. */
+static int base_ext;
+
+__attribute__((noinline))
+static Type base_type_other(void)
 {
     int line = tok_line;
 
-    if (tok == TK_KW_RESERVED)
+    switch (tok) {
+    case TK_KW_ENUM:
+        return enum_specifier();
+    case TK_KW_RESERVED:
         reserved_word();
-    if (!starts_type(tok))
-        acc_error_at(line, "expected a type, found %s", tok_spelling(tok));
+    }
+    acc_error_at(line, "expected a type, found %s", tok_spelling(tok));
+}
 
-    return type_specifier();
+static Type base_type(void)
+{
+    base_ext = 0;
+    if (starts_type(tok))
+        return type_specifier();        /* the keywords, which is most */
+
+    return base_type_other();
+}
+
+/* Whether the current token begins a declaration: a specifier keyword, or
+ * one that introduces a tagged type or a typedef. */
+static const unsigned char decl_start[TK_COUNT] = {
+    [TK_KW_VOID] = 1, [TK_KW_CHAR] = 1, [TK_KW_SHORT] = 1, [TK_KW_INT] = 1,
+    [TK_KW_SIGNED] = 1, [TK_KW_UNSIGNED] = 1, [TK_KW_LONG] = 1,
+    [TK_KW_FLOAT] = 1, [TK_KW_DOUBLE] = 1,
+    [TK_KW_ENUM] = 1, [TK_KW_STRUCT] = 1, [TK_KW_UNION] = 1,
+    [TK_KW_TYPEDEF] = 1
+};
+
+static int starts_decl(void)
+{
+    return decl_start[tok];
 }
 
 /* The stars in front of one name. Inlined, as not_void is: they were one
@@ -1487,6 +1654,8 @@ static int sizeof_unary(void)
             acc_error_at(tok_line, "'%s' is a function, which has no size",
                          name_text(name));
         switch (name_operand(sym, name)) {
+        case NAME_CONST:
+            return SIZEOF_VALUE;
         case NAME_LOCAL: {
             const Sym *local = sym_at(sym);
 
@@ -1516,7 +1685,7 @@ static int sizeof_unary(void)
     }
 
     if (accept(TK_LPAREN)) {
-        if (starts_type(tok)) {
+        if (starts_decl()) {
             cast_rest();
 
             return SIZEOF_VALUE;
@@ -1540,7 +1709,7 @@ static void sizeof_value(void)
 
     next();
     paren = accept(TK_LPAREN);
-    if (paren && starts_type(tok)) {
+    if (paren && starts_decl()) {
         type = type_name(&x);
         expect(TK_RPAREN, "')'");
     } else {
@@ -1911,6 +2080,10 @@ static inline __attribute__((always_inline))
 void declaration(void)
 {
     Type base = base_type();
+
+    /* Nothing but the type: `enum e { A, B };`, declaring what is in it. */
+    if (accept(TK_SEMI))
+        return;
 
     for (;;) {
         int line = tok_line, count, ext, off, sym;
@@ -2428,7 +2601,7 @@ static void for_statement(void)
     next();
     expect(TK_LPAREN, "'('");
 
-    if (starts_type(tok)) {
+    if (starts_decl()) {
         declaration();                  /* and its semicolon */
     } else {
         if (tok != TK_SEMI) {
@@ -2475,16 +2648,18 @@ static void for_statement(void)
  * one of these too. */
 static void block(void)
 {
-    int mark = sym_scope_begin();
+    int mark = sym_scope_begin(), outer = scope_mark;
 
+    scope_mark = mark;
     while (tok != TK_RBRACE && tok != TK_EOF) {
-        if (starts_type(tok))
+        if (starts_decl())
             declaration();
         else
             statement();
     }
     expect(TK_RBRACE, "'}'");
     sym_scope_end(mark);
+    scope_mark = outer;
 }
 
 static void condition(void)
@@ -2697,7 +2872,9 @@ static void function_rest(Type ret_type, NameRef name)
 
     sym_set_params(fn, params_first, nparams);
     gen_func_begin(fn, nparams, ret_type);
+    in_body = 1;
     block();
+    in_body = 0;
     labels_end();
     gen_func_end();
 
@@ -2983,6 +3160,9 @@ static void external_declaration(void)
 {
     Type base = base_type();
     int line = tok_line, count = 0, ext = 0;
+
+    if (accept(TK_SEMI))
+        return;
     Type stars = declarator_stars(base), type = stars;
     NameRef name;
 

@@ -252,6 +252,8 @@ enum {
     TK_KW_GOTO,
     TK_STRING,                  /* a string literal; tok_str holds its bytes */
     TK_KW_SIZEOF,
+    TK_KW_ENUM, TK_KW_STRUCT, TK_KW_UNION, TK_KW_TYPEDEF,
+    TK_DOT, TK_ARROW,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
@@ -337,7 +339,16 @@ enum {
     SYM_LOCAL_ARRAY,    /* a local array: val is its number */
     SYM_FUNC,           /* a function: val is its address in the image */
     SYM_GLOBAL,         /* a file-scope variable: val is its address */
-    SYM_GLOBAL_ARRAY    /* a file-scope array: val is its address */
+    SYM_GLOBAL_ARRAY,   /* a file-scope array: val is its address */
+
+    /* These three are at file scope or in a block, as they are declared:
+     * see sym_push_local. */
+    SYM_CONST,          /* an enum constant: val is its value */
+    SYM_TYPEDEF,        /* a typedef name: type and ext are the type */
+    SYM_TAG             /* a struct, union or enum tag: val says which, and
+                         * type and ext are the type. Its name is the tag's
+                         * with a prefix, which keeps tags apart from other
+                         * names: see tag_name */
 };
 
 /* Whether a symbol of this kind belongs to the function being compiled
@@ -379,6 +390,7 @@ void sym_init(void);
 
 int  sym_find(NameRef name);             /* innermost first; SYM_NONE if unknown */
 int  sym_push(NameRef name, int kind, int val);
+int  sym_push_local(NameRef name, int kind, int val);  /* in the function, whatever the kind */
 /* Symbol i. Good until the next sym_push, which may move the table; nothing
  * holds one across a push. A macro over the table itself rather than a call,
  * because it is used on every name the program mentions and the call opened a
@@ -394,6 +406,7 @@ void sym_drop_locals(void);              /* at the end of a function */
  * declares are dropped at its end, and their frame bytes are not reused. */
 int  sym_scope_begin(void);
 void sym_scope_end(int mark);
+int  sym_declared_in(int sym, int mark);  /* in the scope from mark on; -1 is file scope */
 
 /* ------------------------------------------------------------------ */
 /* values                                                              */

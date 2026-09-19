@@ -84,25 +84,44 @@ static void syms_grow(void)
         acc_error("out of memory for symbols");
 }
 
-int sym_push(NameRef name, int kind, int val)
+/* A symbol in the function's own region whatever its kind: an enum
+ * constant, a typedef or a tag declared inside a function belongs to the
+ * block it is declared in, where the same declaration at file scope does
+ * not. */
+static inline __attribute__((always_inline))
+int push_local(NameRef name, int kind, int val)
 {
     Sym *sym;
     int at;
 
     if (nsyms == cap)
         syms_grow();
-    if (sym_kind_local(kind)) {
-        at = nsyms;
-        sym = sym_at(at);
-        sym->name = name;
-        sym->kind = (unsigned char) kind;
-        sym->val = val;
-        sym->type = TY_INT;     /* until the declaration says otherwise */
-        sym->ext = 0;
-        nsyms += sizeof *sym;
+    at = nsyms;
+    sym = sym_at(at);
+    sym->name = name;
+    sym->kind = (unsigned char) kind;
+    sym->val = val;
+    sym->type = TY_INT;     /* until the declaration says otherwise */
+    sym->ext = 0;
+    nsyms += sizeof *sym;
 
-        return at;
-    }
+    return at;
+}
+
+int sym_push_local(NameRef name, int kind, int val)
+{
+    return push_local(name, kind, val);
+}
+
+int sym_push(NameRef name, int kind, int val)
+{
+    Sym *sym;
+    int at;
+
+    if (sym_kind_local(kind))
+        return push_local(name, kind, val);
+    if (nsyms == cap)
+        syms_grow();
 
     /* File scope. It goes in below the locals, which keeps every index
      * already handed out for a file-scope symbol -- the ones the code
@@ -256,6 +275,14 @@ int sym_scope_begin(void)
 void sym_scope_end(int mark)
 {
     nsyms = nglobals + mark;
+}
+
+int sym_declared_in(int sym, int mark)
+{
+    if (mark < 0)
+        return sym < nglobals;
+
+    return sym >= nglobals + mark;
 }
 
 void sym_set_count(int sym, int count)
