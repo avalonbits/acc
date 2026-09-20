@@ -62,7 +62,7 @@ int main(void)
     int i, base, wrong = 0;
     FILE *f;
 
-    out_open(path);
+    out_open(path, 1);
     base = out_here();
 
     /* A value whose three bytes all differ, and differ between words, so a

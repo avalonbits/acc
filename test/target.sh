@@ -2,6 +2,13 @@
 # Compiles every case with acc as built for the Agon, on the Agon, and requires
 # each image to be byte for byte what the host build of acc makes of it.
 #
+# The objects too, for the cases. An object is meant to be the same file
+# wherever it was made, so that a program begun on the Agon can be carried to
+# a PC and carried back: every number in one is three bytes and every
+# checksum is kept to 24 bits for exactly that reason, and this is what says
+# so. The paths an object records are the ones it was given, so both sides
+# compile the same short names from the directory they are in.
+#
 #   test/target.sh [acc.bin]            # default bin/acc.bin
 #
 # Every other test runs acc on the host, where an int is 32 bits and an
@@ -54,6 +61,10 @@ for src in test/cases/*.c test/bench/*.c; do
     cp "$src" "$host/$id.c"
     echo "$src" > "$host/$id.src"
     printf 'acc %s.c -o %s.bin\r\n' "$id" "$id" >> "$sd/autoexec.txt"
+    case $src in
+      test/cases/*) printf 'acc -c %s.c -o %s.o\r\n' "$id" "$id" \
+                        >> "$sd/autoexec.txt" ;;
+    esac
 done
 printf 'stop\r\n' >> "$sd/autoexec.txt"
 
@@ -68,6 +79,18 @@ for c in "$host"/t*.c; do
         printf '  FAIL %-34s the Agon made no image\n' "$src"; fail=$((fail + 1))
     elif ! cmp -s "$sd/$id.bin" "$host/$id.bin"; then
         printf '  FAIL %-34s the two builds disagree\n' "$src"; fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+
+    case $src in test/cases/*) ;; *) continue ;; esac
+
+    (cd "$host" && ASAN_OPTIONS=detect_leaks=0 "$OLDPWD/bin/acc" -c "$id.c" \
+        -o "$id.o" >/dev/null 2>&1)
+    if [ ! -f "$sd/$id.o" ]; then
+        printf '  FAIL %-34s the Agon made no object\n' "$src"; fail=$((fail + 1))
+    elif ! cmp -s "$sd/$id.o" "$host/$id.o"; then
+        printf '  FAIL %-34s the two objects disagree\n' "$src"; fail=$((fail + 1))
     else
         pass=$((pass + 1))
     fi

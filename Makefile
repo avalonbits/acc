@@ -9,7 +9,7 @@
 CC      ?= cc
 CFLAGS  ?= -O2 -g
 WARN     = -Wall -Wextra -Wno-unused-parameter
-SRC      = src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c
+SRC      = src/obj.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c
 HDR      = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h
 
 # -fsigned-char because char is signed on the eZ80, so the host build should
@@ -71,6 +71,7 @@ test: all unit $(BIN)/acc-asan agon
 	@test/include.sh
 	@test/macro.sh
 	@ACC=$(BIN)/acc-asan test/reloc.sh
+	@ACC=$(BIN)/acc-asan test/object.sh
 	@test/heap.sh || [ $$? -eq 77 ]
 	@test/cycles.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh

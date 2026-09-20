@@ -3900,6 +3900,10 @@ static int  global_again(int sym, Type type, int ext, int count, int line);
 static int static_local;
 static int redefining = SYM_NONE;
 static unsigned char decl_const;    /* the variable being declared is const */
+static int decl_extern;             /* and its declaration said extern */
+/* A name whose declaration said extern and which has not been pushed yet,
+ * so that the flag can go on the symbol once there is one. */
+static NameRef pending_extern = NAME_NONE;
 static unsigned char decl_bottom_const; /* and SQ_CONST, when its type is */
 
 /* `typedef`, and names for types rather than objects: each declarator names
@@ -5066,7 +5070,10 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
         return 0;
     }
 
-    if (sym_at(fn)->val)
+    /* Asked of the flag and not of the address, because compiling to an
+     * object puts the first function at offset zero, and zero is what a
+     * function that has not been defined has. */
+    if (sym_flags(fn) & SYMF_DEFINED)
         acc_error_at(line, "'%s' is defined twice", name_text(name));
     if (unnamed)
         acc_error_at(line, "a parameter of a function's definition needs a "
@@ -5666,6 +5673,19 @@ static void global_variable(Type type, int ext, NameRef name, int count,
 {
     int sym, init = (tok == TK_ASSIGN);
 
+    /* Noted, and asked about at the end of the file: a variable this one
+     * only declares is one some other file has to define, which needs a
+     * linker to join them up. See externs_end. */
+    pending_extern = NAME_NONE;
+    if (decl_extern && !static_local) {
+        int known = name_global(name);
+
+        if (known != SYM_NONE)
+            sym_set_flags(known, SYMF_EXTERN);
+        else
+            pending_extern = name;
+    }
+
     if (!static_local && (sym = name_global(name)) != SYM_NONE) {
         int saved, again = global_again(sym, type, ext, count, line);
 
@@ -5695,8 +5715,40 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         return;
     }
     global_emit(type, ext, name, count, line);
+    if (!static_local && pending_extern == name)
+        sym_set_flags(name_global(name), SYMF_EXTERN);
     if (init && !static_local)
         sym_set_flags(name_global(name), SYMF_DEFINED);
+}
+
+/* At the end of a compile to an object: a variable this file declared extern
+ * and never gave a value to.
+ *
+ * The declaration reserves room for it here, which is right for a program of
+ * one file and wrong for a piece of one -- the file that does define it
+ * reserves room too, and the two would be different variables at different
+ * addresses. Refused rather than quietly built, because what it would build
+ * is a program that runs and gets the wrong answer.
+ *
+ * A function needs no such rule: a call to one this file does not define is
+ * already a relocation for the linker to fill in, and reserves nothing. The
+ * same for a variable is what comes next. */
+static void externs_end(void)
+{
+    int step = (int) sizeof(Sym);
+    int s;
+
+    for (s = 0; s < sym_nglobals(); s += step) {
+        const Sym *sym = sym_at(s);
+
+        if (sym->kind == SYM_FUNC || sym->kind == SYM_GLOBAL_LATE)
+            continue;
+        if ((sym_flags(s) & (SYMF_EXTERN | SYMF_DEFINED)) != SYMF_EXTERN)
+            continue;
+        acc_error("'%s' is declared extern and never given a value here, so "
+                  "another file defines it -- which is not implemented yet",
+                  name_text(sym->name));
+    }
 }
 
 /* A function declared by a declarator whose type came out a function --
@@ -5729,7 +5781,7 @@ static int function_from_type(int x, NameRef name, int line)
         return 0;
     }
 
-    if (sym_at(fn)->val)
+    if (sym_flags(fn) & SYMF_DEFINED)
         acc_error_at(line, "'%s' is defined twice", name_text(name));
     argoff = 2 * ACC_PTR_SIZE + (type_is_struct(ret) ? ACC_PTR_SIZE : 0);
     nstruct_params = 0;
@@ -5800,8 +5852,11 @@ static void external_declaration(void)
      * one that gives the value, if any does, fills in. inline asks that
      * calls be fast, and a call is what they are: C lets that be the
      * answer. In any order, as C allows. */
-    while (tok == TK_KW_STATIC || tok == TK_KW_EXTERN || tok == TK_KW_INLINE)
+    decl_extern = 0;
+    while (tok == TK_KW_STATIC || tok == TK_KW_EXTERN || tok == TK_KW_INLINE) {
+        decl_extern |= tok == TK_KW_EXTERN;
         next();
+    }
     if (tok == TK_KW_AUTO || tok == TK_KW_REGISTER)
         acc_error_at(tok_line, "%s is for a variable in a block, not at file "
                                "scope", tok_spelling(tok));
@@ -5849,9 +5904,14 @@ static void translation_unit(void)
 static void usage(void)
 {
     fprintf(stderr,
-        "usage: acc <source.c> -o <out.bin> [-I <dir>]... [-b <addr>]\n"
-        "                     [-r <file>] [-x]\n"
+        "usage: acc [-c] <source.c> -o <out> [-I <dir>]... [-b <addr>]\n"
+        "                                    [-r <file>] [-x]\n"
+        "       acc <file.o>... -o <out.bin> [-x]\n"
         "\n"
+        "  -c  compile to an object rather than to a program, to be\n"
+        "      linked with others later. An object also records what the\n"
+        "      compile read, so that a build can tell whether it has to\n"
+        "      be made again.\n"
         "  -I  a directory to look in for an #include, after the one the\n"
         "      including file is in.\n"
         "  -b  the address the image is loaded at, in hexadecimal. The\n"
@@ -5945,13 +6005,101 @@ static void stack_report(void)
 #define stack_report()
 #endif
 
+/* ------------------------------------------------------------------ */
+/* linking                                                             */
+
+/* An input that is already compiled. By its name, as every other toolchain
+ * tells them apart, and not by looking inside: a file called x.c that turns
+ * out to hold an object is a mistake worth a clear complaint rather than a
+ * clever recovery. */
+static int is_object(const char *path)
+{
+    size_t n = strlen(path);
+
+    return n > 2 && path[n - 2] == '.' && path[n - 1] == 'o';
+}
+
+/* A name from an object, as a symbol in the compiler's own table.
+ *
+ * The linker reuses what the compiler already has: a call whose target is not
+ * known yet is a fixup, and gen_finish fills the fixups in once everything
+ * has been read. That is the same problem a call to a function further down
+ * the file is, so it is the same machinery -- an object is just a file whose
+ * functions arrive all at once. */
+static int link_symbol(const char *text)
+{
+    NameRef name = name_intern(text, (int) strlen(text));
+    int sym = name_global(name);
+
+    if (sym == SYM_NONE) {
+        sym = sym_push(name, SYM_FUNC, 0);
+        sym_set_flags(sym, SYMF_DECLARED | SYMF_PARAMS);
+    }
+
+    return sym;
+}
+
+/* One object, placed where the image has got to. */
+static void link_object(const char *path)
+{
+    Object o;
+    int base, i;
+
+    obj_read(path, &o);
+    base = out_here();
+    for (i = 0; i < o.text_len; i++)
+        out_byte(o.text[i]);
+
+    /* What it has, at the address it now has it. */
+    for (i = 0; i < o.nsyms; i++) {
+        int sym;
+
+        if (!(obj_sym_flags(&o, i) & OBJ_DEFINED))
+            continue;
+        sym = link_symbol(obj_sym_name(&o, i));
+        if (sym_flags(sym) & SYMF_DEFINED)
+            acc_error("'%s' is defined in more than one object, and '%s' is "
+                      "one of them", obj_sym_name(&o, i), path);
+        sym_at(sym)->val = base + obj_sym_value(&o, i);
+        sym_set_flags(sym, SYMF_DECLARED | SYMF_DEFINED | SYMF_PARAMS);
+    }
+
+    /* And the slots in it that hold an address. One inside the object moves
+     * with it; one that wants a name from somewhere else becomes a fixup,
+     * which gen_finish settles when every object has been read. */
+    for (i = 0; i < o.nrelocs; i++) {
+        int at = obj_reloc_at(&o, i), which = obj_reloc_sym(&o, i);
+
+        if (at < 0 || at + 3 > o.text_len)
+            acc_error("'%s' has a relocation at %06x, outside its %d bytes",
+                      path, at, o.text_len);
+        if (!which) {
+            out_patch24(base + at, get24(o.text + at) + base);
+
+            continue;
+        }
+        if (get24(o.text + at))
+            acc_error("'%s' wants '%s' with an offset added, which is not "
+                      "implemented yet", path,
+                      obj_sym_name(&o, which - 1));
+        gen_data_fixup(link_symbol(obj_sym_name(&o, which - 1)), base + at);
+    }
+    obj_free(&o);
+}
+
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL, *relocs = NULL;
+    const char **objs;
+    int nobjs = 0, to_object = 0;
     int by_exit = 0;
     int i;
     clock_t begin;
     unsigned cs;
+
+    objs = malloc((size_t) argc * sizeof *objs);
+    if (!objs)
+        acc_error("out of memory for the inputs");
 
     for (i = 1; i < argc; i++) {
         if (argv[i][0] == '-' && argv[i][1] == 'o') {
@@ -5988,17 +6136,23 @@ int main(int argc, char **argv)
                 relocs = argv[i];
             else
                 usage();
+        } else if (argv[i][0] == '-' && argv[i][1] == 'c' && !argv[i][2]) {
+            to_object = 1;
         } else if (argv[i][0] == '-' && argv[i][1] == 'x' && !argv[i][2]) {
             by_exit = 1;
         } else if (argv[i][0] == '-') {
             usage();
+        } else if (is_object(argv[i])) {
+            objs[nobjs++] = argv[i];
         } else if (!in) {
             in = argv[i];
         } else {
             usage();
         }
     }
-    if (!in || !out)
+    if (!out || (!in && !nobjs) || (in && nobjs))
+        usage();
+    if (to_object && !in)
         usage();
 
     begin = clock();
@@ -6009,17 +6163,56 @@ int main(int argc, char **argv)
     lex_init();
     sym_init();
     gen_init();
-    out_open(out);
-    gen_startup(by_exit);
-    lex_open(in);
-    translation_unit();
-    lex_end();
-    late_arrays_end();
-    gen_finish();
-    lex_close();
-    if (relocs)
-        out_relocs_write(relocs);
-    out_close();
+
+    if (nobjs) {
+        /* Linking. The entry stub goes in first, as it does for a program
+         * compiled in one piece, and its call to main is a fixup like any
+         * other -- which is what makes the objects' own symbols do the work
+         * of finding it. */
+        out_open(out, 1);
+        gen_startup(by_exit);
+        for (i = 0; i < nobjs; i++)
+            link_object(objs[i]);
+        gen_finish();
+        out_close();
+    } else if (to_object && obj_current(out, in)) {
+        /* Nothing to do: the object is there and every file it was made
+         * from is unchanged. This is the whole point of an object knowing
+         * what it was made from. */
+        printf("%s is up to date\r\n", out);
+    } else if (to_object) {
+        /* Compiling to an object. No header and no entry stub: those belong
+         * to a program, and this is a piece of one. Based at zero, so that
+         * every address in it is an offset from its own first byte and
+         * placing it is one addition. */
+        gen_objects = 1;
+        lex_want_deps();
+        out_base = 0;
+        out_open(out, 0);
+        lex_open(in);
+        translation_unit();
+        lex_end();
+        late_arrays_end();
+        externs_end();
+        gen_finish();
+        lex_close();
+        obj_write(out);
+        if (relocs)
+            out_relocs_write(relocs);
+        out_free();
+    } else {
+        out_open(out, 1);
+        gen_startup(by_exit);
+        lex_open(in);
+        translation_unit();
+        lex_end();
+        late_arrays_end();
+        gen_finish();
+        lex_close();
+        if (relocs)
+            out_relocs_write(relocs);
+        out_close();
+    }
 
     /* Reported the way zap reports it, down to the wording, so that the two
      * halves of a build can be read as one number. Measured from after the

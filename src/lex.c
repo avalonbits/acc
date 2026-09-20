@@ -360,6 +360,7 @@ typedef struct {
     int         owned;          /* OWN_BUF and OWN_PATH, below */
     NameRef     macro;          /* the macro whose text this level is */
     int         conds;          /* conditionals open when this was pushed */
+    int         dep;            /* which file of dep_files this is, or -1 */
 } Source;
 
 /* What this level allocated, and which macro it is the expansion of.
@@ -376,6 +377,153 @@ typedef struct {
 
 static int     src_owned;
 static NameRef src_macro;
+
+/* ------------------------------------------------------------------ */
+/* what the compile read                                               */
+
+/* Every file this compile opened: the source, and each header it reached
+ * through an #include. An object records them so that a later build can ask
+ * whether any of them has changed, and compile again only if one has.
+ *
+ * What is kept of each is its length and a checksum of its bytes, which is
+ * the only honest answer available on this machine. The Agon has no clock of
+ * its own -- MOS gets the time from the VDP, which starts from a fixed point
+ * at every power-on -- so a file written in one session and one written in
+ * the next carry timestamps that say nothing about which is newer. A
+ * checksum does not care.
+ *
+ * The bytes are taken as they are read, in refill, so nothing is read twice
+ * to work it out.
+ *
+ * The sum and the weighted sum together are 48 bits, and the weighting is
+ * what makes the order of the bytes matter: without it, two lines swapped
+ * would look unchanged. Both are kept to 24 bits explicitly, so that a host
+ * whose int is wider works out the same number the Agon does. It is not a
+ * cryptographic hash and does not need to be: it is here to notice an edit,
+ * not to withstand one. */
+typedef struct {
+    char    *path;
+    unsigned size, sum, weighted;
+} Dep;
+
+static Dep  *deps;
+static int   ndeps, deps_cap;
+static int   want_deps;         /* see dep_add */
+static int src_dep = -1;        /* the file being read, or -1 for macro text */
+
+static int dep_add(const char *path)
+{
+    char *keep;
+    int i;
+
+    /* Only an object records what it was made from, and only it pays for
+     * the checksum: a compile straight to a program answers -1 here, and
+     * every byte read after that goes through one compare. */
+    if (!want_deps)
+        return -1;
+
+    /* A header that several others include is opened once for each of them,
+     * and each time it reads the same bytes. One entry is enough, and it
+     * keeps an object from growing with the shape of the include graph
+     * rather than with the number of files in it.
+     *
+     * Its marks start again, because they are the marks of one reading of
+     * the file: folding a second reading into the first would give a number
+     * no reading of that file on its own could produce, and the build would
+     * decide it had changed every time. */
+    for (i = 0; i < ndeps; i++)
+        if (strcmp(deps[i].path, path) == 0) {
+            deps[i].size = deps[i].sum = deps[i].weighted = 0;
+
+            return i;
+        }
+
+    if (ndeps == deps_cap) {
+        deps_cap = deps_cap ? deps_cap * 2 : 16;
+        deps = realloc(deps, (size_t) deps_cap * sizeof *deps);
+        if (!deps)
+            acc_error("out of memory for the list of files read");
+    }
+    keep = malloc(strlen(path) + 1);
+    if (!keep)
+        acc_error("out of memory for '%s'", path);
+    strcpy(keep, path);
+    deps[ndeps].path = keep;
+    deps[ndeps].size = deps[ndeps].sum = deps[ndeps].weighted = 0;
+
+    return ndeps++;
+}
+
+/* `n` bytes folded into the two running sums. */
+static void marks_fold(unsigned *sump, unsigned *weightedp, const char *bytes,
+                       int n)
+{
+    unsigned sum = *sump, weighted = *weightedp;
+    int i;
+
+    for (i = 0; i < n; i++) {
+        sum = (sum + (unsigned char) bytes[i]) & 0xffffffu;
+        weighted = (weighted + sum) & 0xffffffu;
+    }
+    *sump = sum;
+    *weightedp = weighted;
+}
+
+/* The bytes just read from the file at `which`, folded in. */
+static void dep_bytes(int which, const char *bytes, int n)
+{
+    if (which < 0)
+        return;
+    marks_fold(&deps[which].sum, &deps[which].weighted, bytes, n);
+    deps[which].size += (unsigned) n;
+}
+
+/* The marks for a file as it stands now, which is how a build asks whether
+ * it is the same file an object was made from. Zero when it cannot be read,
+ * which counts as changed -- a header that has gone is a reason to compile
+ * again, not to assume nothing happened. */
+int lex_file_marks(const char *path, unsigned *size, unsigned *sum,
+                   unsigned *weighted)
+{
+    char buf[1024];
+    FILE *f = fopen(path, "rb");
+    size_t got;
+
+    if (!f)
+        return 0;
+    *size = *sum = *weighted = 0;
+    while ((got = fread(buf, 1, sizeof buf, f)) > 0) {
+        marks_fold(sum, weighted, buf, (int) got);
+        *size += (unsigned) got;
+    }
+    fclose(f);
+
+    return 1;
+}
+
+/* Said before the source is opened, by a compile that is going to write an
+ * object. */
+void lex_want_deps(void)
+{
+    want_deps = 1;
+}
+
+int lex_ndeps(void)
+{
+    return ndeps;
+}
+
+const char *lex_dep_path(int i)
+{
+    return deps[i].path;
+}
+
+void lex_dep_marks(int i, unsigned *size, unsigned *sum, unsigned *weighted)
+{
+    *size = deps[i].size;
+    *sum = deps[i].sum;
+    *weighted = deps[i].weighted;
+}
 
 static Source open_files[INCLUDE_MAX];
 static int    depth;
@@ -435,6 +583,7 @@ static int refill(void)
      * half a line and break the invariant the whole scheme rests on. */
     room = (size_t) src_cap - keep;
     while (room && (got = fread(src_raw, 1, room, src_file)) > 0) {
+        dep_bytes(src_dep, src_raw, (int) got);
         src_raw += got;
         room -= got;
     }
@@ -690,6 +839,7 @@ static void push_source(const char *path)
     open_files[depth].owned = src_owned;
     open_files[depth].macro = src_macro;
     open_files[depth].conds = nconds;
+    open_files[depth].dep = src_dep;
 
     /* The handle this level was reading through is closed while the file
      * below it runs, and opened again on the way back at the byte it had
@@ -717,6 +867,7 @@ static void push_source(const char *path)
 
     src_file = f;
     src_path = keep;
+    src_dep = dep_add(path);
     src_cap = INCLUDE_CAP;
     src_owned = OWN_BUF | OWN_PATH;
     src_macro = NAME_NONE;
@@ -750,7 +901,9 @@ static void push_text(NameRef macro, char *text, int len)
     open_files[depth].macro = src_macro;
     open_files[depth].conds = nconds;
     open_files[depth].at = -1;          /* no handle of its own to set aside */
+    open_files[depth].dep = src_dep;
     depth++;
+    src_dep = -1;                       /* text in memory, not a file */
 
     src = NULL;
     src_file = NULL;
@@ -810,6 +963,7 @@ static int pop_source(void)
     line = open_files[depth].line;
     src_owned = open_files[depth].owned;
     src_macro = open_files[depth].macro;
+    src_dep = open_files[depth].dep;
 
     /* The handle set aside when this level was pushed, back where it was. */
     if (open_files[depth].at >= 0) {
@@ -835,6 +989,7 @@ void lex_open(const char *path)
     }
 
     src_path = path;
+    src_dep = dep_add(path);
     src_cap = SRC_CAP;
     cursor = src_end = src_raw = src;
     src_held = '\0';

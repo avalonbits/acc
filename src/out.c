@@ -120,6 +120,11 @@ void out_reloc_back(int at)
     out_reloc_put++;
 }
 
+int out_len(void)
+{
+    return OUT_LEN;
+}
+
 int out_nrelocs(void)
 {
     return (int) (out_reloc_put - out_relocs) - 1;
@@ -148,7 +153,10 @@ void out_relocs_write(const char *path)
     fclose(file);
 }
 
-void out_open(const char *path)
+/* `header` is whether MOS's is wanted: a program has one and an object does
+ * not, its bytes being something a linker will put after a header of its own
+ * making. */
+void out_open(const char *path, int header)
 {
     static const unsigned char hdr[HEADER_SIZE - 4] = { 0 };
     const char *base, *scan;
@@ -161,6 +169,8 @@ void out_open(const char *path)
     out_limit = out_img + cap;
     out_reloc_grow();                   /* so the sentinel is there to read */
     out_path = path;
+    if (!header)
+        return;
 
     /* jp 0x040045, over the header */
     out_byte(0xc3);
@@ -277,6 +287,16 @@ void out_patch24(int at, int value)
     put24(out_img + off, value);
 }
 
+/* The image and its table let go of, without writing anything: what the
+ * object writer wants, having written the same bytes itself. */
+void out_free(void)
+{
+    free(out_img);
+    out_img = NULL;
+    free(out_relocs);
+    out_relocs = out_reloc_put = out_reloc_limit = NULL;
+}
+
 void out_close(void)
 {
     FILE *file = fopen(out_path, "wb");
@@ -286,8 +306,5 @@ void out_close(void)
     if ((int) fwrite(out_img, 1, (size_t) OUT_LEN, file) != OUT_LEN)
         acc_error("short write on '%s'", out_path);
     fclose(file);
-    free(out_img);
-    out_img = NULL;
-    free(out_relocs);
-    out_relocs = out_reloc_put = out_reloc_limit = NULL;
+    out_free();
 }

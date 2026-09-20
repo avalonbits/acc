@@ -2965,6 +2965,51 @@ static void rt_emit_used(void)
         out_patch24(rt_fixups[i].at, rt_base + rt_entry[rt_fixups[i].which]);
 }
 
+/* Calls this file cannot resolve, when it is being compiled to an object:
+ * the function is defined somewhere else, and where the call has to point is
+ * the linker's to work out. The slot keeps the zero it was emitted with,
+ * which is the addend, and the relocation names the symbol.
+ *
+ * Kept apart from the relocation table rather than in it, because out.c does
+ * not know about symbols and should not have to. The object writer puts the
+ * two together. */
+int gen_objects;                /* -c: compiling to an object */
+
+typedef struct {
+    int at, fn;
+} ExternFix;
+
+static ExternFix *externs;
+static int        nexterns, externs_cap;
+
+static void extern_add(int at, int fn)
+{
+    if (nexterns == externs_cap) {
+        externs_cap = externs_cap ? externs_cap * 2 : 16;
+        externs = realloc(externs, (size_t) externs_cap * sizeof *externs);
+        if (!externs)
+            acc_error("out of memory for the calls out of this file");
+    }
+    externs[nexterns].at = at;
+    externs[nexterns].fn = fn;
+    nexterns++;
+}
+
+int gen_nexterns(void)
+{
+    return nexterns;
+}
+
+int gen_extern_at(int i)
+{
+    return externs[i].at;
+}
+
+int gen_extern_sym(int i)
+{
+    return externs[i].fn;
+}
+
 void gen_finish(void)
 {
     int i;
@@ -2972,8 +3017,15 @@ void gen_finish(void)
     for (i = 0; i < nfixups; i++) {
         Sym *fn = sym_at(fixups[i].fn);
 
-        if (!fn->val)
+        /* The flag and not the address: an object puts its first function at
+         * offset zero. */
+        if (!(sym_flags(fixups[i].fn) & SYMF_DEFINED)) {
+            if (gen_objects) {
+                extern_add(fixups[i].at, fixups[i].fn);
+                continue;
+            }
             acc_error("'%s' is called but never defined", name_text(fn->name));
+        }
 
         /* The call was emitted before the definition was read, so it took C's
          * word that an undeclared function returns int -- and read its answer
@@ -3473,7 +3525,14 @@ void vpush_function(int fn)
 {
     const Sym *f = sym_at(fn);
 
-    if (f->val) {
+    /* Asked of the flag rather than of the address, here and at the call
+     * below, because an object puts its first function at offset zero --
+     * and zero is also what a function that has not been defined has. Taking
+     * the second path for a function that is in fact defined would still
+     * come out right, since the fixup is filled in with the same address,
+     * but not with the same instructions: this one leaves a constant on the
+     * value stack for whatever wants it, and that one forces a register. */
+    if (sym_flags(fn) & SYMF_DEFINED) {
         vpush_const(f->val, type_ptr_to(TY_FUNC));
         vset_addr();
 
@@ -3626,7 +3685,7 @@ static void call_to(const Callee *callee, int nargs, int params_first,
 
     if (callee->fn == SYM_NONE) {
         call_through();
-    } else if (sym_at(callee->fn)->val) {
+    } else if (sym_flags(callee->fn) & SYMF_DEFINED) {
         out_reloc(out_here() + 1);
         out_opcode24(0xcd, sym_at(callee->fn)->val);    /* call nn */
     } else {

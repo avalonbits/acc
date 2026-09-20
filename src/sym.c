@@ -155,6 +155,15 @@ int sym_push(NameRef name, int kind, int val)
     return at;
 }
 
+/* The file-scope region, in bytes: symbols [0, sym_nglobals()) stepping by
+ * the size of a Sym. What an object file exports comes from this walk, and
+ * it is the only thing outside sym.c that needs to know the table has two
+ * regions. */
+int sym_nglobals(void)
+{
+    return nglobals;
+}
+
 int sym_find(NameRef name)
 {
     /* The locals, innermost first, so one shadows a file-scope name of the

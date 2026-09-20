@@ -410,7 +410,17 @@ extern int      tok_prev_line; /* where the token before it ended */
 
 void lex_init(void);
 void lex_open(const char *path);
-void lex_add_include(const char *dir);  /* a -I directory, in order */
+void lex_add_include(const char *dir);
+
+/* Every file the compile read, and enough about each to tell whether it has
+ * changed: see the note in src/lex.c. */
+void        lex_want_deps(void);
+int         lex_ndeps(void);
+const char *lex_dep_path(int i);
+void        lex_dep_marks(int i, unsigned *size, unsigned *sum,
+                          unsigned *weighted);
+int         lex_file_marks(const char *path, unsigned *size, unsigned *sum,
+                           unsigned *weighted);  /* a -I directory, in order */
 void lex_close(void);
 void lex_end(void);   /* what has to be finished before the file is */
 void next(void);                 /* advance to the following token */
@@ -547,7 +557,11 @@ enum {
     SYMF_PARAMS   = 4,          /* a function: its parameters are declared,
                                  * where `()` in a declaration says nothing
                                  * about them */
-    SYMF_VARIADIC = 8           /* a function: and more of them, `...` */
+    SYMF_VARIADIC = 8,          /* a function: and more of them, `...` */
+    SYMF_EXTERN   = 16          /* a variable: a declaration said extern, so
+                                 * some file defines it -- this one, if one
+                                 * of the declarations here gives it a value,
+                                 * and otherwise another */
 };
 void sym_set_flags(int sym, int flags);
 unsigned char sym_flags(int sym);
@@ -562,6 +576,7 @@ void sym_init(void);
  * because the table is grown with realloc; see sym.c. */
 #define SYM_NONE (-1)
 
+int  sym_nglobals(void);                 /* the file-scope region, in bytes */
 int  sym_find(NameRef name);             /* innermost first; SYM_NONE if unknown */
 int  sym_push(NameRef name, int kind, int val);
 int  sym_push_local(NameRef name, int kind, int val);  /* in the function, whatever the kind */
@@ -770,13 +785,21 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
 void gen_label(int hole);             /* fill a hole in with here */
 void gen_return(int line);            /* `return`, at the line it is on */
 void gen_finish(void);          /* resolve calls to functions defined later */
+
+/* -c: what this file could not resolve, for the object to hand on. */
+extern int gen_objects;
+int gen_nexterns(void);
+int gen_extern_at(int i);
+int gen_extern_sym(int i);
 void gen_startup(int report_by_exit);  /* the entry stub MOS lands on */
 
 /* ------------------------------------------------------------------ */
 /* output                                                              */
 
-void out_open(const char *path);
+void out_open(const char *path, int header);
 void out_close(void);
+void out_free(void);                /* let it go without writing it */
+int  out_len(void);                 /* bytes written so far */
 
 /* Where the image is loaded. Set before out_open and not after: every address
  * the compiler writes is absolute and is worked out from this. */
@@ -942,5 +965,39 @@ void out_rewind(int here);          /* forget what came after out_here() was her
 void out_seek(int here);            /* back to it, keeping what came after */
 void out_copy(int at, unsigned char *to, int len);  /* bytes already written */
 void out_patch24(int at, int v);
+
+/* ------------------------------------------------------------------ */
+/* objects                                                             */
+
+/* What a symbol in an object is: OBJ_DEFINED when this object has the thing
+ * and says where, and OBJ_FUNC when it is a function rather than data. */
+enum {
+    OBJ_DEFINED = 1,
+    OBJ_FUNC    = 2
+};
+
+/* An object read in: the file's bytes, and where each part of it starts.
+ * Nothing is copied out -- the accessors below read the bytes in place. */
+typedef struct {
+    unsigned char *all;
+    const char    *path;
+    unsigned char *syms, *relocs, *deps, *text;
+    char          *strings;
+    int            text_len, nsyms, nrelocs, ndeps, strings_len;
+} Object;
+
+void obj_write(const char *path);
+int  obj_current(const char *path, const char *source);
+void obj_read(const char *path, Object *o);
+void obj_free(Object *o);
+
+const char *obj_sym_name(const Object *o, int i);
+int         obj_sym_value(const Object *o, int i);
+int         obj_sym_flags(const Object *o, int i);
+int         obj_reloc_at(const Object *o, int i);
+int         obj_reloc_sym(const Object *o, int i);   /* 0, or one more than a symbol */
+const char *obj_dep_path(const Object *o, int i);
+void        obj_dep_marks(const Object *o, int i, unsigned *size,
+                          unsigned *sum, unsigned *weighted);
 
 #endif /* ACC_H */
