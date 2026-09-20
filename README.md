@@ -10,22 +10,29 @@ It is being written towards C99. What works today:
     1, 2 and 3 bytes; `long` at 4; `long long` at 8; `float` and `double`,
     which are both the same 4-byte IEEE 754 single there; `_Bool`; and
     pointers, seven deep
-  * every operator C has, including `?:`, `&&`, `||`, the compound
-    assignments, `++` and `--`, `sizeof` and casts, at every width
+  * every operator C has, including `?:`, `&&`, `||`, the comma operator,
+    the compound assignments, `++` and `--`, `sizeof` and casts, at every
+    width -- and the constants among them are worked out by the compiler,
+    whatever their type, so a global may be initialised with any of them
   * `if`, `while`, `for`, `do`, `switch`, `break`, `continue`, `goto` and
     labels, and blocks with declarations anywhere in them
   * functions, prototypes, recursion, forward references, pointers to
     functions, and variable arguments with `va_list`
-  * `struct`, `union`, `enum`, `typedef`, bit-fields, arrays of any
-    dimension, initialisers with braces, and structs passed, returned and
-    assigned by value
+  * `struct`, `union`, `enum`, `typedef`, bit-fields, flexible array
+    members, arrays of any dimension -- including ones whose length the
+    program works out -- initialisers with braces, designated initialisers
+    (`{ .x = 1 }`, `{ [2] = 7 }`), compound literals, and structs passed,
+    returned and assigned by value
   * `static`, `extern`, `const`, `volatile`, `register`, `auto` and
-    `inline`, with `const` checked through pointers, elements and members
-  * string and character literals with their escapes, and both comment forms
+    `inline`, with `const` checked through pointers, elements and members,
+    and `static` and the qualifiers inside a parameter's brackets
+  * string and character literals with their escapes, `__func__`, and both
+    comment forms
 
-What is not there yet: the preprocessor, and a C library. `long double` is
-refused as well, because libagon has no arithmetic for a double at all, and
-half a type is worse than none.
+What is not there yet: the preprocessor, and a C library. Nor `long double`,
+because libagon has no arithmetic for a double at all and half a type is
+worse than none; nor wide characters and strings, `_Complex`, or function
+definitions written the way K&R wrote them.
 
 One `.c` file in, a runnable MOS binary out: no linker, no preprocessor and
 no library. `* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value,
@@ -99,6 +106,7 @@ Each step is meant to be finished and measured before the next one starts.
 | `struct`, `union`, `enum`, `typedef` | done |
 | `long`, `float`, `long long`, `_Bool` | done |
 | bit-fields, pointers to functions, `...` and `va_list` | done |
+| designated initialisers, compound literals, arrays with a length worked out | done |
 | a preprocessor | next |
 | linking against libagon, so there is a C library | |
 

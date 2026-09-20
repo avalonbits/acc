@@ -87,19 +87,25 @@ That 2A is 42.
 What acc can do today
 ---------------------
 
-  char, short, int, long, and the unsigned form of each
+  char, short, int, long, long long, _Bool, and the unsigned form of each
   float and double
   pointers to any of them, and to pointers, seven deep
-  functions, parameters, locals, calls, recursion
+  functions, parameters, locals, calls, recursion, prototypes, pointers to
+    functions, and ... with va_list
+  struct, union, enum, typedef, bit-fields, and arrays of any dimension --
+    including ones whose length the program works out
   + - * / % and unary minus, ~
   & | ^ << >>
   assignment, and += -= *= /= %= &= |= ^= <<= >>=
   < > <= >= == !=, signed or unsigned according to the operands
   ! && ||, stopping as soon as the answer is known
-  ++ -- before and after, ?:
-  if, else, else if, while
-  decimal and hex constants, with the u and l suffixes
+  ++ -- before and after, ?:, the comma operator, sizeof, casts
+  if, else, else if, while, for, do, switch, break, continue, goto
+  static, extern, const, volatile, register, auto, inline
+  initialisers with braces, designated initialisers, compound literals
+  decimal, hex and octal constants, with the u, l and ll suffixes
   floating constants, with or without an exponent
+  'c' and "text", their escapes, and __func__
   /* block */ and // line comments, anywhere a space can go
 
 char is one byte, short two, int three, long four, and a pointer three --
@@ -126,22 +132,14 @@ What it cannot do yet
 The language acc is being written towards is C99. Everything below is
 missing rather than excluded.
 
-  for do break continue switch -- while is the only loop and the only
-                          branch besides if
-  (int) x              -- no casts; a conversion happens where a value is
-                          assigned or passed, and nowhere else
-  arrays, structs, unions, enums
-  'c' and "text"       -- no character or string constants
-  variables at file scope -- everything lives in a function
-  void f(void)         -- a function has to return something
-  int f(int);          -- no declaration without a definition, so a function
-                          must be defined above its first call unless it
-                          takes and returns int
-  declarations inside a block -- they go at the start of the function
-  long double          -- libagon has no arithmetic for a double
   #include, #define    -- no preprocessor
   printf               -- no library, which is why a program prints its
                           result the way it does
+  long double          -- libagon has no arithmetic for a double, so acc
+                          refuses the type rather than carry half of it
+  L'x' and L"text"     -- no wide characters or strings
+  _Complex             -- and no imaginary numbers
+  int f(a) int a; {}   -- a definition has to say its parameters' types
 
   a frame over 128 bytes -- which is 42 ints or 32 longs in one function.
                           (ix+d) reaches that far and no further.
