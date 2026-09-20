@@ -196,5 +196,116 @@ refuses "a macro with parameters, for now" "not supported yet" \
 int main(void) { return 0; }
 '
 
+# --- the conditionals -------------------------------------------------
+# #ifdef and #ifndef ask the same table #define fills, so they belong here.
+
+same "#ifdef on a name that is defined" \
+'#define YES 1
+#ifdef YES
+int main(void) { return 42; }
+#else
+int main(void) { return 1; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+same "#ifndef on a name that is not" \
+'#ifndef NOPE
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+same "the #else of a group not taken" \
+'#ifdef NOPE
+int main(void) { return 1; }
+#else
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+same "#undef makes an #ifdef false" \
+'#define A 1
+#undef A
+#ifdef A
+int main(void) { return 1; }
+#else
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+same "a group inside a group that is taken" \
+'#define A 1
+#ifdef A
+#ifdef NOPE
+int main(void) { return 1; }
+#endif
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+# The nesting has to be counted while skipping too, or the inner #endif
+# ends the outer group and the text after it comes back.
+same "a group inside a group that is skipped" \
+'#ifdef NOPE
+#ifdef ALSO_NOPE
+#endif
+int main(void) { return 1; }
+#endif
+int main(void) { return 42; }
+' 'int main(void) { return 42; }
+'
+
+# What is skipped is not lexed: `#if 0` around prose is what it is for, and
+# an apostrophe in it closes nothing.
+same "text that is not C inside a skipped group" \
+"$(printf '#ifdef NOPE\nthis is prose, and it'"'"'s got \"unclosed quotes\n#endif\nint main(void) { return 42; }\n')" \
+'int main(void) { return 42; }
+'
+
+# A comment is the one thing that is read, because one can run over the
+# #endif that would otherwise end the group.
+same "a comment hiding an #endif" \
+'#ifdef NOPE
+/* #endif */
+int main(void) { return 1; }
+#endif
+int main(void) { return 42; }
+' 'int main(void) { return 42; }
+'
+
+refuses "#endif with no #if" "without #if" \
+'#endif
+int main(void) { return 0; }
+'
+refuses "#else with no #if" "without #if" \
+'#else
+int main(void) { return 0; }
+'
+refuses "an #if left open" "without #endif" \
+'#ifdef NOPE
+int main(void) { return 0; }
+'
+refuses "#else twice" "after #else" \
+'#ifdef NOPE
+#else
+#else
+#endif
+int main(void) { return 42; }
+'
+refuses "#elif, for now" "not supported yet" \
+'#ifdef NOPE
+#elif 1
+#endif
+int main(void) { return 42; }
+'
+refuses "#ifdef with no name" "needs a name" \
+'#ifdef
+int main(void) { return 0; }
+'
+
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

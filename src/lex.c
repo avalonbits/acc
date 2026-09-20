@@ -852,6 +852,10 @@ static int expand(NameRef name)
 
 static void directive(void);
 static void window_more(void);
+static int  directive_name(char *buf, int cap);
+static NameRef directive_target(const char *what);
+static void skip_blanks(void);
+static void rest_of_line(void);
 
 /* Whether `at` is the first thing on its line, blanks aside. Only asked of
  * a '#', so the walk is off every path but that one. */
@@ -1011,6 +1015,188 @@ static void do_include(void)
     push_source(found);
 }
 
+/* ------------------------------------------------------------------ */
+/* conditionals                                                        */
+
+/* One `#if` and its `#else`, innermost last. `taken` is whether any branch
+ * of this group has been used, which is what makes the `#else` of a group
+ * whose `#ifdef` was true a group to skip. */
+#define COND_MAX 16
+
+typedef struct {
+    unsigned char taken;
+    unsigned char seen_else;
+    int           line;         /* where it opened, for the diagnostic */
+} Cond;
+
+static Cond conds[COND_MAX];
+static int  nconds;
+
+/* What ended a skipped group. */
+enum { GROUP_ELSE, GROUP_ELIF, GROUP_ENDIF };
+
+/* Past a group that is not taken, to the directive that ends it.
+ *
+ * The text inside is not lexed: a group under an `#if 0` is only required
+ * to be made of preprocessing tokens, and in practice holds prose, half a
+ * function, or an apostrophe that would close nothing. So this reads lines,
+ * not tokens, and looks at nothing but the directives.
+ *
+ * Block comments are the exception, because one can legitimately run over
+ * the `#endif` that would otherwise end the group. */
+static int skip_group(void)
+{
+    int nest = 0, in_comment = 0, opened = line;
+    char name[32];
+
+    for (;;) {
+        /* At the start of a line. */
+        if (!in_comment) {
+            skip_blanks();
+            if (*cursor == '#') {
+                cursor++;
+                skip_blanks();
+                directive_name(name, (int) sizeof name);
+
+                if (!strcmp(name, "if") || !strcmp(name, "ifdef")
+                    || !strcmp(name, "ifndef")) {
+                    nest++;
+                } else if (!strcmp(name, "endif")) {
+                    if (!nest)
+                        return GROUP_ENDIF;
+                    nest--;
+                } else if (!nest && !strcmp(name, "else")) {
+                    return GROUP_ELSE;
+                } else if (!nest && !strcmp(name, "elif")) {
+                    return GROUP_ELIF;
+                }
+            }
+        }
+
+        /* The rest of the line, watching for a comment that opens on it and
+         * for the end of one that opened earlier. */
+        for (;;) {
+            while (*cursor && *cursor != '\n') {
+                if (in_comment) {
+                    if (cursor[0] == '*' && cursor[1] == '/') {
+                        in_comment = 0;
+                        cursor += 2;
+
+                        continue;
+                    }
+                } else if (cursor[0] == '/' && cursor[1] == '*') {
+                    in_comment = 1;
+                    cursor += 2;
+
+                    continue;
+                } else if (cursor[0] == '/' && cursor[1] == '/') {
+                    break;      /* the rest of the line is a comment */
+                }
+                cursor++;
+            }
+            while (*cursor && *cursor != '\n')
+                cursor++;
+            if (*cursor)
+                break;
+            if (!refill())
+                acc_error_at(opened, "#if without #endif");
+        }
+        cursor++;               /* the newline */
+        line++;
+    }
+}
+
+static void cond_push(int taken)
+{
+    if (nconds == COND_MAX)
+        acc_error_at(line, "conditionals nested more than %d deep", COND_MAX);
+    conds[nconds].taken = (unsigned char) (taken != 0);
+    conds[nconds].seen_else = 0;
+    conds[nconds].line = line;
+    nconds++;
+}
+
+/* A group whose condition was false is skipped, and whatever ends it is
+ * handled here rather than by the directive loop: the `#else` of a group
+ * that was skipped starts a group that is taken. */
+static void cond_skip_until_taken(void)
+{
+    for (;;) {
+        int end = skip_group();
+
+        if (end == GROUP_ENDIF) {
+            nconds--;
+
+            return;
+        }
+        if (end == GROUP_ELSE) {
+            if (conds[nconds - 1].seen_else)
+                acc_error_at(line, "#else after #else");
+            conds[nconds - 1].seen_else = 1;
+            if (!conds[nconds - 1].taken) {
+                conds[nconds - 1].taken = 1;
+
+                return;         /* this branch is the one that runs */
+            }
+
+            continue;           /* a branch was taken already: skip on */
+        }
+
+        /* #elif, which acc does not evaluate yet. Inside a group that is
+         * being skipped it is skipped too, and the error is only for one
+         * that would have to be decided. */
+        if (!conds[nconds - 1].taken)
+            acc_error_at(line, "#elif is not supported yet");
+    }
+}
+
+static void do_ifdef(int want)
+{
+    NameRef name;
+
+    skip_blanks();
+    name = directive_target(want ? "ifdef" : "ifndef");
+    rest_of_line();
+
+    if ((macro_find(name) != NULL) == want) {
+        cond_push(1);
+
+        return;
+    }
+    cond_push(0);
+    cond_skip_until_taken();
+}
+
+static void do_else(void)
+{
+    if (!nconds)
+        acc_error_at(line, "#else without #if");
+    if (conds[nconds - 1].seen_else)
+        acc_error_at(line, "#else after #else");
+    conds[nconds - 1].seen_else = 1;
+    rest_of_line();
+
+    /* Getting here means the branch before this one ran, so this one does
+     * not: skip to the #endif. */
+    cond_skip_until_taken();
+}
+
+static void do_endif(void)
+{
+    if (!nconds)
+        acc_error_at(line, "#endif without #if");
+    nconds--;
+    rest_of_line();
+}
+
+/* At the end of the outermost file: a conditional left open is a mistake
+ * that would otherwise be silent. */
+void lex_end(void)
+{
+    if (nconds)
+        acc_error_at(conds[nconds - 1].line, "#if without #endif");
+}
+
 /* The name a #define or an #undef is about. Interned, so that what the
  * lexer will hand back for the same spelling is the same reference. */
 static NameRef directive_target(const char *what)
@@ -1116,6 +1302,26 @@ static void directive(void)
     }
     if (!strcmp(name, "undef")) {
         do_undef();
+
+        return;
+    }
+    if (!strcmp(name, "ifdef")) {
+        do_ifdef(1);
+
+        return;
+    }
+    if (!strcmp(name, "ifndef")) {
+        do_ifdef(0);
+
+        return;
+    }
+    if (!strcmp(name, "else")) {
+        do_else();
+
+        return;
+    }
+    if (!strcmp(name, "endif")) {
+        do_endif();
 
         return;
     }

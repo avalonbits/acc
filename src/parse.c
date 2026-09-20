@@ -5928,6 +5928,7 @@ int main(int argc, char **argv)
     gen_startup(by_exit);
     lex_open(in);
     translation_unit();
+    lex_end();
     late_arrays_end();
     gen_finish();
     lex_close();

@@ -403,6 +403,7 @@ void lex_init(void);
 void lex_open(const char *path);
 void lex_add_include(const char *dir);  /* a -I directory, in order */
 void lex_close(void);
+void lex_end(void);   /* what has to be finished before the file is */
 void next(void);                 /* advance to the following token */
 int  lex_colon_follows(void);    /* whether `:` comes after the current token */
 int  lex_rparen_follows(void);   /* and whether `)` does */
