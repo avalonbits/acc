@@ -325,9 +325,6 @@ static char  src_held;      /* the byte the sentinel replaced */
 static FILE *src_file;      /* null once the file has been read to its end */
 static const char *src_path;
 static int   line;
-static int   bol;           /* whether nothing but space is before the cursor
-                             * on its line, which is what lets a '#' be a
-                             * directive rather than a stray character */
 
 /* The files an `#include` is inside, innermost last.
  *
@@ -348,7 +345,15 @@ typedef struct {
     FILE       *src_file;
     const char *src_path;
     int         line;
+    int         owned;          /* whether src and src_path are this level's */
+    NameRef     macro;          /* the macro whose text this level is */
 } Source;
+
+/* Whether this level allocated what it is reading, and which macro it is
+ * the expansion of. A file owns its window and its path and has no macro; a
+ * macro's text is the definition itself, owned by the table it lives in. */
+static int     src_owned;
+static NameRef src_macro;
 
 static Source open_files[INCLUDE_MAX];
 static int    depth;
@@ -432,6 +437,149 @@ static int refill(void)
     return *cursor != '\0';
 }
 
+/* ------------------------------------------------------------------ */
+/* macros                                                              */
+
+/* What a name stands for, and the text it stands for. The text is kept as
+ * it was written rather than as tokens: expanding a macro then costs no
+ * more than pushing that text as another window and reading it, which is
+ * the machinery `#include` already needed. Rescanning falls out of it --
+ * the lexer simply carries on -- and so does a macro that uses a macro.
+ *
+ * Open addressing on the name's offset, which is already a good spread: the
+ * names came out of a hash table. Every identifier in the program asks this
+ * question, so the first thing asked is whether there are any macros at
+ * all. */
+typedef struct {
+    NameRef name;               /* NAME_NONE in an empty slot */
+    char   *text;
+} Macro;
+
+static Macro   *macros;
+static unsigned nmacro_slots, nmacros;
+
+/* Whether the program has defined anything at all, as a byte.
+ *
+ * Every identifier in the program asks this, and it is the only thing most
+ * programs ever ask of the preprocessor. `nmacros` would do, but it is an
+ * unsigned and this target has no 24-bit test: a byte is one load and one
+ * `or a`. */
+static unsigned char any_macros;
+
+static void macros_grow(void);
+
+/* The slot a name belongs in, empty or not. */
+static Macro *macro_slot(NameRef name)
+{
+    unsigned i = (name >> 2) & (nmacro_slots - 1);
+
+    while (macros[i].name != NAME_NONE && macros[i].name != name)
+        i = (i + 1) & (nmacro_slots - 1);
+
+    return &macros[i];
+}
+
+/* The definition of a name, or null. */
+static Macro *macro_find(NameRef name)
+{
+    Macro *m;
+
+    if (!nmacros)
+        return NULL;
+    m = macro_slot(name);
+
+    return m->name == NAME_NONE ? NULL : m;
+}
+
+static void macros_grow(void)
+{
+    Macro   *old = macros;
+    unsigned n = nmacro_slots, i;
+
+    nmacro_slots = n ? n * 2 : 64;
+    macros = calloc(nmacro_slots, sizeof *macros);
+    if (!macros)
+        acc_error("out of memory for macros");
+    for (i = 0; i < n; i++)
+        if (old[i].name != NAME_NONE)
+            *macro_slot(old[i].name) = old[i];
+    free(old);
+}
+
+static void macro_define(NameRef name, const char *text, int len)
+{
+    Macro *m;
+    char  *keep;
+
+    /* Kept under half full: past that a linear probe starts walking. */
+    if (!nmacro_slots || nmacros * 2 >= nmacro_slots)
+        macros_grow();
+
+    keep = malloc((size_t) len + 1);
+    if (!keep)
+        acc_error("out of memory for a macro");
+    memcpy(keep, text, (size_t) len);
+    keep[len] = '\0';
+
+    m = macro_slot(name);
+    if (m->name != NAME_NONE)
+        free(m->text);          /* defined again; C allows it if it matches */
+    else
+        nmacros++;
+    m->name = name;
+    m->text = keep;
+    any_macros = 1;
+}
+
+/* Forgotten, and the slot left usable. A tombstone is not needed: the run of
+ * names that probed past this one is put back through the table. */
+static void macro_undef(NameRef name)
+{
+    Macro   *m = macro_find(name);
+    unsigned i;
+
+    if (!m)
+        return;
+    free(m->text);
+    m->name = NAME_NONE;
+    m->text = NULL;
+    if (!--nmacros)
+        any_macros = 0;
+
+    /* Whatever follows in this run may have probed past the hole. */
+    i = (unsigned) (m - macros);
+    for (;;) {
+        Macro moved;
+
+        i = (i + 1) & (nmacro_slots - 1);
+        if (macros[i].name == NAME_NONE)
+            return;
+        moved = macros[i];
+        macros[i].name = NAME_NONE;
+        macros[i].text = NULL;
+        *macro_slot(moved.name) = moved;
+    }
+}
+
+/* Whether a macro is already being expanded, which is what stops `#define A
+ * A` from going on for ever. The standard paints the tokens rather than the
+ * region, so a name that comes back out of its own expansion and is then
+ * used again further along is not expanded here where it would be; the
+ * difference needs a macro that expands to its own name, which no program
+ * that means anything contains. */
+static int expanding(NameRef name)
+{
+    int i;
+
+    if (src_macro == name)
+        return 1;
+    for (i = 0; i < depth; i++)
+        if (open_files[i].macro == name)
+            return 1;
+
+    return 0;
+}
+
 /* A file's window started, with the one under it kept. The path is copied,
  * since it outlives whatever built it and every diagnostic from inside the
  * file names it. */
@@ -455,6 +603,8 @@ static void push_source(const char *path)
     open_files[depth].src_file = src_file;
     open_files[depth].src_path = src_path;
     open_files[depth].line = line;
+    open_files[depth].owned = src_owned;
+    open_files[depth].macro = src_macro;
     depth++;
 
     src = malloc(SRC_CAP + 1);
@@ -465,12 +615,44 @@ static void push_source(const char *path)
 
     src_file = f;
     src_path = keep;
+    src_owned = 1;
+    src_macro = NAME_NONE;
     cursor = src_end = src_raw = src;
     src_held = '\0';
     *src = '\0';
     line = 1;
-    bol = 1;
     refill();
+}
+
+/* A window over text that is already in memory, which is what a macro's
+ * expansion is. Nothing is allocated and nothing is read: the text is the
+ * definition itself, and running off its end pops back to where the name
+ * was used. The file and the line do not change, so a diagnostic from
+ * inside an expansion points at the line that used the macro. */
+static void push_text(NameRef macro, char *text, int len)
+{
+    if (depth == INCLUDE_MAX)
+        acc_error_at(line, "macros expanded more than %d deep", INCLUDE_MAX);
+
+    open_files[depth].src = src;
+    open_files[depth].cursor = cursor;
+    open_files[depth].src_end = src_end;
+    open_files[depth].src_raw = src_raw;
+    open_files[depth].src_held = src_held;
+    open_files[depth].src_file = src_file;
+    open_files[depth].src_path = src_path;
+    open_files[depth].line = line;
+    open_files[depth].owned = src_owned;
+    open_files[depth].macro = src_macro;
+    depth++;
+
+    src = NULL;
+    src_file = NULL;
+    src_owned = 0;
+    src_macro = macro;
+    cursor = text;
+    src_end = src_raw = text + len;
+    src_held = '\0';
 }
 
 /* Back to the file that included this one. Returns whether there was one. */
@@ -479,10 +661,12 @@ static int pop_source(void)
     if (!depth)
         return 0;
 
-    if (src_file)
-        fclose(src_file);
-    free(src);
-    free((char *) src_path);
+    if (src_owned) {
+        if (src_file)
+            fclose(src_file);
+        free(src);
+        free((char *) src_path);
+    }
 
     depth--;
     src = open_files[depth].src;
@@ -493,6 +677,8 @@ static int pop_source(void)
     src_file = open_files[depth].src_file;
     src_path = open_files[depth].src_path;
     line = open_files[depth].line;
+    src_owned = open_files[depth].owned;
+    src_macro = open_files[depth].macro;
 
     return 1;
 }
@@ -513,7 +699,6 @@ void lex_open(const char *path)
     src_held = '\0';
     *src = '\0';
     line = 1;
-    bol = 1;
     depth = 0;
     refill();
     next();
@@ -638,11 +823,45 @@ static void skip_space(void);
  *
  * Out of line and off next()'s path: it runs once per 16 KB, and next() is
  * where a compile spends its time. */
+/* A name put back as the text it stands for. Returns whether it was one:
+ * when it is, the caller reads again and gets the first token of the
+ * expansion.
+ *
+ * Out of line, since a name that is not a macro never reaches it and a name
+ * that is pays a call either way. */
+__attribute__((noinline))
+static int expand(NameRef name)
+{
+    Macro *m = macro_find(name);
+
+    if (!m || expanding(name))
+        return 0;
+
+    /* An empty definition expands to nothing at all, and a window over no
+     * text is not worth pushing: saying it was expanded is enough, and the
+     * caller reads straight past it. `#define EMPTY` and then `EMPTY;` is
+     * a `;` on its own. */
+    if (*m->text)
+        push_text(name, m->text, (int) strlen(m->text));
+
+    return 1;
+}
+
 /* ------------------------------------------------------------------ */
 /* directives                                                          */
 
 static void directive(void);
 static void window_more(void);
+
+/* Whether `at` is the first thing on its line, blanks aside. Only asked of
+ * a '#', so the walk is off every path but that one. */
+static int at_line_start(const char *at)
+{
+    while (at > src && (at[-1] == ' ' || at[-1] == '\t' || at[-1] == '\r'))
+        at--;
+
+    return at == src || at[-1] == '\n';
+}
 
 /* Space that is not a line's end: a directive lives on one line, so the
  * newline that ends it is what stops the scan rather than something to be
@@ -792,6 +1011,62 @@ static void do_include(void)
     push_source(found);
 }
 
+/* The name a #define or an #undef is about. Interned, so that what the
+ * lexer will hand back for the same spelling is the same reference. */
+static NameRef directive_target(const char *what)
+{
+    const char *start = cursor;
+
+    if (!is_alpha((unsigned char) *cursor))
+        acc_error_at(line, "#%s needs a name", what);
+    while (is_alnum((unsigned char) *cursor))
+        cursor++;
+
+    return name_intern(start, (int) (cursor - start));
+}
+
+static void do_define(void)
+{
+    NameRef name;
+    const char *start;
+    const char *end;
+
+    skip_blanks();
+    name = directive_target("define");
+
+    /* `#define f(x)` is a macro with parameters, which is a different thing
+     * from a name standing for some text: the parenthesis has to follow the
+     * name with nothing between it and the name to mean that. */
+    if (*cursor == '(')
+        acc_error_at(line, "a macro with parameters is not supported yet");
+
+    skip_blanks();
+    start = cursor;
+    rest_of_line();
+    end = cursor;
+
+    /* Blanks at either end are left in. Nothing reads the text but the
+     * lexer, which skips them; trimming them would be work whose result
+     * nothing can tell apart. When `#` arrives it will be able to -- what a
+     * parameter stringifies to is spelled out -- and the trimming belongs
+     * with it, where a test can show the difference. */
+    macro_define(name, start, (int) (end - start));
+}
+
+static void do_undef(void)
+{
+    NameRef name;
+
+    skip_blanks();
+    name = directive_target("undef");
+    skip_blanks();
+    if (*cursor && *cursor != '\n')
+        acc_error_at(line, "#undef takes one name and nothing else");
+
+    macro_undef(name);
+    rest_of_line();
+}
+
 /* Every directive in a row, and whatever space and comments follow them, so
  * that next() comes back to a real token. An `#include` leaves the cursor at
  * the start of the file it names, which may itself begin with directives.
@@ -801,11 +1076,16 @@ __attribute__((noinline))
 static void directives(void)
 {
     for (;;) {
+        int started = line;
+
         directive();
         skip_space();
         if (!*cursor)
             window_more();
-        if (*cursor != '#' || !bol)
+
+        /* Another one only if it is first on its line too, which after a
+         * directive means the line moved on. */
+        if (*cursor != '#' || line == started)
             return;
     }
 }
@@ -826,6 +1106,16 @@ static void directive(void)
 
     if (!strcmp(name, "include")) {
         do_include();
+
+        return;
+    }
+    if (!strcmp(name, "define")) {
+        do_define();
+
+        return;
+    }
+    if (!strcmp(name, "undef")) {
+        do_undef();
 
         return;
     }
@@ -850,10 +1140,8 @@ static void skip_space(void)
 {
     for (;;) {
         while (is_space(*cursor)) {
-            if (*cursor == '\n') {
+            if (*cursor == '\n')
                 line++;
-                bol = 1;
-            }
             cursor++;
         }
         if (cursor[0] != '/' || (cursor[1] != '/' && cursor[1] != '*'))
@@ -1501,6 +1789,11 @@ void next(void)
 {
     int c;
 
+    /* A macro comes back here rather than calling next() again. The two say
+     * the same thing -- the call would re-run everything below the label --
+     * but a function that calls itself is one clang gives a frame and spills
+     * around, and this one is where a compile spends its time. */
+restart:
     skip_space();
 
     /* The end of the window, which is the one place the buffer moves. The
@@ -1510,13 +1803,6 @@ void next(void)
     if (!*cursor)
         window_more();
 
-    /* A '#' first on its line is a directive and not a token. Two tests on
-     * a byte already loaded: `#` appears nowhere else in C, so the common
-     * answer is the first one. */
-    if (*cursor == '#' && bol)
-        directives();
-
-    bol = 0;
     tok_prev_line = tok_line;
     tok_line = line;
     c = (unsigned char) *cursor;
@@ -1553,12 +1839,40 @@ void next(void)
         tok_name = name_intern(s, (int) (cursor - s));
         tok = (tok_name < kw_limit) ? (unsigned char) name_arena[tok_name - 3]
                                     : TK_IDENT;
+
+        /* A name that stands for something else. The byte in front of it is
+         * whether the program has defined anything at all, which for most
+         * programs is the only question the preprocessor ever costs them --
+         * and it is asked first, since it is the one that is usually no. */
+        if (any_macros && tok == TK_IDENT && expand(tok_name))
+            goto restart;
+
         return;
     }
 
     cursor++;
     tok = punct[(unsigned char) c];
     if (tok == TK_EOF) {
+        /* A '#' first on its line is a directive. Asking here rather than
+         * before every token costs nothing at all: a name or a number has
+         * already returned, and '#' is not a punctuator acc has, so an
+         * unknown character is where it was going anyway.
+         *
+         * Whether it is first on its line is read back off the buffer --
+         * walk behind it over blanks and see whether a line begins there --
+         * rather than kept in a flag, which would be a store per token. The
+         * characters it walks over are always there: a window only ever
+         * begins where a line does, so the start of this line is either in
+         * it or is the window's own start.
+         *
+         * Not inside a macro, whose text has no lines of its own and whose
+         * '#' will mean something else once there is a '#' to mean. */
+        if (c == '#' && src_macro == NAME_NONE && at_line_start(cursor - 1)) {
+            cursor--;
+            directives();
+
+            goto restart;
+        }
         lex_quoted(c);
 
         return;

@@ -69,6 +69,7 @@ test: all unit $(BIN)/acc-asan agon
 	@test/flags.sh || [ $$? -eq 77 ]
 	@test/buffer.sh
 	@test/include.sh
+	@test/macro.sh
 	@test/heap.sh || [ $$? -eq 77 ]
 	@test/cycles.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh

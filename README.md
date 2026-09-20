@@ -29,10 +29,11 @@ It is being written towards C99. What works today:
   * string and character literals with their escapes, `__func__`, and both
     comment forms
 
-Of the preprocessor, `#include` is there -- a quoted name is looked for
+Of the preprocessor there is `#include` -- a quoted name is looked for
 beside the file that asked for it and then in the `-I` directories, an
-angled one only in those -- and `#define`, `#undef` and the conditionals
-are not yet. Nor is there a C library. Nor `long double`,
+angled one only in those -- and `#define` and `#undef` for a name standing
+for some text. A macro with parameters and the conditionals are not there
+yet, and nor is a C library. Nor `long double`,
 because libagon has no arithmetic for a double at all and half a type is
 worse than none; nor wide characters and strings, `_Complex`, or function
 definitions written the way K&R wrote them.
