@@ -349,6 +349,61 @@ refuses "a parameter list with no ')'" "need a" \
 int main(void) { return 0; }
 '
 
+# --- #error, #pragma and #line ----------------------------------------
+
+refuses "#error says what it was given" "#error this needs a library" \
+'#error this needs a library
+int main(void) { return 0; }
+'
+
+# Under a group that is not taken it is not said: the program meant not to.
+same "#error in a group that is skipped" \
+'#ifdef NOPE
+#error not said
+#endif
+int main(void) { return 42; }
+' 'int main(void) { return 42; }
+'
+
+# C says an unknown pragma is ignored, and acc knows none.
+same "#pragma is ignored" \
+'#pragma once
+#pragma anything at all
+int main(void) { return 42; }
+' 'int main(void) { return 42; }
+'
+
+same "#line sets the number" \
+'#line 100
+int main(void) { return __LINE__ - 58; }
+' 'int main(void) { return 100 - 58; }
+'
+
+same "#line sets the file name too" \
+'#line 7 "generated.c"
+int main(void) { char *s = __FILE__; return s[0] == 103 ? 42 : 0; }
+' 'int main(void) { char *s = "generated.c"; return s[0] == 103 ? 42 : 0; }
+'
+
+# And what it renumbers is what a diagnostic says, which is the point of it.
+refuses "#line moves the diagnostics" ":50: error:" \
+'#line 50
+int main(void) { return @; }
+'
+
+refuses "#line with no number" "needs a line number" \
+'#line
+int main(void) { return 0; }
+'
+refuses "#line with a name that is not closed" "is not closed" \
+'#line 3 "nope
+int main(void) { return 0; }
+'
+refuses "#line with anything else after it" "nothing else" \
+'#line 3 "a.c" and more
+int main(void) { return 0; }
+'
+
 # --- __FILE__ and __LINE__ --------------------------------------------
 # The compiler defines these, not the program. Their values depend on where
 # they are written, so the hand-written side spells out what they should

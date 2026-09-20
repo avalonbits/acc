@@ -2130,6 +2130,9 @@ static int skip_group(void)
                 skip_blanks();
                 directive_name(name, (int) sizeof name);
 
+                /* Only the conditionals are looked at in here: an
+                 * `#error` under an `#if 0` is one the program meant not
+                 * to say. */
                 if (!strcmp(name, "if") || !strcmp(name, "ifdef")
                     || !strcmp(name, "ifndef")) {
                     nest++;
@@ -2396,6 +2399,83 @@ static void do_undef(void)
     rest_of_line();
 }
 
+/* `#error` with whatever the program has to say about it, which is the rest
+ * of the line as written. */
+static void do_error(void)
+{
+    const char *start;
+
+    skip_blanks();
+    start = cursor;
+    rest_of_line();
+
+    acc_error_at(line, "#error %.*s", (int) (cursor - start), start);
+}
+
+/* `#pragma`, all of which acc ignores. C says an unknown one is ignored,
+ * and acc knows none. */
+static void do_pragma(void)
+{
+    rest_of_line();
+}
+
+/* `#line N` and `#line N "file"`: what the lines after this one are called,
+ * which is what a program that generates C uses to point at what it was
+ * generated from.
+ *
+ * The number is the line *after* this one, and the newline that ends this
+ * directive is still to be counted, so what is stored is one less. */
+static void do_line(void)
+{
+    long n = 0;
+    int digits = 0;
+
+    skip_blanks();
+    while (is_digit((unsigned char) *cursor)) {
+        n = n * 10 + (*cursor++ - '0');
+        digits = 1;
+        if (n > 0xffffff)
+            acc_error_at(line, "the line number in a #line is too large");
+    }
+    if (!digits)
+        acc_error_at(line, "#line needs a line number");
+
+    skip_blanks();
+    if (*cursor == '"') {
+        const char *start;
+        char *keep;
+
+        cursor++;
+        start = cursor;
+        while (*cursor && *cursor != '"' && *cursor != '\n')
+            cursor++;
+        if (*cursor != '"')
+            acc_error_at(line, "the file name in a #line is not closed");
+
+        keep = malloc((size_t) (cursor - start) + 1);
+        if (!keep)
+            acc_error("out of memory for a #line");
+        memcpy(keep, start, (size_t) (cursor - start));
+        keep[cursor - start] = '\0';
+        cursor++;
+
+        /* The name belongs to this level now, and whatever it had before
+         * goes -- which for a file is the copy push_source made. */
+        if (src_owned & OWN_PATH)
+            free((char *) src_path);
+        src_path = keep;
+        src_owned |= OWN_PATH;
+    }
+
+    skip_blanks();
+    if (*cursor && *cursor != '\n')
+        acc_error_at(line, "#line takes a number and a file name, and "
+                           "nothing else");
+
+    rest_of_line();
+    line = (int) n - 1;
+}
+
 /* Every directive in a row, and whatever space and comments follow them, so
  * that next() comes back to a real token. An `#include` leaves the cursor at
  * the start of the file it names, which may itself begin with directives.
@@ -2475,6 +2555,21 @@ static void directive(void)
     }
     if (!strcmp(name, "endif")) {
         do_endif();
+
+        return;
+    }
+    if (!strcmp(name, "error")) {
+        do_error();
+
+        return;
+    }
+    if (!strcmp(name, "pragma")) {
+        do_pragma();
+
+        return;
+    }
+    if (!strcmp(name, "line")) {
+        do_line();
 
         return;
     }
