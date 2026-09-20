@@ -571,6 +571,75 @@ static const short rt_entry[RT_COUNT] = {
     5035,   /* ftoll */
 };
 
+/* What each one is called. An object that uses a helper and
+ * does not carry the blob names it by this, and the link
+ * resolves it against the copy it lays down once. The
+ * assembly spells them with the leading underscore its
+ * toolchain puts on a C name; an object of acc's own does
+ * not, so they are written here the way C spells them. */
+static const char *const rt_name[RT_COUNT] = {
+    "acc_rt_and",
+    "acc_rt_or",
+    "acc_rt_xor",
+    "acc_rt_shl",
+    "acc_rt_shru",
+    "acc_rt_shrs",
+    "acc_rt_mul",
+    "acc_rt_divu",
+    "acc_rt_remu",
+    "acc_rt_divs",
+    "acc_rt_rems",
+    "acc_rt_ladd",
+    "acc_rt_lsub",
+    "acc_rt_land",
+    "acc_rt_lor",
+    "acc_rt_lxor",
+    "acc_rt_lcmpeq",
+    "acc_rt_lcmpord",
+    "acc_rt_lshl",
+    "acc_rt_lshru",
+    "acc_rt_lshrs",
+    "acc_rt_lmul",
+    "acc_rt_ldivu",
+    "acc_rt_lremu",
+    "acc_rt_ldivs",
+    "acc_rt_lrems",
+    "acc_rt_lneg",
+    "acc_rt_lnot",
+    "acc_rt_itof",
+    "acc_rt_uitof",
+    "acc_rt_ftoi",
+    "acc_rt_fcmp",
+    "acc_rt_fkey",
+    "acc_rt_fsub",
+    "acc_rt_fadd",
+    "acc_rt_fmul",
+    "acc_rt_fdiv",
+    "acc_rt_ltof",
+    "acc_rt_ultof",
+    "acc_rt_ftol",
+    "acc_rt_lladd",
+    "acc_rt_llsub",
+    "acc_rt_lland",
+    "acc_rt_llor",
+    "acc_rt_llxor",
+    "acc_rt_llcmpeq",
+    "acc_rt_llcmpord",
+    "acc_rt_llneg",
+    "acc_rt_llnot",
+    "acc_rt_llshl",
+    "acc_rt_llshru",
+    "acc_rt_llshrs",
+    "acc_rt_llmul",
+    "acc_rt_lldivu",
+    "acc_rt_llremu",
+    "acc_rt_lldivs",
+    "acc_rt_llrems",
+    "acc_rt_lltof",
+    "acc_rt_ulltof",
+    "acc_rt_ftoll",
+};
+
 /* Calls from one routine to another: the address at `at` is the
  * blob's base plus `to`. */
 typedef struct { short at, to; } RtFix;

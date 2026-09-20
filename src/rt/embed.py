@@ -92,6 +92,16 @@ def main(asm, out, tools):
         for addr, name in entries:
             f.write('    %d,   /* %s */\n' % (addr, name))
         f.write('};\n\n')
+        f.write('/* What each one is called. An object that uses a helper and\n'
+                ' * does not carry the blob names it by this, and the link\n'
+                ' * resolves it against the copy it lays down once. The\n'
+                ' * assembly spells them with the leading underscore its\n'
+                ' * toolchain puts on a C name; an object of acc\'s own does\n'
+                ' * not, so they are written here the way C spells them. */\n')
+        f.write('static const char *const rt_name[RT_COUNT] = {\n')
+        for _, name in entries:
+            f.write('    "acc_rt_%s",\n' % name)
+        f.write('};\n\n')
         f.write('/* Calls from one routine to another: the address at `at` is the\n'
                 ' * blob\'s base plus `to`. */\n')
         f.write('typedef struct { short at, to; } RtFix;\n\n')

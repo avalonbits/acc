@@ -285,16 +285,16 @@ split() {
 # which is what the cell of three bytes it used to get was standing in for.
 split "an array with no size" \
 'extern int table[];
-int pick(void) { return table[2]; }
+int pick(int i) { return table[i]; }
 ' \
 'int table[3] = { 1, 2, 42 };
-int pick(void);
-int main(void) { return pick(); }
+int pick(int i);
+int main(void) { return pick(2); }
 ' \
 'extern int table[];
-int pick(void) { return table[2]; }
+int pick(int i) { return table[i]; }
 int table[3] = { 1, 2, 42 };
-int main(void) { return pick(); }
+int main(void) { return pick(2); }
 '
 
 # An address with an amount added, worked out before the address is known:
@@ -325,6 +325,50 @@ int main(void) { return use(); }
 'int use(void) { extern int hidden; return hidden; }
 int hidden = 42;
 int main(void) { return use(); }
+'
+
+# Both halves multiply, which is a call to a helper. One copy of the runtime
+# goes into the program, not one into each object -- which is what lets this
+# come out as the same bytes as the one file.
+split "both halves use a helper" \
+'int twice(int n) { return n * 2; }
+' \
+'int twice(int n);
+int main(void) { return twice(3) * 7; }
+' \
+'int twice(int n) { return n * 2; }
+int main(void) { return twice(3) * 7; }
+'
+
+# And that it really is a name rather than a copy: the object that multiplies
+# says what it wants and does not carry the runtime, which is five kilobytes
+# of it.
+printf 'int twice(int n) { return n * 2; }\n' > "$work/h.c"
+"$ACC" -c "$work/h.c" -o "$work/h.o" >/dev/null 2>&1
+if grep -q acc_rt_mul "$work/h.o" 2>/dev/null; then
+    pass=$((pass+1))
+else
+    printf '  FAIL %-32s no name for the helper it uses\n' "a helper named, not copied"
+    fail=$((fail+1))
+fi
+if [ "$(wc -c < "$work/h.o")" -lt 1024 ]; then
+    pass=$((pass+1))
+else
+    printf '  FAIL %-32s %s bytes, so the runtime is in it\n' \
+        "an object without the runtime" "$(wc -c < "$work/h.o")"
+    fail=$((fail+1))
+fi
+
+# A long long, whose routines are in the part of the blob that is only laid
+# down when something asks for it.
+split "a helper past the split" \
+'long long wide(long long n) { return n * 6; }
+' \
+'long long wide(long long n);
+int main(void) { return (int) wide(7); }
+' \
+'long long wide(long long n) { return n * 6; }
+int main(void) { return (int) wide(7); }
 '
 
 # A variable one file declares const and another defines.

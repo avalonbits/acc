@@ -2905,6 +2905,66 @@ typedef struct {
 static RtFixup *rt_fixups;
 static int      nrt_fixups, rt_fixups_cap;
 
+/* The symbol each helper is known by, when something has had to name one:
+ * SYM_NONE until then.
+ *
+ * A file compiled to an object does not carry the blob -- one copy of it per
+ * object is one copy too many -- so a call to a helper leaves the object as a
+ * call to `acc_rt_mul` and the like, and the link resolves them all against
+ * the single copy it lays down. Which is what a helper always was: a function
+ * the program calls and does not define. */
+static int rt_syms[RT_COUNT];
+
+static void rt_syms_init(void)
+{
+    int i;
+
+    for (i = 0; i < RT_COUNT; i++)
+        rt_syms[i] = SYM_NONE;
+}
+
+/* The helper of that name, or -1. Asked of every name a link cannot resolve,
+ * which is a handful, so the names are walked rather than hashed. */
+static int rt_which(const char *name)
+{
+    int i;
+
+    for (i = 0; i < RT_COUNT; i++)
+        if (strcmp(rt_name[i], name) == 0)
+            return i;
+
+    return -1;
+}
+
+/* That something wants this helper, whatever laid the want down: a call
+ * emitted here, or a name that came in from an object. */
+static void rt_wanted(int which)
+{
+    /* The long long routines are past RT_SPLIT, and only a program that
+     * calls one of them carries them. */
+    if (rt_entry[which] >= RT_SPLIT)
+        rt_any_used = 2;
+    else if (!rt_any_used)
+        rt_any_used = 1;
+}
+
+/* Its symbol, made the first time one is asked for. Only at the end of a
+ * compile, where pushing a file-scope symbol cannot move a Sym * that
+ * something is holding. */
+static int rt_symbol(int which)
+{
+    if (rt_syms[which] == SYM_NONE) {
+        int sym = sym_push(name_intern(rt_name[which],
+                                       (int) strlen(rt_name[which])),
+                           SYM_FUNC, 0);
+
+        sym_set_flags(sym, SYMF_DECLARED | SYMF_PARAMS);
+        rt_syms[which] = sym;
+    }
+
+    return rt_syms[which];
+}
+
 /* The operators with no instruction behind them. */
 static int needs_helper(int op)
 {
@@ -2926,13 +2986,7 @@ static void rt_call(int which)
         if (!rt_fixups)
             acc_error("out of memory for the runtime fixups");
     }
-    /* The long long routines are past RT_SPLIT, and only a program that
-     * calls one of them carries them. */
-    if (rt_entry[which] >= RT_SPLIT)
-        rt_any_used = 2;
-    else if (!rt_any_used)
-        rt_any_used = 1;
-
+    rt_wanted(which);
     out_opcode24(0xcd, 0);                       /* call nn */
     rt_fixups[nrt_fixups].which = (unsigned char) which;
     rt_fixups[nrt_fixups].at = out_here() - ACC_INT_SIZE;
@@ -2940,6 +2994,10 @@ static void rt_call(int which)
     nrt_fixups++;
 }
 
+/* The blob, once, wherever the image has got to -- which is after everything
+ * else, since this is the last thing written. Every call to a helper is then
+ * pointed at it: the ones this compile emitted directly, and the ones that
+ * arrived as a name from an object. */
 static void rt_emit_used(void)
 {
     int i, len;
@@ -2963,6 +3021,14 @@ static void rt_emit_used(void)
     /* And the calls the compiled program makes to them. */
     for (i = 0; i < nrt_fixups; i++)
         out_patch24(rt_fixups[i].at, rt_base + rt_entry[rt_fixups[i].which]);
+
+    /* The ones that came in by name have a symbol, and the fixups waiting on
+     * it are filled in with the rest of them below. */
+    for (i = 0; i < RT_COUNT; i++)
+        if (rt_syms[i] != SYM_NONE) {
+            sym_at(rt_syms[i])->val = rt_base + rt_entry[i];
+            sym_set_flags(rt_syms[i], SYMF_DEFINED);
+        }
 }
 
 /* Calls this file cannot resolve, when it is being compiled to an object:
@@ -3026,6 +3092,32 @@ void gen_finish(void)
 {
     int i;
 
+    /* A helper wanted by name, which is how one arrives from an object: that
+     * object used it and did not carry the blob. Claimed before anything is
+     * laid down, so that the blob knows how much of itself to be. */
+    if (!gen_objects)
+        for (i = 0; i < nfixups; i++) {
+            int which;
+
+            if (!no_address(fixups[i].fn))
+                continue;
+            which = rt_which(name_text(sym_at(fixups[i].fn)->name));
+            if (which < 0)
+                continue;
+            rt_syms[which] = fixups[i].fn;
+            rt_wanted(which);
+        }
+
+    /* Compiling to an object, a call to a helper is a call to a name, and
+     * the blob stays here: one copy of it goes into the program that is
+     * linked, rather than one into every object that multiplies. */
+    if (gen_objects) {
+        for (i = 0; i < nrt_fixups; i++)
+            extern_add(rt_fixups[i].at, rt_symbol(rt_fixups[i].which));
+    } else {
+        rt_emit_used();
+    }
+
     for (i = 0; i < nfixups; i++) {
         Sym *fn = sym_at(fixups[i].fn);
 
@@ -3071,8 +3163,6 @@ void gen_finish(void)
                          name_text(fn->name));
         out_patch24(fixups[i].at, fn->val + out_read24(fixups[i].at));
     }
-
-    rt_emit_used();
 }
 
 
@@ -3080,6 +3170,7 @@ void gen_init(void)
 {
     vtop = 0;
     vsp = vstack;
+    rt_syms_init();
 }
 
 /* The first thing in the image, because MOS enters at its first byte.
