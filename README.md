@@ -34,8 +34,8 @@ beside the file that asked for it and then in the `-I` directories, an
 angled one only in those -- and `#define` and `#undef` for a name standing
 for some text or taking parameters, with `#` and `##` and a variable number
 of arguments, and the conditionals -- `#if` and `#elif` on an expression,
-with `defined`, as well as `#ifdef`, `#ifndef`, `#else` and `#endif`. What
-is left of it is `__FILE__` and `__LINE__`; there is still no C library. Nor `long double`,
+with `defined`, as well as `#ifdef`, `#ifndef`, `#else` and `#endif` --
+and `__FILE__` and `__LINE__`. There is still no C library. Nor `long double`,
 because libagon has no arithmetic for a double at all and half a type is
 worse than none; nor wide characters and strings, `_Complex`, or function
 definitions written the way K&R wrote them.

@@ -349,6 +349,51 @@ refuses "a parameter list with no ')'" "need a" \
 int main(void) { return 0; }
 '
 
+# --- __FILE__ and __LINE__ --------------------------------------------
+# The compiler defines these, not the program. Their values depend on where
+# they are written, so the hand-written side spells out what they should
+# come to -- for __FILE__ that is the path the test itself used.
+
+same "__LINE__ is the line it is on" \
+'int a(void) { return __LINE__; }
+
+int b(void) { return __LINE__; }
+int main(void) { return a() + b() + 38; }
+' 'int a(void) { return 1; }
+
+int b(void) { return 3; }
+int main(void) { return a() + b() + 38; }
+'
+
+# Inside an expansion the line is the one the macro was used on, since
+# putting text back does not move the count.
+same "__LINE__ inside a macro" \
+'#define WHERE __LINE__
+int main(void) { return WHERE + 41; }
+' 'int main(void) { return 2 + 41; }
+'
+
+same "__FILE__ is the file being read" \
+'int main(void) { char *s = __FILE__; return s[0] == 47 ? 42 : 0; }
+' "int main(void) { char *s = \"$tmp/m.c\"; return s[0] == 47 ? 42 : 0; }
+"
+
+refuses "#define of __LINE__" "compiler's to define" \
+'#define __LINE__ 5
+int main(void) { return 0; }
+'
+refuses "#undef of __FILE__" "compiler's to define" \
+'#undef __FILE__
+int main(void) { return 0; }
+'
+
+same "both count as defined" \
+'#if defined(__FILE__) && defined(__LINE__)
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
 # --- the conditionals -------------------------------------------------
 # #ifdef and #ifndef ask the same table #define fills, so they belong here.
 

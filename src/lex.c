@@ -1184,6 +1184,30 @@ static char *build_expansion(Macro *m, char **argv, int argc)
     return out.text;
 }
 
+/* __FILE__ and __LINE__ as what they stand for: a string of the file being
+ * read and the line the token is on.
+ *
+ * The line is the one the name appears on, and inside a macro's expansion
+ * that is the line the macro was used on, since an expansion does not move
+ * the count. Out of line because it runs for two names in a program and
+ * next() runs for every one. */
+__attribute__((noinline))
+static void predefined(void)
+{
+    if (tok == TK_LINE) {
+        tok = TK_INT;
+        tok_type = TY_INT;
+        tok_val = line;
+        tok_val_hi = 0;
+
+        return;
+    }
+
+    tok = TK_STRING;
+    tok_str = src_path ? src_path : "";
+    tok_str_len = (int) strlen(tok_str);
+}
+
 /* A name put back as the text it stands for. Returns whether it was one:
  * when it is, the caller reads again and gets the first token of the
  * expansion.
@@ -1243,6 +1267,21 @@ static int expand(NameRef name)
 
 static void directive(void);
 static void window_more(void);
+static void predefined(void);
+
+/* Declared here as well as where it is set: the two names the compiler
+ * defines are keywords, and what asks whether a name is one of them comes
+ * before the keywords do. A second tentative definition of the same object
+ * is what C has for exactly this. */
+static NameRef kw_limit;
+
+/* Whether a name is one the compiler defines rather than the program:
+ * `defined(__LINE__)` is true, and neither may be defined or undefined. */
+static int predefined_name(NameRef name)
+{
+    return name < kw_limit
+           && (unsigned char) name_arena[name - 3] >= TK_FILE;
+}
 static int  directive_name(char *buf, int cap);
 static NameRef directive_target(const char *what);
 static void skip_blanks(void);
@@ -1617,7 +1656,11 @@ static const char *if_defined(const char *p, const char *end)
     if (p == start)
         acc_error_at(line, "'defined' needs a name");
 
-    if_put(macro_find(name_intern(start, (int) (p - start))) ? "1" : "0", 1);
+    {
+        NameRef name = name_intern(start, (int) (p - start));
+
+        if_put(macro_find(name) || predefined_name(name) ? "1" : "0", 1);
+    }
 
     if (parens) {
         while (p < end && (*p == ' ' || *p == '\t'))
@@ -2217,7 +2260,7 @@ static void do_ifdef(int want)
     name = directive_target(want ? "ifdef" : "ifndef");
     rest_of_line();
 
-    if ((macro_find(name) != NULL) == want) {
+    if ((macro_find(name) != NULL || predefined_name(name)) == want) {
         cond_push(1);
 
         return;
@@ -2280,6 +2323,9 @@ static void do_define(void)
 
     skip_blanks();
     name = directive_target("define");
+    if (predefined_name(name))
+        acc_error_at(line, "'%s' is the compiler's to define",
+                     name_text(name));
 
     /* `#define f(x)` is a macro with parameters, which is a different thing
      * from a name standing for some text: the parenthesis has to follow the
@@ -2339,6 +2385,9 @@ static void do_undef(void)
 
     skip_blanks();
     name = directive_target("undef");
+    if (predefined_name(name))
+        acc_error_at(line, "'%s' is the compiler's to define",
+                     name_text(name));
     skip_blanks();
     if (*cursor && *cursor != '\n')
         acc_error_at(line, "#undef takes one name and nothing else");
@@ -2527,6 +2576,15 @@ static void keywords_init(void)
     keyword("struct", 6, TK_KW_STRUCT);
     keyword("switch", 6, TK_KW_SWITCH);
     keyword("typedef", 7, TK_KW_TYPEDEF);
+
+    /* Not words of the language but names the preprocessor defines, which
+     * is why they are here rather than among the macros: a macro costs a
+     * lookup for every identifier in the program, and a keyword costs the
+     * one the lexer was doing anyway. C forbids a program from defining or
+     * undefining either, so nothing is lost by their not being in the
+     * table. */
+    keyword("__FILE__", 8, TK_FILE);
+    keyword("__LINE__", 8, TK_LINE);
     keyword("union", 5, TK_KW_UNION);
     keyword("volatile", 8, TK_KW_VOLATILE);
     keyword("_Bool", 5, TK_KW_BOOL);
@@ -3147,14 +3205,26 @@ restart:
         while (is_alnum((unsigned char) *cursor))
             cursor++;
         tok_name = name_intern(s, (int) (cursor - s));
-        tok = (tok_name < kw_limit) ? (unsigned char) name_arena[tok_name - 3]
-                                    : TK_IDENT;
+
+        if (tok_name < kw_limit) {
+            tok = (unsigned char) name_arena[tok_name - 3];
+
+            /* __FILE__ and __LINE__, whose value is not the word: they are
+             * the last two codes in the enum, so this is one compare on the
+             * path every keyword in the program takes. */
+            if (tok >= TK_FILE)
+                predefined();
+
+            return;
+        }
 
         /* A name that stands for something else. The byte in front of it is
          * whether the program has defined anything at all, which for most
-         * programs is the only question the preprocessor ever costs them --
-         * and it is asked first, since it is the one that is usually no. */
-        if (any_macros && tok == TK_IDENT && expand(tok_name))
+         * programs is the only question the preprocessor ever costs them.
+         * Being a keyword is already ruled out above, which is one compare
+         * this used to make and no longer does. */
+        tok = TK_IDENT;
+        if (any_macros && expand(tok_name))
             goto restart;
 
         return;

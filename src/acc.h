@@ -361,6 +361,15 @@ enum {
     TK_ELLIPSIS,
     TK_KW_VA_LIST, TK_KW_VA_START, TK_KW_VA_ARG, TK_KW_VA_END, TK_KW_VA_COPY,
 
+    /* The two names that stand for something the lexer knows and the
+     * program does not write: the line it is on and the file it is in.
+     * They are interned with the keywords, which is what makes them free --
+     * a keyword is already a name whose token code sits in the arena, so
+     * recognising one costs nothing that was not being paid. Last in the
+     * enum, and so the highest codes there are, so that telling them from
+     * every other keyword is one compare. */
+    TK_FILE, TK_LINE,
+
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
 
