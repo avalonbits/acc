@@ -981,6 +981,7 @@ typedef struct {
     const char    *path;
     unsigned char *syms, *relocs, *deps, *text;
     char          *strings;
+    int            build;    /* the acc that made it: see src/build_id.sh */
     int            text_len, nsyms, nrelocs, ndeps, strings_len;
 } Object;
 

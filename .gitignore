@@ -10,3 +10,6 @@ old-acc/src/c2str
 # A pristine tinycc, cloned on demand by old-acc/test/equivalence.sh as the
 # reference its comparison runs against.
 old-acc/test/ref/
+
+# The compiler's identity, worked out at build time.
+src/acc_build.h

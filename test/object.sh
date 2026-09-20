@@ -169,6 +169,28 @@ rm -f "$inc/u.o"
 case $(again) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
 ok "the object deleted"           "$got" compiled
 
+# An object made by a different acc. The program's own files are untouched,
+# which during acc's own development is exactly the case that matters: the
+# compiler changed and everything it made is out of date.
+#
+# Poked rather than made by building a second compiler: byte 4 of an object is
+# the low byte of which acc made it, and byte 3 is the version of the format.
+poke() {                                # poke <file> <offset> <byte>
+    printf "$(printf '\\%03o' "$3")" \
+        | dd of="$1" bs=1 seek="$2" conv=notrunc status=none
+}
+
+case $(again) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "unchanged before the poking"  "$got" skipped
+poke "$inc/u.o" 4 "$(( $(od -An -tu1 -j4 -N1 "$inc/u.o") ^ 1 ))"
+case $(again) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "made by another acc"          "$got" compiled
+poke "$inc/u.o" 3 99
+case $(again) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "an older format"              "$got" compiled
+case $(again) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "and current once more"        "$got" skipped
+
 # A header reached twice -- directly and through another -- is opened twice
 # and read twice. One entry in the object covers it, and its marks are of one
 # reading: folded twice they would be a number no reading of that file could

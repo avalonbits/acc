@@ -10,19 +10,28 @@
 #include <string.h>
 
 #include "acc.h"
+#include "acc_build.h"
+
+/* Zero when the build could not work out what it is -- see src/build_id.sh.
+ * A compiler that cannot say which one it is cannot vouch for an object it
+ * finds, so it makes every one of them again. */
+#ifndef ACC_BUILD
+#define ACC_BUILD 0
+#endif
 
 /* The shape of the file. Every number in it is three bytes, lowest first --
  * the width of an address on this machine, and what put24 and get24 already
  * read and write in one move. Names are a blob of NUL-terminated strings
  * that everything else points into by offset.
  *
- *   0   4   'A', 'C', 'C', 1        what it is, and the version of this
- *   4   3   text_len
- *   7   3   nsyms
- *   10  3   nrelocs
- *   13  3   ndeps
- *   16  3   strings_len
- *   19      symbols   nsyms   * 7   name, value, flags
+ *   0   4   'A', 'C', 'C', 2        what it is, and the version of this
+ *   4   3   build                   which acc made it: see src/build_id.sh
+ *   7   3   text_len
+ *   10  3   nsyms
+ *   13  3   nrelocs
+ *   16  3   ndeps
+ *   19  3   strings_len
+ *   22      symbols   nsyms   * 7   name, value, flags
  *           relocs    nrelocs * 6   at, sym
  *           deps      ndeps   * 12  path, size, sum, weighted
  *           strings   strings_len
@@ -43,8 +52,8 @@
  * they answer -- "does this object have to be made again?" -- is about the
  * object. An answer kept in a file of its own is one that can be lost, or go
  * stale, on its own. */
-#define OBJ_VERSION  1
-#define OBJ_HEADER   19
+#define OBJ_VERSION  2
+#define OBJ_HEADER   22
 #define OBJ_SYM      7
 #define OBJ_RELOC    6
 #define OBJ_DEP      12
@@ -162,6 +171,7 @@ void obj_write(const char *path)
     fputc('C', f);
     fputc('C', f);
     fputc(OBJ_VERSION, f);
+    put_num(f, ACC_BUILD);
     put_num(f, out_len());
     put_num(f, nsyms);
     put_num(f, nrelocs);
@@ -268,11 +278,12 @@ static int read_object(const char *path, Object *o, int complain)
 
     o->all = all;
     o->path = path;
-    o->text_len = get24(all + 4);
-    o->nsyms = get24(all + 7);
-    o->nrelocs = get24(all + 10);
-    o->ndeps = get24(all + 13);
-    o->strings_len = get24(all + 16);
+    o->build = get24(all + 4);
+    o->text_len = get24(all + 7);
+    o->nsyms = get24(all + 10);
+    o->nrelocs = get24(all + 13);
+    o->ndeps = get24(all + 16);
+    o->strings_len = get24(all + 19);
 
     at = OBJ_HEADER;
     o->syms = all + at;
@@ -373,7 +384,16 @@ int obj_current(const char *path, const char *source)
         return 0;
 
     ndeps = o.ndeps;
-    if (ndeps < 1 || strcmp(obj_dep_path(&o, 0), source) != 0) {
+
+    /* Made by a different acc, so what it holds is what that acc would have
+     * produced and not what this one would. During acc's own development
+     * that is the common case: the program's files are untouched and the
+     * compiler is the thing that changed.
+     *
+     * A build that does not know its own number cannot vouch for anything,
+     * so it compiles again every time. */
+    if (!ACC_BUILD || o.build != ACC_BUILD
+        || ndeps < 1 || strcmp(obj_dep_path(&o, 0), source) != 0) {
         obj_free(&o);
 
         return 0;
