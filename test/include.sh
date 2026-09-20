@@ -173,6 +173,117 @@ compiles "a '#' alone" "$tmp/src/hash.c"
 printf 'int main(void) { return 0 # 1; }\n' > "$tmp/src/mid.c"
 refuses "a '#' in the middle of a line" "stray" "$tmp/src/mid.c"
 
+# --- a conditional belongs to the file it is written in ---------------
+# A header that leaves an #if open would otherwise swallow the rest of the
+# file that included it, and one with a stray #endif would close a group
+# its caller opened. Both are mistakes C does not allow, and neither shows
+# up as anything sensible if it is let through.
+cat > "$tmp/src/left_open.h" <<'EOF'
+#ifdef NOT_DEFINED
+EOF
+cat > "$tmp/src/open.c" <<'EOF'
+#include "left_open.h"
+int main(void) { return 42; }
+EOF
+refuses "a header that leaves an #if open" "#endif" "$tmp/src/open.c"
+
+cat > "$tmp/src/stray_endif.h" <<'EOF'
+int from_the_header(void) { return 1; }
+#endif
+EOF
+cat > "$tmp/src/stray.c" <<'EOF'
+#define TAKEN 1
+#ifdef TAKEN
+#include "stray_endif.h"
+int main(void) { return 42; }
+#endif
+EOF
+refuses "a header with an #endif of its caller's" \
+    "close an #if in the file" "$tmp/src/stray.c"
+
+# What it must not do is refuse a header that balances its own, which is
+# every include guard ever written -- and the same header twice.
+cat > "$tmp/src/guard.h" <<'EOF'
+#ifndef GUARD_H
+#define GUARD_H
+int guarded(void) { return 42; }
+#endif
+EOF
+cat > "$tmp/src/guarded.c" <<'EOF'
+#include "guard.h"
+#include "guard.h"
+int main(void) { return guarded(); }
+EOF
+compiles "an include guard, and the header twice" "$tmp/src/guarded.c"
+
+# --- as deep as it goes -----------------------------------------------
+# Every level holds a window and, while it runs, the handle of the file
+# that included it is set aside -- MOS has few of them. A chain to the
+# limit is what says both of those work.
+{
+    i=1
+    while [ $i -lt 8 ]; do
+        printf '#include "deep%d.h"\nint level%d(void) { return %d; }\n' \
+            $((i + 1)) "$i" "$i" > "$tmp/src/deep$i.h"
+        i=$((i + 1))
+    done
+    printf 'int level8(void) { return 8; }\n' > "$tmp/src/deep8.h"
+}
+cat > "$tmp/src/deep.c" <<'EOF'
+#include "deep1.h"
+int main(void) {
+    return level1() + level2() + level3() + level4()
+         + level5() + level6() + level7() + level8() + 6;
+}
+EOF
+compiles "a chain as deep as it goes" "$tmp/src/deep.c"
+
+# --- a file whose handle is still open when it includes ---------------
+# The handle of the file doing the including is closed while the included
+# one runs, and opened again afterwards at the byte it had reached. A small
+# file never exercises that -- it has already been read to its end by the
+# time the include happens -- so this one is longer than the window, which
+# leaves it mid-file with the handle open, and has more to read afterwards.
+#
+# Without the seek back, the file carries on from its own beginning and
+# what comes after the include is read twice.
+# The include comes near the top: what makes the handle still be open is
+# that most of the file is still to come, not that most of it has been read.
+#
+# The padding is function definitions rather than comments on purpose. With
+# comments, a file read a second time is swallowed by whatever comment was
+# half-scanned at the join and the damage hides; a definition that arrives
+# twice is refused, so the mistake is seen.
+{
+    printf 'int before(void) { return 20; }\n'
+    printf '#include "small.h"\n'
+    i=0
+    while [ $i -lt 600 ]; do
+        printf 'int pad_%03d(void) { return %d; }\n' $i $i
+        i=$((i + 1))
+    done
+    printf 'int after(void) { return 15; }\n'
+    printf 'int main(void) { return before() + middle() + after(); }\n'
+} > "$tmp/src/long.c"
+cat > "$tmp/src/small.h" <<'EOF'
+int middle(void) { return 7; }
+EOF
+compiles "an include from a file bigger than its window" "$tmp/src/long.c"
+
+# The same program with the header written out where it was included: the
+# two have to compile to the same image, which is what says the seek landed
+# on the right byte rather than merely somewhere legal.
+{
+    sed 's|#include "small.h"|int middle(void) { return 7; }|' "$tmp/src/long.c"
+} > "$tmp/src/long_flat.c"
+"$ACC" "$tmp/src/long.c" -o "$tmp/out/one/z.bin" >/dev/null 2>&1
+"$ACC" "$tmp/src/long_flat.c" -o "$tmp/out/two/z.bin" >/dev/null 2>&1
+if cmp -s "$tmp/out/one/z.bin" "$tmp/out/two/z.bin"; then
+    ok
+else
+    bad "the file carries on where it left off" "the images differ"
+fi
+
 # --- and that the result is the same however it was split up ----------
 # The same program in one file and in three has to compile to the same
 # image: an include is not allowed to change what the program means.

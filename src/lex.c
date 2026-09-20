@@ -315,9 +315,19 @@ const char *name_text(NameRef ref)
  * The byte at the end of the handed-out part is replaced by a '\0' so that
  * scanning stops there without a bounds test on every character, and the
  * byte it hid is put back when the window moves. */
-#define SRC_CAP 16384
+/* The window the file named on the command line gets, which is what sets
+ * the longest line a source may have.
+ *
+ * A file below it gets less. Four kilobytes is still far longer than any
+ * line anybody writes, and eight of them is 32 KB where eight of the big
+ * one would be 128 -- on a machine with 448 KB for everything, that is the
+ * difference between a deep chain of headers being affordable and not.
+ * zap sized its includes the same way and for the same reason. */
+#define SRC_CAP     16384
+#define INCLUDE_CAP 4096
 
-static char *src;           /* SRC_CAP + 1 bytes, the +1 for the sentinel */
+static char *src;           /* src_cap + 1 bytes, the +1 for the sentinel */
+static int   src_cap;       /* which of the two sizes this level has */
 static char *cursor;
 static char *src_end;       /* where the sentinel sits: the last line's end */
 static char *src_raw;       /* one past the last byte read into the buffer */
@@ -341,12 +351,15 @@ static int   line;
 
 typedef struct {
     char       *src, *cursor, *src_end, *src_raw;
+    int         cap;
+    long        at;             /* where the handle was when it was closed */
     char        src_held;
     FILE       *src_file;
     const char *src_path;
     int         line;
     int         owned;          /* OWN_BUF and OWN_PATH, below */
     NameRef     macro;          /* the macro whose text this level is */
+    int         conds;          /* conditionals open when this was pushed */
 } Source;
 
 /* What this level allocated, and which macro it is the expansion of.
@@ -420,7 +433,7 @@ static int refill(void)
      * full rather than taking one read's worth is what lets the trim below
      * stand: a short read that stopped mid-line would otherwise hand out
      * half a line and break the invariant the whole scheme rests on. */
-    room = (size_t) SRC_CAP - keep;
+    room = (size_t) src_cap - keep;
     while (room && (got = fread(src_raw, 1, room, src_file)) > 0) {
         src_raw += got;
         room -= got;
@@ -436,7 +449,7 @@ static int refill(void)
         for (nl = src_raw; nl > src && nl[-1] != '\n'; nl--)
             ;
         if (nl == src)
-            acc_error_at(line, "a line longer than %d characters", SRC_CAP);
+            acc_error_at(line, "a line longer than %d characters", src_cap);
         src_held = *nl;
     }
 
@@ -637,6 +650,19 @@ static int expanding(NameRef name)
     return 0;
 }
 
+/* The conditionals open at this moment, and where each of them began. A
+ * file has to close its own, so pushing and popping a source looks at
+ * these; they are defined with the rest of the conditional machinery. */
+typedef struct {
+    unsigned char taken;
+    unsigned char seen_else;
+    int           line;
+} Cond;
+
+#define COND_MAX 16
+static Cond conds[COND_MAX];
+static int  nconds;
+
 /* A file's window started, with the one under it kept. The path is copied,
  * since it outlives whatever built it and every diagnostic from inside the
  * file names it. */
@@ -656,15 +682,34 @@ static void push_source(const char *path)
     open_files[depth].cursor = cursor;
     open_files[depth].src_end = src_end;
     open_files[depth].src_raw = src_raw;
+    open_files[depth].cap = src_cap;
     open_files[depth].src_held = src_held;
     open_files[depth].src_file = src_file;
     open_files[depth].src_path = src_path;
     open_files[depth].line = line;
     open_files[depth].owned = src_owned;
     open_files[depth].macro = src_macro;
+    open_files[depth].conds = nconds;
+
+    /* The handle this level was reading through is closed while the file
+     * below it runs, and opened again on the way back at the byte it had
+     * reached. MOS gives a program few handles, and a chain of headers
+     * would otherwise hold one for every file in it -- zap does the same,
+     * for the same reason.
+     *
+     * Where to start again is what the handle had already read, which is
+     * exactly what the window holds: everything from there on is still to
+     * come. */
+    if (src_file) {
+        open_files[depth].at = ftell(src_file);
+        fclose(src_file);
+        src_file = NULL;
+    } else {
+        open_files[depth].at = -1;      /* read to its end already */
+    }
     depth++;
 
-    src = malloc(SRC_CAP + 1);
+    src = malloc(INCLUDE_CAP + 1);
     keep = malloc(strlen(path) + 1);
     if (!src || !keep)
         acc_error("out of memory for '%s'", path);
@@ -672,6 +717,7 @@ static void push_source(const char *path)
 
     src_file = f;
     src_path = keep;
+    src_cap = INCLUDE_CAP;
     src_owned = OWN_BUF | OWN_PATH;
     src_macro = NAME_NONE;
     cursor = src_end = src_raw = src;
@@ -695,12 +741,15 @@ static void push_text(NameRef macro, char *text, int len)
     open_files[depth].cursor = cursor;
     open_files[depth].src_end = src_end;
     open_files[depth].src_raw = src_raw;
+    open_files[depth].cap = src_cap;
     open_files[depth].src_held = src_held;
     open_files[depth].src_file = src_file;
     open_files[depth].src_path = src_path;
     open_files[depth].line = line;
     open_files[depth].owned = src_owned;
     open_files[depth].macro = src_macro;
+    open_files[depth].conds = nconds;
+    open_files[depth].at = -1;          /* no handle of its own to set aside */
     depth++;
 
     src = NULL;
@@ -728,6 +777,19 @@ static int pop_source(void)
     if (!depth)
         return 0;
 
+    /* A conditional belongs to the file it is written in: one left open at
+     * the end of a file is a mistake, and so is an `#endif` that would
+     * close the caller's.
+     *
+     * Asked before anything is freed, because what is reported names this
+     * file and reads the path this level is about to give up. */
+    if (nconds > open_files[depth - 1].conds)
+        acc_error_at(conds[open_files[depth - 1].conds].line,
+                     "#if without #endif before the end of this file");
+    if (nconds < open_files[depth - 1].conds)
+        acc_error_at(line, "an #endif here would close an #if in the file "
+                           "that included this one");
+
     if (src_file)
         fclose(src_file);
     if (src_owned & OWN_BUF)
@@ -736,16 +798,27 @@ static int pop_source(void)
         free((char *) src_path);
 
     depth--;
+
     src = open_files[depth].src;
     cursor = open_files[depth].cursor;
     src_end = open_files[depth].src_end;
     src_raw = open_files[depth].src_raw;
+    src_cap = open_files[depth].cap;
     src_held = open_files[depth].src_held;
     src_file = open_files[depth].src_file;
     src_path = open_files[depth].src_path;
     line = open_files[depth].line;
     src_owned = open_files[depth].owned;
     src_macro = open_files[depth].macro;
+
+    /* The handle set aside when this level was pushed, back where it was. */
+    if (open_files[depth].at >= 0) {
+        src_file = fopen(src_path, "rb");
+        if (!src_file)
+            acc_error_at(line, "cannot open '%s' again", src_path);
+        if (fseek(src_file, open_files[depth].at, SEEK_SET) != 0)
+            acc_error_at(line, "cannot go back to where '%s' was", src_path);
+    }
 
     return 1;
 }
@@ -762,6 +835,7 @@ void lex_open(const char *path)
     }
 
     src_path = path;
+    src_cap = SRC_CAP;
     cursor = src_end = src_raw = src;
     src_held = '\0';
     *src = '\0';
@@ -2093,17 +2167,6 @@ static int if_condition(void)
 /* One `#if` and its `#else`, innermost last. `taken` is whether any branch
  * of this group has been used, which is what makes the `#else` of a group
  * whose `#ifdef` was true a group to skip. */
-#define COND_MAX 16
-
-typedef struct {
-    unsigned char taken;
-    unsigned char seen_else;
-    int           line;         /* where it opened, for the diagnostic */
-} Cond;
-
-static Cond conds[COND_MAX];
-static int  nconds;
-
 /* What ended a skipped group. */
 enum { GROUP_ELSE, GROUP_ELIF, GROUP_ENDIF };
 
