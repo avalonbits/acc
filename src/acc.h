@@ -280,6 +280,19 @@ extern char *name_arena;    /* for name_global, further down */
 const char *float_literal(const char *s, uint32_t *bits);
 uint32_t    float_from_int(uint32_t magnitude, int negative);
 
+/* Folding a constant expression, in integers rather than in the float of
+ * whichever compiler built this one: see the head of the arithmetic in
+ * float.c for why the host's own is not good enough. */
+uint32_t    float_add(uint32_t a, uint32_t b);
+uint32_t    float_mul(uint32_t a, uint32_t b);
+uint32_t    float_div(uint32_t a, uint32_t b);
+uint32_t    float_neg(uint32_t a);
+int64_t     float_to_int(uint32_t a);
+int         float_is_nan(uint32_t a);
+int         float_is_inf(uint32_t a);
+int         float_is_zero(uint32_t a);
+int         float_compare(uint32_t a, uint32_t b);  /* -1, 0, 1; 2 unordered */
+
 /* ------------------------------------------------------------------ */
 /* tokens                                                              */
 

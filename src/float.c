@@ -508,3 +508,288 @@ const char *float_literal(const char *s, uint32_t *bits)
     return p;
 }
 
+/* ------------------------------------------------------------------ */
+/* arithmetic                                                          */
+
+/* The four operations on floats, worked out in integers.
+ *
+ * acc folds a constant expression while it parses it, and what it folds with
+ * has to give the same answer in both builds. The host's own float is not
+ * that: on the host it is the machine's, and on the Agon it is agondev's
+ * library, and the two disagree at the edges -- a multiply that overflows
+ * answers 0x7fffffff there where IEEE 754 says an infinity. The same program
+ * compiled on the Agon then differs from the same program compiled on the
+ * host, which is the one thing acc promises it does not do.
+ *
+ * So the arithmetic is here, in the integers both builds agree on, and
+ * float_pack rounds a result to nearest, ties to even, exactly as it rounds
+ * the digits of a literal. */
+
+#define F_SIGN  0x80000000u
+#define F_EXP   0x7f800000u
+#define F_FRAC  0x007fffffu
+#define F_QNAN  0x7fc00000u     /* the quiet NaN an invalid operation gives */
+
+/* Enough room under a significand to align the smaller operand of an
+ * addition without losing a bit of it: two 24-bit significands, 38 bits
+ * apart, still subtract exactly. Past that what is left of the smaller one
+ * is only a sticky bit, which is all the rounding needs. */
+#define F_GUARD 38
+
+int float_is_nan(uint32_t a)
+{
+    return (a & F_EXP) == F_EXP && (a & F_FRAC) != 0;
+}
+
+int float_is_inf(uint32_t a)
+{
+    return (a & ~F_SIGN) == F_EXP;
+}
+
+int float_is_zero(uint32_t a)
+{
+    return (a & ~F_SIGN) == 0;
+}
+
+/* A significand with the implied one put back, and the exponent of its
+ * leading bit. A denormal is shifted up until it has one, which is what
+ * makes the rest of this blind to the difference; a zero comes back as a
+ * significand of zero. */
+static void float_unpack(uint32_t a, uint32_t *q, int *e)
+{
+    int ef = (int) ((a >> 23) & 0xff);
+    uint32_t m = a & F_FRAC;
+
+    if (ef != 0) {
+        *q = m | 0x800000u;
+        *e = ef - 127;
+
+        return;
+    }
+    if (m == 0) {
+        *q = 0;
+        *e = 0;
+
+        return;
+    }
+
+    *e = -126;
+    while (!(m & 0x800000u)) {
+        m <<= 1;
+        (*e)--;
+    }
+    *q = m;
+}
+
+/* A result, from a significand of any width and the exponent of its leading
+ * bit: normalised to the 26 bits float_pack rounds from, with whatever falls
+ * off the bottom folded into the sticky bit. */
+static uint32_t float_round(uint64_t p, int e, int sticky, uint32_t sign)
+{
+    int bl = bits64(p);
+
+    if (p == 0)
+        return sign;
+    if (bl > 26) {
+        uint64_t lost = p & (((uint64_t) 1 << (bl - 26)) - 1);
+
+        sticky = sticky || lost != 0;
+        p >>= bl - 26;
+    } else {
+        p <<= 26 - bl;
+    }
+
+    return float_pack((uint32_t) p, e, sticky) | sign;
+}
+
+uint32_t float_mul(uint32_t a, uint32_t b)
+{
+    uint32_t sign = (a ^ b) & F_SIGN, qa, qb;
+    int ea, eb;
+
+    if (float_is_nan(a) || float_is_nan(b))
+        return F_QNAN;
+    if (float_is_inf(a) || float_is_inf(b)) {
+        if (float_is_zero(a) || float_is_zero(b))
+            return F_QNAN;              /* zero times an infinity */
+
+        return F_EXP | sign;
+    }
+    if (float_is_zero(a) || float_is_zero(b))
+        return sign;
+
+    float_unpack(a, &qa, &ea);
+    float_unpack(b, &qb, &eb);
+
+    /* Two significands of 24 bits make 47 or 48, and the leading bit of the
+     * product is where bits64 finds it. */
+    {
+        uint64_t p = (uint64_t) qa * qb;
+
+        return float_round(p, ea + eb - 46 + bits64(p) - 1, 0, sign);
+    }
+}
+
+uint32_t float_div(uint32_t a, uint32_t b)
+{
+    uint32_t sign = (a ^ b) & F_SIGN, qa, qb;
+    int ea, eb;
+
+    if (float_is_nan(a) || float_is_nan(b))
+        return F_QNAN;
+    if (float_is_inf(a)) {
+        if (float_is_inf(b))
+            return F_QNAN;              /* an infinity over an infinity */
+
+        return F_EXP | sign;
+    }
+    if (float_is_inf(b))
+        return sign;                    /* finite over an infinity is zero */
+    if (float_is_zero(b)) {
+        if (float_is_zero(a))
+            return F_QNAN;              /* zero over zero */
+
+        return F_EXP | sign;
+    }
+    if (float_is_zero(a))
+        return sign;
+
+    float_unpack(a, &qa, &ea);
+    float_unpack(b, &qb, &eb);
+
+    /* 32 bits of quotient past the significand's own, which is more than the
+     * 26 the rounding reads; what the division leaves over is the sticky. */
+    {
+        uint64_t n = (uint64_t) qa << 32;
+        uint64_t p = n / qb;
+
+        return float_round(p, ea - eb - 32 + bits64(p) - 1, (n % qb) != 0,
+                           sign);
+    }
+}
+
+/* Addition, and subtraction as the addition of a negated operand.
+ *
+ * The operands are aligned by shifting the smaller one down, and F_GUARD
+ * bits of room under both means that alignment loses nothing until they are
+ * further apart than a result could tell -- past that the remainder is a
+ * sticky bit, and a subtraction takes one unit off for it, which leaves the
+ * true value between the answer and the next one up. */
+uint32_t float_add(uint32_t a, uint32_t b)
+{
+    uint32_t qa, qb, sign;
+    int ea, eb, diff, sticky = 0;
+    uint64_t wa, wb;
+
+    if (float_is_nan(a) || float_is_nan(b))
+        return F_QNAN;
+    if (float_is_inf(a)) {
+        if (float_is_inf(b) && ((a ^ b) & F_SIGN))
+            return F_QNAN;              /* an infinity less itself */
+
+        return a;
+    }
+    if (float_is_inf(b))
+        return b;
+    if (float_is_zero(a) && float_is_zero(b))
+        return (a & b & F_SIGN);        /* -0 only when both are */
+    if (float_is_zero(a))
+        return b;
+    if (float_is_zero(b))
+        return a;
+
+    float_unpack(a, &qa, &ea);
+    float_unpack(b, &qb, &eb);
+
+    /* The larger goes first, so the shift is always to the right. */
+    if (eb > ea || (eb == ea && qb > qa)) {
+        uint32_t tq = qa; int te = ea; uint32_t t = a;
+
+        qa = qb; ea = eb; a = b;
+        qb = tq; eb = te; b = t;
+    }
+
+    diff = ea - eb;
+    wa = (uint64_t) qa << F_GUARD;
+    if (diff > F_GUARD + 1) {
+        wb = 0;                         /* nothing of it reaches the result */
+        sticky = 1;
+    } else {
+        uint64_t full = (uint64_t) qb << F_GUARD;
+
+        wb = full >> diff;
+        sticky = (wb << diff) != full;
+    }
+
+    sign = a & F_SIGN;
+    if (((a ^ b) & F_SIGN) == 0) {
+        wa += wb;
+    } else if (wa > wb || (wa == wb && !sticky)) {
+        wa -= wb;
+        if (sticky)
+            wa--;                       /* the part that was shifted away */
+    } else {
+        /* b is the larger after all, which only the sticky can decide. */
+        uint64_t d = wb - wa;
+
+        sign = b & F_SIGN;
+        wa = d;
+    }
+    if (wa == 0 && !sticky)
+        return 0;                       /* x + -x is +0, whatever the signs */
+
+    return float_round(wa, ea - 23 - F_GUARD + bits64(wa) - 1, sticky, sign);
+}
+
+uint32_t float_neg(uint32_t a)
+{
+    return a ^ F_SIGN;
+}
+
+/* Truncated towards zero, which is what a cast to an integer does. Out of
+ * range is undefined in C; what comes back here is the value with the bits
+ * above the ones asked for dropped, which is what the host did. */
+int64_t float_to_int(uint32_t a)
+{
+    uint32_t q;
+    int e;
+    uint64_t whole;
+
+    if (float_is_nan(a) || float_is_zero(a))
+        return 0;
+    if (float_is_inf(a))
+        return (a & F_SIGN) ? INT64_MIN : INT64_MAX;
+
+    float_unpack(a, &q, &e);
+    if (e < 0)
+        return 0;                       /* under one, so nothing is left */
+    if (e > 62)
+        return (a & F_SIGN) ? INT64_MIN : INT64_MAX;
+
+    whole = (e >= 23) ? (uint64_t) q << (e - 23) : (uint64_t) q >> (23 - e);
+
+    return (a & F_SIGN) ? -(int64_t) whole : (int64_t) whole;
+}
+
+/* Which of two floats is the smaller: -1, 0 or 1, and 2 for a pair with a
+ * NaN in it, which is none of the three. IEEE 754 lays the bits out so that
+ * two floats of a sign compare as the integers they are made of, with the
+ * order reversed for the negative ones; the zeros are the exception, since
+ * -0 and +0 have different bits and the same value. */
+int float_compare(uint32_t a, uint32_t b)
+{
+    int negative;
+
+    if (float_is_nan(a) || float_is_nan(b))
+        return 2;
+    if (float_is_zero(a) && float_is_zero(b))
+        return 0;
+    if ((a ^ b) & F_SIGN)
+        return (a & F_SIGN) ? -1 : 1;
+
+    negative = (a & F_SIGN) != 0;
+    if (a == b)
+        return 0;
+
+    return (a < b) == !negative ? -1 : 1;
+}

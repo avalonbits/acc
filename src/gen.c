@@ -617,7 +617,6 @@ int vquals(void)
  * error: the value is put in the frame instead, which is where it was going
  * before any of this. */
 static int64_t wide_signed(uint64_t bits, int width);
-static float   wide_float(uint64_t bits);
 
 #define WIDE_CONSTS 24
 static uint64_t wide_consts[WIDE_CONSTS];
@@ -690,12 +689,9 @@ static uint64_t const_as(const Value *v, Type to)
 
         return float_from_int((uint32_t) magnitude, negative);
     }
-    if (from_float && !to_float) {
-        float f = wide_float(bits);
-        int64_t whole = (int64_t) f;
+    if (from_float && !to_float)
+        return (uint64_t) float_to_int((uint32_t) bits);
 
-        return (uint64_t) whole;
-    }
     if (type_wide_bytes(to) == 4)
         bits &= 0xffffffffu;
 
@@ -2223,39 +2219,28 @@ static int fold_wide_int(int op, Type type, uint64_t a, uint64_t b,
     return 1;
 }
 
-/* The same for two floats, in the host's own float -- which is the IEEE 754
- * single this target has, so the answer is the one the runtime would give.
- * Not for a division by zero, which is an infinity the routine makes and
- * the compiler's own division may trap on. */
-static float wide_float(uint64_t bits)
-{
-    float f;
-    uint32_t word = (uint32_t) bits;
-
-    memcpy(&f, &word, sizeof f);
-
-    return f;
-}
-
+/* The same for two floats, in float.c's own arithmetic rather than in the
+ * float of whichever compiler built this one: the host's and agondev's do
+ * not agree at the edges, and a constant folded here has to come out the
+ * same in both builds. Not for a division by zero, which is an infinity the
+ * runtime routine makes and which C leaves to it. */
 static int fold_wide_float(int op, uint64_t a, uint64_t b, uint64_t *out)
 {
-    float x = wide_float(a), y = wide_float(b), r;
-    uint32_t word;
+    uint32_t x = (uint32_t) a, y = (uint32_t) b, r;
 
     switch (op) {
-    case TK_PLUS:  r = x + y; break;
-    case TK_MINUS: r = x - y; break;
-    case TK_STAR:  r = x * y; break;
+    case TK_PLUS:  r = float_add(x, y); break;
+    case TK_MINUS: r = float_add(x, float_neg(y)); break;
+    case TK_STAR:  r = float_mul(x, y); break;
     case TK_SLASH:
-        if (y == 0.0f)
+        if (float_is_zero(y))
             return 0;
-        r = x / y;
+        r = float_div(x, y);
         break;
     default:
         return 0;
     }
-    memcpy(&word, &r, sizeof word);
-    *out = word;
+    *out = r;
 
     return 1;
 }
@@ -2448,11 +2433,16 @@ static void vcmp_wide(int op, Type operand)
         int answer;
 
         if (floating) {
-            float x = wide_float(a), y = wide_float(b);
+            /* -1, 0, 1 or 2 for a pair with a NaN in it, which answers no
+             * to every comparison but `!=`. */
+            int cmp = float_compare((uint32_t) a, (uint32_t) b);
 
-            answer = op == TK_EQ ? x == y : op == TK_NE ? x != y
-                   : op == TK_LT ? x <  y : op == TK_GT ? x >  y
-                   : op == TK_LE ? x <= y : x >= y;
+            if (cmp == 2)
+                answer = op == TK_NE;
+            else
+                answer = op == TK_EQ ? cmp == 0 : op == TK_NE ? cmp != 0
+                       : op == TK_LT ? cmp <  0 : op == TK_GT ? cmp >  0
+                       : op == TK_LE ? cmp <= 0 : cmp >= 0;
         } else if (type_unsigned(operand)) {
             answer = op == TK_EQ ? a == b : op == TK_NE ? a != b
                    : op == TK_LT ? a <  b : op == TK_GT ? a >  b

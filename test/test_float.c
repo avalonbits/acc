@@ -113,6 +113,146 @@ static void check_exact(double d)
     check(above);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* arithmetic                                                          */
+
+/* float_add and the rest against the host's own float, which on this machine
+ * rounds correctly. They exist because the compiler cannot use the host's:
+ * the one agondev gives the Agon build answers 0x7fffffff where an overflow
+ * should give an infinity, so a constant folded there came out different
+ * from the same constant folded on the host. These check that the integer
+ * arithmetic which replaced it is the IEEE 754 the host implements.
+ *
+ * A NaN is compared as a NaN rather than by its bits: which NaN an operation
+ * gives is not laid down, and acc's is the quiet one whatever the host makes.
+ */
+static float as_float(uint32_t bits)
+{
+    float f;
+
+    memcpy(&f, &bits, sizeof f);
+
+    return f;
+}
+
+static uint32_t as_bits(float f)
+{
+    uint32_t bits;
+
+    memcpy(&bits, &f, sizeof bits);
+
+    return bits;
+}
+
+static int is_nan_bits(uint32_t b)
+{
+    return (b & 0x7f800000u) == 0x7f800000u && (b & 0x7fffffu) != 0;
+}
+
+static int check_op(const char *what, uint32_t a, uint32_t b, uint32_t got,
+                    float want_f, int *failures)
+{
+    uint32_t want = as_bits(want_f);
+
+    checks++;
+    if (is_nan_bits(want) ? is_nan_bits(got) : got == want)
+        return 0;
+    if (*failures < 20)
+        fprintf(stderr, "  FAIL %s %08lx %08lx: got %08lx, want %08lx\n",
+                what, (unsigned long) a, (unsigned long) b,
+                (unsigned long) got, (unsigned long) want);
+    (*failures)++;
+
+    return 1;
+}
+
+/* The values worth trying on purpose: the ends of the range, the smallest of
+ * each kind, and the ones a carry out of the top runs into. */
+static const uint32_t corners[] = {
+    0x00000000u, 0x80000000u,           /* the zeros */
+    0x00000001u, 0x80000001u,           /* the smallest denormals */
+    0x007fffffu, 0x00800000u,           /* the largest denormal, and past it */
+    0x3f800000u, 0xbf800000u,           /* one */
+    0x7f7fffffu, 0xff7fffffu,           /* the largest finite */
+    0x7f800000u, 0xff800000u,           /* the infinities */
+    0x7fc00000u, 0x7f800001u,           /* NaNs */
+    0x4b7fffffu, 0x4b800000u,           /* each side of 2^24 */
+    0x00000002u, 0x33800000u, 0x73800000u
+};
+
+static int arithmetic(void)
+{
+    int failures = 0;
+    size_t i, j;
+    int k;
+
+    for (i = 0; i < sizeof corners / sizeof *corners; i++)
+        for (j = 0; j < sizeof corners / sizeof *corners; j++) {
+            uint32_t a = corners[i], b = corners[j];
+
+            check_op("add", a, b, float_add(a, b),
+                     as_float(a) + as_float(b), &failures);
+            check_op("sub", a, b, float_add(a, float_neg(b)),
+                     as_float(a) - as_float(b), &failures);
+            check_op("mul", a, b, float_mul(a, b),
+                     as_float(a) * as_float(b), &failures);
+            check_op("div", a, b, float_div(a, b),
+                     as_float(a) / as_float(b), &failures);
+        }
+
+    /* And a spread of ordinary values, whose exponents are kept close enough
+     * together often enough that cancellation is actually reached. */
+    for (k = 0; k < 200000; k++) {
+        uint32_t a = rand32();
+        uint32_t b = rand32();
+        float x, y;
+        int cmp, want;
+
+        if (k % 2)                      /* the same exponent, give or take */
+            b = (b & 0x807fffffu) | (a & 0x7f800000u)
+                | ((uint32_t) (rand32() % 3) << 23);
+
+        x = as_float(a);
+        y = as_float(b);
+        check_op("add", a, b, float_add(a, b), x + y, &failures);
+        check_op("sub", a, b, float_add(a, float_neg(b)), x - y, &failures);
+        check_op("mul", a, b, float_mul(a, b), x * y, &failures);
+        check_op("div", a, b, float_div(a, b), x / y, &failures);
+
+        cmp = float_compare(a, b);
+        want = (x != x || y != y) ? 2 : x < y ? -1 : x > y ? 1 : 0;
+        checks++;
+        if (cmp != want) {
+            if (failures < 20)
+                fprintf(stderr, "  FAIL cmp %08lx %08lx: got %d, want %d\n",
+                        (unsigned long) a, (unsigned long) b, cmp, want);
+            failures++;
+        }
+
+        /* Truncation, for the values a cast to an integer is defined for. */
+        if (!is_nan_bits(a) && (a & 0x7fffffffu) < 0x5f000000u) {
+            int64_t whole = float_to_int(a);
+
+            checks++;
+            if (whole != (int64_t) x) {
+                if (failures < 20)
+                    fprintf(stderr, "  FAIL int %08lx: got %lld, want %lld\n",
+                            (unsigned long) a, (long long) whole,
+                            (long long) x);
+                failures++;
+            }
+        }
+    }
+
+    if (failures)
+        fprintf(stderr, "  %d arithmetic checks failed\n", failures);
+    else
+        fprintf(stderr, "  arithmetic against the host's float, 0 failed\n");
+
+    return failures;
+}
+
 int main(void)
 {
     static const char *const fixed[] = {
@@ -227,6 +367,8 @@ int main(void)
         fprintf(stderr, "  %d of %ld failed\n", failures, checks);
     else
         fprintf(stderr, "  %ld literals, 0 failed\n", checks);
+
+    failures += arithmetic();
 
     return failures ? 1 : 0;
 }
