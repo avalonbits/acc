@@ -684,12 +684,25 @@ static void readonly_address(int sym)
  * inlined, its locals gave primary() -- which every operand goes through -- a
  * larger frame. */
 __attribute__((noinline))
+static void address_of_literal(int line);
+
 static void address_of(void)
 {
     NameRef name;
     int sym, line;
 
     next();
+
+    /* `&(struct s){ ... }`: a compound literal is an object, and this is
+     * the address of the one it makes. Out of line, next to the rest of the
+     * literals: starts_decl has to stay inlined into its callers, and a
+     * call to it from here is one more of those on a path that is rare. */
+    if (tok == TK_LPAREN) {
+        address_of_literal(tok_line);
+
+        return;
+    }
+
     if (tok != TK_IDENT)
         acc_error_at(tok_line, "'&' takes the address of a variable, and "
                                "this is %s", tok_spelling(tok));
@@ -783,7 +796,15 @@ static void string_value(void)
 }
 
 static void cast_rest(void);
+static void cast_operand(Type to, int x, int quals);
 static void sizeof_value(void);
+static void compound_literal(Type type, int x, int count, Type elem,
+                             int elem_x, int line, int address, int *countp);
+static int  local_array_object(Type elem, int elem_x, int *countp, int line,
+                               int braced);
+static int  local_struct_object(int x, int line, int braced);
+static void literal_bytes(Type type, int x, int count, Type elem, int elem_x,
+                          int line, int address, int *countp);
 static void va_form(void);
 static inline __attribute__((always_inline)) int starts_decl(void);
 
@@ -2253,21 +2274,26 @@ static NameRef declared_name(void)
 
 /* A type with no name in it, as a cast and sizeof take one: `int`, `char *`,
  * `int [4]`, `int (*)[4]`. *x is its extension. */
-static Type type_name(int *x)
+/* A type name, with how many elements it has if it is an array: -1 for
+ * `[]`, which only a compound literal may write, since its initialiser is
+ * there to say. `*elem` and `*elem_x` are the element's type for an array
+ * and the whole type otherwise. */
+static Type type_name_elem(int *x, int *count, Type *elem, int *elem_x)
 {
     Type t = declarator_stars(base_type()), type;
-    int tx = base_ext, saved = abstract_ok, count;
+    int tx = base_ext, saved = abstract_ok;
 
     abstract_ok = 1;
     if (tok == TK_IDENT)
         acc_error_at(tok_line, "a type name has no name in it, and this has "
                                "'%s'", name_text(tok_name));
-    direct_declarator_out(t, tx, &type, x, &count);
+    direct_declarator_out(t, tx, &type, x, count);
     abstract_ok = saved;
-    if (count < 0)
-        acc_error_at(tok_line, "an array type here needs its size");
-    if (count) {
-        *x = ext_array(type, *x, count);
+    *elem = type;
+    *elem_x = *x;
+    if (*count) {
+        if (*count > 0)
+            *x = ext_array(type, *x, *count);
 
         return TY_EXT;
     }
@@ -2275,19 +2301,145 @@ static Type type_name(int *x)
     return type;
 }
 
-/* `(type) operand`, from just past the parenthesis. A cast binds as the
- * unary operators do, so its operand is one of those or a postfix
- * expression, which is what primary() reads. */
+static Type type_name(int *x)
+{
+    Type elem;
+    int count, elem_x;
+    Type type = type_name_elem(x, &count, &elem, &elem_x);
+
+    if (count < 0)
+        acc_error_at(tok_line, "an array type here needs its size");
+
+    return type;
+}
+
+/* A compound literal: `(struct s){ 1, 2 }`, `(int[]){ 1, 2, 3 }`,
+ * `(int){ 5 }`, with the type read and the `{` next.
+ *
+ * C99 makes it an unnamed object of that type, taking the initialiser a
+ * declaration of it would take. In a function it is a local without a name:
+ * it lives in the frame, it can be assigned to, and it goes when the block
+ * does. At file scope its bytes go into the image where a global's do.
+ *
+ * `count` is what the type name said about its length: 0 when it is not an
+ * array, -1 for `[]`, whose length the values give. `address` asks for the
+ * object's address rather than its value, which is what `&` in front of one
+ * wants.
+ */
+__attribute__((noinline))
+static void compound_literal(Type type, int x, int count, Type elem,
+                             int elem_x, int line, int address, int *countp)
+{
+    int array;
+
+    /* At file scope there is no frame to put it in, so it is static, as C99
+     * says: its bytes are built the way a global's are and left in the
+     * image, and what the literal comes to is where they went. That half is
+     * further down, where the machinery for a global's bytes is. */
+    if (!in_body) {
+        literal_bytes(type, x, count, elem, elem_x, line, address, countp);
+
+        return;
+    }
+
+    if (count) {
+        array = local_array_object(elem, elem_x, &count, line, 1);
+        vaddr_array(array, elem);       /* an array is its first element's
+                                         * address, address or not */
+        vset_ext(elem_x);
+        if (countp)
+            *countp = count;
+
+        return;
+    }
+
+    if (type_is_struct(type)) {
+        array = local_struct_object(x, line, 1);
+        vaddr_array(array, TY_STRUCT);
+        vset_ext(x);
+        if (!address)
+            vderef();
+
+        return;
+    }
+
+    /* A scalar, which C99 allows and which is a local of its own. */
+    {
+        int off = gen_local(type_scalar_bytes(type));
+        Type outer = narrow_dest;
+
+        expect(TK_LBRACE, "'{'");
+        if (tok == TK_RBRACE)
+            acc_error_at(line, "a compound literal needs a value");
+        narrow_dest = type_narrow(type);
+        expr();
+        narrow_dest = outer;
+        vstore_local(off, type);
+        vdrop();
+        gen_stmt_end();
+        accept(TK_COMMA);
+        expect(TK_RBRACE, "'}'");
+        if (address)
+            vaddr_local(off, type);
+        else
+            vpush_local(off, type);
+    }
+}
+
+/* `&(type){ values }`: the object the literal makes, and its address. The
+ * `&` is read, and the `(` is next. */
+__attribute__((noinline))
+static void address_of_literal(int line)
+{
+    int x, count, elem_x;
+    Type elem, type;
+
+    next();
+    if (!starts_decl())
+        acc_error_at(line, "'&' takes the address of a variable, and this is "
+                           "an expression");
+    type = type_name_elem(&x, &count, &elem, &elem_x);
+    expect(TK_RPAREN, "')'");
+    if (tok != TK_LBRACE)
+        acc_error_at(line, "'&' takes the address of a variable, and a cast "
+                           "has none");
+    compound_literal(type, x, count, elem, elem_x, line, 1, NULL);
+}
+
+/* `(type) operand` and `(type){ values }`, from just past the parenthesis:
+ * a cast, or a compound literal, which the brace after the `)` tells
+ * apart. A cast binds as the unary operators do, so its operand is one of
+ * those or a postfix expression, which is what primary() reads. */
 __attribute__((noinline))
 static void cast_rest(void)
 {
-    int x, line = tok_line;
-    Type to = type_name(&x), outer = narrow_dest;
+    int x, line = tok_line, count, elem_x;
+    Type elem;
+    Type to = type_name_elem(&x, &count, &elem, &elem_x), outer = narrow_dest;
     int quals = base_const ? VQ_CONST : 0;
 
     expect(TK_RPAREN, "')'");
+    if (tok == TK_LBRACE) {
+        narrow_dest = 0;
+        compound_literal(to, x, count, elem, elem_x, line, 0, NULL);
+        narrow_dest = outer;
+        if (tok_postfix())
+            subscript_value();
+
+        return;
+    }
+    if (count < 0)
+        acc_error_at(line, "an array type here needs its size");
     if (type_is_array(to))
         acc_error_at(line, "a cast cannot make an array");
+    cast_operand(to, x, quals);
+}
+
+/* The operand of a cast whose type has been read, and the conversion. */
+static void cast_operand(Type to, int x, int quals)
+{
+    Type outer = narrow_dest;
+
     narrow_dest = 0;
     primary();
     narrow_dest = outer;
@@ -2411,7 +2563,30 @@ static int sizeof_unary(void)
 
     if (accept(TK_LPAREN)) {
         if (starts_decl()) {
-            cast_rest();
+            int x, count, elem_x, line = tok_line;
+            Type elem, type = type_name_elem(&x, &count, &elem, &elem_x);
+
+            expect(TK_RPAREN, "')'");
+
+            /* A compound literal, whose size is the object's and not the
+             * pointer an array one comes to as a value. */
+            if (tok == TK_LBRACE) {
+                compound_literal(type, x, count, elem, elem_x, line, 0,
+                                 &count);
+                if (count) {
+                    vset_type(type_ptr_to(TY_EXT),
+                              ext_array(elem, elem_x, count));
+
+                    return sizeof_postfix(SIZEOF_OBJECT);
+                }
+
+                return sizeof_postfix(SIZEOF_VALUE);
+            }
+            if (count < 0)
+                acc_error_at(line, "an array type here needs its size");
+            if (type_is_array(type))
+                acc_error_at(line, "a cast cannot make an array");
+            cast_operand(type, x, base_const ? VQ_CONST : 0);
 
             return SIZEOF_VALUE;
         }
@@ -3298,15 +3473,21 @@ static void bits_zeroed(int array, int x, int bytes)
  * where it is reached by its address as an array is. Its initialiser is a
  * braced list, the members not given zeroed, or a struct of the same type,
  * copied. */
+/* The object itself, without the name: a declaration pushes a symbol for it
+ * and a compound literal leaves it unnamed. `braced` says the initialiser
+ * follows straight away, as a compound literal's does, rather than after an
+ * `=`. Returns which array area it is in. */
 __attribute__((noinline))
-static void local_struct(int x, NameRef name, int line)
+static int local_struct_object(int x, int line, int braced)
 {
-    int array = gen_local_array(), sym;
+    int array = gen_local_array();
 
     record_complete(x, line);
     gen_local_array_size(array, ext_bytes(x));
-    if (accept(TK_ASSIGN)) {
-        if (accept(TK_LBRACE)) {
+    if (braced || accept(TK_ASSIGN)) {
+        if (braced || accept(TK_LBRACE)) {
+            if (braced)
+                expect(TK_LBRACE, "'{'");
             init_array = array;
             if (init_given_cap)
                 memset(init_given, 0, (size_t) init_given_cap);
@@ -3323,7 +3504,14 @@ static void local_struct(int x, NameRef name, int line)
         }
     }
 
-    sym = sym_push(name, SYM_LOCAL_STRUCT, array);
+    return array;
+}
+
+static void local_struct(int x, NameRef name, int line)
+{
+    int array = local_struct_object(x, line, 0);
+    int sym = sym_push(name, SYM_LOCAL_STRUCT, array);
+
     sym_at(sym)->type = TY_STRUCT;
     sym_at(sym)->ext = (unsigned char) x;
 }
@@ -3373,12 +3561,13 @@ static int local_struct_value(int x, int offset)
  * elements having been stored against an address that is only filled in
  * when the function ends. */
 __attribute__((noinline))
-static void local_array(Type elem, int elem_x, NameRef name, int count,
-                        int line)
+static int local_array_object(Type elem, int elem_x, int *countp, int line,
+                              int braced)
 {
     int array = gen_local_array();
-    int step = type_bytes(elem, elem_x), sym;
-    int init = accept(TK_ASSIGN);
+    int step = type_bytes(elem, elem_x);
+    int count = *countp;
+    int init = braced || accept(TK_ASSIGN);
 
     if (count > 0)
         gen_local_array_size(array, count * step);
@@ -3466,7 +3655,17 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
                            "say how long it is");
     }
 
-    sym = sym_push(name, SYM_LOCAL_ARRAY, array);
+    *countp = count;
+
+    return array;
+}
+
+static void local_array(Type elem, int elem_x, NameRef name, int count,
+                        int line)
+{
+    int array = local_array_object(elem, elem_x, &count, line, 0);
+    int sym = sym_push(name, SYM_LOCAL_ARRAY, array);
+
     sym_at(sym)->type = elem;
     sym_at(sym)->ext = (unsigned char) elem_x;
     sym_set_count(sym, count);
@@ -4875,6 +5074,61 @@ static void global_put(Type scalar, int offset, int value)
         nwalk_fns++;
         gen_pending_fn = SYM_NONE;
     }
+}
+
+/* The static half of a compound literal: at file scope its bytes are built
+ * the way a global's are, in the initialiser's buffer, and left in the
+ * image. See compound_literal, which is where the rest of it is. */
+__attribute__((noinline))
+static void literal_bytes(Type type, int x, int count, Type elem, int elem_x,
+                          int line, int address, int *countp)
+{
+
+        int at, total, i;
+
+        init_bytes_len = 0;
+        expect(TK_LBRACE, "'{'");
+        if (count) {
+            int n = init_list(elem, elem_x, count, 0, global_put, 0);
+
+            if (count < 0) {
+                if (n == 0)
+                    acc_error_at(line, "a compound literal of an array with no "
+                                       "size needs a value to say how long "
+                                       "it is");
+                count = n;
+            }
+            total = count * type_bytes(elem, elem_x);
+        } else if (type_is_struct(type)) {
+            init_record(x, 0, global_put, 1);
+            total = ext_bytes(x);
+        } else {
+            global_put(type, 0, -1);
+            accept(TK_COMMA);
+            expect(TK_RBRACE, "'}'");
+            total = type_scalar_bytes(type);
+        }
+        init_room(total);
+        at = out_here();
+        walk_fns_at(at);
+        for (i = 0; i < total; i++)
+            out_byte(init_bytes[i]);
+
+        if (count) {
+            vpush_const(at, type_ptr_to(elem));
+            vset_ext(elem_x);
+            if (countp)
+                *countp = count;
+        } else if (type_is_struct(type)) {
+            vpush_const(at, type_ptr_to(TY_STRUCT));
+            vset_ext(x);
+            if (!address)
+                vderef();
+        } else {
+            vpush_const(at, type_ptr_to(type));
+            if (!address)
+                vderef();
+        }
 }
 
 /* A file-scope array, from just past its declarator: its bytes, each value a
