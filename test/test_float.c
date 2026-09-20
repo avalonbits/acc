@@ -59,29 +59,6 @@ static void check(const char *text)
     failures++;
 }
 
-/* And one as a double, against strtod, which is what a long double literal
- * has to come to. */
-static void check_double(const char *text)
-{
-    uint64_t got, want;
-    double d;
-    char *want_end;
-    const char *got_end;
-
-    checks++;
-    d = strtod(text, &want_end);
-    memcpy(&want, &d, sizeof want);
-    got_end = double_literal(text, &got);
-    if (got == want && got_end == want_end)
-        return;
-    if (failures < 20)
-        fprintf(stderr, "  FAIL double %s\n       got %016llx ending at +%d, "
-                        "want %016llx at +%d\n",
-                text, (unsigned long long) got, (int) (got_end - text),
-                (unsigned long long) want, (int) (want_end - text));
-    failures++;
-}
-
 static uint32_t rng = 12345;
 
 static uint32_t rand32(void)
@@ -242,77 +219,6 @@ int main(void)
                 fprintf(stderr, "  FAIL int %s%lu: got %08lx, want %08lx\n",
                         negative ? "-" : "", (unsigned long) mag,
                         (unsigned long) got, (unsigned long) want_bits);
-            failures++;
-        }
-    }
-
-    /* The same for a double, which is what a long double is here. Round
-     * trips at every precision, the midpoints between neighbouring doubles,
-     * hex, the ends of the range, and digit strings long enough that not all
-     * of them are kept. */
-    {
-        static const char *const fixed_d[] = {
-            "1.5", "0.1", "1e308", "1.7976931348623157e308",
-            "1.7976931348623159e308", "1e309", "5e-324", "2e-324", "3e-324",
-            "2.2250738585072014e-308", "4.9406564584124654e-324",
-            "0x1.fffffffffffffp1023", "0x1p-1074", "0x1p-1075",
-            "9007199254740993", "9007199254740993.0000000000000000000001",
-            "123456789012345678901234567890e-20", "1e100000000",
-            "1e-100000000", "0", "0.0", ".5", "5.", "1e", "0x1.8p3"
-        };
-
-        for (i = 0; i < (int) (sizeof fixed_d / sizeof fixed_d[0]); i++)
-            check_double(fixed_d[i]);
-    }
-
-    for (i = 0; i < 20000; i++) {
-        uint64_t bits = ((uint64_t) rand32() << 32 | rand32()) & 0x7fffffffffffffffULL;
-        double d, mid;
-        char text[800];
-
-        switch (rand32() % 4) {
-        case 0: bits &= 0x000fffffffffffffULL; break;   /* subnormal */
-        case 1: bits |= 0x7fe0000000000000ULL; break;   /* near the top */
-        }
-        if ((bits & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL)
-            bits &= 0x7fefffffffffffffULL;
-        memcpy(&d, &bits, sizeof d);
-
-        snprintf(text, sizeof text, "%.15e", d);  check_double(text);
-        snprintf(text, sizeof text, "%.17e", d);  check_double(text);
-        snprintf(text, sizeof text, "%.60e", d);  check_double(text);
-        snprintf(text, sizeof text, "%a", d);     check_double(text);
-
-        /* The midpoint between this double and the next, which is exact in
-         * decimal however many digits it takes, and one step either side of
-         * it: the cases a conversion that rounds twice gets wrong. */
-        mid = d / 2 + nextafter(d, 1.0e308) / 2;
-        snprintf(text, sizeof text, "%.330e", mid);
-        check_double(text);
-        snprintf(text, sizeof text, "%.330e", nextafter(mid, 0.0));
-        check_double(text);
-    }
-
-    /* Integers to double, as an integer constant initialising a long double
-     * is converted. */
-    for (i = 0; i < 20000; i++) {
-        uint64_t mag = ((uint64_t) rand32() << 32 | rand32()) >> (rand32() % 64);
-        int negative = (int) (rand32() % 2);
-        double want;
-        uint64_t want_bits, got;
-
-        if (i < 128)                    /* 2^n - 1 and 2^n, for every n */
-            mag = ((uint64_t) 1 << (i % 64)) - (uint64_t) (i / 64);
-        want = negative ? -(double) mag : (double) mag;
-        got = double_from_int(mag, negative);
-        memcpy(&want_bits, &want, sizeof want_bits);
-        checks++;
-        if (got != want_bits) {
-            if (failures < 20)
-                fprintf(stderr, "  FAIL int %s%llu as a double: got %016llx, "
-                                "want %016llx\n", negative ? "-" : "",
-                        (unsigned long long) mag, (unsigned long long) got,
-                        (unsigned long long) want_bits);
             failures++;
         }
     }

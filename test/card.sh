@@ -138,7 +138,7 @@ missing rather than excluded.
                           must be defined above its first call unless it
                           takes and returns int
   declarations inside a block -- they go at the start of the function
-  long long, long double
+  long double          -- libagon has no arithmetic for a double
   #include, #define    -- no preprocessor
   printf               -- no library, which is why a program prints its
                           result the way it does

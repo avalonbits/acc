@@ -8,8 +8,8 @@ It is being written towards C99. What works today:
   * every scalar type at agondev's widths, so a program compiled by either
     comes out the same: `char`, `short`, `int` and their `unsigned` forms at
     1, 2 and 3 bytes; `long` at 4; `long long` at 8; `float` and `double`,
-    which are both the same 4-byte IEEE 754 single there; `long double`,
-    which is an 8-byte double; `_Bool`; and pointers, seven deep
+    which are both the same 4-byte IEEE 754 single there; `_Bool`; and
+    pointers, seven deep
   * every operator C has, including `?:`, `&&`, `||`, the compound
     assignments, `++` and `--`, `sizeof` and casts, at every width
   * `if`, `while`, `for`, `do`, `switch`, `break`, `continue`, `goto` and
@@ -23,9 +23,9 @@ It is being written towards C99. What works today:
     `inline`, with `const` checked through pointers, elements and members
   * string and character literals with their escapes, and both comment forms
 
-What is not there yet: the preprocessor, and a C library. The arithmetic
-libagon has no routine for is refused rather than half-done -- `long double`
-is held, passed and converted but not added.
+What is not there yet: the preprocessor, and a C library. `long double` is
+refused as well, because libagon has no arithmetic for a double at all, and
+half a type is worse than none.
 
 One `.c` file in, a runnable MOS binary out: no linker, no preprocessor and
 no library. `* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value,
@@ -97,7 +97,7 @@ Each step is meant to be finished and measured before the next one starts.
 | `if`, `while`, `for`, comparisons | done |
 | globals, `char`, `short`, pointers, arrays | done |
 | `struct`, `union`, `enum`, `typedef` | done |
-| `long`, `float`, `long long`, `long double`, `_Bool` | done |
+| `long`, `float`, `long long`, `_Bool` | done |
 | bit-fields, pointers to functions, `...` and `va_list` | done |
 | a preprocessor | next |
 | linking against libagon, so there is a C library | |

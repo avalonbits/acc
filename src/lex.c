@@ -308,7 +308,6 @@ static int   line;
 int      tok;
 long     tok_val;
 uint32_t tok_val_hi;
-uint64_t tok_dval;
 float    tok_fval;
 typedef char float_is_four_bytes[sizeof(float) == 4 ? 1 : -1];
 NameRef  tok_name;
@@ -540,18 +539,13 @@ static void lex_floating(void)
     if (end == cursor)
         acc_error_at(tok_line, "a floating-point number with no digits");
 
-    /* An l suffix makes it a long double, which is eight bytes and not four:
-     * the literal is read again, to the double's own precision. Reading it
-     * twice costs nothing that matters -- a long double literal is rare --
-     * and keeps the common one on the path it has. */
-    if (*end == 'l' || *end == 'L') {
-        double_literal(cursor, &tok_dval);
-        cursor = (char *) end + 1;
-        tok = TK_FLOAT;
-        tok_type = TY_LDOUBLE;
-
-        return;
-    }
+    /* An l suffix would make it a long double, which acc does not have: said
+     * here rather than left to the parser, which would see the letter as a
+     * name of its own and blame the punctuation. */
+    if (*end == 'l' || *end == 'L')
+        acc_error_at(tok_line, "'long double' is not supported: agondev's "
+                               "library has no arithmetic for one, so a "
+                               "program that asks for it does not link");
 
     memcpy(&tok_fval, &bits, sizeof tok_fval);
     cursor = (char *) end;

@@ -123,10 +123,6 @@ static int  is_comparison(int op);
 static void vcmp_pointer_check(Type left, Type right);
 static void convert_int_to_float(void);
 static void convert_float_to_int(Type to);
-static void convert_to_long_double(void);
-static void convert_from_long_double(Type to);
-__attribute__((noreturn))
-static void no_long_double(const char *what);
 static void force_into(Value *target, int want);
 static int  needs_helper(int op);
 static void rt_call(int which);
@@ -431,19 +427,6 @@ void vconvert(Type to)
     /* To _Bool is a comparison with zero, whatever it is from. */
     if (to == TY_BOOL) {
         bool_from();
-
-        return;
-    }
-
-    /* A long double is neither a float nor an integer to any path below,
-     * so its conversions are taken here, before any of them. */
-    if (type_ldouble(to)) {
-        convert_to_long_double();
-
-        return;
-    }
-    if (type_ldouble(top->type)) {
-        convert_from_long_double(to);
 
         return;
     }
@@ -1126,9 +1109,6 @@ void vneg(void)
     Value *top = vsp - 1;
     int right;
 
-    if (type_ldouble(top->type))
-        no_long_double("negating a long double");
-
     if (type_float(top->type)) {
         /* Negating a float is its sign bit flipped and nothing else -- no
          * routine, and correct for zero and for every other value alike. */
@@ -1183,7 +1163,7 @@ void vnot(void)
     /* ~ takes an integer. C makes a float operand a constraint violation
      * rather than something to define, so it is named rather than refused as
      * unfinished work. */
-    if (type_float(top->type) || type_ldouble(top->type))
+    if (type_float(top->type))
         acc_error_at(tok_line, "'~' takes an integer, not a floating-point value");
 
     if (type_wide(top->type)) {
@@ -1697,72 +1677,6 @@ static void check_no_float_mix(Type to, const Value *from)
                            "not implemented yet");
 }
 
-/* To and from a long double, which is where its whole arithmetic is: agondev
- * has __ltod and __dtol and nothing else, so an integer converts and a float
- * does not. The long long is refused with them: libagon has __dtoll but no
- * routine the other way, and half a conversion is worse than none. */
-__attribute__((noinline, noreturn))
-static void no_long_double(const char *what)
-{
-    acc_error_at(tok_line, "%s is not supported: agondev's library has no "
-                           "routine for it, and a program that asks for one "
-                           "does not link", what);
-}
-
-static void convert_to_long_double(void)
-{
-    Value *top = vsp - 1;
-    int unsign, slot;
-
-    if (type_float(top->type))
-        no_long_double("converting a float to a long double");
-    if (type_eight(top->type))
-        no_long_double("converting a long long to a long double");
-
-    /* Through a long, which is what the routine takes: everything narrower
-     * widens to one first, and the sign of what it came from says which of
-     * the two routines reads it. */
-    unsign = type_unsigned(top->type) != 0;
-    vconvert(unsign ? TY_ULONG : TY_LONG);
-    save_regs_below(1);
-
-    slot = long_scratch(TY_LDOUBLE);
-    materialise_long(slot, unsign ? TY_ULONG : TY_LONG);
-    vdrop();
-
-    need_disp(slot);
-    need_disp(slot + 7);
-    lea_rr_ix(R_HL, slot);
-    rt_call(unsign ? RT_ULTOD : RT_LTOD);
-    vpush(VAL_LOCAL, TY_LDOUBLE, slot);
-}
-
-static void convert_from_long_double(Type to)
-{
-    int slot;
-
-    if (type_float(to))
-        no_long_double("converting a long double to a float");
-    if (type_eight(to))
-        no_long_double("converting a long double to a long long");
-
-    save_regs_below(1);
-    slot = long_scratch(TY_LDOUBLE);
-    materialise_long(slot, TY_LDOUBLE);
-    vdrop();
-
-    need_disp(slot);
-    need_disp(slot + 7);
-    lea_rr_ix(R_HL, slot);
-    rt_call(RT_DTOL);
-
-    /* A long, from here on: the routine wrote one over the first four bytes,
-     * and anything narrower is the ordinary integer conversion. */
-    vpush(VAL_LOCAL, type_unsigned(to) ? TY_ULONG : TY_LONG, slot);
-    if (to != TY_LONG && to != TY_ULONG)
-        vconvert(to);
-}
-
 /* Put the top of the stack into a wide slot, whatever width it arrived as:
  * a long into a long long's slot is extended by its sign or by zero, and a
  * long long into a long's is its low four bytes. */
@@ -1822,13 +1736,6 @@ void vpush_const_float(float val)
 void vpush_const_long(long val, Type type)
 {
     vpush_const_wide((uint32_t) val, 0, type);
-}
-
-/* A long double constant: the eight bytes of the double, which the compiler
- * worked out, laid down in the frame where every wide value lives. */
-void vpush_const_double(uint64_t bits)
-{
-    vpush_const_wide((uint32_t) bits, (uint32_t) (bits >> 32), TY_LDOUBLE);
 }
 
 void vpush_const_wide(uint32_t low, uint32_t high, Type type)
@@ -1948,8 +1855,7 @@ static int wide_in_place(const Value *v, Type type, int n)
 {
     return v->kind == VAL_LOCAL && type_wide(v->type)
         && type_wide_bytes(v->type) == n
-        && type_float(v->type) == type_float(type)
-        && type_ldouble(v->type) == type_ldouble(type);
+        && type_float(v->type) == type_float(type);
 }
 
 /* A slot at a given place in the scratch area, which may be one an operand
@@ -2012,8 +1918,6 @@ static int long_long_helper(int op, Type type)
 
 static int long_helper(int op, Type type)
 {
-    if (type_ldouble(type))
-        no_long_double("arithmetic on a long double");
     if (type_float(type))
         return float_helper(op);
     if (type_eight(type))
@@ -2502,7 +2406,7 @@ void gen_label(int hole)
  *
  * With one cut, at RT_SPLIT: the eight-byte routines are another 800 bytes
  * and nothing above the cut calls anything below it, so a program that never
- * uses a long long or a long double does not carry them. */
+ * uses a long long does not carry them. */
 static int rt_base = 0;                 /* where the blob landed */
 static int rt_any_used;                 /* 1 for the first part, 2 for all */
 
@@ -3371,8 +3275,6 @@ static void vbinop_pointer(int op, Type left, Type right)
  * than zero. Making it unsigned long made it 4294967295. */
 static Type common_wide(Type left, Type right)
 {
-    if (type_ldouble(left) || type_ldouble(right))
-        no_long_double("arithmetic on a long double");
     if (type_float(left) || type_float(right))
         return TY_FLOAT;
 
@@ -4102,8 +4004,6 @@ static Type cond_type(Type a, int a_null, Type b, int b_null)
                          : "a pointer and a number that is not 0");
     }
 
-    if (type_ldouble(a) && a == b)
-        return a;                       /* the same type: nothing to convert */
     if (type_wide(a) || type_wide(b))
         return common_wide(a, b);
 

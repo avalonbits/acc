@@ -91,19 +91,6 @@ typedef unsigned int NameRef;
 #define TY_FLOATING 0x10
 #define TY_FLOAT    ((Type) (ACC_LONG_SIZE | TY_FLOATING))
 
-/* long double, which agondev makes an eight-byte IEEE 754 double -- and
- * gives no arithmetic at all: libagon has __ltod and __dtol and nothing that
- * adds, multiplies or compares one, and no conversion to or from a float
- * either. So acc has the type, holds it, moves it, passes it, returns it and
- * converts it to and from the integers, and refuses the arithmetic for the
- * same reason an agondev program that tries it does not link.
- *
- * Its width is the long long's, 6 for the eight bytes it stores as, with the
- * floating bit on top -- which makes it a code of its own that no path for
- * float or for long long picks up by accident. */
-#define TY_LDOUBLE  ((Type) (TY_FLOATING | 6))
-#define type_ldouble(ty)  ((Type) (ty) == TY_LDOUBLE)
-
 /* A pointer is never a floating type, however floating the thing it points
  * at, and an array type is never one either, although some of the codes
  * arrays are given have the floating bit set. So it is the whole byte that is
@@ -141,7 +128,7 @@ typedef unsigned int NameRef;
 #define type_wide(ty)     (type_size(ty) > ACC_INT_SIZE)
 
 /* The bytes a wide value takes in the frame: four, or eight for a long long
- * or a long double. Only ever asked of a type that is already known to be
+ * long. Only ever asked of a type that is already known to be
  * wide, so it reads the width field directly rather than going through
  * type_size, whose answer for a pointer cannot arise here. */
 #define type_wide_bytes(ty) (((ty) & TY_SIZE_MASK) == 6 ? 8 : ACC_LONG_SIZE)
@@ -290,8 +277,6 @@ extern char *name_arena;    /* for name_global, further down */
  * it ends, which is s if it has no digits. In float.c. */
 const char *float_literal(const char *s, uint32_t *bits);
 uint32_t    float_from_int(uint32_t magnitude, int negative);
-const char *double_literal(const char *s, uint64_t *bits);
-uint64_t    double_from_int(uint64_t magnitude, int negative);
 
 /* ------------------------------------------------------------------ */
 /* tokens                                                              */
@@ -395,7 +380,6 @@ extern const char *tok_str; /* its bytes, when TK_STRING, escapes undone */
 extern int      tok_str_len; /* and how many, without a terminator */
 extern Type     tok_type;   /* and its type, which C99 fixes by its size */
 extern float    tok_fval;   /* its value, when TK_FLOAT */
-extern uint64_t tok_dval;   /* or its bits, when that is a long double */
 extern NameRef  tok_name;   /* its name, when TK_IDENT */
 extern int      tok_line;   /* the line it started on */
 extern int      tok_prev_line; /* where the token before it ended */
@@ -622,7 +606,6 @@ void gen_copy_to_array(int array, int offset, int from, int count);
 void vpush_const(int val, Type type);
 void vpush_const_long(long val, Type type);  /* four bytes, so it goes to the frame */
 void vpush_const_wide(uint32_t low, uint32_t high, Type type);   /* eight */
-void vpush_const_double(uint64_t bits);         /* a long double's bits */
 void vpush_const_float(float val);
 void vconvert(Type to);               /* narrow the top, then widen it back */
 Type vtype(void);                     /* the type of the top */

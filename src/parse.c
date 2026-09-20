@@ -742,10 +742,7 @@ static inline __attribute__((always_inline)) int starts_decl(void);
 static void primary(void)
 {
     if (tok == TK_FLOAT) {
-        if (tok_type == TY_LDOUBLE)
-            vpush_const_double(tok_dval);
-        else
-            vpush_const_float(tok_fval);
+        vpush_const_float(tok_fval);
         next();
 
         return;
@@ -796,16 +793,6 @@ static void primary(void)
 
     if (tok == TK_MINUS) {
         next();
-
-        /* A negative long double literal is the literal with its sign bit
-         * set, done here: there is no routine that negates one, and `-1.5L`
-         * is a constant and not arithmetic. */
-        if (tok == TK_FLOAT && tok_type == TY_LDOUBLE) {
-            vpush_const_double(tok_dval ^ (uint64_t) 1 << 63);
-            next();
-
-            return;
-        }
         primary();
         vneg();
 
@@ -1508,7 +1495,9 @@ static Type type_specifier_slow(int first, int line)
         if (is_char || is_short || is_int || is_signed || is_unsigned)
             acc_error_at(line, "a floating type with an integer one");
         if (is_long)
-            return TY_LDOUBLE;
+            acc_error_at(line, "'long double' is not supported: agondev's "
+                               "library has no arithmetic for one, so a "
+                               "program that asks for it does not link");
 
         return TY_FLOAT;
     }
@@ -1726,8 +1715,6 @@ static int bitfield_width(Type type, NameRef name, int line)
     if (type_eight(type))
         acc_error_at(line, "a bit-field of 'long long' is not supported: C99 "
                            "leaves the types past 'int' to the implementation");
-    if (type_ldouble(type))
-        acc_error_at(line, "a bit-field has to have an integer type");
     if (width < 0 || width > most)
         acc_error_at(line, "a bit-field of this type is 0 to %d bits wide",
                      most);
@@ -3786,7 +3773,7 @@ static void switch_statement(void)
     expr();
     expect(TK_RPAREN, "')'");
     type = vtype();
-    if (type_pointer(type) || type_float(type) || type_ldouble(type))
+    if (type_pointer(type) || type_float(type))
         acc_error_at(line, "a switch needs an integer, and this is %s",
                      type_pointer(type) ? "a pointer" : "a floating-point value");
     type = type_promote(type);
@@ -4460,17 +4447,9 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
     if (tok == TK_FLOAT) {
         uint32_t bits;
 
-        if (type_ldouble(type) != (tok_type == TY_LDOUBLE))
-            acc_error_at(line, "a long double's initial value has to be a long "
-                               "double, and nothing else's may be one");
-        if (!type_float(type) && !type_ldouble(type))
+        if (!type_float(type))
             acc_error_at(line, "a floating-point initial value for an integer "
                                "or a pointer is not supported yet");
-        if (type_ldouble(type)) {
-            value = tok_dval ^ (negative ? (uint64_t) 1 << 63 : 0);
-            next();
-            goto store;
-        }
         memcpy(&bits, &tok_fval, sizeof bits);
         value = bits ^ (negative ? 0x80000000u : 0);
         next();
@@ -4481,9 +4460,7 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
         value = (uint32_t) tok_val;
         if (type_eight(tok_type))
             value |= (uint64_t) tok_val_hi << 32;
-        if (type_ldouble(type))
-            value = double_from_int(value, negative);
-        else if (type_float(type))
+        if (type_float(type))
             value = float_from_int((uint32_t) value, negative);
         else if (negative)
             value = 0 - value;
@@ -4518,14 +4495,7 @@ folded:
             acc_error_at(line, "a global's initial value has to be a constant");
         vdrop();
 
-        if (type_ldouble(type)) {
-            if (type_unsigned(from))
-                value = double_from_int((uint32_t) val & 0xffffff, 0);
-            else if (val < 0)
-                value = double_from_int((uint64_t) -(long) val, 1);
-            else
-                value = double_from_int((uint64_t) (long) val, 0);
-        } else if (type_float(type)) {
+        if (type_float(type)) {
             if (type_unsigned(from))
                 value = float_from_int((uint32_t) val & 0xffffff, 0);
             else if (val < 0)

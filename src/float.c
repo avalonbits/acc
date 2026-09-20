@@ -39,15 +39,6 @@
 #define DIGITS      120
 #define HEX_DIGITS  32
 
-/* And for a double, whose boundaries are longer: 767 digits is the bound a
- * double's own boundary reaches, which no arithmetic here could hold -- the
- * numerator would be a kilobyte. 340 is what is kept, and the digits past it
- * say only that there is more, which is the sticky bit. So a long double
- * literal is correctly rounded unless its first 340 significant digits land
- * exactly on the boundary between two doubles and the ones after decide it,
- * which no literal anybody writes does. */
-#define DIGITS_D    340
-
 /* A non-negative integer, a byte to a limb, lowest first. Bytes because a
  * byte times a byte fits in the 24 bits an int has on the Agon, so every step
  * below is native arithmetic there.
@@ -56,7 +47,7 @@
  * simply zero -- 120 digits past the 46th place, 10^166, is 552 bits -- and
  * then the 26 the division shifts it by. Static, because the frames on the
  * Agon have to stay small, and there are three. */
-#define LIMBS 300
+#define LIMBS 88
 
 typedef struct {
     unsigned char b[LIMBS];
@@ -517,135 +508,3 @@ const char *float_literal(const char *s, uint32_t *bits)
     return p;
 }
 
-/* ------------------------------------------------------------------ */
-/* double                                                              */
-
-/* A long double is an eight-byte IEEE 754 double, and a literal with an L
- * suffix is one. The same rounding as a float's, at 53 bits of significand
- * and 11 of exponent -- and only the big-integer path, because a long double
- * literal is rare enough that a fast one would be code nothing runs. */
-static uint64_t double_pack(uint64_t q, int e, int sticky)
-{
-    int bl = (q >> 54) ? 55 : 54;
-    int p_bits = (e >= -1022) ? 53 : e + 1075;  /* bits the result can hold */
-    int drop;
-    uint64_t half, rem, m;
-
-    if (p_bits < 0)
-        return 0;                               /* under half the smallest */
-
-    drop = bl - p_bits;
-    half = (uint64_t) 1 << (drop - 1);
-    rem = q & ((half << 1) - 1);
-    m = q >> drop;
-    if (rem > half || (rem == half && (sticky || (m & 1))))
-        m++;
-
-    /* Subnormal, and a mantissa that rounded up to 2^52 is the smallest
-     * normal number, which is what those bits say without help. */
-    if (e < -1022)
-        return m;
-    if (m == (uint64_t) 1 << 53) {
-        m >>= 1;
-        e++;
-    }
-    if (e > 1023)
-        return 0x7ff0000000000000ULL;
-
-    return ((uint64_t) (e + 1023) << 52) | (m & 0xfffffffffffffULL);
-}
-
-/* The double nearest an integer, given as a magnitude and a sign: what a
- * global's initial value is when an integer constant initialises a long
- * double. Every value under 2^53 is exact. */
-uint64_t double_from_int(uint64_t magnitude, int negative)
-{
-    int bl = bits64(magnitude), sticky = 0;
-    uint64_t q = magnitude, sign = negative ? (uint64_t) 1 << 63 : 0;
-
-    if (magnitude == 0)
-        return sign;
-    if (bl < 55) {
-        q <<= 55 - bl;
-    } else {
-        sticky = (q & (((uint64_t) 1 << (bl - 55)) - 1)) != 0;
-        q >>= bl - 55;
-    }
-
-    return double_pack(q, bl - 1, sticky) | sign;
-}
-
-/* The literal at s: its bits as a double, and where it ends, as
- * float_literal does it for a float. */
-const char *double_literal(const char *s, uint64_t *bits)
-{
-    Digits g;
-    const char *p = literal_digits(s, (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
-                                      ? HEX_DIGITS : DIGITS_D, &g);
-    int k, i;
-    uint64_t q;
-
-    *bits = 0;
-    if (!g.seen)
-        return s;
-    if (g.kept == 0)
-        return p;                           /* zero, however it was written */
-
-    /* Out of range either way, told from where the leading digit falls, and
-     * before any of the big arithmetic: 10^310 is past the largest double,
-     * and a value below 10^-324 is less than half the smallest one. */
-    if (!g.hex) {
-        long lead = g.kept + g.scale;       /* the value is below 10^lead */
-
-        if (lead > 310) {
-            *bits = 0x7ff0000000000000ULL;
-
-            return p;
-        }
-        if (lead < -324)
-            return p;
-    } else {
-        long lead = big_bits(&num) + g.power2;  /* the value is below 2^lead */
-
-        if (lead > 1025) {
-            *bits = 0x7ff0000000000000ULL;
-
-            return p;
-        }
-        if (lead < -1080)
-            return p;
-    }
-
-    /* num / den scaled by 2^k, so that the quotient has 54 or 55 bits: the
-     * 53 a double keeps, one more to say which side of the halfway point it
-     * is on, and the remainder to say whether it is exactly on it. */
-    big_set(&den, 1);
-    for (; g.scale > 0; g.scale--)
-        big_mul_add(&num, 10, 0);
-    for (; g.scale < 0; g.scale++)
-        big_mul_add(&den, 10, 0);
-
-    k = 54 - (big_bits(&num) - big_bits(&den));
-    if (k > 0)
-        big_shl(&num, k);
-    else if (k < 0)
-        big_shl(&den, -k);
-
-    part = den;
-    big_shl(&part, 54);
-    q = 0;
-    for (i = 54; i >= 0; i--) {
-        if (big_cmp(&num, &part) >= 0) {
-            big_sub(&num, &part);
-            q |= (uint64_t) 1 << i;
-        }
-        big_shr1(&part);
-    }
-    if (num.n)
-        g.sticky = 1;
-
-    /* The value is q * 2^(power2 - k), and a little more if sticky. */
-    *bits = double_pack(q, ((q >> 54) ? 54 : 53) - k + (int) g.power2, g.sticky);
-
-    return p;
-}
