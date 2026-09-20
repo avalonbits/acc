@@ -14,6 +14,13 @@ int take(long a, int b) { return a - 999958 + b - 7; }
 int mixed(int a, long b, int c) { return b - 1999958 + a + c - 9; }
 long doubled(long n) { return n + n; }
 
+/* An address and a long in one call. The long is pushed through HL, six
+ * bytes at a time, and the address was sitting in HL: it has to come out
+ * before the push, or the callee is handed whatever the long left there. */
+struct held { int id; long big; };
+
+int both(struct held *h, long big) { return h->id == 4 && h->big == big; }
+
 int main(void) {
     long sum = add(1000000, 2000000);
     int r = 0;
@@ -27,7 +34,21 @@ int main(void) {
     /* A long result used straight away, and nested. */
     if (doubled(1000000) == 2000000) r = r + 8;
     if (doubled(doubled(500000)) == 2000000) r = r + 16;
-    /* 31 */
 
-    return r + 11;
+    {
+        struct held one;
+        long v = -5;
+
+        one.id = 4;
+        one.big = -5;
+
+        /* The long argument is a variable: it goes to the callee out of the
+         * frame, and nothing before the push has had to touch HL. The
+         * address is in HL, and this is where it was lost. */
+        if (both(&one, v)) r = r + 32;
+        if (both(&one, -5)) r = r + 64;
+    }
+    /* 127 */
+
+    return r - 85;
 }

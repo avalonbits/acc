@@ -3029,8 +3029,13 @@ static void call_to(const Callee *callee, int nargs, int params_first,
              * long: the top one first, so that the eight bytes lie in order
              * from the lowest address. The ninth is read from past the end
              * of the value and means nothing. */
-            int slot = (vsp - 1)->val;
+            int slot;
 
+            /* The pushes below go through HL, and an argument still to be
+             * pushed may be sitting in it -- `f(&a, 1L)` lost the address.
+             * Everything but this argument goes to the frame first. */
+            save_regs_below(1);
+            slot = (vsp - 1)->val;
             need_disp(slot);
             need_disp(slot + 2 * ACC_INT_SIZE);
             ld_rr_ix(R_HL, slot + 2 * ACC_INT_SIZE);
@@ -3045,8 +3050,11 @@ static void call_to(const Callee *callee, int nargs, int params_first,
             /* Two slots, six bytes, which is what agondev gives a long. The
              * high half goes first because the stack grows downwards, so the
              * low bytes end up at the lower address. */
-            int slot = (vsp - 1)->val;
+            int slot;
 
+            /* HL again, as above. */
+            save_regs_below(1);
+            slot = (vsp - 1)->val;
             need_disp(slot);
             need_disp(slot + ACC_LONG_SIZE - 1);
             ld_rr_imm(R_HL, 0);
