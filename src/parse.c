@@ -1820,7 +1820,7 @@ static void record_members(int x, int is_union, int line)
 {
     /* Where the next member goes: a byte, and a bit within it, for a
      * bit-field to continue from. */
-    int first = -1, last = -1, size = 0, bit = 0, has_bits = 0;
+    int first = -1, last = -1, size = 0, bit = 0, has_bits = 0, flexible = 0;
 
     while (tok != TK_RBRACE) {
         Type base = base_type();
@@ -1845,16 +1845,38 @@ static void record_members(int x, int is_union, int line)
                                     "to one can");
             if (accept(TK_COLON))
                 width = bitfield_width(type, name, mline);
-            if (count < 0)
-                acc_error_at(mline, "a member that is an array needs its size");
-            if (count) {
+            /* `char b[];` last in a struct: C99's flexible array member,
+             * which takes no room and stands for whatever was allocated
+             * past the struct. Only last, only in a struct, and only where
+             * something else came first -- a struct of nothing but one has
+             * no size to allocate from. */
+            if (count < 0) {
+                if (is_union)
+                    acc_error_at(mline, "a union's member that is an array "
+                                        "needs its size");
+                if (first < 0)
+                    acc_error_at(mline, "an array with no size has to come "
+                                        "after another member");
+                if (width >= 0 || !name)
+                    acc_error_at(mline, "an array with no size cannot be a "
+                                        "bit-field");
+                flexible = 1;
+                count = 0;              /* no room, and no elements of its
+                                         * own: the room is the caller's */
+            }
+            if (count || flexible) {
                 ext = ext_array(type, ext, count);
                 type = TY_EXT;
             }
             if (type == TY_VOID)
                 acc_error_at(mline, "'void' is not a type a member can have");
-            if (type_is_struct(type))
+            if (type_is_struct(type)) {
                 record_complete(ext, mline);
+                if (ext_has_flex(ext))
+                    acc_error_at(mline, "'%s' ends in an array with no size, "
+                                        "so it cannot be a member",
+                                 record_name(ext));
+            }
             for (m = first; name && m >= 0; m = member_next(m))
                 if (member_name(m) == name)
                     acc_error_at(mline, "'%s' is already a member of '%s'",
@@ -1907,6 +1929,9 @@ static void record_members(int x, int is_union, int line)
             else
                 first = m;
             last = m;
+            if (flexible && !(tok == TK_SEMI && lex_rbrace_follows()))
+                acc_error_at(mline, "an array with no size has to be the last "
+                                    "member");
           placed:
             if (size > 0x7fffff)
                 acc_error_at(mline, "a struct this large does not fit in "
@@ -1923,6 +1948,8 @@ static void record_members(int x, int is_union, int line)
     ext_record_done(x, first, size);
     if (has_bits)
         ext_set_bits(x);
+    if (flexible)
+        ext_set_flex(x);
 }
 
 /* `struct` or `union`, and a tag, a list of members or both. A tag with no
@@ -2234,8 +2261,13 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
 
     if (base == TY_VOID)
         acc_error_at(tok_line, "an array of void has no elements to hold");
-    if (type_is_struct(base))
+    if (type_is_struct(base)) {
         record_complete(base_x, tok_line);
+        if (ext_has_flex(base_x))
+            acc_error_at(tok_line, "'%s' ends in an array with no size, so "
+                                   "there is no saying where the next element "
+                                   "would start", record_name(base_x));
+    }
     *elem = base;
     *elem_x = base_x;
     for (i = n - 1; i >= 1; i--) {

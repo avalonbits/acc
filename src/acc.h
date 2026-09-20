@@ -210,6 +210,8 @@ int     ext_is_union(int x);
 int     ext_complete(int x);
 void    ext_set_bits(int x);            /* it has bit-fields */
 int     ext_has_bits(int x);
+void    ext_set_flex(int x);            /* and an array with no size last */
+int     ext_has_flex(int x);
 NameRef ext_tag(int x);                 /* NAME_NONE when it has none */
 
 /* A record's members, in the order they were declared: member_first, then
@@ -391,6 +393,7 @@ void next(void);                 /* advance to the following token */
 int  lex_colon_follows(void);    /* whether `:` comes after the current token */
 int  lex_rparen_follows(void);   /* and whether `)` does */
 int  lex_ident_follows(void);    /* and whether a name does */
+int  lex_rbrace_follows(void);   /* and whether `}` does */
 int         accept_next(void);          /* next(), returning 1, for accept */
 
 /* The current token if it is `token`, stepping past it; 0 and nothing done if

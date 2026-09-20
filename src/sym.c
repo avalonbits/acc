@@ -362,7 +362,7 @@ static struct {
 } ext_types[NEXT_TYPES + 1];
 
 enum { EXT_ARRAY = 0, EXT_STRUCT = 1, EXT_UNION = 2, EXT_COMPLETE = 4,
-       EXT_BITS = 8, EXT_FUNC = 16 };
+       EXT_BITS = 8, EXT_FUNC = 16, EXT_FLEX = 32 };
 
 static unsigned char ext_what[NEXT_TYPES + 1];      /* the kind, and whether
                                                      * a record is complete */
@@ -519,6 +519,19 @@ void ext_set_bits(int x)
 int ext_has_bits(int x)
 {
     return (ext_what[x] & EXT_BITS) != 0;
+}
+
+/* Whether the last member is an array with no size, which makes the record
+ * one that cannot be a member of another or an element of an array: what
+ * follows it in memory is the caller's business, not the type's. */
+void ext_set_flex(int x)
+{
+    ext_what[x] |= EXT_FLEX;
+}
+
+int ext_has_flex(int x)
+{
+    return (ext_what[x] & EXT_FLEX) != 0;
 }
 
 int ext_complete(int x)
