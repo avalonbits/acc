@@ -50,6 +50,10 @@ void acc_error(const char *fmt, ...)
 
 static void expr(void);
 static void comma_expr(void);
+
+/* The function being compiled, for __func__ and for the variadic forms;
+ * SYM_NONE between functions. */
+static int current_fn = SYM_NONE;
 static void deref_rest(void);
 static void conditional_rest(void);
 static void primary(void);
@@ -342,6 +346,50 @@ static int postfix_chain(int object)
  * `a[i]` is the address `a + i`. A second subscript reads the element first,
  * since it has to be a pointer to be subscripted again: that is `p[i][j]` on
  * an array of pointers. */
+/* __func__, which C99 says is declared in every function body as
+ *
+ *     static const char __func__[] = "the function's name";
+ *
+ * Made where it is first used and not before: a program that never asks for
+ * it carries neither the bytes nor the symbol, and the test is one strcmp
+ * on the path that was about to report an undeclared name anyway.
+ *
+ * The bytes go into the image the way a string literal's do, and the symbol
+ * is pushed in the function's own scope, so it goes when the function does
+ * and the next one makes its own. SYM_GLOBAL_ARRAY is what it is: an array
+ * at an address that is known, which is what a string literal leaves too.
+ * The const is what makes `__func__[0] = 'x'` the error C says it is. */
+static int func_name_symbol(NameRef name)
+{
+    const char *text;
+    int len, at, sym;
+
+    if (current_fn == SYM_NONE || strcmp(name_text(name), "__func__") != 0)
+        return SYM_NONE;
+
+    text = name_text(sym_at(current_fn)->name);
+    len = (int) strlen(text);
+    at = gen_data(text, len);
+    sym = sym_push_local(name, SYM_GLOBAL_ARRAY, at);
+    sym_at(sym)->type = TY_CHAR;        /* char[], so its extension is the
+                                         * element's, which char has none of */
+    sym_at(sym)->quals = SQ_CONST;
+    sym_set_count(sym, len + 1);        /* the terminator counts, as sizeof
+                                         * of a string literal does */
+
+    return sym;
+}
+
+/* A name being read, and the symbol it stands for: __func__ is made here if
+ * that is what it is, so that the caller holds the symbol and not the
+ * SYM_NONE it looked up. */
+static int sym_find_value(NameRef name)
+{
+    int sym = sym_find(name);
+
+    return sym == SYM_NONE ? func_name_symbol(name) : sym;
+}
+
 __attribute__((noinline))
 static int name_operand(int sym, NameRef name)
 {
@@ -499,7 +547,7 @@ void symbol_value(int sym, NameRef name)
 
 static void local_value(NameRef name)
 {
-    symbol_value(sym_find(name), name);
+    symbol_value(sym_find_value(name), name);
 }
 
 /* `++x`, `--x`, `++*p`, `--*p`: the operand changed, and the answer is its
@@ -1213,7 +1261,7 @@ static void assignment(void)
         /* A global or an element is reached through its address, so what
          * follows it is handled as what follows `*p` is: a store, a compound
          * store, a step, or a read and the rest of the expression. */
-        sym = sym_find(name);
+        sym = sym_find_value(name);
         if (sym != SYM_NONE
             && (sym_at(sym)->kind != SYM_LOCAL || tok_postfix())) {
             object_statement(sym, name);
@@ -1569,7 +1617,7 @@ static int in_body;
 
 /* The function whose body is being read, for va_start to check it has a
  * `...` to start after. */
-static int current_fn = SYM_NONE;
+
 
 static NameRef declared_name(void);
 static int     constant_int(const char *what, int line);
@@ -2143,6 +2191,7 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
  * may: `int f(char *, int [4])`. */
 static int abstract_ok;
 
+
 static NameRef declared_name(void)
 {
     NameRef name;
@@ -2277,7 +2326,7 @@ static int sizeof_unary(void)
 
             return sizeof_postfix(SIZEOF_VALUE);
         }
-        sym = sym_find(name);
+        sym = sym_find_value(name);
         if (sym != SYM_NONE && sym_at(sym)->kind == SYM_FUNC)
             acc_error_at(tok_line, "'%s' is a function, which has no size",
                          name_text(name));
