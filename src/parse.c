@@ -5789,8 +5789,10 @@ static void translation_unit(void)
 static void usage(void)
 {
     fprintf(stderr,
-        "usage: acc <source.c> -o <out.bin> [-x]\n"
+        "usage: acc <source.c> -o <out.bin> [-I <dir>]... [-x]\n"
         "\n"
+        "  -I  a directory to look in for an #include, after the one the\n"
+        "      including file is in.\n"
         "  The program prints what main returned, as six hex digits.\n"
         "  -x  report it to IO port 0 instead, which stops an emulator\n"
         "      with the low byte as its exit status.\n");
@@ -5892,6 +5894,13 @@ int main(int argc, char **argv)
                 out = argv[i] + 2;
             else if (++i < argc)
                 out = argv[i];
+            else
+                usage();
+        } else if (argv[i][0] == '-' && argv[i][1] == 'I') {
+            if (argv[i][2])
+                lex_add_include(argv[i] + 2);
+            else if (++i < argc)
+                lex_add_include(argv[i]);
             else
                 usage();
         } else if (argv[i][0] == '-' && argv[i][1] == 'x' && !argv[i][2]) {

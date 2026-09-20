@@ -401,6 +401,7 @@ extern int      tok_prev_line; /* where the token before it ended */
 
 void lex_init(void);
 void lex_open(const char *path);
+void lex_add_include(const char *dir);  /* a -I directory, in order */
 void lex_close(void);
 void next(void);                 /* advance to the following token */
 int  lex_colon_follows(void);    /* whether `:` comes after the current token */

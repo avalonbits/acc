@@ -325,6 +325,46 @@ static char  src_held;      /* the byte the sentinel replaced */
 static FILE *src_file;      /* null once the file has been read to its end */
 static const char *src_path;
 static int   line;
+static int   bol;           /* whether nothing but space is before the cursor
+                             * on its line, which is what lets a '#' be a
+                             * directive rather than a stray character */
+
+/* The files an `#include` is inside, innermost last.
+ *
+ * The window's state stays in the plain statics above rather than in a
+ * field of whatever is on top of this stack: the lexer's inner loops read
+ * `cursor` on every character, and reaching it through a pointer costs that
+ * loop a load it does not have. Pushing a file puts the statics here and
+ * starts new ones; popping puts them back.
+ *
+ * Eight deep, because each level holds a window of its own and the memory
+ * is what there is least of: a program 128 KB of buffer deep in headers has
+ * other problems. */
+#define INCLUDE_MAX 8
+
+typedef struct {
+    char       *src, *cursor, *src_end, *src_raw;
+    char        src_held;
+    FILE       *src_file;
+    const char *src_path;
+    int         line;
+} Source;
+
+static Source open_files[INCLUDE_MAX];
+static int    depth;
+
+/* Where a `<...>` include is looked for, and a `"..."` one after the
+ * directory of the file that asked for it. From -I, in the order given. */
+#define INCLUDE_DIRS 8
+static const char *include_dirs[INCLUDE_DIRS];
+static int         ninclude_dirs;
+
+void lex_add_include(const char *dir)
+{
+    if (ninclude_dirs == INCLUDE_DIRS)
+        acc_error("more than %d -I directories", INCLUDE_DIRS);
+    include_dirs[ninclude_dirs++] = dir;
+}
 
 int      tok;
 long     tok_val;
@@ -392,6 +432,71 @@ static int refill(void)
     return *cursor != '\0';
 }
 
+/* A file's window started, with the one under it kept. The path is copied,
+ * since it outlives whatever built it and every diagnostic from inside the
+ * file names it. */
+static void push_source(const char *path)
+{
+    FILE *f;
+    char *keep;
+
+    if (depth == INCLUDE_MAX)
+        acc_error_at(line, "includes nested more than %d deep", INCLUDE_MAX);
+
+    f = fopen(path, "rb");
+    if (!f)
+        acc_error_at(line, "cannot open '%s'", path);
+
+    open_files[depth].src = src;
+    open_files[depth].cursor = cursor;
+    open_files[depth].src_end = src_end;
+    open_files[depth].src_raw = src_raw;
+    open_files[depth].src_held = src_held;
+    open_files[depth].src_file = src_file;
+    open_files[depth].src_path = src_path;
+    open_files[depth].line = line;
+    depth++;
+
+    src = malloc(SRC_CAP + 1);
+    keep = malloc(strlen(path) + 1);
+    if (!src || !keep)
+        acc_error("out of memory for '%s'", path);
+    strcpy(keep, path);
+
+    src_file = f;
+    src_path = keep;
+    cursor = src_end = src_raw = src;
+    src_held = '\0';
+    *src = '\0';
+    line = 1;
+    bol = 1;
+    refill();
+}
+
+/* Back to the file that included this one. Returns whether there was one. */
+static int pop_source(void)
+{
+    if (!depth)
+        return 0;
+
+    if (src_file)
+        fclose(src_file);
+    free(src);
+    free((char *) src_path);
+
+    depth--;
+    src = open_files[depth].src;
+    cursor = open_files[depth].cursor;
+    src_end = open_files[depth].src_end;
+    src_raw = open_files[depth].src_raw;
+    src_held = open_files[depth].src_held;
+    src_file = open_files[depth].src_file;
+    src_path = open_files[depth].src_path;
+    line = open_files[depth].line;
+
+    return 1;
+}
+
 void lex_open(const char *path)
 {
     src_file = fopen(path, "rb");
@@ -408,6 +513,8 @@ void lex_open(const char *path)
     src_held = '\0';
     *src = '\0';
     line = 1;
+    bol = 1;
+    depth = 0;
     refill();
     next();
 }
@@ -531,10 +638,207 @@ static void skip_space(void);
  *
  * Out of line and off next()'s path: it runs once per 16 KB, and next() is
  * where a compile spends its time. */
+/* ------------------------------------------------------------------ */
+/* directives                                                          */
+
+static void directive(void);
+static void window_more(void);
+
+/* Space that is not a line's end: a directive lives on one line, so the
+ * newline that ends it is what stops the scan rather than something to be
+ * skipped over. */
+static void skip_blanks(void)
+{
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r')
+        cursor++;
+}
+
+/* The rest of the directive's line, thrown away. The newline is left for
+ * skip_space, which is what counts the lines. */
+static void rest_of_line(void)
+{
+    for (;;) {
+        while (*cursor && *cursor != '\n')
+            cursor++;
+        if (*cursor || !refill())
+            return;
+    }
+}
+
+/* The name after the '#', into `buf`. Returns its length, which is zero for
+ * a '#' on a line of its own -- which C allows and which does nothing. */
+static int directive_name(char *buf, int cap)
+{
+    int n = 0;
+
+    while (is_alnum((unsigned char) *cursor) && n < cap - 1)
+        buf[n++] = *cursor++;
+    buf[n] = '\0';
+
+    return n;
+}
+
+/* The file named by an `#include`, into `buf`. Returns the quote character,
+ * '"' or '<', so the caller knows where to look for it. */
+static int include_name(char *buf, int cap)
+{
+    int close, n = 0;
+    int open_ch = (unsigned char) *cursor;
+
+    if (open_ch != '"' && open_ch != '<')
+        acc_error_at(line, "an #include needs \"a file\" or <a file>");
+    close = open_ch == '"' ? '"' : '>';
+    cursor++;
+
+    while (*cursor && *cursor != close && *cursor != '\n') {
+        if (n == cap - 1)
+            acc_error_at(line, "the file name in an #include is too long");
+        buf[n++] = *cursor++;
+    }
+    if (*cursor != close)
+        acc_error_at(line, "the file name in an #include is not closed");
+    cursor++;
+    buf[n] = '\0';
+    if (!n)
+        acc_error_at(line, "an #include needs a file name");
+
+    return open_ch;
+}
+
+/* dir + "/" + name, or just name when there is no directory. Returns 0 when
+ * the two together do not fit. */
+static int join_path(char *out, int cap, const char *dir, int dirlen,
+                     const char *name)
+{
+    int n = (int) strlen(name);
+
+    if (dirlen + (dirlen ? 1 : 0) + n >= cap)
+        return 0;
+    if (dirlen) {
+        memcpy(out, dir, (size_t) dirlen);
+        out[dirlen] = '/';
+        strcpy(out + dirlen + 1, name);
+    } else {
+        strcpy(out, name);
+    }
+
+    return 1;
+}
+
+static int readable(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+
+    if (!f)
+        return 0;
+    fclose(f);
+
+    return 1;
+}
+
+/* Where a named file is, or null. A quoted name is looked for beside the
+ * file that asked for it first, which is what makes a header next to its
+ * source findable without an -I; an angled one is not. Both then go through
+ * the -I directories in the order they were given. */
+static const char *find_include(int how, const char *name, char *buf, int cap)
+{
+    int i;
+
+    /* An absolute path, or one the working directory already answers. */
+    if (name[0] == '/')
+        return readable(name) ? name : NULL;
+
+    if (how == '"') {
+        const char *slash = NULL, *p;
+
+        for (p = src_path; *p; p++)
+            if (*p == '/')
+                slash = p;
+        if (join_path(buf, cap, src_path, slash ? (int) (slash - src_path) : 0,
+                      name)
+            && readable(buf))
+            return buf;
+    }
+
+    for (i = 0; i < ninclude_dirs; i++)
+        if (join_path(buf, cap, include_dirs[i],
+                      (int) strlen(include_dirs[i]), name)
+            && readable(buf))
+            return buf;
+
+    return NULL;
+}
+
+static void do_include(void)
+{
+    char name[128], buf[256];
+    const char *found;
+    int how;
+
+    skip_blanks();
+    how = include_name(name, (int) sizeof name);
+    skip_blanks();
+    if (*cursor && *cursor != '\n')
+        acc_error_at(line, "an #include takes one file name and nothing else");
+
+    found = find_include(how, name, buf, (int) sizeof buf);
+    if (!found)
+        acc_error_at(line, "cannot find '%s'", name);
+
+    /* The rest of this file's line goes first: the push swaps the window
+     * out, and what is left of the line has to be behind the cursor when it
+     * comes back. */
+    rest_of_line();
+    push_source(found);
+}
+
+/* Every directive in a row, and whatever space and comments follow them, so
+ * that next() comes back to a real token. An `#include` leaves the cursor at
+ * the start of the file it names, which may itself begin with directives.
+ *
+ * Out of line: a compile that uses no directive at all pays one test. */
+__attribute__((noinline))
+static void directives(void)
+{
+    for (;;) {
+        directive();
+        skip_space();
+        if (!*cursor)
+            window_more();
+        if (*cursor != '#' || !bol)
+            return;
+    }
+}
+
+/* One directive, with the cursor on its '#'. The line it is on is consumed,
+ * up to but not including its newline. */
+static void directive(void)
+{
+    char name[32];
+
+    cursor++;                           /* the '#' */
+    skip_blanks();
+    if (!directive_name(name, (int) sizeof name)) {
+        rest_of_line();                 /* a '#' alone, which C allows */
+
+        return;
+    }
+
+    if (!strcmp(name, "include")) {
+        do_include();
+
+        return;
+    }
+
+    acc_error_at(line, "'#%s' is not a directive acc knows", name);
+}
+
 __attribute__((noinline))
 static void window_more(void)
 {
-    while (refill()) {
+    for (;;) {
+        if (!refill() && !pop_source())
+            return;                     /* the outermost file has ended */
         skip_space();
         if (*cursor)
             return;
@@ -546,8 +850,10 @@ static void skip_space(void)
 {
     for (;;) {
         while (is_space(*cursor)) {
-            if (*cursor == '\n')
+            if (*cursor == '\n') {
                 line++;
+                bol = 1;
+            }
             cursor++;
         }
         if (cursor[0] != '/' || (cursor[1] != '/' && cursor[1] != '*'))
@@ -1204,6 +1510,13 @@ void next(void)
     if (!*cursor)
         window_more();
 
+    /* A '#' first on its line is a directive and not a token. Two tests on
+     * a byte already loaded: `#` appears nowhere else in C, so the common
+     * answer is the first one. */
+    if (*cursor == '#' && bol)
+        directives();
+
+    bol = 0;
     tok_prev_line = tok_line;
     tok_line = line;
     c = (unsigned char) *cursor;

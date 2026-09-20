@@ -29,13 +29,16 @@ It is being written towards C99. What works today:
   * string and character literals with their escapes, `__func__`, and both
     comment forms
 
-What is not there yet: the preprocessor, and a C library. Nor `long double`,
+Of the preprocessor, `#include` is there -- a quoted name is looked for
+beside the file that asked for it and then in the `-I` directories, an
+angled one only in those -- and `#define`, `#undef` and the conditionals
+are not yet. Nor is there a C library. Nor `long double`,
 because libagon has no arithmetic for a double at all and half a type is
 worse than none; nor wide characters and strings, `_Complex`, or function
 definitions written the way K&R wrote them.
 
-One `.c` file in, a runnable MOS binary out: no linker, no preprocessor and
-no library. `* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value,
+One `.c` file in, whatever it includes, a runnable MOS binary out: no
+linker and no library. `* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value,
 and nothing wider than a register has one at all, so acc carries those
 routines and emits the ones a program uses into that program's image.
 

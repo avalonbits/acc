@@ -37,6 +37,14 @@ bin/acc "$host/stop.c" -o "$sd/bin/stop.bin" -x >/dev/null || exit 2
 # Short names, because the output's name goes into the image's header and has
 # to be the same on both sides; and one line of autoexec per input, so that
 # the card boots once for all of them.
+# Headers a case includes go on under their own names: a case is renamed to
+# something MOS is happy with, but what it asks for by name is not.
+for h in test/cases/*.h; do
+    [ -e "$h" ] || continue
+    cp "$h" "$sd/"
+    cp "$h" "$host/"
+done
+
 : > "$sd/autoexec.txt"
 n=0
 for src in test/cases/*.c test/bench/*.c; do

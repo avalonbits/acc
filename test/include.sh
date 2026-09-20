@@ -1,0 +1,193 @@
+#!/bin/bash
+# #include: where a file is looked for, and what is said when it is not there.
+#
+# The differential tests cover what an included file *means* -- it is the
+# same program however it was spelled across files, and agondev agrees. What
+# they cannot cover is the searching: which directory a quoted name is tried
+# in and an angled one is not, what a diagnostic from inside a header says,
+# and that the line numbers go back to the includer's when it ends. Those are
+# this file's job, and none of them needs an emulator.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ACC=${ACC:-bin/acc}
+[ -x "$ACC" ] || { echo "$ACC missing -- run make"; exit 2; }
+
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/src/sub" "$tmp/elsewhere" "$tmp/out"
+
+pass=0; fail=0
+
+ok() { pass=$((pass + 1)); }
+bad() { printf '  FAIL %-34s %s\n' "$1" "$2"; fail=$((fail + 1)); }
+
+# Compiles, and the image is made. $1 names the check, the rest are arguments.
+compiles() {
+    local what=$1; shift
+    if out=$("$ACC" "$@" -o "$tmp/out/a.bin" 2>&1); then
+        ok
+    else
+        bad "$what" "$(printf '%s' "$out" | head -1)"
+    fi
+}
+
+# Refused, with a message matching $2.
+refuses() {
+    local what=$1 want=$2; shift 2
+    if out=$("$ACC" "$@" -o "$tmp/out/a.bin" 2>&1); then
+        bad "$what" "it was accepted"
+    elif ! printf '%s' "$out" | grep -q -- "$want"; then
+        bad "$what" "$(printf '%s' "$out" | head -1)"
+    else
+        ok
+    fi
+}
+
+# --- a header beside the source, and one below it ---------------------
+cat > "$tmp/src/sub/deep.h" <<'EOF'
+int deeper(int x) { return x * 2; }
+EOF
+cat > "$tmp/src/hdr.h" <<'EOF'
+#include "sub/deep.h"
+int helper(int x) { return x + 1; }
+EOF
+cat > "$tmp/src/main.c" <<'EOF'
+#include "hdr.h"
+int main(void) { return deeper(helper(20)); }
+EOF
+compiles "a quoted header beside the source" "$tmp/src/main.c"
+
+# The same, from a directory that is not the working one: a quoted name is
+# looked for beside the file that asked for it, not beside the compiler.
+compiles "a header found from another directory" "$tmp/src/main.c"
+
+# --- angled names do not look beside the source -----------------------
+cat > "$tmp/elsewhere/lib.h" <<'EOF'
+int from_a_path(void) { return 7; }
+EOF
+cat > "$tmp/src/angled.c" <<'EOF'
+#include <lib.h>
+int main(void) { return from_a_path(); }
+EOF
+refuses "an angled name is not looked for beside the source" \
+    "cannot find 'lib.h'" "$tmp/src/angled.c"
+compiles "an angled name is looked for in -I" \
+    "$tmp/src/angled.c" -I "$tmp/elsewhere"
+
+# A quoted name falls back to the -I directories when it is not beside the
+# file that asked for it.
+cat > "$tmp/src/quoted_far.c" <<'EOF'
+#include "lib.h"
+int main(void) { return from_a_path(); }
+EOF
+compiles "a quoted name falls back to -I" \
+    "$tmp/src/quoted_far.c" -I "$tmp/elsewhere"
+
+# And the source's own directory wins over -I, so a header next to the file
+# is the one that is used.
+cat > "$tmp/src/lib.h" <<'EOF'
+int from_a_path(void) { return 42; }
+EOF
+cat > "$tmp/src/which.c" <<'EOF'
+#include "lib.h"
+int main(void) { return from_a_path(); }
+EOF
+cat > "$tmp/src/direct.c" <<'EOF'
+int from_a_path(void) { return 42; }
+int main(void) { return from_a_path(); }
+EOF
+
+# The output's name goes into the image's header, so the two sides are built
+# under the same basename in different directories to be comparable at all.
+mkdir -p "$tmp/out/one" "$tmp/out/two"
+"$ACC" "$tmp/src/which.c" -I "$tmp/elsewhere" -o "$tmp/out/one/x.bin" \
+    >/dev/null 2>&1
+"$ACC" "$tmp/src/direct.c" -o "$tmp/out/two/x.bin" >/dev/null 2>&1
+if cmp -s "$tmp/out/one/x.bin" "$tmp/out/two/x.bin"; then
+    ok
+else
+    bad "the source's own directory wins over -I" "a different header was used"
+fi
+
+# --- what a diagnostic says -------------------------------------------
+cat > "$tmp/src/bad.h" <<'EOF'
+int fine(void) { return 1; }
+int broken(void) { return @; }
+EOF
+cat > "$tmp/src/usebad.c" <<'EOF'
+#include "bad.h"
+int main(void) { return 0; }
+EOF
+refuses "an error inside a header names the header" \
+    "bad.h:2: error:" "$tmp/src/usebad.c"
+
+# And when the header ends, the lines are the includer's again.
+cat > "$tmp/src/after.c" <<'EOF'
+#include "hdr.h"
+
+
+int main(void) { return @; }
+EOF
+refuses "the line after an include is the includer's" \
+    "after.c:4: error:" "$tmp/src/after.c"
+
+# --- how deep it goes --------------------------------------------------
+# A file that includes itself is the shortest way to the bottom.
+cat > "$tmp/src/loop.h" <<'EOF'
+#include "loop.h"
+EOF
+cat > "$tmp/src/loop.c" <<'EOF'
+#include "loop.h"
+int main(void) { return 0; }
+EOF
+refuses "a header that includes itself stops" \
+    "nested more than" "$tmp/src/loop.c"
+
+# --- the directive itself ---------------------------------------------
+printf '#include "nothing_here.h"\nint main(void) { return 0; }\n' \
+    > "$tmp/src/missing.c"
+refuses "a file that is not there" "cannot find" "$tmp/src/missing.c"
+
+printf '#include hdr.h\nint main(void) { return 0; }\n' > "$tmp/src/bare.c"
+refuses "a name with no quotes" "needs \"a file\"" "$tmp/src/bare.c"
+
+printf '#include "hdr.h\nint main(void) { return 0; }\n' > "$tmp/src/unclosed.c"
+refuses "a name that is not closed" "is not closed" "$tmp/src/unclosed.c"
+
+printf '#include ""\nint main(void) { return 0; }\n' > "$tmp/src/empty.c"
+refuses "an empty name" "needs a file name" "$tmp/src/empty.c"
+
+printf '#include "hdr.h" and more\nint main(void) { return 0; }\n' \
+    > "$tmp/src/junk.c"
+refuses "anything after the name" "and nothing else" "$tmp/src/junk.c"
+
+printf '#nonsense\nint main(void) { return 0; }\n' > "$tmp/src/unknown.c"
+refuses "a directive acc does not know" "is not a directive" \
+    "$tmp/src/unknown.c"
+
+# A '#' on a line of its own is allowed and does nothing.
+printf '#\nint main(void) { return 0; }\n' > "$tmp/src/hash.c"
+compiles "a '#' alone" "$tmp/src/hash.c"
+
+# A '#' that is not first on its line is not a directive.
+printf 'int main(void) { return 0 # 1; }\n' > "$tmp/src/mid.c"
+refuses "a '#' in the middle of a line" "stray" "$tmp/src/mid.c"
+
+# --- and that the result is the same however it was split up ----------
+# The same program in one file and in three has to compile to the same
+# image: an include is not allowed to change what the program means.
+cat > "$tmp/src/whole.c" <<'EOF'
+int deeper(int x) { return x * 2; }
+int helper(int x) { return x + 1; }
+int main(void) { return deeper(helper(20)); }
+EOF
+"$ACC" "$tmp/src/whole.c" -o "$tmp/out/one/y.bin" >/dev/null 2>&1
+"$ACC" "$tmp/src/main.c" -o "$tmp/out/two/y.bin" >/dev/null 2>&1
+if cmp -s "$tmp/out/one/y.bin" "$tmp/out/two/y.bin"; then
+    ok
+else
+    bad "split across files is the same image" "the two differ"
+fi
+
+echo "  $pass passed, $fail failed"
+[ "$fail" -eq 0 ]
