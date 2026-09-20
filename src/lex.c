@@ -296,12 +296,33 @@ const char *name_text(NameRef ref)
 /* ------------------------------------------------------------------ */
 /* the source                                                          */
 
-/* The whole file, read once. A four-hundred-line source is around 20 KB,
- * which is small beside the 206 KB a program has on the Agon -- the previous
- * compiler ran out on its symbol table, not on its input. Streaming it is a
- * change to make when there is a reason, not before. */
-static char *src;
+/* A window on the file rather than the whole of it.
+ *
+ * The reason is the preprocessor: `#include` means several files open at
+ * once, and a header that is included from a header from a header is three
+ * whole files held in memory at the same time as the one being compiled.
+ * One buffer each, of a size that does not grow with the file, is what makes
+ * that affordable on a machine with 448 KB for everything.
+ *
+ * What the buffer holds is always whole lines: a read is trimmed back to the
+ * last newline in it, and the bytes after that newline are carried to the
+ * front on the next refill. That is the invariant the rest of the lexer
+ * rests on -- a token can point straight into the buffer, because a refill
+ * only ever happens where a line ended and no token in C spans a line. Nor
+ * does `*<slash>`, whose two characters cannot have a newline between them,
+ * so even a comment that runs over many lines is found across a refill.
+ *
+ * The byte at the end of the handed-out part is replaced by a '\0' so that
+ * scanning stops there without a bounds test on every character, and the
+ * byte it hid is put back when the window moves. */
+#define SRC_CAP 16384
+
+static char *src;           /* SRC_CAP + 1 bytes, the +1 for the sentinel */
 static char *cursor;
+static char *src_end;       /* where the sentinel sits: the last line's end */
+static char *src_raw;       /* one past the last byte read into the buffer */
+static char  src_held;      /* the byte the sentinel replaced */
+static FILE *src_file;      /* null once the file has been read to its end */
 static const char *src_path;
 static int   line;
 
@@ -315,34 +336,91 @@ int      tok_line;
 Type     tok_type;
 int      tok_prev_line;
 
+/* More of the file, with what has not been read yet kept.
+ *
+ * The unconsumed tail moves to the front, the rest of the buffer is read
+ * into, and the window is trimmed back to the last newline so that it ends
+ * where a line does. Returns whether there is anything to look at after it,
+ * which is what the callers mean by asking: at the end of the file the
+ * answer is no and the sentinel stays where it is.
+ *
+ * Out of line and off the hot path: it runs once per 16 KB of source, where
+ * skip_space runs once per token. */
+__attribute__((noinline))
+static int refill(void)
+{
+    size_t keep, room, got;
+    char *nl;
+
+    if (!src_file)
+        return 0;                       /* the whole file has been read */
+
+    *src_end = src_held;                /* put back what the sentinel hid */
+    keep = (size_t) (src_raw - cursor);
+    if (keep && cursor != src)
+        memmove(src, cursor, keep);
+    cursor = src;
+    src_raw = src + keep;
+
+    /* Until the window is full or the file has no more. Reading until it is
+     * full rather than taking one read's worth is what lets the trim below
+     * stand: a short read that stopped mid-line would otherwise hand out
+     * half a line and break the invariant the whole scheme rests on. */
+    room = (size_t) SRC_CAP - keep;
+    while (room && (got = fread(src_raw, 1, room, src_file)) > 0) {
+        src_raw += got;
+        room -= got;
+    }
+    if (room) {                         /* that was the end of the file */
+        fclose(src_file);
+        src_file = NULL;
+        nl = src_raw;
+        src_held = '\0';
+    } else {
+        /* Whole lines only. A full window with no newline in it is a line
+         * longer than the window, which there is nowhere to put. */
+        for (nl = src_raw; nl > src && nl[-1] != '\n'; nl--)
+            ;
+        if (nl == src)
+            acc_error_at(line, "a line longer than %d characters", SRC_CAP);
+        src_held = *nl;
+    }
+
+    src_end = nl;
+    *src_end = '\0';
+
+    return *cursor != '\0';
+}
+
 void lex_open(const char *path)
 {
-    FILE *f = fopen(path, "rb");
-    long n;
-
-    if (!f)
+    src_file = fopen(path, "rb");
+    if (!src_file)
         acc_error("cannot open '%s'", path);
-    fseek(f, 0, SEEK_END);
-    n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    src = malloc(n + 1);
-    if (!src)
-        acc_error("out of memory reading '%s'", path);
-    if ((long) fread(src, 1, n, f) != n)
-        acc_error("short read on '%s'", path);
-    src[n] = '\0';
-    fclose(f);
+    if (!src) {
+        src = malloc(SRC_CAP + 1);
+        if (!src)
+            acc_error("out of memory for the source buffer");
+    }
 
     src_path = path;
-    cursor = src;
+    cursor = src_end = src_raw = src;
+    src_held = '\0';
+    *src = '\0';
     line = 1;
+    refill();
     next();
 }
 
 void lex_close(void)
 {
+    if (src_file) {
+        fclose(src_file);
+        src_file = NULL;
+    }
     free(src);
     src = NULL;
+    cursor = src_end = src_raw = NULL;
 }
 
 const char *lex_path(void) { return src_path; }
@@ -353,14 +431,34 @@ int lex_line(void)         { return line; }
  * start with the same token -- and one character is enough to look at: at
  * the start of a statement a name followed by a colon can only be a label.
  * Nothing is consumed. */
+/* The window ended in white space, so what follows has not been read yet.
+ * Out of line, because this runs once per 16 KB and next_char runs at every
+ * statement: a call in the middle of it costs the peek its registers. */
+__attribute__((noinline))
+static char next_char_refilled(void)
+{
+    while (refill()) {
+        const char *p = cursor;
+
+        while (is_space(*p))
+            p++;
+        if (*p)
+            return *p;
+    }
+
+    return '\0';
+}
+
 static char next_char(void)
 {
     const char *p = cursor;
 
     while (is_space(*p))
         p++;
+    if (*p)
+        return *p;
 
-    return *p;
+    return next_char_refilled();
 }
 
 int lex_colon_follows(void)
@@ -407,14 +505,40 @@ static void skip_comment(void)
     int opened = line;
 
     cursor += 2;
-    while (*cursor && !(cursor[0] == '*' && cursor[1] == '/')) {
-        if (*cursor == '\n')
-            line++;
-        cursor++;
+    for (;;) {
+        while (*cursor && !(cursor[0] == '*' && cursor[1] == '/')) {
+            if (*cursor == '\n')
+                line++;
+            cursor++;
+        }
+        if (*cursor)
+            break;
+
+        /* The window ended inside the comment. The two characters that close
+         * one cannot have a newline between them and a window always ends
+         * after a newline, so a `*<slash>` is never split by this. */
+        if (!refill())
+            acc_error_at(opened, "unterminated comment");
     }
-    if (!*cursor)
-        acc_error_at(opened, "unterminated comment");
     cursor += 2;
+}
+
+static void skip_space(void);
+
+/* More of the file, and whatever white space and comments begin it. At the
+ * end of the file the cursor is left on the sentinel, which is what next()
+ * reads as the end.
+ *
+ * Out of line and off next()'s path: it runs once per 16 KB, and next() is
+ * where a compile spends its time. */
+__attribute__((noinline))
+static void window_more(void)
+{
+    while (refill()) {
+        skip_space();
+        if (*cursor)
+            return;
+    }
 }
 
 __attribute__((noinline))
@@ -1072,12 +1196,21 @@ void next(void)
     int c;
 
     skip_space();
+
+    /* The end of the window, which is the one place the buffer moves. The
+     * test is here rather than in skip_space because every token goes
+     * through that loop, and the reading itself is out of line because it
+     * happens once per 16 KB. */
+    if (!*cursor)
+        window_more();
+
     tok_prev_line = tok_line;
     tok_line = line;
     c = (unsigned char) *cursor;
 
     if (c == '\0') {
         tok = TK_EOF;
+
         return;
     }
 
