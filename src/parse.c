@@ -2877,7 +2877,9 @@ static void sizeof_value(void)
 
     next();
     sizeof_vla = 0;
-    paren = accept(TK_LPAREN);
+    paren = tok == TK_LPAREN;      /* as in global_array, and for its reason */
+    if (paren)
+        next();
     if (paren && starts_decl()) {
         type = type_name(&x);
         expect(TK_RPAREN, "')'");
@@ -5317,7 +5319,17 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
                          int line)
 {
     int step = type_bytes(elem, elem_x), total, at, sym, i;
-    int init = accept(TK_ASSIGN);
+    /* Read as a test and then consumed, rather than as accept's value.
+     * agondev's clang lowers `x = accept(t)` into a compare, the zero for
+     * the other arm, and a conditional call -- and puts the zero, which is
+     * `or a, a` and `sbc hl, hl`, between the compare and the call. Both
+     * instructions write the zero flag the call reads, so the call is made
+     * whatever the token was: every array declared with no initial value
+     * went looking for a '{'. */
+    int init = tok == TK_ASSIGN;
+
+    if (init)
+        next();
 
     /* One dimension, which is most arrays, needs none of the walk: its values
      * arrive in order, each written as it is read, and zeros follow. As the

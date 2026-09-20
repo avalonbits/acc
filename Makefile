@@ -23,7 +23,7 @@ SAN      = -fsanitize=address,undefined -fno-sanitize-recover=all \
 
 BIN = bin
 
-.PHONY: all clean test unit
+.PHONY: all clean test unit agon
 all: $(BIN)/acc
 
 # The runtime helpers are assembly, and the table acc emits them from is
@@ -63,15 +63,32 @@ $(BIN):
 # generates and checks it against the same table. The differential tests
 # cannot do that job -- acc links with nothing, so a convention it gets
 # consistently wrong agrees with itself everywhere.
-test: all unit $(BIN)/acc-asan
+test: all unit $(BIN)/acc-asan agon
 	@test/abi.sh || [ $$? -eq 77 ]
 	@test/helpers.sh || [ $$? -eq 77 ]
+	@test/flags.sh || [ $$? -eq 77 ]
 	@test/heap.sh || [ $$? -eq 77 ]
 	@test/cycles.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh
 	@ACC=$(BIN)/acc-asan test/errors.sh
 	@ACC=$(BIN)/acc-asan test/run.sh
 	@ACC=$(BIN)/acc-asan test/self.sh
+	@if [ -f $(BIN)/acc.bin ]; then test/target.sh || [ $$? -eq 77 ]; \
+	 else echo "  [no Agon build: the target test is skipped]"; fi
+
+# The Agon build, through its own makefile so there is one recipe for it.
+#
+# It is part of `make test` because target.sh is: every other test runs the
+# host build, where an int is 32 bits and agondev's clang never sees the
+# code. A compare that clang scheduled a flag write in front of made every
+# global array with no initial value fail to compile, on the target only,
+# with a whole suite passing on the host.
+agon:
+	@if [ -x $(AGONDEV)/bin/ez80-none-elf-clang ]; then \
+	    $(MAKE) -s -f Makefile.agon; \
+	else \
+	    echo "[no agondev: the Agon build is skipped]"; \
+	fi
 
 unit: | $(BIN)
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_timing test/test_timing.c
