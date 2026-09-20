@@ -140,9 +140,11 @@ typedef unsigned int NameRef;
  * points at. */
 #define type_wide(ty)     (type_size(ty) > ACC_INT_SIZE)
 
-/* The bytes a wide value takes in the frame: four, or eight for a long
- * long. */
-#define type_wide_bytes(ty) (type_eight(ty) ? 8 : ACC_LONG_SIZE)
+/* The bytes a wide value takes in the frame: four, or eight for a long long
+ * or a long double. Only ever asked of a type that is already known to be
+ * wide, so it reads the width field directly rather than going through
+ * type_size, whose answer for a pointer cannot arise here. */
+#define type_wide_bytes(ty) (((ty) & TY_SIZE_MASK) == 6 ? 8 : ACC_LONG_SIZE)
 
 #define type_size(ty)     (type_pointer(ty) ? ACC_INT_SIZE \
                                             : (int) ((ty) & TY_SIZE_MASK))

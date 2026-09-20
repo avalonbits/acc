@@ -1584,6 +1584,9 @@ _acc_rt_fkey:
 	res	7, (iy + 3)		; zero significand means an infinity,
 	ret				; anything else a NaN
 
+; The right operand is written to, which is why helper_writes_right in gen.c
+; names this routine: acc passes a right operand where the program keeps it
+; unless the routine is one of the few that change it.
 _acc_rt_fsub:
 	push	hl			; the same as adding the right operand
 	push	de			; with its sign turned over, and the

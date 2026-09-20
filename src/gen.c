@@ -1546,14 +1546,21 @@ static void lea_rr_ix(int reg, int disp)
     out_byte3(0xed, lea_code[reg], disp);
 }
 
-/* Copy n bytes from one frame slot to another. */
+/* Copy n bytes from one frame slot to another.
+ *
+ * The two instructions are laid down here rather than through ld_a_ix and
+ * ld_ix_a, which are calls: out_byte3 is inlined, so a byte of the copy is
+ * six stores behind one bounds check instead of two calls. Worth the
+ * departure from how the rest of the file emits, because this is the loop
+ * that runs for every byte of every wide value a program moves -- it was
+ * 4.8% of a compile of the long benchmark. */
 static void copy_long(int to, int from, int n)
 {
     int i;
 
     for (i = 0; i < n; i++) {
-        ld_a_ix(from + i);
-        ld_ix_a(to + i);
+        out_byte3(0xdd, 0x7e, from + i);        /* ld a, (ix+d) */
+        out_byte3(0xdd, 0x77, to + i);          /* ld (ix+d), a */
     }
 }
 
@@ -1681,12 +1688,10 @@ static void convert_float_to_int(Type to)
  * rather than at each of them. */
 static void check_no_float_mix(Type to, const Value *from)
 {
-    if (from->kind == VAL_CONST && from->val == 0)
-        return;                 /* zero is all zero bits either way */
-    if (type_ldouble(to) != type_ldouble(from->type))
-        acc_error("internal: a long double converted as though it were not one");
     if (type_float(to) == type_float(from->type))
         return;
+    if (from->kind == VAL_CONST && from->val == 0)
+        return;                 /* zero is all zero bits either way */
 
     acc_error_at(tok_line, "converting between floating-point and integer is "
                            "not implemented yet");
@@ -1864,8 +1869,7 @@ static int long_scratch(Type type)
  * is dead the moment this one has read it. So the answer is built at the
  * lowest of those rather than on top of them, and the mark comes back to
  * just past it. Everything else the statement is holding stays where it is:
- * spill_floor is where the values still on the stack end, and nothing is
- * built below that.
+ * Nothing is built below where the values still on the stack end.
  *
  * A slot is described by where it starts in the scratch area, which is what
  * the displacement and the width say between them. */
@@ -1886,36 +1890,66 @@ static int spill_start_of(const Value *v, int *size)
     return start;
 }
 
-/* Where the values under the operands end: the operator builds nothing
- * below this. */
-static int spill_floor(int operands)
+/* The lowest place this operator may build its answer.
+ *
+ * The scratch of the operands it consumes is its to take; everything else
+ * the statement is still holding stays where it is, and the answer goes
+ * above the highest of it. `live_top` says the top operand is not consumed
+ * but read where it lies, which makes it one of the values to stay clear of
+ * rather than one to take. */
+static int spill_lowest(int operands, int live_top)
 {
-    int floor = 0, size, i;
+    int low = spill_used, floor = 0, first = vtop - operands, size, i;
 
-    for (i = 0; i < vtop - operands; i++) {
+    for (i = 0; i < vtop; i++) {
         int start = spill_start_of(vstack + i, &size);
+        int consumed = i >= first && !(live_top && i == vtop - 1);
 
-        if (start >= 0 && start + size > floor)
-            floor = start + size;
-    }
-
-    return floor;
-}
-
-/* The lowest place this operator may build its answer: the floor, unless an
- * operand's own scratch starts lower. */
-static int spill_lowest(int operands)
-{
-    int low = spill_used, floor = spill_floor(operands), size, i;
-
-    for (i = vtop - operands; i < vtop; i++) {
-        int start = spill_start_of(vstack + i, &size);
-
-        if (start >= 0 && start < low)
+        if (start < 0)
+            continue;
+        if (!consumed) {
+            if (start + size > floor)
+                floor = start + size;
+        } else if (start < low) {
             low = start;
+        }
     }
 
     return low < floor ? floor : low;
+}
+
+/* Whether the routine writes through DE as well as HL, which says whether
+ * its right operand has to be a copy.
+ *
+ * The divisions do: they leave the remainder where the divisor was. So does
+ * the float subtract, which turns the right operand's sign over and adds --
+ * and the float comparison, which rewrites both operands as the unsigned
+ * integers that sort the way they do. All three are written that way on
+ * purpose, because the operand was scratch the operator had finished with;
+ * this list is what keeps that true. Everything else only reads. */
+static int helper_writes_right(int which)
+{
+    switch (which) {
+    case RT_LDIVU:  case RT_LREMU:  case RT_LDIVS:  case RT_LREMS:
+    case RT_LLDIVU: case RT_LLREMU: case RT_LLDIVS: case RT_LLREMS:
+    case RT_FSUB:   case RT_FCMP:
+        return 1;
+    }
+
+    return 0;
+}
+
+/* Whether a value is already what the routine wants to read: in the frame,
+ * of the width the operation is at, and meaning what its bytes say -- a long
+ * and an unsigned long are the same four bytes, a float is not. A global is
+ * not, either: it is read into scratch on the way, and this is asked of what
+ * is on the stack by then. */
+static int wide_in_place(const Value *v, Type type, int n)
+{
+    return v->kind == VAL_LOCAL && type_wide(v->type)
+        && type_wide_bytes(v->type) == n
+        && type_float(v->type) == type_float(type)
+        && type_ldouble(v->type) == type_ldouble(type);
 }
 
 /* A slot at a given place in the scratch area, which may be one an operand
@@ -2043,29 +2077,42 @@ static void vbinop_long(int op, Type result)
      * the first comparison. The top two are the operands and are exempt:
      * they are about to be copied into the frame and dropped. */
     int n = type_wide_bytes(result);
-    int low, rstart;
+    int low, rstart, in_place;
 
     /* After the spills, not before: a register the call below puts in the
      * frame is a value under the operands, and the floor has to know about
      * it. */
     save_regs_below(2);
-    low = spill_lowest(2);
-    rstart = spill_used > low + n ? spill_used : low + n;
 
     which = long_helper(op, result);
     if (which < 0)
         acc_error_at(tok_line, "the operator %s is not implemented for %s yet",
                      tok_spelling(op), type_float(result) ? "float" : "long");
 
+    /* A right operand already in the frame at the right width is read where
+     * it lies: the routine only reads through DE. That is a copy of the
+     * value saved, and a scratch slot, on most of the wide operators a
+     * program has -- `a + b` now copies a and reads b. */
+    in_place = !helper_writes_right(which) && wide_in_place(vsp - 1, result, n);
+    low = spill_lowest(2, in_place);
+    rstart = spill_used > low + n ? spill_used : low + n;
+
     /* The right operand is built first, because building the left one may
      * need HL and the right may still be an expression on the stack. The
      * left goes where the answer is to be, which is at or below where the
      * operands are. */
     left = slot_at(low, n);
-    right = slot_at(rstart, n);
-    spill_used = rstart + n;
-    materialise_long(right, result);
-    vdrop();
+    if (in_place) {
+        right = (vsp - 1)->val;
+        vdrop();
+        if (low + n > spill_used)
+            spill_used = low + n;
+    } else {
+        right = slot_at(rstart, n);
+        spill_used = rstart + n;
+        materialise_long(right, result);
+        vdrop();
+    }
 
     materialise_long(left, result);
     vdrop();
@@ -2143,7 +2190,7 @@ static void vcmp_wide(int op, Type operand)
 {
     int floating = type_float(operand);
     int n = type_wide_bytes(operand);
-    int low, rstart;
+    int low, rstart, in_place;
     int left, right;
 
     /* Anything else live in a register has to come out first. The two lea
@@ -2154,14 +2201,26 @@ static void vcmp_wide(int op, Type operand)
      * the first comparison. The top two are the operands and are exempt:
      * they are about to be copied into the frame and dropped. */
     save_regs_below(2);
-    low = spill_lowest(2);
+
+    /* As in vbinop_long: the integer comparisons only read through DE, so a
+     * right operand already in the frame is compared where it lies. The
+     * float one rewrites both operands and cannot. */
+    in_place = !floating && wide_in_place(vsp - 1, operand, n);
+    low = spill_lowest(2, in_place);
     rstart = spill_used > low + n ? spill_used : low + n;
 
     left = slot_at(low, n);
-    right = slot_at(rstart, n);
-    spill_used = rstart + n;
-    materialise_long(right, operand);
-    vdrop();
+    if (in_place) {
+        right = (vsp - 1)->val;
+        vdrop();
+        if (low + n > spill_used)
+            spill_used = low + n;
+    } else {
+        right = slot_at(rstart, n);
+        spill_used = rstart + n;
+        materialise_long(right, operand);
+        vdrop();
+    }
 
     materialise_long(left, operand);
     vdrop();
