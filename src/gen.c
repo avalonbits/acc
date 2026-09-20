@@ -3314,25 +3314,52 @@ void gen_init(void)
  *          emulator with that byte as its exit status. That is how the tests
  *          read an answer with no C library and nothing to print with.
  */
+/* IY is saved and put back around the whole of the program, in both stubs.
+ *
+ * MOS wants it as it left it: a program that returns having changed it takes
+ * the machine down, and takes it down after the program has run and printed
+ * its answer, which is as confusing a way to find this out as there is. It
+ * cost a morning. The backend uses IY as its own scratch -- see the note on
+ * the value stack -- so the program will have changed it, and the stub is
+ * the one place that can put it back whatever the program did.
+ *
+ * In the exit stub too, though that one stops the machine rather than
+ * returning: the contract is that a program acc compiles gives IY back, and
+ * a contract with a hole in it for the mode the tests use is worse than no
+ * contract. */
 static const unsigned char startup_exit[] = {
-    0xcd, 0x00, 0x00, 0x00, 0x7d, 0xd3, 0x00, 0xc9
+    0xfd, 0xe5,                                 /* push iy */
+    0xcd, 0x00, 0x00, 0x00,                     /* call main */
+    0x7d, 0xd3, 0x00,                           /* ld a, l / out (0), a */
+    0xfd, 0xe1,                                 /* pop iy */
+    0xc9
 };
 
 static const unsigned char startup_print[] = {
-    0xcd, 0x00, 0x00, 0x00, 0xe5, 0xfd, 0x21, 0x00, 0x00, 0x00, 0xfd, 0x39,
-    0xfd, 0x7e, 0x02, 0xcd, 0x33, 0x00, 0x00, 0xfd, 0x7e, 0x01, 0xcd, 0x33,
-    0x00, 0x00, 0xfd, 0x7e, 0x00, 0xcd, 0x33, 0x00, 0x00, 0xe1, 0x3e, 0x0d,
-    0x5b, 0xd7, 0x3e, 0x0a, 0x5b, 0xd7, 0xc9, 0xf5, 0x1f, 0x1f, 0x1f, 0x1f,
-    0xcd, 0x3d, 0x00, 0x00, 0xf1, 0xe6, 0x0f, 0xc6, 0x30, 0xfe, 0x3a, 0x38,
-    0x02, 0xc6, 0x07, 0x5b, 0xd7, 0xc9
+    0xfd, 0xe5,                                 /* push iy */
+    0xcd, 0x00, 0x00, 0x00,                     /* call main */
+    0xe5,                                       /* push hl */
+    0xfd, 0x21, 0x00, 0x00, 0x00, 0xfd, 0x39,   /* ld iy, 0 / add iy, sp */
+    0xfd, 0x7e, 0x02, 0xcd, 0x00, 0x00, 0x00,   /* ld a, (iy+2) / hexbyte */
+    0xfd, 0x7e, 0x01, 0xcd, 0x00, 0x00, 0x00,
+    0xfd, 0x7e, 0x00, 0xcd, 0x00, 0x00, 0x00,
+    0xe1,                                       /* pop hl */
+    0x3e, 0x0d, 0x5b, 0xd7,                     /* ld a, 13 / rst.lil 0x10 */
+    0x3e, 0x0a, 0x5b, 0xd7,                     /* ld a, 10 / rst.lil 0x10 */
+    0xfd, 0xe1,                                 /* pop iy */
+    0xc9,
+    0xf5, 0x1f, 0x1f, 0x1f, 0x1f,               /* hexbyte: push af / rra x4 */
+    0xcd, 0x00, 0x00, 0x00, 0xf1,               /* call hexnib / pop af */
+    0xe6, 0x0f, 0xc6, 0x30, 0xfe, 0x3a,         /* hexnib: the digit */
+    0x38, 0x02, 0xc6, 0x07, 0x5b, 0xd7, 0xc9
 };
 
 /* Where the print stub calls within itself, as offsets from its first byte.
  * They are absolute calls, so they have to be filled in once the stub's
  * address is known. */
 static const struct { int at, to; } print_calls[] = {
-    { 0x10, 0x2b }, { 0x17, 0x2b }, { 0x1e, 0x2b },   /* hexbyte */
-    { 0x31, 0x35 }                                    /* hexnib */
+    { 0x12, 0x2f }, { 0x19, 0x2f }, { 0x20, 0x2f },   /* hexbyte */
+    { 0x35, 0x39 }                                    /* hexnib */
 };
 
 void gen_startup(int report_by_exit)
@@ -3355,8 +3382,9 @@ void gen_startup(int report_by_exit)
     for (i = 0; i < n; i++)
         out_byte(stub[i]);
 
-    /* The call to main is the first instruction in either version. */
-    fixup_add(m, base + 1);
+    /* The call to main is the second instruction in either version; the
+     * first is the one that saves MOS's IY. */
+    fixup_add(m, base + 3);
 
     if (!report_by_exit)
         for (i = 0; i < (int) (sizeof print_calls / sizeof *print_calls); i++) {

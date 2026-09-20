@@ -5,13 +5,18 @@
 # Now it is nothing: the variable is given an address past the image's last
 # byte, and the program clears what is there before main runs.
 #
-# Two things to say. What it costs in the file is measured here directly.
-# That the clearing really happens is read out of the image by test/bss.py
-# rather than watched: watching it needs memory that is dirty first, and the
-# only way to dirty it is to run another program before this one -- which
-# means returning to MOS, which an acc-compiled program does not yet survive.
+# Two things to say. What it costs in the file is measured here directly, and
+# what the program does about it is read out of the image by test/bss.py --
+# which routine it calls, where it clears from and how much.
+#
+# And then watched happening, which is the part that needs care: a program
+# run on a fresh machine finds zeros whether anything cleared them or not. So
+# two programs on one boot. The first fills a large area with a pattern and
+# returns to MOS; the second is laid out to sit inside that area and has to
+# find zeros. Without the clearing it finds the first one's pattern.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. test/emu.sh
 
 ACC=${ACC:-bin/acc}
 [ -x "$ACC" ] || { echo "$ACC missing -- run make"; exit 2; }
@@ -154,6 +159,60 @@ clears "extern first, then declared here" 3 \
 int ours;
 int main(void) { return ours + 42; }
 '
+
+# ------------------------------------------------------------------
+# And watched happening, over memory that was dirty first.
+
+if emu_available >/dev/null 2>&1; then
+    # The first program's area starts at its own image's end and runs on for
+    # thirty-two kilobytes; the second's is four, and starts a little later
+    # because its image is a little longer. So the second sits inside the
+    # first, and every byte it looks at was written by the first.
+    #
+    # The first returns to MOS so that the second gets to run; only the
+    # second stops the machine, with its answer.
+    cat > "$tmp/dirty.c" <<'C'
+char area[32768];
+
+int main(void) {
+    int i;
+
+    for (i = 0; i < 32768; i++)
+        area[i] = 0x5a;
+
+    return 0;
+}
+C
+    cat > "$tmp/check.c" <<'C'
+char area[4096];
+
+int main(void) {
+    int i, dirty = 0;
+
+    for (i = 0; i < 4096; i++)
+        if (area[i])
+            dirty++;
+
+    return dirty ? 1 : 42;
+}
+C
+    if "$ACC" "$tmp/dirty.c" -o "$tmp/dirty.bin" >/dev/null 2>&1 \
+       && "$ACC" "$tmp/check.c" -o "$tmp/check.bin" -x >/dev/null 2>&1; then
+        sd=$(emu_card)
+        cp "$tmp/dirty.bin" "$sd/bin/d.bin"
+        cp "$tmp/check.bin" "$sd/bin/c.bin"
+        printf 'd\r\nc\r\n' > "$sd/autoexec.txt"
+        ACC_EMU_TIMEOUT=${ACC_EMU_TIMEOUT:-180} emu_run "$sd" -z -u >/dev/null 2>&1
+        got=$?
+        rm -rf "$sd"
+        ok "zero, over memory that was dirty" "$got" 42
+    else
+        printf '  FAIL %-36s they would not compile\n' "the two programs"
+        fail=$((fail + 1))
+    fi
+else
+    echo "  [no emulator: the clearing is read, not watched]"
+fi
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
