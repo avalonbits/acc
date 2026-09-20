@@ -565,7 +565,8 @@ enum {
     VAL_LOCAL,      /* a local at frame offset val */
     VAL_REG,        /* already in register val */
     VAL_ACC,        /* in A, still narrow: see the note on byte arithmetic */
-    VAL_VOID        /* what a void function returned, which is nothing */
+    VAL_VOID,       /* what a void function returned, which is nothing */
+    VAL_WIDE        /* a constant too wide for val: see wide_const */
 };
 
 /* What the parser knows about a value it has not had to emit yet: a constant,
@@ -614,7 +615,9 @@ void vpush_const_float(float val);
 void vconvert(Type to);               /* narrow the top, then widen it back */
 Type vtype(void);                     /* the type of the top */
 int  vext(void);                      /* and its extension */
-int  vconst_top(int *val, Type *type);  /* whether the top is a constant */
+int  vconst_top(int *val, Type *type);
+int  vconst_wide(uint64_t *bits, Type *type);   /* and one of four or eight
+                                                 * bytes, as its bits */  /* whether the top is a constant */
 void vset_type(Type type, int ext);   /* the same address, another pointer type */
 void vset_ext(int ext);               /* the top's type's extension */
 void vset_quals(int quals);           /* and its VQ_* */
@@ -667,6 +670,7 @@ void vcast(Type to, int ext, int quals);
  * by code that no longer exists. */
 typedef struct {
     int    at, nfixups, nrt_fixups, narray_patches, spill_used, vtop;
+    int    nwide_consts;
     int    rt_any_used;
     Value *saved;
 } GenMark;

@@ -4921,83 +4921,33 @@ static int push_global(NameRef name, int kind, int at)
 static void global_initializer(Type type, unsigned char *bytes, int line)
 {
     int size = type_scalar_bytes(type);
-    int negative = 0;
+    int before;
     uint64_t value;
+    Type from;
     int i;
 
-    if (tok == TK_MINUS || tok == TK_PLUS) {
-        negative = (tok == TK_MINUS);
-        next();
-        if (tok != TK_INT && tok != TK_FLOAT)
-            goto expression;
-    }
-
-    if (tok == TK_FLOAT) {
-        uint32_t bits;
-
-        if (!type_float(type))
-            acc_error_at(line, "a floating-point initial value for an integer "
-                               "or a pointer is not supported yet");
-        memcpy(&bits, &tok_fval, sizeof bits);
-        value = bits ^ (negative ? 0x80000000u : 0);
-        next();
-        goto store;
-    }
-
-    if (tok == TK_INT && type_wide(tok_type)) {
-        value = (uint32_t) tok_val;
-        if (type_eight(tok_type))
-            value |= (uint64_t) tok_val_hi << 32;
-        if (type_float(type))
-            value = float_from_int((uint32_t) value, negative);
-        else if (negative)
-            value = 0 - value;
-        next();
-        goto store;
-    }
-
-    if (negative) {
-        /* A sign in front of something narrower: put it back into the
-         * expression by negating what that comes to. */
-        primary();
-        vneg();
-        binary_rest(PREC_LOWEST);
-        goto folded;
-    }
-
-expression:
+    /* Read as an expression and folded, whatever it is: a long's arithmetic
+     * is worked out by the compiler now, so `2L + 3L` and `1L << 20` are as
+     * much a constant here as `5L` is. What a global may not have is
+     * anything that leaves code behind, which is what the out_here check
+     * catches -- a call, a variable, an address that is not a symbol's. */
     gen_pending_fn = SYM_NONE;
     gen_data_context = 1;
-    binary(PREC_LOWEST);
+    expr();                     /* not comma_expr: in a braced list the
+                                 * comma between values is a separator */
     gen_data_context = 0;
 
-folded:
-    {
-        int before = out_here();
-        int val;
-        Type from;
+    /* From here on nothing may be emitted: what the expression itself left
+     * in the image is a string's bytes, which are a constant's and fine.
+     * What would not be fine is the conversion below turning into code,
+     * which is what an initial value that is not a constant does. */
+    before = out_here();
+    vconvert(type);
+    if (!vconst_wide(&value, &from) || out_here() != before)
+        acc_error_at(line, "a global's initial value has to be a constant");
+    vdrop();
+    gen_stmt_end();             /* the constants it used are done with */
 
-        if (!type_wide(type) && !type_float(type))
-            vconvert(type);
-        if (!vconst_top(&val, &from) || out_here() != before)
-            acc_error_at(line, "a global's initial value has to be a constant");
-        vdrop();
-
-        if (type_float(type)) {
-            if (type_unsigned(from))
-                value = float_from_int((uint32_t) val & 0xffffff, 0);
-            else if (val < 0)
-                value = float_from_int((uint32_t) -(long) val, 1);
-            else
-                value = float_from_int((uint32_t) val, 0);
-        } else if (type_unsigned(from)) {
-            value = (uint32_t) val & 0xffffff;
-        } else {
-            value = (uint64_t) (int64_t) (long) val;    /* sign-extended */
-        }
-    }
-
-store:
     for (i = 0; i < size; i++) {
         bytes[i] = (unsigned char) value;
         value >>= 8;

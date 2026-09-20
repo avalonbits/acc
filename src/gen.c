@@ -110,6 +110,11 @@ static void struct_used(void)
 }
 
 static int  long_scratch(Type type);
+static void wide_to_slot(uint64_t bits, Type type);
+static void wide_bytes_at(int disp, uint64_t bits, int n);
+static uint64_t const_as(const Value *v, Type to);
+static int  wide_push(uint64_t bits, Type type, int ext);
+static int  trunc_int(int value);
 static void bool_from(void);
 static void bitfield_read(void);
 static void bitfield_write(void);
@@ -431,6 +436,23 @@ void vconvert(Type to)
         return;
     }
 
+    /* A constant going to something four bytes or wider is converted here,
+     * bits and all: an int becoming a float is the rounding float_from_int
+     * does, a long becoming a long long is its sign, and none of it is
+     * emitted. Pointers and structs are not arithmetic and keep to the
+     * paths below. */
+    if ((top->kind == VAL_CONST || top->kind == VAL_WIDE)
+        && type_wide(to) && !type_pointer(to) && !type_pointer(top->type)
+        && !type_is_struct(to) && !type_is_struct(top->type)) {
+        uint64_t bits = const_as(top, to);
+
+        vdrop();
+        if (!wide_push(bits, to, 0))
+            wide_to_slot(bits, to);
+
+        return;
+    }
+
     /* Between a float and an integer is a conversion of the value, not of
      * the label on it. Both directions go through an int, so a narrow type
      * widens first and a long is still refused. */
@@ -471,6 +493,19 @@ void vconvert(Type to)
 
         return;
     }
+    /* A wide constant on its way down to an int or narrower is that many of
+     * its low bytes, worked out here. */
+    if (top->kind == VAL_WIDE && !type_float(to)) {
+        uint64_t bits = const_as(top, to);
+
+        vdrop();
+        vpush_const(trunc_int((int) (bits & 0xffffff)), type_promote(to));
+        if (type_size(to) < ACC_INT_SIZE)
+            vconvert(to);
+
+        return;
+    }
+
     if (type_size(to) >= ACC_INT_SIZE) {
         /* A struct is as wide as an int, so it is here that one converted
          * to or from anything is caught -- after the common case, a value
@@ -567,6 +602,142 @@ int vquals(void)
 
 /* Whether the top of the stack is a constant, and if so its value and type.
  * What a global's initial value has to come to. */
+/* Constants too wide for a Value's val: a long's four bytes, a long long's
+ * eight, a float's bits.
+ *
+ * They are not emitted where they are written. `1L << 20` in a global's
+ * initial value has to be worked out here -- a global takes a constant and
+ * not code -- and inside a function it is the difference between a call
+ * into the runtime and four `ld (ix+d), n`. So a wide constant is a value
+ * of its own, VAL_WIDE, whose val indexes this table, and the operators
+ * fold two of them into a third.
+ *
+ * The table is emptied at each statement, as the scratch area is, and holds
+ * as many as an expression can have live at once. Running out is not an
+ * error: the value is put in the frame instead, which is where it was going
+ * before any of this. */
+static int64_t wide_signed(uint64_t bits, int width);
+static float   wide_float(uint64_t bits);
+
+#define WIDE_CONSTS 24
+static uint64_t wide_consts[WIDE_CONSTS];
+static int      nwide_consts;
+
+static uint64_t wide_value(const Value *v)
+{
+    return wide_consts[v->val];
+}
+
+/* A wide value where the frame is what is wanted: a constant is written
+ * into a slot of its own, and anything else is already in one. The paths
+ * that push arguments and return a result read the slot itself, so this is
+ * what they call before they do. */
+static void wide_needs_slot(void)
+{
+    Value *top = vsp - 1;
+    uint64_t bits;
+    Type type;
+
+    if (top->kind != VAL_WIDE)
+        return;
+    bits = wide_value(top);
+    type = top->type;
+    vdrop();
+    wide_to_slot(bits, type);
+}
+
+/* Where the table can be wound back to once two operands are folded into
+ * one: they are the last entries in it, since a value under them on the
+ * stack was pushed before them. -1 when neither is in the table. */
+static int wide_table_of(const Value *a, const Value *b)
+{
+    if (a->kind == VAL_WIDE)
+        return a->val;
+    if (b->kind == VAL_WIDE)
+        return b->val;
+
+    return -1;
+}
+
+/* Whether the top two values are both constants, which is what lets an
+ * operator work its answer out rather than emit it. */
+static int vconst_pair(void)
+{
+    const Value *a = vsp - 2, *b = vsp - 1;
+
+    return vtop >= 2
+        && (a->kind == VAL_CONST || a->kind == VAL_WIDE)
+        && (b->kind == VAL_CONST || b->kind == VAL_WIDE);
+}
+
+/* A constant of any kind as the bits `to` would hold: a narrow one widens by
+ * its own sign, a long long narrows to a long's four bytes, and an integer
+ * becoming a float is arithmetic, not a relabelling. */
+static uint64_t const_as(const Value *v, Type to)
+{
+    uint64_t bits = v->kind == VAL_WIDE ? wide_value(v)
+                  : type_unsigned(v->type) ? (uint64_t) (uint32_t) v->val
+                  : (uint64_t) (int64_t) v->val;
+    int from_float = type_float(v->type), to_float = type_float(to);
+
+    if (to_float && !from_float) {
+        int negative = !type_unsigned(v->type)
+                       && wide_signed(bits, type_wide_bytes(v->type)) < 0;
+        uint64_t magnitude = negative
+                             ? (uint64_t) -wide_signed(bits,
+                                                       type_wide_bytes(v->type))
+                             : bits;
+
+        return float_from_int((uint32_t) magnitude, negative);
+    }
+    if (from_float && !to_float) {
+        float f = wide_float(bits);
+        int64_t whole = (int64_t) f;
+
+        return (uint64_t) whole;
+    }
+    if (type_wide_bytes(to) == 4)
+        bits &= 0xffffffffu;
+
+    return bits;
+}
+
+/* A wide constant on the stack, if there is room in the table for it. */
+static int wide_push(uint64_t bits, Type type, int ext)
+{
+    if (nwide_consts == WIDE_CONSTS)
+        return 0;
+    wide_consts[nwide_consts] = bits;
+    vpush(VAL_WIDE, type, nwide_consts);
+    (vsp - 1)->ext = (unsigned char) ext;
+    nwide_consts++;
+
+    return 1;
+}
+
+int vconst_wide(uint64_t *bits, Type *type)
+{
+    const Value *top = vsp - 1;
+
+    if (vtop == 0)
+        return 0;
+    if (top->kind == VAL_WIDE) {
+        *bits = wide_value(top);
+        *type = top->type;
+
+        return 1;
+    }
+    if (top->kind == VAL_CONST) {       /* a narrow one widens here */
+        *bits = type_unsigned(top->type) ? (uint64_t) (uint32_t) top->val
+                                         : (uint64_t) (int64_t) top->val;
+        *type = top->type;
+
+        return 1;
+    }
+
+    return 0;
+}
+
 int vconst_top(int *val, Type *type)
 {
     const Value *top = vsp - 1;
@@ -601,6 +772,7 @@ void vdrop(void)
 void gen_stmt_end(void)
 {
     spill_used = 0;
+    nwide_consts = 0;
 }
 
 /* Always inlined, for the same reason: the allocator asks it about every
@@ -752,6 +924,8 @@ static int force_reg(Value *val)
     reg = reg_alloc();
     if (val->kind == VAL_CONST) {
         ld_rr_imm(reg, val->val);
+    } else if (val->kind == VAL_WIDE) {
+        ld_rr_imm(reg, (int) (wide_value(val) & 0xffffff));
     } else {
         if (val->kind == VAL_VOID)
             void_used();
@@ -852,6 +1026,8 @@ static void force_into(Value *target, int want)
             mov_rr(want, target->val);
     } else if (target->kind == VAL_CONST) {
         ld_rr_imm(want, target->val);
+    } else if (target->kind == VAL_WIDE) {
+        ld_rr_imm(want, (int) (wide_value(target) & 0xffffff));
     } else {
         if (target->kind == VAL_VOID)
             void_used();
@@ -1109,6 +1285,23 @@ void vneg(void)
     Value *top = vsp - 1;
     int right;
 
+    /* A wide constant is negated here: a float by its sign bit, which is
+     * exact for zero as well, and an integer by two's complement at its own
+     * width. */
+    if (top->kind == VAL_WIDE) {
+        uint64_t bits = wide_value(top);
+        Type type = top->type;
+
+        bits = type_float(type) ? bits ^ 0x80000000u : 0 - bits;
+        if (type_wide_bytes(type) == 4)
+            bits &= 0xffffffffu;
+        vdrop();
+        if (!wide_push(bits, type, 0))
+            wide_to_slot(bits, type);
+
+        return;
+    }
+
     if (type_float(top->type)) {
         /* Negating a float is its sign bit flipped and nothing else -- no
          * routine, and correct for zero and for every other value alike. */
@@ -1165,6 +1358,19 @@ void vnot(void)
      * unfinished work. */
     if (type_float(top->type))
         acc_error_at(tok_line, "'~' takes an integer, not a floating-point value");
+
+    if (top->kind == VAL_WIDE) {
+        uint64_t bits = ~wide_value(top);
+        Type type = top->type;
+
+        if (type_wide_bytes(type) == 4)
+            bits &= 0xffffffffu;
+        vdrop();
+        if (!wide_push(bits, type, 0))
+            wide_to_slot(bits, type);
+
+        return;
+    }
 
     if (type_wide(top->type)) {
         vunary_long(type_eight(top->type) ? RT_LLNOT : RT_LNOT, top->type);
@@ -1687,6 +1893,14 @@ static void materialise_long(int disp, Type type)
 
     check_no_float_mix(type, top);
 
+    /* A constant goes in as its bytes, whatever width it came as: no load,
+     * no sign extension, and for a long long no runtime call. */
+    if (top->kind == VAL_WIDE || top->kind == VAL_CONST) {
+        wide_bytes_at(disp, const_as(top, type), n);
+
+        return;
+    }
+
     if (top->kind == VAL_LOCAL && type_wide(top->type)) {
         int from = type_wide_bytes(top->type);
 
@@ -1717,18 +1931,11 @@ static void materialise_long(int disp, Type type)
  * implementation of the format, to be got wrong separately. */
 void vpush_const_float(float val)
 {
-    int slot = spill_slot_of(ACC_LONG_SIZE);
-    unsigned char bytes[ACC_LONG_SIZE];
-    int i;
+    uint32_t bits;
 
-    memcpy(bytes, &val, ACC_LONG_SIZE);
-    need_disp(slot);
-    need_disp(slot + ACC_LONG_SIZE - 1);
-    for (i = 0; i < ACC_LONG_SIZE; i++) {
-        out_byte2(0x3e, bytes[i]);              /* ld a, n */
-        ld_ix_a(slot + i);
-    }
-    vpush(VAL_LOCAL, TY_FLOAT, slot);
+    memcpy(&bits, &val, sizeof bits);
+    if (!wide_push(bits, TY_FLOAT, 0))
+        wide_to_slot(bits, TY_FLOAT);
 }
 
 /* A constant too wide for a register goes straight to a frame slot, which is
@@ -1740,19 +1947,34 @@ void vpush_const_long(long val, Type type)
 
 void vpush_const_wide(uint32_t low, uint32_t high, Type type)
 {
-    int n = type_wide_bytes(type);
-    int slot = spill_slot_of(n);
+    uint64_t bits = (uint64_t) high << 32 | low;
+
+    if (!wide_push(bits, type, 0))
+        wide_to_slot(bits, type);
+}
+
+/* The bytes of a wide constant written into a frame slot: `ld a, n` and a
+ * store, a byte at a time. */
+static void wide_bytes_at(int disp, uint64_t bits, int n)
+{
     int i;
 
-    need_disp(slot);
-    need_disp(slot + n - 1);
+    need_disp(disp);
+    need_disp(disp + n - 1);
     for (i = 0; i < n; i++) {
-        uint32_t half = i < 4 ? low : high;
-
         out_byte(0x3e);                         /* ld a, n */
-        out_byte((int) ((half >> (i % 4 * 8)) & 0xff));
-        ld_ix_a(slot + i);
+        out_byte((int) (bits >> (i * 8)) & 0xff);
+        ld_ix_a(disp + i);
     }
+}
+
+/* And a slot of its own for it, which is what a wide constant becomes when
+ * something needs it where a wide value lives. */
+static void wide_to_slot(uint64_t bits, Type type)
+{
+    int slot = spill_slot_of(type_wide_bytes(type));
+
+    wide_bytes_at(slot, bits, type_wide_bytes(type));
     vpush(VAL_LOCAL, type, slot);
 }
 
@@ -1943,6 +2165,101 @@ static int long_helper(int op, Type type)
     return -1;
 }
 
+/* Two wide constants, worked out here rather than by the program.
+ *
+ * The width and the sign come from the type the operands met at, which is
+ * what the runtime routine would have used: an eight-byte divide is not a
+ * four-byte one with the top bytes ignored, and a signed shift right is not
+ * an unsigned one. Division by zero is not folded -- C leaves it undefined,
+ * the runtime answers zero, and the compiler must not be the thing that
+ * divides by it. */
+static int64_t wide_signed(uint64_t bits, int width)
+{
+    if (width == 8)
+        return (int64_t) bits;
+
+    return (int32_t) bits;
+}
+
+static int fold_wide_int(int op, Type type, uint64_t a, uint64_t b,
+                         uint64_t *out)
+{
+    int width = type_wide_bytes(type);
+    int unsign = type_unsigned(type) != 0;
+    uint64_t mask = width == 8 ? ~(uint64_t) 0 : 0xffffffffu;
+    unsigned count = (unsigned) (b & (width == 8 ? 63 : 31));
+
+    switch (op) {
+    case TK_PLUS:  *out = a + b;  break;
+    case TK_MINUS: *out = a - b;  break;
+    case TK_STAR:  *out = a * b;  break;
+    case TK_AMP:   *out = a & b;  break;
+    case TK_PIPE:  *out = a | b;  break;
+    case TK_CARET: *out = a ^ b;  break;
+    case TK_SHL:   *out = a << count; break;
+    case TK_SHR:
+        *out = unsign ? (a & mask) >> count
+                      : (uint64_t) (wide_signed(a, width) >> count);
+        break;
+    case TK_SLASH:
+        if ((b & mask) == 0)
+            return 0;
+        *out = unsign ? (a & mask) / (b & mask)
+                      : (uint64_t) (wide_signed(a, width)
+                                    / wide_signed(b, width));
+        break;
+    case TK_PERCENT:
+        if ((b & mask) == 0)
+            return 0;
+        *out = unsign ? (a & mask) % (b & mask)
+                      : (uint64_t) (wide_signed(a, width)
+                                    % wide_signed(b, width));
+        break;
+    default:
+        return 0;
+    }
+    *out &= mask;
+
+    return 1;
+}
+
+/* The same for two floats, in the host's own float -- which is the IEEE 754
+ * single this target has, so the answer is the one the runtime would give.
+ * Not for a division by zero, which is an infinity the routine makes and
+ * the compiler's own division may trap on. */
+static float wide_float(uint64_t bits)
+{
+    float f;
+    uint32_t word = (uint32_t) bits;
+
+    memcpy(&f, &word, sizeof f);
+
+    return f;
+}
+
+static int fold_wide_float(int op, uint64_t a, uint64_t b, uint64_t *out)
+{
+    float x = wide_float(a), y = wide_float(b), r;
+    uint32_t word;
+
+    switch (op) {
+    case TK_PLUS:  r = x + y; break;
+    case TK_MINUS: r = x - y; break;
+    case TK_STAR:  r = x * y; break;
+    case TK_SLASH:
+        if (y == 0.0f)
+            return 0;
+        r = x / y;
+        break;
+    default:
+        return 0;
+    }
+    memcpy(&word, &r, sizeof word);
+    *out = word;
+
+    return 1;
+}
+
 /* -x and ~x on a long, which are the same shape: the value goes to a scratch
  * slot and the routine works on it there. The 24-bit forms hold the value in
  * HL and cannot be reached for: a long does not fit in a register.
@@ -1982,6 +2299,27 @@ static void vbinop_long(int op, Type result)
      * they are about to be copied into the frame and dropped. */
     int n = type_wide_bytes(result);
     int low, rstart, in_place;
+
+    /* Both constants: worked out here, and nothing emitted. */
+    if (vconst_pair()) {
+        uint64_t a = const_as(vsp - 2, result), b = const_as(vsp - 1, result);
+        int table = wide_table_of(vsp - 2, vsp - 1);
+        uint64_t folded;
+        int done = type_float(result) ? fold_wide_float(op, a, b, &folded)
+                                      : fold_wide_int(op, result, a, b,
+                                                      &folded);
+
+        if (done) {
+            vdrop();
+            vdrop();
+            if (table >= 0)
+                nwide_consts = table;   /* the operands' entries are dead */
+            if (!wide_push(folded, result, 0))
+                wide_to_slot(folded, result);
+
+            return;
+        }
+    }
 
     /* After the spills, not before: a register the call below puts in the
      * frame is a value under the operands, and the floor has to know about
@@ -2104,6 +2442,35 @@ static void vcmp_wide(int op, Type operand)
      * was overwritten by the second of them, so `(a == 1) + (b == 2)` lost
      * the first comparison. The top two are the operands and are exempt:
      * they are about to be copied into the frame and dropped. */
+    /* Both constants: the answer is a 0 or a 1 the compiler knows. */
+    if (vconst_pair()) {
+        uint64_t a = const_as(vsp - 2, operand), b = const_as(vsp - 1, operand);
+        int answer;
+
+        if (floating) {
+            float x = wide_float(a), y = wide_float(b);
+
+            answer = op == TK_EQ ? x == y : op == TK_NE ? x != y
+                   : op == TK_LT ? x <  y : op == TK_GT ? x >  y
+                   : op == TK_LE ? x <= y : x >= y;
+        } else if (type_unsigned(operand)) {
+            answer = op == TK_EQ ? a == b : op == TK_NE ? a != b
+                   : op == TK_LT ? a <  b : op == TK_GT ? a >  b
+                   : op == TK_LE ? a <= b : a >= b;
+        } else {
+            int64_t x = wide_signed(a, n), y = wide_signed(b, n);
+
+            answer = op == TK_EQ ? x == y : op == TK_NE ? x != y
+                   : op == TK_LT ? x <  y : op == TK_GT ? x >  y
+                   : op == TK_LE ? x <= y : x >= y;
+        }
+        vdrop();
+        vdrop();
+        vpush_const(answer, TY_INT);
+
+        return;
+    }
+
     save_regs_below(2);
 
     /* As in vbinop_long: the integer comparisons only read through DE, so a
@@ -2829,6 +3196,7 @@ void gen_return(int line)
             int at;
 
             vconvert(return_type);
+            wide_needs_slot();
             at = (vsp - 1)->val;
             need_disp(at);
             if (type_eight(return_type)) {
@@ -3035,7 +3403,9 @@ static void call_to(const Callee *callee, int nargs, int params_first,
              * pushed may be sitting in it -- `f(&a, 1L)` lost the address.
              * Everything but this argument goes to the frame first. */
             save_regs_below(1);
+            wide_needs_slot();
             slot = (vsp - 1)->val;
+
             need_disp(slot);
             need_disp(slot + 2 * ACC_INT_SIZE);
             ld_rr_ix(R_HL, slot + 2 * ACC_INT_SIZE);
@@ -3049,12 +3419,14 @@ static void call_to(const Callee *callee, int nargs, int params_first,
         } else if (type_wide(vtype())) {
             /* Two slots, six bytes, which is what agondev gives a long. The
              * high half goes first because the stack grows downwards, so the
-             * low bytes end up at the lower address. */
+             * low bytes end up at the lower address. HL is used, so the
+             * arguments still to go come out of the registers first. */
             int slot;
 
-            /* HL again, as above. */
             save_regs_below(1);
+            wide_needs_slot();
             slot = (vsp - 1)->val;
+
             need_disp(slot);
             need_disp(slot + ACC_LONG_SIZE - 1);
             ld_rr_imm(R_HL, 0);
@@ -3903,6 +4275,9 @@ static void vsnapshot(void)
     if (top->kind != VAL_LOCAL)
         return;
 
+    if (top->kind == VAL_WIDE)
+        wide_needs_slot();
+    top = vsp - 1;
     if (type_wide(top->type)) {
         Type type = top->type;
         int slot = long_scratch(type);
@@ -4137,6 +4512,7 @@ void gen_mark(GenMark *m)
     m->nrt_fixups = nrt_fixups;
     m->narray_patches = narray_patches;
     m->spill_used = spill_used;
+    m->nwide_consts = nwide_consts;
     m->vtop = vtop;
     m->rt_any_used = rt_any_used;
     m->saved = NULL;
@@ -4155,6 +4531,7 @@ void gen_rollback(GenMark *m)
     nrt_fixups = m->nrt_fixups;
     narray_patches = m->narray_patches;
     spill_used = m->spill_used;
+    nwide_consts = m->nwide_consts;
     vtop = m->vtop;
     vsp = vstack + vtop;
     rt_any_used = m->rt_any_used;
