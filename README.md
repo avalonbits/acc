@@ -32,9 +32,9 @@ It is being written towards C99. What works today:
 Of the preprocessor there is `#include` -- a quoted name is looked for
 beside the file that asked for it and then in the `-I` directories, an
 angled one only in those -- and `#define` and `#undef` for a name standing
-for some text, and `#ifdef`, `#ifndef`, `#else` and `#endif`. A macro with
-parameters, and `#if` on an expression, are not there yet, and nor is a C
-library. Nor `long double`,
+for some text, and the conditionals -- `#if` and `#elif` on an expression,
+with `defined`, as well as `#ifdef`, `#ifndef`, `#else` and `#endif`. A
+macro with parameters is not there yet, and nor is a C library. Nor `long double`,
 because libagon has no arithmetic for a double at all and half a type is
 worse than none; nor wide characters and strings, `_Complex`, or function
 definitions written the way K&R wrote them.

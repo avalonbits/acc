@@ -1018,6 +1018,476 @@ static void do_include(void)
 /* ------------------------------------------------------------------ */
 /* conditionals                                                        */
 
+/* ------------------------------------------------------------------ */
+/* #if                                                                 */
+
+/* The line an `#if` is given, with the macros in it put back as their text
+ * and `defined X` answered, built into a buffer and then read as an
+ * expression.
+ *
+ * Done on the text rather than through the lexer because the lexer is in
+ * the middle of a directive: asking it for the next token would run it off
+ * the end of the line, and putting it back afterwards is more machinery
+ * than copying the line is. */
+#define IF_TEXT 512
+
+static char if_text[IF_TEXT];
+static int  if_len;
+
+static void if_put(const char *text, int len)
+{
+    if (if_len + len >= IF_TEXT)
+        acc_error_at(line, "the expression in an #if is too long");
+    memcpy(if_text + if_len, text, (size_t) len);
+    if_len += len;
+}
+
+/* The names being expanded, so that one does not expand inside itself. */
+static NameRef if_active[INCLUDE_MAX];
+static int     if_depth;
+
+static void if_expand(const char *text, int len);
+
+/* A name in the expression: expanded if it is a macro, and otherwise left
+ * for the evaluator, which reads any name that is left as zero. */
+static void if_name(const char *at, int len)
+{
+    NameRef name = name_intern(at, len);
+    Macro  *m;
+    int     i;
+
+    for (i = 0; i < if_depth; i++)
+        if (if_active[i] == name) {
+            if_put(at, len);            /* already being expanded */
+
+            return;
+        }
+
+    m = macro_find(name);
+    if (!m) {
+        if_put(at, len);
+
+        return;
+    }
+    if (if_depth == INCLUDE_MAX)
+        acc_error_at(line, "macros expanded more than %d deep", INCLUDE_MAX);
+    if_active[if_depth++] = name;
+    if_expand(m->text, (int) strlen(m->text));
+    if_depth--;
+}
+
+/* `defined X` and `defined(X)`, which are answered before anything is
+ * expanded: the name is the one that was written, not what it stands for. */
+static const char *if_defined(const char *p, const char *end)
+{
+    const char *start;
+    int parens = 0;
+
+    while (p < end && (*p == ' ' || *p == '\t'))
+        p++;
+    if (p < end && *p == '(') {
+        parens = 1;
+        p++;
+        while (p < end && (*p == ' ' || *p == '\t'))
+            p++;
+    }
+    start = p;
+    while (p < end && is_alnum((unsigned char) *p))
+        p++;
+    if (p == start)
+        acc_error_at(line, "'defined' needs a name");
+
+    if_put(macro_find(name_intern(start, (int) (p - start))) ? "1" : "0", 1);
+
+    if (parens) {
+        while (p < end && (*p == ' ' || *p == '\t'))
+            p++;
+        if (p == end || *p != ')')
+            acc_error_at(line, "'defined(' needs a ')'");
+        p++;
+    }
+
+    return p;
+}
+
+/* One stretch of text into the buffer, with its names dealt with. */
+static void if_expand(const char *text, int len)
+{
+    const char *p = text, *end = text + len;
+
+    while (p < end) {
+        const char *start;
+
+        if (!is_alpha((unsigned char) *p)) {
+            /* A string or a character constant goes over whole, so that a
+             * name inside one is not a name. */
+            if (*p == '"' || *p == '\'') {
+                int quote = *p;
+
+                start = p++;
+                while (p < end && *p != quote) {
+                    if (*p == '\\' && p + 1 < end)
+                        p++;
+                    p++;
+                }
+                if (p < end)
+                    p++;
+                if_put(start, (int) (p - start));
+
+                continue;
+            }
+            if_put(p, 1);
+            p++;
+
+            continue;
+        }
+
+        start = p;
+        while (p < end && is_alnum((unsigned char) *p))
+            p++;
+
+        if (p - start == 7 && !memcmp(start, "defined", 7)) {
+            p = if_defined(p, end);
+
+            continue;
+        }
+        if_name(start, (int) (p - start));
+    }
+}
+
+/* ------------------------------------------------------------------ */
+
+/* The expression, read from the buffer the expansion built.
+ *
+ * C says an #if is worked out in the widest integers there are, which here
+ * is a long long, and that a name left over is zero -- `#if FOO` on a name
+ * nobody defined is false rather than a mistake. */
+static const char *ep;
+
+static long long if_ternary(void);
+
+/* A hex digit's value, or -1. float.c has one of these, but it is static
+ * there and this is the only other place that wants one. */
+static int if_digit(int c, int base)
+{
+    int v;
+
+    if (c >= '0' && c <= '9')
+        v = c - '0';
+    else if (c >= 'a' && c <= 'f')
+        v = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'F')
+        v = c - 'A' + 10;
+    else
+        return -1;
+
+    return v < base ? v : -1;
+}
+
+static void ep_blanks(void)
+{
+    while (*ep == ' ' || *ep == '\t' || *ep == '\r')
+        ep++;
+}
+
+/* Whether the operator `op` is next, stepping over it if so. Two-character
+ * operators are asked for before the one-character ones they start with. */
+static int ep_op(const char *op)
+{
+    int n = (int) strlen(op);
+
+    ep_blanks();
+    if (memcmp(ep, op, (size_t) n) != 0)
+        return 0;
+
+    /* `&` must not match the front of `&&`, nor `<` that of `<<` or `<=`. */
+    if (n == 1 && (ep[1] == ep[0] || ep[1] == '=')
+        && (*op == '&' || *op == '|' || *op == '<' || *op == '>'
+            || *op == '=' || *op == '!'))
+        return 0;
+    ep += n;
+
+    return 1;
+}
+
+static long long if_primary(void)
+{
+    long long v;
+
+    ep_blanks();
+    if (*ep == '(') {
+        ep++;
+        v = if_ternary();
+        ep_blanks();
+        if (*ep != ')')
+            acc_error_at(line, "the expression in an #if needs a ')'");
+        ep++;
+
+        return v;
+    }
+    if (*ep == '\'') {
+        /* A character constant, whose value is what the byte is. */
+        ep++;
+        if (*ep == '\\') {
+            ep++;
+            switch (*ep) {
+            case 'n':  v = '\n'; break;
+            case 't':  v = '\t'; break;
+            case 'r':  v = '\r'; break;
+            case '0':  v = '\0'; break;
+            case '\\': v = '\\'; break;
+            case '\'': v = '\''; break;
+            default:   v = (unsigned char) *ep; break;
+            }
+            ep++;
+        } else {
+            v = (signed char) *ep++;
+        }
+        if (*ep != '\'')
+            acc_error_at(line, "a character constant in an #if is not closed");
+        ep++;
+
+        return v;
+    }
+    if (is_digit((unsigned char) *ep)) {
+        int base = 10;
+
+        if (ep[0] == '0' && (ep[1] == 'x' || ep[1] == 'X')) {
+            base = 16;
+            ep += 2;
+        } else if (ep[0] == '0') {
+            base = 8;
+        }
+        v = 0;
+        for (;;) {
+            int d = if_digit((unsigned char) *ep, base);
+
+            if (d < 0)
+                break;
+            v = v * base + d;
+            ep++;
+        }
+        while (*ep == 'u' || *ep == 'U' || *ep == 'l' || *ep == 'L')
+            ep++;
+
+        return v;
+    }
+    if (is_alpha((unsigned char) *ep)) {
+        /* A name nothing defined, which C says is zero. */
+        while (is_alnum((unsigned char) *ep))
+            ep++;
+
+        return 0;
+    }
+    if (!*ep)
+        acc_error_at(line, "the expression in an #if stops too soon");
+
+    acc_error_at(line, "'%c' has no meaning in an #if", *ep);
+
+    return 0;
+}
+
+static long long if_unary(void)
+{
+    ep_blanks();
+    if (ep_op("!"))
+        return !if_unary();
+    if (ep_op("~"))
+        return ~if_unary();
+    if (ep_op("-"))
+        return -if_unary();
+    if (ep_op("+"))
+        return if_unary();
+
+    return if_primary();
+}
+
+static long long if_mul(void)
+{
+    long long v = if_unary();
+
+    for (;;) {
+        long long r;
+
+        if (ep_op("*")) {
+            v = v * if_unary();
+        } else if (ep_op("/")) {
+            r = if_unary();
+            if (!r)
+                acc_error_at(line, "a division by zero in an #if");
+            v = v / r;
+        } else if (ep_op("%")) {
+            r = if_unary();
+            if (!r)
+                acc_error_at(line, "a division by zero in an #if");
+            v = v % r;
+        } else {
+            return v;
+        }
+    }
+}
+
+static long long if_add(void)
+{
+    long long v = if_mul();
+
+    for (;;) {
+        if (ep_op("+"))
+            v = v + if_mul();
+        else if (ep_op("-"))
+            v = v - if_mul();
+        else
+            return v;
+    }
+}
+
+static long long if_shift(void)
+{
+    long long v = if_add();
+
+    for (;;) {
+        if (ep_op("<<"))
+            v = v << if_add();
+        else if (ep_op(">>"))
+            v = v >> if_add();
+        else
+            return v;
+    }
+}
+
+static long long if_relational(void)
+{
+    long long v = if_shift();
+
+    for (;;) {
+        if (ep_op("<="))
+            v = v <= if_shift();
+        else if (ep_op(">="))
+            v = v >= if_shift();
+        else if (ep_op("<"))
+            v = v < if_shift();
+        else if (ep_op(">"))
+            v = v > if_shift();
+        else
+            return v;
+    }
+}
+
+static long long if_equality(void)
+{
+    long long v = if_relational();
+
+    for (;;) {
+        if (ep_op("=="))
+            v = v == if_relational();
+        else if (ep_op("!="))
+            v = v != if_relational();
+        else
+            return v;
+    }
+}
+
+static long long if_bitand(void)
+{
+    long long v = if_equality();
+
+    while (ep_op("&"))
+        v = v & if_equality();
+
+    return v;
+}
+
+static long long if_bitxor(void)
+{
+    long long v = if_bitand();
+
+    while (ep_op("^"))
+        v = v ^ if_bitand();
+
+    return v;
+}
+
+static long long if_bitor(void)
+{
+    long long v = if_bitxor();
+
+    while (ep_op("|"))
+        v = v | if_bitxor();
+
+    return v;
+}
+
+static long long if_and(void)
+{
+    long long v = if_bitor();
+
+    /* Both sides are read whether or not the first decided it: what is on
+     * the right is text that has to be stepped over either way. */
+    while (ep_op("&&")) {
+        long long r = if_bitor();
+
+        v = v && r;
+    }
+
+    return v;
+}
+
+static long long if_or(void)
+{
+    long long v = if_and();
+
+    while (ep_op("||")) {
+        long long r = if_and();
+
+        v = v || r;
+    }
+
+    return v;
+}
+
+static long long if_ternary(void)
+{
+    long long v = if_or();
+
+    if (!ep_op("?"))
+        return v;
+    {
+        long long yes = if_ternary();
+        long long no;
+
+        if (!ep_op(":"))
+            acc_error_at(line, "the '?' in an #if needs a ':'");
+        no = if_ternary();
+
+        return v ? yes : no;
+    }
+}
+
+/* The condition of an #if or an #elif: what is left of the line, expanded,
+ * and then read. */
+static int if_condition(void)
+{
+    const char *start;
+    long long v;
+
+    skip_blanks();
+    start = cursor;
+    rest_of_line();
+
+    if_len = 0;
+    if_depth = 0;
+    if_expand(start, (int) (cursor - start));
+    if_put("", 1);                      /* the terminator */
+
+    ep = if_text;
+    v = if_ternary();
+    ep_blanks();
+    if (*ep)
+        acc_error_at(line, "'%c' is left over at the end of an #if", *ep);
+
+    return v != 0;
+}
+
 /* One `#if` and its `#else`, innermost last. `taken` is whether any branch
  * of this group has been used, which is what makes the `#else` of a group
  * whose `#ifdef` was true a group to skip. */
@@ -1142,12 +1612,42 @@ static void cond_skip_until_taken(void)
             continue;           /* a branch was taken already: skip on */
         }
 
-        /* #elif, which acc does not evaluate yet. Inside a group that is
-         * being skipped it is skipped too, and the error is only for one
-         * that would have to be decided. */
-        if (!conds[nconds - 1].taken)
-            acc_error_at(line, "#elif is not supported yet");
+        /* #elif. Its condition only has to be worked out when no branch of
+         * this group has run yet; after one has, the rest are skipped
+         * whatever they say. */
+        if (conds[nconds - 1].seen_else)
+            acc_error_at(line, "#elif after #else");
+        if (conds[nconds - 1].taken)
+            continue;
+        if (if_condition()) {
+            conds[nconds - 1].taken = 1;
+
+            return;
+        }
     }
+}
+
+static void do_if(void)
+{
+    if (if_condition()) {
+        cond_push(1);
+
+        return;
+    }
+    cond_push(0);
+    cond_skip_until_taken();
+}
+
+/* An #elif reached by reading rather than by skipping: the branch before it
+ * ran, so this one does not whatever it says. */
+static void do_elif(void)
+{
+    if (!nconds)
+        acc_error_at(line, "#elif without #if");
+    if (conds[nconds - 1].seen_else)
+        acc_error_at(line, "#elif after #else");
+    rest_of_line();
+    cond_skip_until_taken();
 }
 
 static void do_ifdef(int want)
@@ -1302,6 +1802,16 @@ static void directive(void)
     }
     if (!strcmp(name, "undef")) {
         do_undef();
+
+        return;
+    }
+    if (!strcmp(name, "if")) {
+        do_if();
+
+        return;
+    }
+    if (!strcmp(name, "elif")) {
+        do_elif();
 
         return;
     }

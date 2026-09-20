@@ -296,9 +296,128 @@ refuses "#else twice" "after #else" \
 #endif
 int main(void) { return 42; }
 '
-refuses "#elif, for now" "not supported yet" \
-'#ifdef NOPE
+# --- #if on an expression ---------------------------------------------
+
+same "arithmetic in an #if" \
+'#if (2 + 3) * 4 == 20
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+# A name nothing defined is zero rather than a mistake, which is what makes
+# `#if FEATURE` usable without defining FEATURE to 0 first.
+same "a name nothing defined is zero" \
+'#if UNDEFINED_THING
+int main(void) { return 1; }
+#else
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+same "defined, with and without parentheses" \
+'#define A 1
+#if defined A && defined(A) && !defined(NOPE)
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+same "a macro used in the condition" \
+'#define WIDTH 6
+#define HEIGHT 7
+#if WIDTH * HEIGHT == 42
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+same "an #elif chain, the middle one taken" \
+'#define V 2
+#if V == 1
+int main(void) { return 1; }
+#elif V == 2
+int main(void) { return 42; }
+#elif V == 3
+int main(void) { return 3; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+same "an #elif chain falling to #else" \
+'#define V 9
+#if V == 1
+int main(void) { return 1; }
+#elif V == 2
+int main(void) { return 2; }
+#else
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+# Once a branch has run the rest are skipped whatever they say, so the
+# condition on this one is never worked out -- it would divide by zero.
+same "an #elif after a branch that ran" \
+'#if 1
+int main(void) { return 42; }
+#elif 1/0
+int main(void) { return 1; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+same "hex, octal and character constants" \
+"$(printf '#if 0x10 == 16 && 010 == 8 && %s == 65\nint main(void) { return 42; }\n#endif\n' "'A'")" \
+'int main(void) { return 42; }
+'
+
+same "shifts, and the conditional operator" \
+'#if (1 << 5) == 32 ? 1 : 0
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+refuses "a division by zero in an #if" "division by zero" \
+'#if 1/0
+#endif
+int main(void) { return 42; }
+'
+refuses "an #if with no expression" "stops too soon" \
+'#if
+#endif
+int main(void) { return 42; }
+'
+refuses "a character an #if cannot read" "has no meaning" \
+'#if @
+#endif
+int main(void) { return 42; }
+'
+refuses "something left over in an #if" "left over" \
+'#if 1 2
+#endif
+int main(void) { return 42; }
+'
+refuses "an #if missing a parenthesis" "needs a" \
+'#if (1 + 2
+#endif
+int main(void) { return 42; }
+'
+refuses "#elif after #else" "after #else" \
+'#if 0
+#else
 #elif 1
+#endif
+int main(void) { return 42; }
+'
+refuses "#elif with no #if" "without #if" \
+'#elif 1
+int main(void) { return 42; }
+'
+refuses "defined with no name" "needs a name" \
+'#if defined()
 #endif
 int main(void) { return 42; }
 '
