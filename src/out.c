@@ -278,6 +278,19 @@ void out_copy(int at, unsigned char *to, int len)
     memcpy(to, out_img + off, (size_t) len);
 }
 
+/* The three bytes at `at`, read back: what a relocation's slot was emitted
+ * with, which for an address in a global's bytes is the amount to add to the
+ * symbol's own address. */
+int out_read24(int at)
+{
+    int off = at - out_base;
+
+    if (off < 0 || off + 3 > OUT_LEN)
+        acc_error("internal: a read at %06x is outside the image", at);
+
+    return get24(out_img + off);
+}
+
 void out_patch24(int at, int value)
 {
     int off = at - out_base;

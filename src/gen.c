@@ -3010,6 +3010,18 @@ int gen_extern_sym(int i)
     return externs[i].fn;
 }
 
+/* A symbol the fixups are waiting on that nothing here has given an address
+ * to. A function has one once its body has been read -- asked of the flag
+ * and not of the address, because an object puts its first function at
+ * offset zero. A variable has one once room has been reserved for it, which
+ * a declaration that only says extern does not do: that leaves -1 behind. */
+static int no_address(int sym)
+{
+    return sym_at(sym)->kind == SYM_FUNC
+           ? !(sym_flags(sym) & SYMF_DEFINED)
+           : sym_at(sym)->val < 0;
+}
+
 void gen_finish(void)
 {
     int i;
@@ -3017,14 +3029,17 @@ void gen_finish(void)
     for (i = 0; i < nfixups; i++) {
         Sym *fn = sym_at(fixups[i].fn);
 
-        /* The flag and not the address: an object puts its first function at
-         * offset zero. */
-        if (!(sym_flags(fixups[i].fn) & SYMF_DEFINED)) {
+        if (no_address(fixups[i].fn)) {
             if (gen_objects) {
                 extern_add(fixups[i].at, fixups[i].fn);
                 continue;
             }
-            acc_error("'%s' is called but never defined", name_text(fn->name));
+            if (fn->kind == SYM_FUNC)
+                acc_error("'%s' is called but never defined",
+                          name_text(fn->name));
+            acc_error("'%s' is declared and used but never given room, so "
+                      "another file has to define it -- which needs the "
+                      "pieces linked together", name_text(fn->name));
         }
 
         /* The call was emitted before the definition was read, so it took C's
@@ -3036,8 +3051,12 @@ void gen_finish(void)
          * says: it is the same function declared two ways. A call that had
          * a prototype to go by knew the type, and read the answer from
          * where it is. */
+        /* Plus whatever the slot was emitted with, which is nothing for a
+         * call or a register load and is the amount added for an address in
+         * a global's bytes: `int *p = &g + 1` puts the one there, because
+         * where g is was not known when the bytes were written. */
         if (fixups[i].declared) {
-            out_patch24(fixups[i].at, fn->val);
+            out_patch24(fixups[i].at, fn->val + out_read24(fixups[i].at));
             continue;
         }
         if (fn->type == TY_VOID)
@@ -3050,7 +3069,7 @@ void gen_finish(void)
                          "'%s' returns a one-byte type and is called before it "
                          "is defined; move its definition above the call",
                          name_text(fn->name));
-        out_patch24(fixups[i].at, fn->val);
+        out_patch24(fixups[i].at, fn->val + out_read24(fixups[i].at));
     }
 
     rt_emit_used();
@@ -3519,7 +3538,35 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
  * defined, and otherwise loaded with a hole that gen_finish fills in, as a
  * call to it would be. */
 int gen_data_context;
-int gen_pending_fn = SYM_NONE;
+int gen_pending_sym = SYM_NONE;
+
+/* A variable whose address is not known yet, which is what a declaration
+ * that only says extern leaves behind: some file defines it, and which
+ * address that is comes from the linker -- or from gen_finish, when this
+ * file turns out to define it further down.
+ *
+ * The same shape as a call to a function not yet seen: a load of zero with
+ * the slot written down. It costs a register load where a variable with an
+ * address is a constant the value stack can carry about and fold into an
+ * index, which is why it is only done for the ones that need it. */
+void vpush_global_addr(int sym)
+{
+    /* In a global's initial value there is no code to put a hole in, so the
+     * bytes are the hole: the same path a function's address takes. */
+    if (gen_data_context) {
+        if (gen_pending_sym != SYM_NONE)
+            acc_error_at(tok_line, "one address not yet known in each initial "
+                                   "value, at most");
+        gen_pending_sym = sym;
+        vpush_const(0, type_ptr_to(sym_at(sym)->type));
+
+        return;
+    }
+    vpush_const(0, type_ptr_to(sym_at(sym)->type));
+    force_reg(vsp - 1);
+    fixup_add(sym, out_here() - ACC_INT_SIZE);
+    fixups[nfixups - 1].declared = 1;   /* an address: the type is no matter */
+}
 
 void vpush_function(int fn)
 {
@@ -3543,10 +3590,10 @@ void vpush_function(int fn)
      * value is 0 for now, and the caller fills its bytes in once it knows
      * where they went -- see gen_data_fixup. */
     if (gen_data_context) {
-        if (gen_pending_fn != SYM_NONE)
+        if (gen_pending_sym != SYM_NONE)
             acc_error_at(tok_line, "one function not yet defined in each "
                                    "initial value, at most");
-        gen_pending_fn = fn;
+        gen_pending_sym = fn;
         vpush_const(0, type_ptr_to(TY_FUNC));
 
         return;

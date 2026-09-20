@@ -490,12 +490,12 @@ enum {
                          * sym_count is the offset of its size in bytes */
     SYM_FUNC,           /* a function: val is its address in the image */
     SYM_GLOBAL,         /* a file-scope variable: val is its address */
-    SYM_GLOBAL_ARRAY,   /* a file-scope array: val is its address */
+    SYM_GLOBAL_ARRAY,   /* a file-scope array: val is its address, and -1
+                         * until something gives it one: a declaration that
+                         * only says extern, or one with no size, reserves
+                         * nothing */
     SYM_GLOBAL_CONST,   /* a const file-scope variable: as SYM_GLOBAL, read
                          * as a value */
-    SYM_GLOBAL_LATE,    /* an array declared with no size, `extern int a[];`:
-                         * val is the address of a cell that will hold its
-                         * address, once a definition gives it one */
 
     /* These three are at file scope or in a block, as they are declared:
      * see sym_push_local. */
@@ -557,11 +557,7 @@ enum {
     SYMF_PARAMS   = 4,          /* a function: its parameters are declared,
                                  * where `()` in a declaration says nothing
                                  * about them */
-    SYMF_VARIADIC = 8,          /* a function: and more of them, `...` */
-    SYMF_EXTERN   = 16          /* a variable: a declaration said extern, so
-                                 * some file defines it -- this one, if one
-                                 * of the declarations here gives it a value,
-                                 * and otherwise another */
+    SYMF_VARIADIC = 8           /* a function: and more of them, `...` */
 };
 void sym_set_flags(int sym, int flags);
 unsigned char sym_flags(int sym);
@@ -729,9 +725,10 @@ void gen_stmt_end(void);              /* the scratch area is free again */
 void gen_call(int fn, int nargs, int params_first, int nparams);
 void gen_call_indirect(int nargs);      /* through the pointer under them */
 void vpush_function(int fn);          /* a function's address */
+void vpush_global_addr(int sym);      /* a variable's, when it has none yet */
 void gen_data_fixup(int fn, int at);  /* and one in a global's bytes */
 extern int gen_data_context;          /* a global's initial value is being read */
-extern int gen_pending_fn;            /* whose address it needs, not yet known */
+extern int gen_pending_sym;            /* whose address it needs, not yet known */
 
 /* A cast: the top converted to `to`, as an assignment to an object of that
  * type would convert it, or thrown away for `(void)`. */
@@ -964,6 +961,7 @@ void out_word24(int v);
 void out_rewind(int here);          /* forget what came after out_here() was here */
 void out_seek(int here);            /* back to it, keeping what came after */
 void out_copy(int at, unsigned char *to, int len);  /* bytes already written */
+int  out_read24(int at);            /* and read one back */
 void out_patch24(int at, int v);
 
 /* ------------------------------------------------------------------ */

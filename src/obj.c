@@ -174,7 +174,12 @@ void obj_write(const char *path)
 
         if (index_of[n] < 0)
             continue;
-        defined = (sym_flags(s) & SYMF_DEFINED) != 0;
+        /* A function is defined here when its body has been read, and a
+         * variable when this object has room for it. A declaration that only
+         * said extern reserves nothing and leaves -1 behind, which is what
+         * makes the symbol one the linker has to find elsewhere. */
+        defined = sym->kind == SYM_FUNC ? (sym_flags(s) & SYMF_DEFINED) != 0
+                                        : sym->val >= 0;
         put_num(f, name_at[n]);
         put_num(f, defined ? sym->val : 0);
         fputc((defined ? OBJ_DEFINED : 0)

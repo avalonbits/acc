@@ -77,7 +77,7 @@ static Type narrow_dest;
  * already long. They are here once. Measured on the Agon it is neither
  * faster nor slower than the two copies were.
  */
-static void global_address(const Sym *global);
+static void global_address(int sym);
 
 /* A call's arguments, from just past its `(` to just past its `)`: pushed
  * in order. Returns how many. */
@@ -136,7 +136,7 @@ static void call_variable(int sym, NameRef name)
         break;
     case SYM_GLOBAL:
     case SYM_GLOBAL_CONST:
-        global_address(v);
+        global_address(sym);
         vderef();
         break;
     default:
@@ -198,13 +198,33 @@ static void reserved_word(void)
  * `*p` -- a store, `+=`, `++` either side, a value that is four bytes wide --
  * works on a global by pushing this and carrying on exactly as it would after
  * a star. */
-static void global_address(const Sym *global)
+static void global_address(int sym)
 {
+    const Sym *global = sym_at(sym);
+
     if (type_ptr_depth(global->type) == TY_PTR_MAX)
         acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                      TY_PTR_MAX);
-    vpush_const(global->val, type_ptr_to(global->type));
-    vset_addr();
+
+    /* -1 is what a declaration that only said extern left: nothing here
+     * knows where the variable is, so the address is written down for
+     * gen_finish or the linker to fill in.
+     *
+     * Against the file-scope symbol, not against this one. An `extern` in a
+     * block is a copy of the file-scope symbol taken when the declaration
+     * was read, and a copy made before the address was known does not have
+     * it -- and is dropped at the end of the block, long before gen_finish
+     * comes looking. For a symbol that is already the file-scope one this
+     * finds the same symbol again. */
+    if (global->val < 0) {
+        int g = name_global(global->name);
+
+        vpush_global_addr(g == SYM_NONE ? sym : g);
+    } else {
+        vpush_const(global->val, type_ptr_to(global->type));
+        vset_addr();
+    }
+    global = sym_at(sym);
     if (global->ext)
         vset_ext(global->ext);
     if (global->quals)
@@ -260,7 +280,6 @@ enum {
 
 static const char *record_name(int x);
 static void        func_suffix(Type *type, int *ext);
-static void        late_address(const Sym *s);
 static void        record_complete(int x, int line);
 
 /* `.name` or `->name`, with the struct's address on the stack and the
@@ -411,7 +430,7 @@ static int name_operand(int sym, NameRef name)
         object = 0;
         break;
     case SYM_GLOBAL:
-        global_address(s);
+        global_address(sym);
         object = 1;
         break;
     case SYM_LOCAL_ARRAY:
@@ -436,17 +455,7 @@ static int name_operand(int sym, NameRef name)
         object = 1;
         break;
     case SYM_GLOBAL_ARRAY:
-        if (type_ptr_depth(s->type) == TY_PTR_MAX)
-            acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
-                         TY_PTR_MAX);
-        vpush_const(s->val, type_ptr_to(s->type));
-        vset_addr();
-        vset_ext(s->ext);
-        vset_quals(s->quals);
-        object = 0;
-        break;
-    case SYM_GLOBAL_LATE:
-        late_address(s);
+        global_address(sym);
         object = 0;
         break;
     case SYM_CONST:
@@ -469,7 +478,7 @@ static int name_operand(int sym, NameRef name)
         object = 0;
         break;
     case SYM_GLOBAL_CONST:
-        global_address(s);
+        global_address(sym);
         if (!tok_postfix()) {
             vderef();
 
@@ -658,21 +667,6 @@ int paren_deref_step(void)
     return 1;
 }
 
-/* An array declared with no size and not yet defined, as the address of its
- * first element: read from its cell. */
-__attribute__((noinline))
-static void late_address(const Sym *s)
-{
-    Type elem = s->type;
-    int ext = s->ext, quals = s->quals;
-
-    vpush_const(s->val, type_ptr_to(type_ptr_to(elem)));
-    vset_addr();
-    vderef();
-    vset_ext(ext);
-    vset_quals(quals);
-}
-
 /* A const variable's address, which its name alone does not give: it reads
  * as its value. */
 __attribute__((noinline))
@@ -682,7 +676,7 @@ static void readonly_address(int sym)
 
     /* The variable is const, so what its address points at is. */
     if (v->kind == SYM_GLOBAL_CONST) {
-        global_address(v);
+        global_address(sym);
         vset_quals(VQ_CONST);
 
         return;
@@ -2795,7 +2789,7 @@ static void va_list_address(void)
     if (v->kind == SYM_LOCAL)
         vaddr_local(v->val, v->type);
     else
-        global_address(v);
+        global_address(sym);
     next();
 }
 
@@ -3901,9 +3895,6 @@ static int static_local;
 static int redefining = SYM_NONE;
 static unsigned char decl_const;    /* the variable being declared is const */
 static int decl_extern;             /* and its declaration said extern */
-/* A name whose declaration said extern and which has not been pushed yet,
- * so that the flag can go on the symbol once there is one. */
-static NameRef pending_extern = NAME_NONE;
 static unsigned char decl_bottom_const; /* and SQ_CONST, when its type is */
 
 /* `typedef`, and names for types rather than objects: each declarator names
@@ -3957,10 +3948,13 @@ static void block_extern(Type type, int ext, NameRef name, int count,
     if (tok == TK_ASSIGN)
         acc_error_at(line, "an extern in a block cannot give a value");
     if (g == SYM_NONE) {
-        int hole = gen_jump();          /* its bytes go here, jumped over */
-
+        /* Nothing of that name at file scope yet, so this declaration
+         * introduces it -- and reserves nothing for it, which is what extern
+         * means wherever it is said. It used to put the variable's bytes
+         * here, in the middle of a function, with a jump over them. */
+        decl_extern = 1;
         global_variable(type, ext, name, count, line);
-        gen_label(hole);
+        decl_extern = 0;
         g = name_global(name);
     } else {
         global_again(g, type, ext, count, line);
@@ -5110,8 +5104,15 @@ static int push_global(NameRef name, int kind, int at)
 {
     int sym;
 
-    if (redefining != SYM_NONE)
+    if (redefining != SYM_NONE) {
+        /* A name only declared so far has no address, and this is where it
+         * gets one. One that already had room keeps what it had: the output
+         * was wound back to it, so `at` is that address again. */
+        if (sym_at(redefining)->val < 0)
+            sym_at(redefining)->val = at;
+
         return redefining;
+    }
     sym = static_local ? sym_push_local(name, kind, at)
                        : sym_push(name, kind, at);
     sym_at(sym)->quals = decl_bottom_const;
@@ -5121,7 +5122,7 @@ static int push_global(NameRef name, int kind, int at)
 
 /* That the value just read is an address inside the image -- another
  * global's, a string's -- and so moves with it, which is a relocation
- * wherever it lands. The companion to gen_pending_fn, which says the same of
+ * wherever it lands. The companion to gen_pending_sym, which says the same of
  * a function whose address is not known yet; a value is one or the other and
  * never both. */
 static int init_address;
@@ -5148,7 +5149,7 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
      * much a constant here as `5L` is. What a global may not have is
      * anything that leaves code behind, which is what the out_here check
      * catches -- a call, a variable, an address that is not a symbol's. */
-    gen_pending_fn = SYM_NONE;
+    gen_pending_sym = SYM_NONE;
     init_address = 0;
     gen_data_context = 1;
     expr();                     /* not comma_expr: in a braced list the
@@ -5243,10 +5244,10 @@ static void data_fn_at(int at)
         init_address = 0;
     }
 
-    if (gen_pending_fn == SYM_NONE)
+    if (gen_pending_sym == SYM_NONE)
         return;
-    gen_data_fixup(gen_pending_fn, at);
-    gen_pending_fn = SYM_NONE;
+    gen_data_fixup(gen_pending_sym, at);
+    gen_pending_sym = SYM_NONE;
 }
 
 static void walk_fns_at(int at)
@@ -5296,9 +5297,9 @@ static void global_put(Type scalar, int offset, int value)
         init_bytes[offset] = (unsigned char) value;     /* a char of a string */
     else
         global_initializer(scalar, init_bytes + offset, tok_line);
-    if (gen_pending_fn != SYM_NONE) {
-        walk_fn_add(gen_pending_fn, offset);
-        gen_pending_fn = SYM_NONE;
+    if (gen_pending_sym != SYM_NONE) {
+        walk_fn_add(gen_pending_sym, offset);
+        gen_pending_sym = SYM_NONE;
     } else if (init_address) {
         walk_fn_add(SYM_NONE, offset);
         init_address = 0;
@@ -5542,15 +5543,13 @@ static int global_again(int sym, Type type, int ext, int count, int line)
 
     if (g->kind == SYM_FUNC)
         acc_error_at(line, "'%s' is already a function", name_text(name));
-    if (g->kind == SYM_GLOBAL_LATE) {
-        if (!count || g->type != type || g->ext != ext)
-            acc_error_at(line, "'%s' is declared again with another type",
-                         name_text(name));
-
-        return count > 0 || tok == TK_ASSIGN ? 2 : 0;
-    }
     if (count < 0 && g->kind == SYM_GLOBAL_ARRAY)
         count = sym_count(sym);         /* `int a[] = ...` after `int a[4]` */
+    /* An array declared with no size takes the size a later declaration
+     * gives it: `extern int a[];` and then `int a[4];` is one array, not two
+     * declared differently. */
+    if (g->kind == SYM_GLOBAL_ARRAY && sym_count(sym) < 0 && count > 0)
+        sym_set_count(sym, count);
     if (g->kind != (count ? SYM_GLOBAL_ARRAY
                           : decl_const && !type_is_struct(type) ? SYM_GLOBAL_CONST
                           : SYM_GLOBAL)
@@ -5572,54 +5571,6 @@ static int global_again(int sym, Type type, int ext, int count, int line)
  * cell as the program runs. The definition writes it there, and from then
  * on the array is an ordinary one, used directly. */
 static void global_emit(Type type, int ext, NameRef name, int count, int line);
-
-static int  late_arrays[32];
-static int  nlate_arrays;
-
-static void global_late(Type type, int ext, NameRef name)
-{
-    int sym, i;
-
-    if (nlate_arrays == 32)
-        acc_error_at(tok_line, "more than 32 arrays declared with no size");
-    sym = sym_push(name, SYM_GLOBAL_LATE, out_here());
-    out_reloc(out_here());              /* what the cell will hold */
-    for (i = 0; i < ACC_INT_SIZE; i++)
-        out_byte(0);
-    sym_at(sym)->type = type;
-    sym_at(sym)->ext = (unsigned char) ext;
-    sym_at(sym)->quals = decl_bottom_const;
-    sym_set_count(sym, -1);
-    late_arrays[nlate_arrays++] = sym;
-}
-
-/* Its definition: the array's bytes, where they are declared, and their
- * address into the cell. */
-static void global_late_define(int sym, Type type, int ext, NameRef name,
-                               int count, int line)
-{
-    int cell = sym_at(sym)->val, at = out_here();
-
-    redefining = sym;
-    global_emit(type, ext, name, count, line);
-    redefining = SYM_NONE;
-    out_patch24(cell, at);
-    sym_at(sym)->kind = SYM_GLOBAL_ARRAY;
-    sym_at(sym)->val = at;
-    sym_set_flags(sym, SYMF_DEFINED);
-}
-
-/* At the end: an array declared with no size and never defined has nothing
- * behind its name, which a program of one file cannot mean. */
-static void late_arrays_end(void)
-{
-    int i;
-
-    for (i = 0; i < nlate_arrays; i++)
-        if (sym_at(late_arrays[i])->kind == SYM_GLOBAL_LATE)
-            acc_error("'%s' is declared with no size and never defined",
-                      name_text(sym_at(late_arrays[i])->name));
-}
 
 /* A file-scope variable's bytes, from its initialiser if it has one, and
  * its name bound to them -- or, when redefining, written over the bytes it
@@ -5660,6 +5611,36 @@ static void global_emit(Type type, int ext, NameRef name, int count, int line)
     sym_at(sym)->ext = (unsigned char) ext;
 }
 
+/* A name with everything the type says and no address at all: a variable
+ * some other file defines, or an array with no size yet, which is the same
+ * thing said another way -- there is nothing to reserve room by.
+ *
+ * -1 is the address until something gives it one, and every use of it in
+ * between is written down for gen_finish or the linker to fill in. An array
+ * with no size used to get a cell here instead: three bytes to hold its
+ * address once a definition gave it one, which every use of the array read
+ * as the program ran. A relocation is what that was standing in for, and it
+ * does the same job without the load.
+ *
+ * The kind is the one a definition would push, so that a later declaration
+ * of the same thing agrees with this one. */
+static void global_undefined(Type type, int ext, NameRef name, int count,
+                             int line)
+{
+    int kind = count ? SYM_GLOBAL_ARRAY
+             : decl_const && !type_is_struct(type) ? SYM_GLOBAL_CONST
+             : SYM_GLOBAL;
+    int sym;
+
+    not_void(type, "a variable", line);
+    sym = push_global(name, kind, -1);
+    sym_at(sym)->type = type;
+    sym_at(sym)->ext = (unsigned char) ext;
+    sym_at(sym)->quals = decl_bottom_const;
+    if (kind == SYM_GLOBAL_ARRAY)
+        sym_set_count(sym, count);
+}
+
 /* One file-scope variable, or a block's `static` one.
  *
  * C lets `int x;` be said twice at file scope -- and `extern int x;` as
@@ -5673,31 +5654,48 @@ static void global_variable(Type type, int ext, NameRef name, int count,
 {
     int sym, init = (tok == TK_ASSIGN);
 
-    /* Noted, and asked about at the end of the file: a variable this one
-     * only declares is one some other file has to define, which needs a
-     * linker to join them up. See externs_end. */
-    pending_extern = NAME_NONE;
-    if (decl_extern && !static_local) {
+    /* `extern T x;` and nothing more. Some file defines x and reserves room
+     * for it; this one does not, or the two would be different variables at
+     * different addresses. Until something here gives it an address its
+     * address is -1, and every use of it is written down for gen_finish or
+     * the linker to fill in -- which is what a call to a function not yet
+     * seen has always been.
+     *
+     * An array with no size goes the same way and for the same reason:
+     * there is no size to reserve room by. */
+    if (decl_extern && !init && !static_local) {
         int known = name_global(name);
 
-        if (known != SYM_NONE)
-            sym_set_flags(known, SYMF_EXTERN);
-        else
-            pending_extern = name;
+        if (known == SYM_NONE) {
+            global_undefined(type, ext, name, count, line);
+
+            return;
+        }
+        (void) global_again(known, type, ext, count, line);
+
+        return;
     }
 
     if (!static_local && (sym = name_global(name)) != SYM_NONE) {
         int saved, again = global_again(sym, type, ext, count, line);
 
-        if (!again)
-            return;
-        if (again == 2) {
-            global_late_define(sym, type, ext, name, count, line);
+        if (count < 0)
+            count = sym_count(sym);
+
+        /* Declared before and given no room then. This declaration is what
+         * reserves it, whether or not it gives a value: `extern int x;` and
+         * then `int x;` is a definition, as C says. */
+        if (sym_at(sym)->val < 0) {
+            redefining = sym;
+            global_emit(type, ext, name, count, line);
+            redefining = SYM_NONE;
+            if (again)
+                sym_set_flags(sym, SYMF_DEFINED);
 
             return;
         }
-        if (count < 0)
-            count = sym_count(sym);
+        if (!again)
+            return;
         saved = out_here();
         out_seek(sym_at(sym)->val);
         redefining = sym;
@@ -5710,45 +5708,13 @@ static void global_variable(Type type, int ext, NameRef name, int count,
     }
 
     if (count < 0 && !init && !static_local) {
-        global_late(type, ext, name);
+        global_undefined(type, ext, name, count, line);
 
         return;
     }
     global_emit(type, ext, name, count, line);
-    if (!static_local && pending_extern == name)
-        sym_set_flags(name_global(name), SYMF_EXTERN);
     if (init && !static_local)
         sym_set_flags(name_global(name), SYMF_DEFINED);
-}
-
-/* At the end of a compile to an object: a variable this file declared extern
- * and never gave a value to.
- *
- * The declaration reserves room for it here, which is right for a program of
- * one file and wrong for a piece of one -- the file that does define it
- * reserves room too, and the two would be different variables at different
- * addresses. Refused rather than quietly built, because what it would build
- * is a program that runs and gets the wrong answer.
- *
- * A function needs no such rule: a call to one this file does not define is
- * already a relocation for the linker to fill in, and reserves nothing. The
- * same for a variable is what comes next. */
-static void externs_end(void)
-{
-    int step = (int) sizeof(Sym);
-    int s;
-
-    for (s = 0; s < sym_nglobals(); s += step) {
-        const Sym *sym = sym_at(s);
-
-        if (sym->kind == SYM_FUNC || sym->kind == SYM_GLOBAL_LATE)
-            continue;
-        if ((sym_flags(s) & (SYMF_EXTERN | SYMF_DEFINED)) != SYMF_EXTERN)
-            continue;
-        acc_error("'%s' is declared extern and never given a value here, so "
-                  "another file defines it -- which is not implemented yet",
-                  name_text(sym->name));
-    }
 }
 
 /* A function declared by a declarator whose type came out a function --
@@ -6026,13 +5992,18 @@ static int is_object(const char *path)
  * has been read. That is the same problem a call to a function further down
  * the file is, so it is the same machinery -- an object is just a file whose
  * functions arrive all at once. */
-static int link_symbol(const char *text)
+static int link_symbol(const char *text, int flags)
 {
     NameRef name = name_intern(text, (int) strlen(text));
     int sym = name_global(name);
 
     if (sym == SYM_NONE) {
-        sym = sym_push(name, SYM_FUNC, 0);
+        /* As the kind the object said, so that what is said about one that
+         * nothing defines is about the right sort of thing -- and so that a
+         * variable's "no address yet" is the -1 the compiler uses for it. */
+        int func = (flags & OBJ_FUNC) != 0;
+
+        sym = sym_push(name, func ? SYM_FUNC : SYM_GLOBAL, func ? 0 : -1);
         sym_set_flags(sym, SYMF_DECLARED | SYMF_PARAMS);
     }
 
@@ -6056,7 +6027,7 @@ static void link_object(const char *path)
 
         if (!(obj_sym_flags(&o, i) & OBJ_DEFINED))
             continue;
-        sym = link_symbol(obj_sym_name(&o, i));
+        sym = link_symbol(obj_sym_name(&o, i), obj_sym_flags(&o, i));
         if (sym_flags(sym) & SYMF_DEFINED)
             acc_error("'%s' is defined in more than one object, and '%s' is "
                       "one of them", obj_sym_name(&o, i), path);
@@ -6078,11 +6049,11 @@ static void link_object(const char *path)
 
             continue;
         }
-        if (get24(o.text + at))
-            acc_error("'%s' wants '%s' with an offset added, which is not "
-                      "implemented yet", path,
-                      obj_sym_name(&o, which - 1));
-        gen_data_fixup(link_symbol(obj_sym_name(&o, which - 1)), base + at);
+        /* Whatever the slot holds is the amount to add to the symbol's
+         * address, and it is already in the image: gen_finish reads it back
+         * when it fills the slot in. */
+        gen_data_fixup(link_symbol(obj_sym_name(&o, which - 1),
+                                   obj_sym_flags(&o, which - 1)), base + at);
     }
     obj_free(&o);
 }
@@ -6192,8 +6163,6 @@ int main(int argc, char **argv)
         lex_open(in);
         translation_unit();
         lex_end();
-        late_arrays_end();
-        externs_end();
         gen_finish();
         lex_close();
         obj_write(out);
@@ -6206,7 +6175,6 @@ int main(int argc, char **argv)
         lex_open(in);
         translation_unit();
         lex_end();
-        late_arrays_end();
         gen_finish();
         lex_close();
         if (relocs)

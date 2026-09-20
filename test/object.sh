@@ -188,13 +188,159 @@ printf '#define A 7\n' > "$two/one.h"
 case $(twice) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
 ok "the twice-read header edited" "$got" compiled
 
-# A variable another file has to define: refused rather than built wrong.
-printf 'extern int counter;\nint bump(void) { return ++counter; }\n' > "$work/e.c"
-err=$("$ACC" -c "$work/e.c" -o "$work/e.o" 2>&1)
+# A variable one file declares and another defines. Nothing is reserved for
+# it where it is only declared, so every use of it is a relocation -- and the
+# whole comes out as the same program written in one piece, where the
+# declaration and the definition are both in the same file and the uses
+# between them are relocations for the same reason.
+cat > "$work/e.c" <<'C'
+extern int counter;
+int bump(void) { return ++counter; }
+C
+cat > "$work/f.c" <<'C'
+int counter = 41;
+int bump(void);
+int main(void) { return bump(); }
+C
+cat > "$work/ef.c" <<'C'
+extern int counter;
+int bump(void) { return ++counter; }
+int counter = 41;
+int main(void) { return bump(); }
+C
+"$ACC" "$work/ef.c" -o "$work/one/x.bin" -x >/dev/null 2>&1
+"$ACC" -c "$work/e.c" -o "$work/e.o" >/dev/null 2>&1
+"$ACC" -c "$work/f.c" -o "$work/f.o" >/dev/null 2>&1
+"$ACC" "$work/e.o" "$work/f.o" -o "$work/two/x.bin" -x >/dev/null 2>&1
+if cmp -s "$work/one/x.bin" "$work/two/x.bin"; then
+    pass=$((pass+1))
+else
+    printf '  FAIL %-32s a shared variable differs from the one file\n' \
+        "a variable two objects share"
+    fail=$((fail+1))
+fi
+
+# And nothing defines it at all. With a main of its own, so that what is
+# missing is the variable and not the entry point.
+cat > "$work/g.c" <<'C'
+extern int counter;
+int main(void) { return counter; }
+C
+"$ACC" -c "$work/g.c" -o "$work/g.o" >/dev/null 2>&1
+err=$("$ACC" "$work/g.o" -o "$work/two/x.bin" -x 2>&1)
 case $err in
-  *"declared extern and never given a value here"*) pass=$((pass+1)) ;;
-  *) printf '  FAIL %-32s %s\n' "extern with no definition" "$err"; fail=$((fail+1)) ;;
+  *"'counter'"*"never given room"*) pass=$((pass+1)) ;;
+  *) printf '  FAIL %-32s %s\n' "a variable nothing defines" "$err"
+     fail=$((fail+1)) ;;
 esac
+
+# The same, compiled straight to a program rather than to an object: there is
+# no linker coming, so there is nothing that could ever give it an address.
+err=$("$ACC" "$work/g.c" -o "$work/two/x.bin" -x 2>&1)
+case $err in
+  *"'counter'"*"never given room"*) pass=$((pass+1)) ;;
+  *) printf '  FAIL %-32s %s\n' "extern with no linker" "$err"
+     fail=$((fail+1)) ;;
+esac
+
+# split <name> <a.c> <b.c> <whole.c>: two objects against the same program
+# written as one file.
+#
+# The pieces are written to need none of the runtime helpers -- no multiply,
+# no shift, no `&` -- because every object that uses one carries its own copy
+# of the blob, so two that use them do not lay out the way one file does.
+# Making the helpers a library object is what settles that; until then the
+# comparison keeps clear of them.
+split() {
+    local what=$1
+    printf '%s' "$2" > "$work/s1.c"
+    printf '%s' "$3" > "$work/s2.c"
+    printf '%s' "$4" > "$work/sw.c"
+    if ! err=$("$ACC" "$work/sw.c" -o "$work/one/x.bin" -x 2>&1); then
+        printf '  FAIL %-32s as one file: %s\n' "$what" \
+            "$(printf '%s' "$err" | head -1)"
+        fail=$((fail+1)); return
+    fi
+    if ! err=$("$ACC" -c "$work/s1.c" -o "$work/s1.o" 2>&1) \
+       || ! err=$("$ACC" -c "$work/s2.c" -o "$work/s2.o" 2>&1); then
+        printf '  FAIL %-32s to an object: %s\n' "$what" \
+            "$(printf '%s' "$err" | head -1)"
+        fail=$((fail+1)); return
+    fi
+    if ! err=$("$ACC" "$work/s1.o" "$work/s2.o" -o "$work/two/x.bin" -x 2>&1); then
+        printf '  FAIL %-32s linking: %s\n' "$what" \
+            "$(printf '%s' "$err" | head -1)"
+        fail=$((fail+1)); return
+    fi
+    if cmp -s "$work/one/x.bin" "$work/two/x.bin"; then
+        pass=$((pass+1))
+    else
+        printf '  FAIL %-32s differs from the one file\n' "$what"
+        fail=$((fail+1))
+    fi
+}
+
+# An array declared with no size at all. There is nothing to reserve room by
+# and nothing to say how long it is, so every use of it is a relocation --
+# which is what the cell of three bytes it used to get was standing in for.
+split "an array with no size" \
+'extern int table[];
+int pick(void) { return table[2]; }
+' \
+'int table[3] = { 1, 2, 42 };
+int pick(void);
+int main(void) { return pick(); }
+' \
+'extern int table[];
+int pick(void) { return table[2]; }
+int table[3] = { 1, 2, 42 };
+int main(void) { return pick(); }
+'
+
+# An address with an amount added, worked out before the address is known:
+# the amount goes in the slot and the linker adds the address to it.
+split "an address with an offset" \
+'extern int arr[4];
+int *p = arr + 2;
+int main(void) { return *p; }
+' \
+'int arr[4] = { 1, 2, 42, 4 };
+' \
+'extern int arr[4];
+int *p = arr + 2;
+int main(void) { return *p; }
+int arr[4] = { 1, 2, 42, 4 };
+'
+
+# An extern said inside a block, with nothing of that name at file scope: it
+# introduces the name and reserves nothing, as an extern anywhere does. Its
+# bytes used to go in the middle of the function, with a jump over them.
+split "an extern inside a block" \
+'int use(void) { extern int hidden; return hidden; }
+' \
+'int hidden = 42;
+int use(void);
+int main(void) { return use(); }
+' \
+'int use(void) { extern int hidden; return hidden; }
+int hidden = 42;
+int main(void) { return use(); }
+'
+
+# A variable one file declares const and another defines.
+split "a const variable shared" \
+'extern const int limit;
+int under(int n) { return n < limit; }
+' \
+'const int limit = 50;
+int under(int n);
+int main(void) { return under(1) ? 42 : 0; }
+' \
+'extern const int limit;
+int under(int n) { return n < limit; }
+const int limit = 50;
+int main(void) { return under(1) ? 42 : 0; }
+'
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
