@@ -373,6 +373,14 @@ int lex_rparen_follows(void)
     return next_char() == ')';
 }
 
+/* Whether a name comes after the current token, which is what tells a
+ * designator's `.` from a floating literal's: `.x` names a member and `.5`
+ * is a number, and the difference is one character away. */
+int lex_ident_follows(void)
+{
+    return is_alpha(next_char()) != 0;
+}
+
 /* A comment, with the cursor on its opening `/`. Out of line so that
  * skip_space, which is inlined into next(), carries nothing but the cursor
  * and the line count: the comment scan's own state, the line a block comment

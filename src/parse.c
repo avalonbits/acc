@@ -2945,6 +2945,20 @@ static int init_pending;
 static int init_bits;
 static void init_record(int x, int offset, InitPut put, int braced);
 static int  init_string(int count, int offset, InitPut put);
+static int  init_index(Type elem, int elem_x, int count, int offset,
+                       InitPut put);
+static int  init_member(int x, int offset, InitPut put);
+
+/* Whether a row or a record that was taking values from the list around it
+ * stopped because the next thing is a designator, which belongs to that
+ * list and not to it. It has eaten the comma before the designator by then,
+ * so the list is told not to look for one. */
+static int init_designator_next;
+
+/* Whether a designator starts here. A `.` is one only in front of a name:
+ * `.5` is a number. */
+#define tok_designator()  (tok == TK_LBRACKET \
+                           || (tok == TK_DOT && lex_ident_follows()))
 
 /* Whether `type`, an element type, is one of the three chars a string can
  * initialise an array of. */
@@ -2954,22 +2968,34 @@ static int  init_string(int count, int offset, InitPut put);
 /* The elements of a braced list, the brace already read. Returns how many.
  * `count` is how many there may be, or -1 for no limit. `elem_x` is the
  * element type's extension, when it is a row. */
-static int init_list(Type elem, int elem_x, int count, int offset, InitPut put)
+static int init_list(Type elem, int elem_x, int count, int offset, InitPut put,
+                     int from)
 {
-    int n = 0, step = type_bytes(elem, elem_x);
+    int n = from, most = from, step = type_bytes(elem, elem_x);
 
     while (tok != TK_RBRACE) {
-        if (n == count)
-            acc_error_at(tok_line, "more initial values than the array has "
-                                   "elements");
-        init_element(elem, elem_x, offset + n * step, put);
-        n++;
-        if (!accept(TK_COMMA))
+        if (tok_designator()) {
+            /* `[3] = v` puts v in element 3 and the list goes on from 4,
+             * wherever it had got to. */
+            n = init_index(elem, elem_x, count, offset, put) + 1;
+        } else {
+            if (n == count)
+                acc_error_at(tok_line, "more initial values than the array has "
+                                       "elements");
+            init_element(elem, elem_x, offset + n * step, put);
+            n++;
+        }
+        if (n > most)
+            most = n;               /* an `[]` array is as long as its
+                                     * furthest element, not its last */
+        if (init_designator_next)
+            init_designator_next = 0;
+        else if (!accept(TK_COMMA))
             break;
     }
     expect(TK_RBRACE, "'}'");
 
-    return n;
+    return most;
 }
 
 /* A row with its braces left out: it takes values from the list it is in,
@@ -2989,9 +3015,89 @@ static void init_elided(int x, int offset, InitPut put)
             next();
             if (tok == TK_RBRACE)
                 return;
+            if (tok_designator()) {
+                init_designator_next = 1;
+
+                return;
+            }
         }
         init_element(elem, elem_x, offset + i * step, put);
     }
+}
+
+/* What a designator names, once it has been read: another designator
+ * inside it -- `[2].x = 5` -- or the `=` and the value.
+ *
+ * C99 lets them chain as deep as the object goes, and each step is the same
+ * question the list itself asks: is this an element or a member. */
+static void init_designated(Type type, int x, int offset, InitPut put)
+{
+    if (tok_designator()) {
+        if (tok == TK_LBRACKET) {
+            if (!type_is_array(type))
+                acc_error_at(tok_line, "'[' designates an element, and this is "
+                                       "not an array");
+            init_index(ext_elem(x), ext_elem_x(x), ext_count(x), offset, put);
+
+            return;
+        }
+        if (!type_is_struct(type))
+            acc_error_at(tok_line, "'.' designates a member, and this is not a "
+                                   "struct or a union");
+        init_member(x, offset, put);
+
+        return;
+    }
+    expect(TK_ASSIGN, "'=' after a designator");
+    init_element(type, x, offset, put);
+}
+
+/* `[3] = v` in an array's list: v goes to element 3, and 3 is returned so
+ * that the list goes on from the one after it. */
+static int init_index(Type elem, int elem_x, int count, int offset, InitPut put)
+{
+    int line = tok_line, i;
+
+    next();                             /* the '[' */
+    i = constant_int("the element a designator names", line);
+    expect(TK_RBRACKET, "']'");
+    if (i < 0)
+        acc_error_at(line, "a designator names element %d, and there is no "
+                           "such element", i);
+    if (count >= 0 && i >= count)
+        acc_error_at(line, "a designator names element %d of an array of %d",
+                     i, count);
+    init_designated(elem, elem_x, offset + i * type_bytes(elem, elem_x), put);
+
+    return i;
+}
+
+/* `.name = v` in a record's list: the member is returned, so that the list
+ * goes on with the one after it. */
+static int init_member(int x, int offset, InitPut put)
+{
+    int line = tok_line, m, saved_bits;
+    NameRef name;
+
+    next();                             /* the '.' */
+    if (tok != TK_IDENT)
+        acc_error_at(tok_line, "expected a member's name after '.', found %s",
+                     tok_spelling(tok));
+    name = tok_name;
+    next();
+    record_complete(x, line);
+    m = member_find(x, name);
+    if (m < 0)
+        acc_error_at(line, "'%s' has no member '%s'", record_name(x),
+                     name_text(name));
+
+    saved_bits = init_bits;
+    init_bits = member_bits(m);
+    init_designated(member_type(m), member_ext(m), offset + member_offset(m),
+                    put);
+    init_bits = saved_bits;
+
+    return m;
 }
 
 static void init_element(Type type, int x, int offset, InitPut put)
@@ -3015,7 +3121,7 @@ static void init_element(Type type, int x, int offset, InitPut put)
             return;
         }
         if (accept(TK_LBRACE))
-            init_list(ext_elem(x), ext_elem_x(x), ext_count(x), offset, put);
+            init_list(ext_elem(x), ext_elem_x(x), ext_count(x), offset, put, 0);
         else
             init_elided(x, offset, put);
 
@@ -3061,7 +3167,7 @@ static void init_record(int x, int offset, InitPut put, int braced)
     int m = member_first(x), i;
 
     record_complete(x, tok_line);
-    for (i = 0; m >= 0; i++) {
+    for (i = 0; m >= 0 || (braced && tok_designator()); i++) {
         if (braced && tok == TK_RBRACE)
             break;
         if (!braced && i) {
@@ -3070,13 +3176,29 @@ static void init_record(int x, int offset, InitPut put, int braced)
             next();
             if (tok == TK_RBRACE)
                 return;
+            if (tok_designator()) {
+                init_designator_next = 1;
+
+                return;
+            }
         }
-        init_bits = member_bits(m);
-        init_element(member_type(m), member_ext(m),
-                     offset + member_offset(m), put);
-        init_bits = 0;
-        m = ext_is_union(x) ? -1 : member_next(m);
-        if (braced && !accept(TK_COMMA))
+
+        /* `.name = v` names the member itself, and the list goes on with
+         * the one after it -- in a union as well, where a designator is how
+         * a member other than the first is given a value. */
+        if (tok_designator()) {
+            m = init_member(x, offset, put);
+            m = ext_is_union(x) ? -1 : member_next(m);
+        } else {
+            init_bits = member_bits(m);
+            init_element(member_type(m), member_ext(m),
+                         offset + member_offset(m), put);
+            init_bits = 0;
+            m = ext_is_union(x) ? -1 : member_next(m);
+        }
+        if (init_designator_next)
+            init_designator_next = 0;
+        else if (braced && !accept(TK_COMMA))
             break;
     }
     if (!braced)
@@ -3098,6 +3220,9 @@ static int            init_given_cap;
 static void init_mark(int offset, int size)
 {
     int end = offset + size;
+
+    if (size <= 0)
+        return;                 /* nothing given, and nothing to grow for */
 
     if (end > init_given_cap) {
         int cap = init_given_cap ? init_given_cap : 64;
@@ -3280,11 +3405,23 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
         /* One dimension: the values in order, each stored as it is read, and
          * the rest zeroed after them in one run, as before arrays of
          * arrays. */
-        int n = 0;
+        int n = 0, designated = 0;
 
         expect(TK_LBRACE, "'{'");
         init_array = array;
         while (tok != TK_RBRACE) {
+            /* A designator, so the rest of the list is not in order: what
+             * has been given so far is marked as given -- it is the first n
+             * elements, in order -- and the walk takes it from here, which
+             * knows how to zero the gaps it leaves. */
+            if (tok_designator()) {
+                if (init_given_cap)
+                    memset(init_given, 0, (size_t) init_given_cap);
+                init_mark(0, n * step);
+                n = init_list(elem, elem_x, count, 0, local_put, n);
+                designated = 1;
+                break;
+            }
             if (n == count)
                 acc_error_at(tok_line, "more initial values than the array has "
                                        "elements");
@@ -3293,15 +3430,18 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
             if (!accept(TK_COMMA))
                 break;
         }
-        expect(TK_RBRACE, "'}'");
+        if (!designated)
+            expect(TK_RBRACE, "'}'");        /* the walk read its own */
         if (count < 0) {
             if (n == 0)
                 acc_error_at(line, "an array needs at least one element");
             count = n;
             gen_local_array_size(array, count * step);
-        } else if (n < count) {
-            gen_zero_array(array, n * step, (count - n) * step);
         }
+        if (designated)
+            zero_gaps(array, count * step);
+        else if (n < count)
+            gen_zero_array(array, n * step, (count - n) * step);
     } else if (init) {
         expect(TK_LBRACE, "'{'");
         init_array = array;
@@ -3310,7 +3450,7 @@ static void local_array(Type elem, int elem_x, NameRef name, int count,
         if (type_is_struct(elem) && count > 0)
             bits_zeroed(array, elem_x, count * step);
         {
-            int n = init_list(elem, elem_x, count, 0, local_put);
+            int n = init_list(elem, elem_x, count, 0, local_put, 0);
 
             if (count < 0) {
                 if (n == 0)
@@ -4753,7 +4893,7 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
      * already knows strings. */
     if (!type_is_array(elem) && !type_is_struct(elem)
         && !(init && tok == TK_STRING)) {
-        int n = 0;
+        int n = 0, designated = 0;
 
         at = out_here();
         if (init) {
@@ -4761,6 +4901,20 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
             while (tok != TK_RBRACE) {
                 unsigned char bytes[8] = { 0 };
 
+                /* A designator: the rest of the list is not in order, and
+                 * writing it as it is read no longer works. What has been
+                 * written -- the first n elements, in order -- goes into the
+                 * buffer the walk builds, the image is wound back to where
+                 * they were, and the walk carries on from there. */
+                if (tok_designator()) {
+                    init_bytes_len = 0;
+                    init_room(n * step);
+                    out_copy(at, init_bytes, n * step);
+                    out_rewind(at);
+                    n = init_list(elem, elem_x, count, 0, global_put, n);
+                    designated = 1;
+                    break;
+                }
                 if (n == count)
                     acc_error_at(tok_line, "more initial values than the array "
                                            "has elements");
@@ -4778,7 +4932,8 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
                 if (!accept(TK_COMMA))
                     break;
             }
-            expect(TK_RBRACE, "'}'");
+            if (!designated)
+                expect(TK_RBRACE, "'}'");    /* the walk read its own */
             if (count < 0) {
                 if (n == 0)
                     acc_error_at(line, "an array needs at least one element");
@@ -4788,8 +4943,15 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
             acc_error_at(line, "an array declared with [] needs initial values "
                                "to say how long it is");
         }
-        for (i = n * step; i < count * step; i++)
-            out_byte(0);
+        if (designated) {
+            init_room(count * step);
+            walk_fns_at(at);
+            for (i = 0; i < count * step; i++)
+                out_byte(init_bytes[i]);
+        } else {
+            for (i = n * step; i < count * step; i++)
+                out_byte(0);
+        }
 
         sym = push_global(name, SYM_GLOBAL_ARRAY, at);
         sym_at(sym)->type = elem;
@@ -4810,7 +4972,7 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
         int n;
 
         expect(TK_LBRACE, "'{'");
-        n = init_list(elem, elem_x, count, 0, global_put);
+        n = init_list(elem, elem_x, count, 0, global_put, 0);
         if (count < 0) {
             if (n == 0)
                 acc_error_at(line, "an array needs at least one element");

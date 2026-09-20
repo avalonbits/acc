@@ -390,6 +390,7 @@ void lex_close(void);
 void next(void);                 /* advance to the following token */
 int  lex_colon_follows(void);    /* whether `:` comes after the current token */
 int  lex_rparen_follows(void);   /* and whether `)` does */
+int  lex_ident_follows(void);    /* and whether a name does */
 int         accept_next(void);          /* next(), returning 1, for accept */
 
 /* The current token if it is `token`, stepping past it; 0 and nothing done if
@@ -818,6 +819,7 @@ static inline __attribute__((always_inline)) void out_byte3(int first, int secon
 void out_word24(int v);
 int  out_here(void);                  /* the address the next byte will have */
 void out_rewind(int here);            /* forget what came after out_here() was here */
+void out_copy(int at, unsigned char *to, int len);  /* bytes already written */
 void out_patch24(int at, int v);
 
 #endif /* ACC_H */

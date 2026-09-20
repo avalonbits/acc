@@ -132,6 +132,20 @@ void out_rewind(int here)
     out_put = img + (here - LOAD_ADDR);
 }
 
+/* Bytes already written, copied back out: an initialiser that turns out to
+ * be given out of order has to take what it wrote in order and put it in the
+ * buffer the walk builds. */
+void out_copy(int at, unsigned char *to, int len)
+{
+    int off = at - LOAD_ADDR;
+
+    if (len <= 0)
+        return;                 /* nothing written yet, and `to` may be null */
+    if (off < 0 || off + len > OUT_LEN)
+        acc_error("internal: a read at %06x is outside the image", at);
+    memcpy(to, img + off, (size_t) len);
+}
+
 void out_patch24(int at, int value)
 {
     int off = at - LOAD_ADDR;
