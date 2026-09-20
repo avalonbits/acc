@@ -38,8 +38,9 @@ worse than none; nor wide characters and strings, `_Complex`, or function
 definitions written the way K&R wrote them.
 
 One `.c` file in, whatever it includes, a runnable MOS binary out: no
-linker and no library. `* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value,
-and nothing wider than a register has one at all, so acc carries those
+linker and no library. `* / % & | ^ << >>` have no eZ80 instruction on a
+24-bit value, and nothing wider than a register has one at all, so acc
+carries those
 routines and emits the ones a program uses into that program's image.
 
     $ cat t.c
