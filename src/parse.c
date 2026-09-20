@@ -49,6 +49,7 @@ void acc_error(const char *fmt, ...)
 /* expressions                                                         */
 
 static void expr(void);
+static void comma_expr(void);
 static void deref_rest(void);
 static void conditional_rest(void);
 static void primary(void);
@@ -230,7 +231,7 @@ static void subscript(void)
                                          : "an integer");
     next();
     narrow_dest = 0;            /* the index is not the destination */
-    expr();
+    comma_expr();
     narrow_dest = outer;
     expect(TK_RBRACKET, "']'");
     vapply(TK_PLUS, 0);
@@ -782,7 +783,7 @@ static void primary(void)
 
             return;
         }
-        expr();
+        comma_expr();
         narrow_dest = outer;
         expect(TK_RPAREN, "')'");
         if (tok_postfix() || tok == TK_LPAREN)
@@ -1159,7 +1160,7 @@ static void paren_statement(void)
     }
     narrow_dest = 0;
     if (!(tok == TK_STAR && paren_deref_step())) {
-        expr();
+        comma_expr();
         expect(TK_RPAREN, "')'");
     }
     narrow_dest = outer;
@@ -1339,6 +1340,28 @@ static void expr(void)
                                "assigned to", tok_spelling(tok));
 }
 
+/* `a, b`: the left side is evaluated for what it does and thrown away, and
+ * the answer is the right side. The loosest binding there is, which is why
+ * it is a level above expr rather than an entry in the precedence table.
+ *
+ * Most of the commas in a program are not this operator: the ones between a
+ * call's arguments, between the values in braces and between the declarators
+ * of one declaration are separators, and each of those parses expr and not
+ * this. Where C says `expression` -- a statement, the clauses of a for, what
+ * is inside `( )` or `[ ]`, what follows return -- comma_expr is what runs.
+ *
+ * vdrop is all that discarding the left side takes: whatever it did has been
+ * emitted already, and the value stack entry is what is left of it. */
+static void comma_expr(void)
+{
+    expr();
+    while (tok == TK_COMMA) {
+        next();
+        vdrop();
+        expr();
+    }
+}
+
 /* The third operand of `?:`, which may itself be a conditional -- `a ? b : c ?
  * d : e` groups to the right -- but not an assignment: C reads `a ? b : c = d`
  * as an assignment to the whole conditional, which cannot be assigned to. */
@@ -1368,7 +1391,7 @@ static void conditional_rest(void)
     to_third = gen_cond_begin(&slot);
 
     narrow_dest = 0;
-    expr();
+    comma_expr();
     expect(TK_COLON, "':'");
     to_stub = gen_cond_middle(&slot, &middle, &middle_ext, &middle_null);
 
@@ -3770,7 +3793,7 @@ static void switch_statement(void)
     next();
     expect(TK_LPAREN, "'('");
     line = tok_line;
-    expr();
+    comma_expr();
     expect(TK_RPAREN, "')'");
     type = vtype();
     if (type_pointer(type) || type_float(type))
@@ -3957,7 +3980,7 @@ static void for_statement(void)
         declaration();                  /* and its semicolon */
     } else {
         if (tok != TK_SEMI) {
-            expr();
+            comma_expr();
             vdrop();
         }
         expect(TK_SEMI, "';'");
@@ -3966,7 +3989,7 @@ static void for_statement(void)
     gen_stmt_end();
     top = gen_here();
     if (tok != TK_SEMI) {
-        expr();
+        comma_expr();
         to_end = gen_jump_if_false();
     }
     expect(TK_SEMI, "';'");
@@ -3976,7 +3999,7 @@ static void for_statement(void)
         to_body = gen_jump();
         again = gen_here();
         gen_stmt_end();
-        expr();
+        comma_expr();
         vdrop();
         gen_jump_to(top);
         gen_label(to_body);
@@ -4023,7 +4046,7 @@ static void condition(void)
      * return. If `?:` or a statement expression ever arrives, both become
      * reachable and will need it. */
     expect(TK_LPAREN, "'('");
-    expr();
+    comma_expr();
     expect(TK_RPAREN, "')'");
 }
 
@@ -4122,7 +4145,7 @@ static void statement(void)
 
         next();
         if (tok != TK_SEMI)
-            expr();
+            comma_expr();
         expect(TK_SEMI, "';'");
         gen_return(line);
 
@@ -4150,7 +4173,7 @@ static void statement(void)
 
             return;
         }
-        expr();
+        comma_expr();
         vdrop();                /* the value of a statement is discarded */
         expect(TK_SEMI, "';'");
 
