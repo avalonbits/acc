@@ -557,9 +557,15 @@ enum {
     SYMF_PARAMS   = 4,          /* a function: its parameters are declared,
                                  * where `()` in a declaration says nothing
                                  * about them */
-    SYMF_VARIADIC = 8           /* a function: and more of them, `...` */
+    SYMF_VARIADIC = 8,          /* a function: and more of them, `...` */
+    SYMF_EXTERN   = 16          /* a variable: a declaration said extern, so
+                                 * some other file defines it. What tells it
+                                 * apart from one this file declared and
+                                 * never gave a value to, which C says starts
+                                 * at zero and acc puts in the bss */
 };
 void sym_set_flags(int sym, int flags);
+void sym_clear_flags(int sym, int flags);
 unsigned char sym_flags(int sym);
 
 /* How many elements an array symbol has, kept where a function's signature
@@ -781,6 +787,16 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
                   int middle_null);
 void gen_label(int hole);             /* fill a hole in with here */
 void gen_return(int line);            /* `return`, at the line it is on */
+/* What a program has of the Agon's memory: the image, what it leaves at
+ * zero, and then its heap and its stack. */
+#define ACC_RAM_BYTES 458752
+
+/* Variables that start at zero and so take no room in the file. */
+int  gen_bss_reserve(int bytes);      /* room in it; returns where */
+void gen_bss_symbol(int sym, int at); /* and which symbol is there */
+int  gen_bss_offset(int sym);         /* where one is, or -1 */
+int  gen_bss_len(void);
+
 void gen_finish(void);          /* resolve calls to functions defined later */
 
 /* -c: what this file could not resolve, for the object to hand on. */
@@ -971,7 +987,11 @@ void out_patch24(int at, int v);
  * and says where, and OBJ_FUNC when it is a function rather than data. */
 enum {
     OBJ_DEFINED = 1,
-    OBJ_FUNC    = 2
+    OBJ_FUNC    = 2,
+    OBJ_BSS     = 4             /* a variable with no room in the text: its
+                                 * value is where in this object's bss it
+                                 * starts, and what address that comes to is
+                                 * the linker's to work out */
 };
 
 /* An object read in: the file's bytes, and where each part of it starts.
@@ -982,7 +1002,7 @@ typedef struct {
     unsigned char *syms, *relocs, *deps, *text;
     char          *strings;
     int            build;    /* the acc that made it: see src/build_id.sh */
-    int            text_len, nsyms, nrelocs, ndeps, strings_len;
+    int            text_len, bss_len, nsyms, nrelocs, ndeps, strings_len;
 } Object;
 
 void obj_write(const char *path);

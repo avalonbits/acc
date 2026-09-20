@@ -5625,7 +5625,7 @@ static void global_emit(Type type, int ext, NameRef name, int count, int line)
  * The kind is the one a definition would push, so that a later declaration
  * of the same thing agrees with this one. */
 static void global_undefined(Type type, int ext, NameRef name, int count,
-                             int line)
+                             int line, int is_extern)
 {
     int kind = count ? SYM_GLOBAL_ARRAY
              : decl_const && !type_is_struct(type) ? SYM_GLOBAL_CONST
@@ -5639,6 +5639,8 @@ static void global_undefined(Type type, int ext, NameRef name, int count,
     sym_at(sym)->quals = decl_bottom_const;
     if (kind == SYM_GLOBAL_ARRAY)
         sym_set_count(sym, count);
+    if (is_extern)
+        sym_set_flags(sym, SYMF_EXTERN);
 }
 
 /* One file-scope variable, or a block's `static` one.
@@ -5667,11 +5669,12 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         int known = name_global(name);
 
         if (known == SYM_NONE) {
-            global_undefined(type, ext, name, count, line);
+            global_undefined(type, ext, name, count, line, 1);
 
             return;
         }
         (void) global_again(known, type, ext, count, line);
+        sym_set_flags(known, SYMF_EXTERN);
 
         return;
     }
@@ -5682,15 +5685,23 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         if (count < 0)
             count = sym_count(sym);
 
-        /* Declared before and given no room then. This declaration is what
-         * reserves it, whether or not it gives a value: `extern int x;` and
-         * then `int x;` is a definition, as C says. */
+        /* Declared before and given no room then. A declaration that gives
+         * it a value is what reserves that room, here, in the file. One
+         * that does not leaves it where it was -- still waiting, and by the
+         * end of the file either in the bss or another file's to define.
+         *
+         * Either way this file is no longer only declaring it: `extern int
+         * x;` and then `int x;` is a definition, as C says, and what makes
+         * it one is that the second says nothing about extern. */
+        if (!decl_extern)
+            sym_clear_flags(sym, SYMF_EXTERN);
         if (sym_at(sym)->val < 0) {
+            if (!again)
+                return;
             redefining = sym;
             global_emit(type, ext, name, count, line);
             redefining = SYM_NONE;
-            if (again)
-                sym_set_flags(sym, SYMF_DEFINED);
+            sym_set_flags(sym, SYMF_DEFINED);
 
             return;
         }
@@ -5707,14 +5718,70 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         return;
     }
 
-    if (count < 0 && !init && !static_local) {
-        global_undefined(type, ext, name, count, line);
+    /* No initial value, so C says it starts at zero -- and zeros do not have
+     * to be in the file. It reserves nothing here; bss_end gives it room
+     * past the image's last byte, unless a later declaration in this file
+     * gives it a value after all. A block's static still takes its zeros in
+     * the file: see the note on the bss in src/gen.c. */
+    if (!init && !static_local) {
+        global_undefined(type, ext, name, count, line, 0);
 
         return;
     }
     global_emit(type, ext, name, count, line);
     if (init && !static_local)
         sym_set_flags(name_global(name), SYMF_DEFINED);
+}
+
+/* How many bytes a variable takes, worked out from what its declaration
+ * said. The same three cases global_emit writes out, asked the other way
+ * round: it is the declaration that is remembered, not the size. */
+static int global_bytes(int sym)
+{
+    const Sym *s = sym_at(sym);
+
+    if (s->kind == SYM_GLOBAL_ARRAY)
+        return sym_count(sym) * type_bytes(s->type, s->ext);
+    if (type_is_struct(s->type))
+        return ext_bytes(s->ext);
+
+    return type_scalar_bytes(s->type);
+}
+
+/* At the end of the file: every variable it declared, never gave a value to,
+ * and did not say another file defines. Those are the ones that start at
+ * zero, and this is where they are given room.
+ *
+ * At the end and not where they are declared, because until the file has
+ * been read a later declaration may still give one of them a value -- which
+ * C calls a tentative definition, and acc has always let it do. */
+static void bss_end(void)
+{
+    int step = (int) sizeof(Sym);
+    int s;
+
+    for (s = 0; s < sym_nglobals(); s += step) {
+        const Sym *sym = sym_at(s);
+        int bytes;
+
+        /* Variables, and only variables. A function has an address or does
+         * not; a typedef and a tag have no room of their own; and an enum
+         * constant's val is the constant itself, which `enum { BELOW = -1 }`
+         * makes negative -- and negative is what "no address yet" looks
+         * like. */
+        if (sym->kind != SYM_GLOBAL && sym->kind != SYM_GLOBAL_ARRAY
+            && sym->kind != SYM_GLOBAL_CONST)
+            continue;
+        if (sym->val >= 0)
+            continue;
+        if (sym_flags(s) & SYMF_EXTERN)
+            continue;                   /* another file's to define */
+        if (sym->kind == SYM_GLOBAL_ARRAY && sym_count(s) < 0)
+            acc_error("'%s' is declared with no size and never given one",
+                      name_text(sym->name));
+        bytes = global_bytes(s);
+        gen_bss_symbol(s, gen_bss_reserve(bytes));
+    }
 }
 
 /* A function declared by a declarator whose type came out a function --
@@ -6014,23 +6081,34 @@ static int link_symbol(const char *text, int flags)
 static void link_object(const char *path)
 {
     Object o;
-    int base, i;
+    int base, bss, i;
 
     obj_read(path, &o);
     base = out_here();
     for (i = 0; i < o.text_len; i++)
         out_byte(o.text[i]);
 
+    /* And room past the image for what it wants at zero. Which address that
+     * comes to is not known until every object has been placed, so this is
+     * only its place in the queue. */
+    bss = gen_bss_reserve(o.bss_len);
+
     /* What it has, at the address it now has it. */
     for (i = 0; i < o.nsyms; i++) {
+        int flags = obj_sym_flags(&o, i);
         int sym;
 
-        if (!(obj_sym_flags(&o, i) & OBJ_DEFINED))
+        if (!(flags & OBJ_DEFINED))
             continue;
-        sym = link_symbol(obj_sym_name(&o, i), obj_sym_flags(&o, i));
-        if (sym_flags(sym) & SYMF_DEFINED)
+        sym = link_symbol(obj_sym_name(&o, i), flags);
+        if ((sym_flags(sym) & SYMF_DEFINED) || gen_bss_offset(sym) >= 0)
             acc_error("'%s' is defined in more than one object, and '%s' is "
                       "one of them", obj_sym_name(&o, i), path);
+        if (flags & OBJ_BSS) {
+            gen_bss_symbol(sym, bss + obj_sym_value(&o, i));
+
+            continue;           /* its address comes with the rest of them */
+        }
         sym_at(sym)->val = base + obj_sym_value(&o, i);
         sym_set_flags(sym, SYMF_DECLARED | SYMF_DEFINED | SYMF_PARAMS);
     }
@@ -6163,6 +6241,7 @@ int main(int argc, char **argv)
         lex_open(in);
         translation_unit();
         lex_end();
+        bss_end();
         gen_finish();
         lex_close();
         obj_write(out);
@@ -6175,6 +6254,7 @@ int main(int argc, char **argv)
         lex_open(in);
         translation_unit();
         lex_end();
+        bss_end();
         gen_finish();
         lex_close();
         if (relocs)

@@ -83,6 +83,7 @@ test: all unit $(BIN)/acc-asan agon
 	@test/macro.sh
 	@ACC=$(BIN)/acc-asan test/reloc.sh
 	@ACC=$(BIN)/acc-asan test/object.sh
+	@ACC=$(BIN)/acc-asan test/bss.sh
 	@test/heap.sh || [ $$? -eq 77 ]
 	@test/cycles.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh

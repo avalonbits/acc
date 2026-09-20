@@ -267,6 +267,15 @@ void sym_set_flags(int sym, int flags)
     fn_sig(sym)->s.flags |= (unsigned char) flags;
 }
 
+/* Taking one back, which only extern needs: a declaration that says it
+ * leaves the defining to another file, and then one in the same file that
+ * does not. */
+void sym_clear_flags(int sym, int flags)
+{
+    fn_room((unsigned) sym);
+    fn_sig(sym)->s.flags &= (unsigned char) ~flags;
+}
+
 unsigned char sym_flags(int sym)
 {
     return fn_sig(sym)->s.flags;

@@ -3076,6 +3076,133 @@ int gen_extern_sym(int i)
     return externs[i].fn;
 }
 
+/* ------------------------------------------------------------------ */
+/* what starts at zero                                                 */
+
+/* A variable C says starts at zero takes no room in the file. It is given an
+ * address past the image's last byte instead, and the program clears what is
+ * there before main runs. `int big[1000];` was three thousand bytes of zeros
+ * to read off the card; now it is three thousand bytes of nothing.
+ *
+ * Where any of it goes is not known until the whole image has been written,
+ * so each one is a symbol without an address until then -- which is what a
+ * variable another file defines already was, and rides the same fixups. What
+ * that costs is the folding: `a[3]` is a load and an add where a variable
+ * whose address was known as it was compiled is one load.
+ *
+ * Only what is at file scope, for now. A block's `static` still takes its
+ * zeros in the file, because it is a local symbol that is gone by the time
+ * the addresses are handed out, and reaching it needs a relocation against
+ * the start of the bss rather than against a symbol of its own. */
+typedef struct {
+    int sym, at;
+} BssSym;
+
+static BssSym *bss_syms;
+static int     nbss_syms, bss_syms_cap;
+static int     bss_len;
+static int     bss_init_hole = -1;      /* the stub's call to the clearing */
+
+/* Room in the bss, and where in it. The linker asks for a whole object's
+ * worth at once and hands out the pieces itself. */
+int gen_bss_reserve(int bytes)
+{
+    int at = bss_len;
+
+    if (bytes < 0 || bss_len + bytes < bss_len)
+        acc_error("internal: %d bytes of bss", bytes);
+    bss_len += bytes;
+
+    return at;
+}
+
+void gen_bss_symbol(int sym, int at)
+{
+    if (nbss_syms == bss_syms_cap) {
+        bss_syms_cap = bss_syms_cap ? bss_syms_cap * 2 : 16;
+        bss_syms = realloc(bss_syms, (size_t) bss_syms_cap * sizeof *bss_syms);
+        if (!bss_syms)
+            acc_error("out of memory for the variables that start at zero");
+    }
+    bss_syms[nbss_syms].sym = sym;
+    bss_syms[nbss_syms].at = at;
+    nbss_syms++;
+}
+
+/* Where in the bss a symbol is, or -1 when it is not there. Asked by the
+ * object writer, of every symbol it exports, so that the object can say
+ * which of them have room in the file and which want it cleared. */
+int gen_bss_offset(int sym)
+{
+    int i;
+
+    for (i = 0; i < nbss_syms; i++)
+        if (bss_syms[i].sym == sym)
+            return bss_syms[i].at;
+
+    return -1;
+}
+
+int gen_bss_len(void)
+{
+    return bss_len;
+}
+
+/* The routine that clears the bss, and the addresses of everything in it.
+ *
+ * Last of all, so that what follows the image's last byte is the bss itself
+ * -- which is the whole point: the file stops, and the zeros do not have to
+ * be in it. The routine is in the file, just before them.
+ *
+ * It has three shapes, and which one follows from how much there is to
+ * clear, so its own length is known before it is written and with it where
+ * the bss starts. One byte is the shape that has to be told apart: `ld (hl),
+ * 0` has already cleared it, and an ldir of the nothing left over would be
+ * an ldir of bc = 0, which on this chip is not nothing but sixteen
+ * megabytes -- it cleared the machine out from under the program. */
+#define BSS_INIT_ONE  7                 /* ld hl, base / ld (hl), 0 / ret */
+#define BSS_INIT_LEN  17                /* and an ldir along the rest */
+
+static void bss_emit(void)
+{
+    int base, i;
+
+    if (bss_init_hole < 0)
+        return;                         /* no entry stub: nothing calls it */
+
+    out_patch24(bss_init_hole, out_here());
+    if (!bss_len) {
+        out_byte(0xc9);                 /* ret */
+
+        return;
+    }
+
+    base = out_here() + (bss_len == 1 ? BSS_INIT_ONE : BSS_INIT_LEN);
+    if (base - out_base + bss_len > ACC_RAM_BYTES)
+        acc_error("the program and what it leaves at zero come to %d bytes, "
+                  "and the Agon has %d for both",
+                  base - out_base + bss_len, ACC_RAM_BYTES);
+
+    out_byte(0x21);                             /* ld hl, base */
+    out_reloc(out_here());
+    out_word24(base);
+    out_byte2(0x36, 0x00);                      /* ld (hl), 0 */
+    if (bss_len > 1) {
+        out_byte(0x11);                         /* ld de, base + 1 */
+        out_reloc(out_here());
+        out_word24(base + 1);
+        out_byte(0x01);                         /* ld bc, bss_len - 1 */
+        out_word24(bss_len - 1);
+        out_byte2(0xed, 0xb0);                  /* ldir */
+    }
+    out_byte(0xc9);                             /* ret */
+
+    for (i = 0; i < nbss_syms; i++) {
+        sym_at(bss_syms[i].sym)->val = base + bss_syms[i].at;
+        sym_set_flags(bss_syms[i].sym, SYMF_DEFINED);
+    }
+}
+
 /* A symbol the fixups are waiting on that nothing here has given an address
  * to. A function has one once its body has been read -- asked of the flag
  * and not of the address, because an object puts its first function at
@@ -3116,6 +3243,7 @@ void gen_finish(void)
             extern_add(rt_fixups[i].at, rt_symbol(rt_fixups[i].which));
     } else {
         rt_emit_used();
+        bss_emit();
     }
 
     for (i = 0; i < nfixups; i++) {
@@ -3212,9 +3340,18 @@ void gen_startup(int report_by_exit)
     int m = sym_push(name_intern("main", 4), SYM_FUNC, 0);
     const unsigned char *stub = report_by_exit ? startup_exit : startup_print;
     int n = report_by_exit ? (int) sizeof startup_exit : (int) sizeof startup_print;
-    int base = out_here();
+    int base;
     int i;
 
+    /* Clearing what starts at zero comes first, and is a routine emitted at
+     * the end once there is an address and a length for it. The call is
+     * here whether there turns out to be anything to clear or not: four
+     * bytes and a `ret`, against working out how to not have made the call. */
+    out_reloc(out_here() + 1);
+    out_opcode24(0xcd, 0);                       /* call the clearing */
+    bss_init_hole = out_here() - ACC_INT_SIZE;
+
+    base = out_here();
     for (i = 0; i < n; i++)
         out_byte(stub[i]);
 

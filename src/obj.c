@@ -24,14 +24,15 @@
  * read and write in one move. Names are a blob of NUL-terminated strings
  * that everything else points into by offset.
  *
- *   0   4   'A', 'C', 'C', 2        what it is, and the version of this
+ *   0   4   'A', 'C', 'C', 3        what it is, and the version of this
  *   4   3   build                   which acc made it: see src/build_id.sh
  *   7   3   text_len
- *   10  3   nsyms
- *   13  3   nrelocs
- *   16  3   ndeps
- *   19  3   strings_len
- *   22      symbols   nsyms   * 7   name, value, flags
+ *   10  3   bss_len                 room it wants past the image, at zero
+ *   13  3   nsyms
+ *   16  3   nrelocs
+ *   19  3   ndeps
+ *   22  3   strings_len
+ *   25      symbols   nsyms   * 7   name, value, flags
  *           relocs    nrelocs * 6   at, sym
  *           deps      ndeps   * 12  path, size, sum, weighted
  *           strings   strings_len
@@ -40,6 +41,10 @@
  * The text is what the compiler emitted with the image based at zero, so
  * every address in it is an offset from its own first byte. Placing it is
  * adding one number to the slots the relocations name.
+ *
+ * A symbol with OBJ_BSS has no room in the text: its value is where in this
+ * object's bss it starts, and the address it ends up with is not known until
+ * every object has been placed and the bss laid out after them all.
  *
  * A relocation's `sym` is zero for a slot that holds an address inside this
  * object -- which is nearly all of them -- and otherwise one more than the
@@ -52,8 +57,8 @@
  * they answer -- "does this object have to be made again?" -- is about the
  * object. An answer kept in a file of its own is one that can be lost, or go
  * stale, on its own. */
-#define OBJ_VERSION  2
-#define OBJ_HEADER   22
+#define OBJ_VERSION  3
+#define OBJ_HEADER   25
 #define OBJ_SYM      7
 #define OBJ_RELOC    6
 #define OBJ_DEP      12
@@ -173,6 +178,7 @@ void obj_write(const char *path)
     fputc(OBJ_VERSION, f);
     put_num(f, ACC_BUILD);
     put_num(f, out_len());
+    put_num(f, gen_bss_len());
     put_num(f, nsyms);
     put_num(f, nrelocs);
     put_num(f, ndeps);
@@ -180,20 +186,33 @@ void obj_write(const char *path)
 
     for (s = 0, n = 0; s < nglobals; s += step, n++) {
         const Sym *sym = sym_at(s);
-        int defined;
+        int bss_at = gen_bss_offset(s);
+        int defined, value, kind;
 
         if (index_of[n] < 0)
             continue;
-        /* A function is defined here when its body has been read, and a
-         * variable when this object has room for it. A declaration that only
-         * said extern reserves nothing and leaves -1 behind, which is what
-         * makes the symbol one the linker has to find elsewhere. */
-        defined = sym->kind == SYM_FUNC ? (sym_flags(s) & SYMF_DEFINED) != 0
-                                        : sym->val >= 0;
+
+        /* A function is defined here when its body has been read. A variable
+         * is defined here when this object has room for it, either in the
+         * text or in the bss; a declaration that only said extern reserves
+         * neither and leaves -1 behind, which is what makes the symbol one
+         * the linker has to find somewhere else. */
+        if (bss_at >= 0) {
+            defined = 1;
+            value = bss_at;
+            kind = OBJ_BSS;
+        } else if (sym->kind == SYM_FUNC) {
+            defined = (sym_flags(s) & SYMF_DEFINED) != 0;
+            value = defined ? sym->val : 0;
+            kind = OBJ_FUNC;
+        } else {
+            defined = sym->val >= 0;
+            value = defined ? sym->val : 0;
+            kind = 0;
+        }
         put_num(f, name_at[n]);
-        put_num(f, defined ? sym->val : 0);
-        fputc((defined ? OBJ_DEFINED : 0)
-              | (sym->kind == SYM_FUNC ? OBJ_FUNC : 0), f);
+        put_num(f, value);
+        fputc((defined ? OBJ_DEFINED : 0) | kind, f);
     }
 
     for (i = 0; i < nrelocs; i++) {
@@ -280,10 +299,11 @@ static int read_object(const char *path, Object *o, int complain)
     o->path = path;
     o->build = get24(all + 4);
     o->text_len = get24(all + 7);
-    o->nsyms = get24(all + 10);
-    o->nrelocs = get24(all + 13);
-    o->ndeps = get24(all + 16);
-    o->strings_len = get24(all + 19);
+    o->bss_len = get24(all + 10);
+    o->nsyms = get24(all + 13);
+    o->nrelocs = get24(all + 16);
+    o->ndeps = get24(all + 19);
+    o->strings_len = get24(all + 22);
 
     at = OBJ_HEADER;
     o->syms = all + at;
