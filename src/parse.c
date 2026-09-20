@@ -2140,6 +2140,46 @@ static int constant_int(const char *what, int line)
     return constant_folded(what, line, before);
 }
 
+/* Whether a parameter list is being read, which is the only place C99 lets
+ * `static` and the qualifiers stand inside an array's brackets. */
+static int in_params;
+
+/* What may follow a `[` in a parameter: `int a[static 3]`, which promises
+ * the caller passes at least three, and qualifiers, which belong to the
+ * pointer the parameter becomes -- `char s[const]` is `char *const s`.
+ * Both are promises to the compiler rather than a change of type, and acc
+ * keeps neither: the parameter is the pointer it always was, and the
+ * promise is the program's to keep.
+ *
+ * Anywhere else they are a constraint violation, and someone who writes
+ * `int a[static 3]` for a local has said something that does not mean what
+ * they think, so it is refused rather than ignored. */
+static void array_brackets(int line)
+{
+    int had_static = 0, had_qualifier = 0;
+
+    for (;;) {
+        if (tok == TK_KW_STATIC) {
+            if (had_static)
+                acc_error_at(line, "'static' twice inside []");
+            had_static = 1;
+        } else if (tok_qualifier()) {
+            had_qualifier = 1;
+        } else {
+            break;
+        }
+        next();
+    }
+    if (!had_static && !had_qualifier)
+        return;
+    if (!in_params)
+        acc_error_at(line, "'static' and qualifiers inside [] say something "
+                           "about a parameter, and this is not one");
+    if (had_static && tok == TK_RBRACKET)
+        acc_error_at(line, "'static' inside [] needs the number the caller "
+                           "passes at least");
+}
+
 /* The dimensions after a name being declared: `[N]`, `[]`, `[N][M]` and so
  * on. Returns how many there were. When there were any, *count is the number
  * of elements -- -1 for `[]`, which only the first may be -- and *elem their
@@ -2154,6 +2194,7 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
         int line = tok_line, d = -1;
 
         next();
+        array_brackets(line);
         if (n == 8)
             acc_error_at(line, "an array may have at most 8 dimensions");
         if (tok != TK_RBRACKET) {
@@ -2190,7 +2231,6 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
 /* Whether a declarator may leave its name out, as a prototype's parameter
  * may: `int f(char *, int [4])`. */
 static int abstract_ok;
-
 
 static NameRef declared_name(void)
 {
@@ -2656,6 +2696,7 @@ static NameRef decl_direct(void)
         if (accept(TK_LBRACKET)) {
             int n = -1, line = tok_line;
 
+            array_brackets(line);
             if (tok != TK_RBRACKET) {
                 n = constant_int("an array's size", line);
                 if (n <= 0)
@@ -2710,7 +2751,7 @@ static NameRef decl_full(void)
  * `()` does not give them. */
 static int param_types(int *first, int *count)
 {
-    int saved_abstract = abstract_ok, variadic = 0;
+    int saved_abstract = abstract_ok, saved_params = in_params, variadic = 0;
 
     *first = sym_params_begin();
     *count = 0;
@@ -2723,6 +2764,7 @@ static int param_types(int *first, int *count)
         return 1;
     }
     abstract_ok = 1;
+    in_params = 1;
     for (;;) {
         Type base, type;
         int bx, ext, n;
@@ -2753,6 +2795,7 @@ static int param_types(int *first, int *count)
         }
     }
     abstract_ok = saved_abstract;
+    in_params = saved_params;
     expect(TK_RPAREN, "')'");
 
     return 1 | variadic;
@@ -4334,6 +4377,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
         argoff += ACC_PTR_SIZE;
     nstruct_params = 0;
     abstract_ok = 1;
+    in_params = 1;
     if (tok == TK_KW_VOID && lex_rparen_follows()) {
         next();
     } else if (tok == TK_RPAREN) {
@@ -4419,6 +4463,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
         }
     }
     abstract_ok = 0;
+    in_params = 0;
     expect(TK_RPAREN, "')'");
 
     if (declared) {
