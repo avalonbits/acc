@@ -5139,6 +5139,51 @@ static void cycles_report(void)
 #define cycles_report()
 #endif
 
+#if defined(AGONDEV) && defined(ACC_STACK)
+/* How deep the stack goes, for sizing the room the linker script leaves it
+ * above the heap.
+ *
+ * The reserve -- everything from the heap's top to the stack's bottom -- is
+ * painted before the compile and read back after it. The lowest byte still
+ * holding the pattern is as far down as the stack reached, give or take a
+ * frame that wrote nothing. Nothing else is in that region: the heap stops
+ * at ___heaptop, which is where the painting starts.
+ *
+ * Built by `make -f Makefile.agon STACK=1`. Not in the ordinary build: the
+ * painting is a pass over 8 KB, and the report would be noise in front of
+ * every compile. */
+/* The linker's own symbols, whose names gain an underscore on the way from
+ * C to the assembler: ___heaptop and __stack. */
+extern char __heaptop[], _stack[];
+
+#define STACK_PAINT 0x5a
+
+static void stack_paint(void)
+{
+    char here;
+    char *p;
+
+    /* Up to a little below this frame, which is live. */
+    for (p = __heaptop; p < &here - 64; p++)
+        *p = STACK_PAINT;
+}
+
+static void stack_report(void)
+{
+    char *p;
+
+    for (p = __heaptop; p < _stack; p++)
+        if (*p != STACK_PAINT)
+            break;
+
+    printf("Stack: %u bytes of %u reserved\r\n",
+           (unsigned) (_stack - p), (unsigned) (_stack - __heaptop));
+}
+#else
+#define stack_paint()
+#define stack_report()
+#endif
+
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL;
@@ -5169,6 +5214,7 @@ int main(int argc, char **argv)
         usage();
 
     begin = clock();
+    stack_paint();
     cycles_start();
 
     name_init();
@@ -5190,6 +5236,7 @@ int main(int argc, char **argv)
      * "how long did that take" is asking about, and nothing else. */
     cs = elapsed_cs(begin, clock());
     cycles_report();
+    stack_report();
     printf("Done in %u.%02u seconds\r\n", cs / 100, cs % 100);
 
     return 0;

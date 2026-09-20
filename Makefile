@@ -66,6 +66,7 @@ $(BIN):
 test: all unit $(BIN)/acc-asan
 	@test/abi.sh || [ $$? -eq 77 ]
 	@test/helpers.sh || [ $$? -eq 77 ]
+	@test/heap.sh || [ $$? -eq 77 ]
 	@test/cycles.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh
 	@ACC=$(BIN)/acc-asan test/errors.sh
