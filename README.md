@@ -3,21 +3,34 @@
 A C compiler written for the Agon Light: one that runs **on** the machine,
 in the 448 KB it gives a program for code, data, heap and stack together.
 
-It is early, and it is being written towards C99. What works today:
+It is being written towards C99. What works today:
 
-  * `char`, `short`, `int` and the `unsigned` form of each, at agondev's
-    widths -- 1, 2 and 3 bytes -- so a program compiled by either comes out
-    the same
-  * functions, parameters, locals, calls, recursion, forward references
-  * `+ - * / %`, unary minus, `~`, `& | ^ << >>`, and all six comparisons,
-    signed or unsigned according to the operands
-  * `if`, `else`, `else if`, `while`
-  * both comment forms
+  * every scalar type at agondev's widths, so a program compiled by either
+    comes out the same: `char`, `short`, `int` and their `unsigned` forms at
+    1, 2 and 3 bytes; `long` at 4; `long long` at 8; `float` and `double`,
+    which are both the same 4-byte IEEE 754 single there; `long double`,
+    which is an 8-byte double; `_Bool`; and pointers, seven deep
+  * every operator C has, including `?:`, `&&`, `||`, the compound
+    assignments, `++` and `--`, `sizeof` and casts, at every width
+  * `if`, `while`, `for`, `do`, `switch`, `break`, `continue`, `goto` and
+    labels, and blocks with declarations anywhere in them
+  * functions, prototypes, recursion, forward references, pointers to
+    functions, and variable arguments with `va_list`
+  * `struct`, `union`, `enum`, `typedef`, bit-fields, arrays of any
+    dimension, initialisers with braces, and structs passed, returned and
+    assigned by value
+  * `static`, `extern`, `const`, `volatile`, `register`, `auto` and
+    `inline`, with `const` checked through pointers, elements and members
+  * string and character literals with their escapes, and both comment forms
+
+What is not there yet: the preprocessor, and a C library. The arithmetic
+libagon has no routine for is refused rather than half-done -- `long double`
+is held, passed and converted but not added.
 
 One `.c` file in, a runnable MOS binary out: no linker, no preprocessor and
-no library. `* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value, so
-acc carries those routines and emits the ones a program uses into that
-program's image.
+no library. `* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value,
+and nothing wider than a register has one at all, so acc carries those
+routines and emits the ones a program uses into that program's image.
 
     $ cat t.c
     int add(int a, int b) { return a + b; }
@@ -53,9 +66,10 @@ that are only turned into instructions when something needs them. That is
 tinycc's model, and it is kept because it is both the fastest way to compile C
 and the smallest.
 
-What is not kept is tinycc's memory: a symbol here is 7 bytes, names live in
-one arena that is never freed, and the output is a flat MOS image written
-directly rather than ELF sections assembled and then relocated.
+What is not kept is tinycc's memory: a symbol here is 10 bytes and a type is
+one, names live in one arena that is never freed, and the output is a flat
+MOS image written directly rather than ELF sections assembled and then
+relocated.
 
 ## Testing, without an oracle
 
@@ -79,11 +93,13 @@ Each step is meant to be finished and measured before the next one starts.
 | | |
 | --- | --- |
 | functions, `int`, `+ - ~`, calls, locals | done |
-| the operators the chip lacks: `* / % & \| ^ << >>` | next |
-| `if`, `while`, `for`, comparisons | |
-| globals, `char`, `short`, pointers, arrays | |
-| a preprocessor | |
-| `struct`, `union`, `enum`, `typedef` | |
+| the operators the chip lacks: `* / % & \| ^ << >>` | done |
+| `if`, `while`, `for`, comparisons | done |
+| globals, `char`, `short`, pointers, arrays | done |
+| `struct`, `union`, `enum`, `typedef` | done |
+| `long`, `float`, `long long`, `long double`, `_Bool` | done |
+| bit-fields, pointers to functions, `...` and `va_list` | done |
+| a preprocessor | next |
 | linking against libagon, so there is a C library | |
 
 ## License
