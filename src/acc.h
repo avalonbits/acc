@@ -450,6 +450,10 @@ enum {
                          * array area, where it lives as an array does */
     SYM_LOCAL_CONST,    /* a const local or parameter: as SYM_LOCAL, but it
                          * reads as a value, which cannot be assigned to */
+    SYM_LOCAL_VLA,      /* an array whose length the program works out: val
+                         * is the frame offset of the pointer to its room,
+                         * taken from the stack where it was declared, and
+                         * sym_count is the offset of its size in bytes */
     SYM_FUNC,           /* a function: val is its address in the image */
     SYM_GLOBAL,         /* a file-scope variable: val is its address */
     SYM_GLOBAL_ARRAY,   /* a file-scope array: val is its address */
@@ -471,7 +475,7 @@ enum {
 
 /* Whether a symbol of this kind belongs to the function being compiled
  * rather than to file scope. */
-#define sym_kind_local(kind) ((unsigned) (kind) <= SYM_LOCAL_CONST)
+#define sym_kind_local(kind) ((unsigned) (kind) <= SYM_LOCAL_VLA)
 
 /* Ten bytes on the target: a name, a kind, one number whose meaning the
  * kind decides, a type with its extension, and its qualifiers. tinycc's
@@ -599,7 +603,18 @@ enum { R_HL = 0, R_DE, R_BC, NREGS };
 void gen_init(void);
 void gen_func_begin(int fn, int nparams, Type returns);
 void gen_func_end(void);
-int  gen_local(int size);             /* reserve a slot; returns its offset */
+int  gen_local(int size);
+
+/* An array whose length is not known until it runs: the room comes off the
+ * stack where it is declared and goes back when the block ends.
+ *
+ * gen_stack_take reads the byte count from the top of the value stack,
+ * takes that much, and leaves the address in the local at `slot`.
+ * gen_stack_mark notes where the stack is, and gen_stack_back puts it
+ * there again -- at the end of the block, and before a jump out of it. */
+void gen_stack_take(int slot);
+void gen_stack_mark(int slot);
+void gen_stack_back(int slot);
 int  gen_local_array(void);           /* a new local array; returns its number */
 void gen_local_array_size(int array, int size);  /* and how big, once known */
 void vaddr_array(int array, Type elem);  /* its first element's address */

@@ -2948,6 +2948,47 @@ int gen_local(int size)
     return -locals_size;
 }
 
+/* The stack, as an array whose length only the program knows.
+ *
+ * The frame itself is reached through ix and does not move, so taking room
+ * off the stack costs nothing but sp: the bytes are below everything the
+ * frame holds, and `ld sp, ix` in the epilogue gives them all back at once.
+ * What these three add is giving them back earlier -- at the end of the
+ * block that took them, so that a loop does not take the room again on
+ * every turn. */
+void gen_stack_take(int slot)
+{
+    save_regs_below(1);
+    force_into(vsp - 1, R_HL);          /* the byte count */
+    vdrop();
+    evict_reg(R_DE);
+    ex_de_hl();
+    ld_rr_imm(R_HL, 0);
+    out_byte(0x39);                     /* add hl, sp */
+    or_a_a();
+    sbc_hl_rr(R_DE);                    /* hl = sp - bytes */
+    out_byte(0xf9);                     /* ld sp, hl */
+    need_disp(slot);
+    ld_ix_rr(slot, R_HL);               /* and that is where the array is */
+}
+
+void gen_stack_mark(int slot)
+{
+    evict_reg(R_HL);
+    ld_rr_imm(R_HL, 0);
+    out_byte(0x39);                     /* add hl, sp */
+    need_disp(slot);
+    ld_ix_rr(slot, R_HL);
+}
+
+void gen_stack_back(int slot)
+{
+    evict_reg(R_HL);
+    need_disp(slot);
+    ld_rr_ix(R_HL, slot);
+    out_byte(0xf9);                     /* ld sp, hl */
+}
+
 int gen_local_array(void)
 {
     if (narrays == array_end_cap) {

@@ -1,7 +1,7 @@
-/* expect: 5: error: an array's size has to be a constant integer */
-/* Variable-length arrays are C99, and not in acc yet. */
+/* expect: 5: error: an array's length has to be an integer */
+/* A length worked out as the program runs is C99's, and acc has it; what
+ * it still has to be is an integer. */
 int main(void) {
-    int n = 4;
-    int a[n];
-    return 0;
+    int a[1.5];
+    return a[0];
 }

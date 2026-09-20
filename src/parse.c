@@ -419,6 +419,15 @@ static int name_operand(int sym, NameRef name)
         vset_quals(s->quals);
         object = 0;
         break;
+    case SYM_LOCAL_VLA:
+        /* The pointer the declaration left: an array is its first
+         * element's address wherever it is used, and here that address is
+         * a value the program worked out. */
+        vpush_local(s->val, s->type);
+        vset_ext(s->ext);
+        vset_quals(s->quals);
+        object = 0;
+        break;
     case SYM_LOCAL_STRUCT:
         vaddr_array(s->val, TY_STRUCT);
         vset_ext(s->ext);
@@ -741,6 +750,13 @@ static void address_of(void)
     case NAME_RESULT:
         acc_error_at(line, "what a call comes to has no address to take");
     }
+
+    /* An array whose length was worked out as the program ran is already
+     * its own address: `&a` and `a` are the same three bytes, and the type
+     * C gives the first -- a pointer to an array of n -- is not one acc has
+     * a way of writing down. */
+    if (sym_at(sym)->kind == SYM_LOCAL_VLA)
+        return;
 
     /* A whole array: the same address as its first element, as a pointer to
      * the array, which steps over all of it at once. */
@@ -2188,9 +2204,83 @@ static int constant_int(const char *what, int line)
     return constant_folded(what, line, before);
 }
 
+/* Whether the array just read has a length the program works out: its
+ * value is on the value stack, waiting for the declaration to take the room
+ * for it. */
+static int vla_length;
+
+/* Where the stack was when the block being compiled started taking room for
+ * arrays whose lengths it works out, or -1 when it has taken none.
+ *
+ * The room goes back at the end of the block, so that a loop whose body
+ * declares one does not take it again on every turn, and before a break or
+ * a continue, which leave the block without reaching its end. A return
+ * needs nothing: the epilogue puts the stack back where the frame says.
+ *
+ * A goto out of such a block is the one way left that does not give the
+ * room back. It is not wrong -- nothing is overwritten, and the function's
+ * return frees it -- but a goto in a loop can take the room again on every
+ * turn, and acc does not stop it.
+ *
+ * One mark a block, taken before the first of its arrays: everything after
+ * it goes back at once. */
+static int vla_mark = -1;
+
+/* The block's mark, made if this is the first array in it to need one. */
+static void block_vla_mark(void)
+{
+    if (vla_mark >= 0)
+        return;
+    vla_mark = gen_local(ACC_PTR_SIZE);
+    gen_stack_mark(vla_mark);
+}
+
 /* Whether a parameter list is being read, which is the only place C99 lets
  * `static` and the qualifiers stand inside an array's brackets. */
 static int in_params;
+
+/* An array's size from inside its brackets: the number if it is a constant,
+ * and -1 with the length left on the value stack if it is not, which is
+ * C99's variable-length array.
+ *
+ * A length that is not a constant is only an array inside a function. At
+ * file scope there is nothing to work it out with, and in a parameter it
+ * says nothing -- the parameter is a pointer either way -- so there the
+ * expression is read for its syntax and thrown away with the code it
+ * emitted. */
+static int array_size(const char *what, int line, int *variable)
+{
+    GenMark mark;
+    int before = out_here();
+    Type outer = narrow_dest;
+    int val;
+    Type type;
+
+    *variable = 0;
+    gen_mark(&mark);
+    narrow_dest = 0;
+    binary(PREC_LOWEST);
+    narrow_dest = outer;
+
+    if (vconst_top(&val, &type) && out_here() == before
+        && !type_pointer(type) && !type_float(type)) {
+        vdrop();
+
+        return val;
+    }
+    if (!in_body || in_params) {
+        gen_rollback(&mark);
+        if (in_params)
+            return -1;                  /* `int a[n]` is `int *a` */
+        acc_error_at(line, "%s has to be a constant integer", what);
+    }
+    if (type_pointer(vtype()) || type_float(vtype()))
+        acc_error_at(line, "an array's length has to be an integer");
+    vconvert(TY_INT);
+    *variable = 1;
+
+    return -1;
+}
 
 /* What may follow a `[` in a parameter: `int a[static 3]`, which promises
  * the caller passes at least three, and qualifiers, which belong to the
@@ -2238,6 +2328,7 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
 {
     int dims[8], n = 0, i;
 
+    vla_length = 0;
     while (tok == TK_LBRACKET) {
         int line = tok_line, d = -1;
 
@@ -2246,9 +2337,26 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
         if (n == 8)
             acc_error_at(line, "an array may have at most 8 dimensions");
         if (tok != TK_RBRACKET) {
-            d = constant_int("an array's size", line);
-            if (d <= 0)
+            int variable;
+
+            d = array_size("an array's size", line, &variable);
+            if (variable) {
+                /* Only the first: the ones after it are how far an element
+                 * steps, and a step the compiler cannot work out is a
+                 * multiply on every subscript. */
+                if (n > 0)
+                    acc_error_at(line, "only an array's first dimension may "
+                                       "be worked out as it runs");
+                vla_length = 1;
+            } else if (d < 0) {
+                /* A parameter's `[n]`, which array_size threw away: the
+                 * parameter is a pointer, as `[]` would have made it. */
+                if (n > 0)
+                    acc_error_at(line, "only an array's first dimension may "
+                                       "be left out");
+            } else if (d == 0) {
                 acc_error_at(line, "an array needs at least one element");
+            }
         } else if (n > 0) {
             acc_error_at(line, "only an array's first dimension may be left "
                                "out");
@@ -2490,6 +2598,12 @@ static void cast_operand(Type to, int x, int quals)
  * points at. */
 enum { SIZEOF_OBJECT, SIZEOF_VALUE };
 
+/* Whether sizeof was asked about an array whose length the program worked
+ * out, and where its size is: not a number the compiler has, but a value in
+ * the frame beside it. A frame offset is negative, so the flag is its own. */
+static int sizeof_vla;
+static int sizeof_vla_slot;
+
 static int sizeof_unary(void);
 
 /* The subscripts after an operand, each of which designates an element, and
@@ -2554,6 +2668,16 @@ static int sizeof_unary(void)
         if (sym != SYM_NONE && sym_at(sym)->kind == SYM_FUNC)
             acc_error_at(tok_line, "'%s' is a function, which has no size",
                          name_text(name));
+
+        /* `sizeof a` where a's length was worked out as the program ran:
+         * the answer is in the frame beside it. A subscript or a member
+         * after it is an ordinary size again. */
+        if (sym != SYM_NONE && sym_at(sym)->kind == SYM_LOCAL_VLA
+            && !tok_postfix()) {
+            sizeof_vla = 1;
+            sizeof_vla_slot = sym_count(sym);
+        }
+
         switch (name_operand(sym, name)) {
         case NAME_CONST:
             return SIZEOF_VALUE;
@@ -2572,6 +2696,8 @@ static int sizeof_unary(void)
         case NAME_VALUE: {
             const Sym *array = sym_at(sym);
 
+            if (sizeof_vla)
+                return SIZEOF_VALUE;    /* the size is read, not counted */
             if (sym_count(sym) < 0)
                 acc_error_at(tok_line, "'%s' has no size yet",
                              name_text(name));
@@ -2750,6 +2876,7 @@ static void sizeof_value(void)
     Type type;
 
     next();
+    sizeof_vla = 0;
     paren = accept(TK_LPAREN);
     if (paren && starts_decl()) {
         type = type_name(&x);
@@ -2767,6 +2894,14 @@ static void sizeof_value(void)
         if (what == SIZEOF_OBJECT)
             type = type_deref(type);
         gen_rollback(&mark);
+
+        /* An array whose length the program worked out: its size is the
+         * value the declaration put beside it. */
+        if (sizeof_vla) {
+            vpush_local(sizeof_vla_slot, TY_UINT);
+
+            return;
+        }
     }
 
     if (type == TY_VOID)
@@ -3098,6 +3233,7 @@ NameRef direct_declarator(Type t, int tx, Type *type, int *ext, int *count)
 {
     NameRef name;
 
+    vla_length = 0;             /* of this declarator, and not the last */
     if (tok != TK_IDENT) {
         name = paren_declarator(t, tx, type, ext, count);
     } else {
@@ -3692,6 +3828,50 @@ static int local_array_object(Type elem, int elem_x, int *countp, int line,
     return array;
 }
 
+/* `int a[n];` -- an array whose length the program works out. The room
+ * comes off the stack where the declaration stands, and the name is bound
+ * to a pointer to it: a local holding the address, which is what makes
+ * `a[i]` the subscript it already is, and another holding the size in
+ * bytes, which is what sizeof reads.
+ *
+ * The length is on the value stack, left there by array_size. C99 says it
+ * has to be positive; a length of zero or less takes no room and leaves a
+ * pointer that nothing may be read through, which is what the program asked
+ * for.
+ *
+ * The room goes back at the end of the block, and not before: see
+ * block_vla_mark. An initialiser is not allowed -- C99 says so, and there
+ * would be no telling how many values to expect. */
+__attribute__((noinline))
+static void local_vla(Type elem, int elem_x, NameRef name, int line)
+{
+    int step = type_bytes(elem, elem_x);
+    int ptr = gen_local(ACC_PTR_SIZE);
+    int size = gen_local(ACC_INT_SIZE);
+    int sym;
+
+    not_void(elem, "an array's element", line);
+    block_vla_mark();
+
+    /* bytes = length * the element's size, and the size local holds it. */
+    if (step != 1) {
+        vpush_const(step, TY_INT);
+        vapply(TK_STAR, 0);
+    }
+    vstore_local(size, TY_UINT);
+    gen_stack_take(ptr);
+    gen_stmt_end();
+
+    if (tok == TK_ASSIGN)
+        acc_error_at(line, "an array whose length is worked out as it runs "
+                           "cannot have an initialiser");
+
+    sym = sym_push(name, SYM_LOCAL_VLA, ptr);
+    sym_at(sym)->type = type_ptr_to(elem);
+    sym_at(sym)->ext = (unsigned char) elem_x;
+    sym_set_count(sym, size);
+}
+
 static void local_array(Type elem, int elem_x, NameRef name, int count,
                         int line)
 {
@@ -3895,6 +4075,14 @@ void declaration(void)
                 break;
             continue;
         }
+        if (vla_length) {
+            local_vla(type, ext, name, line);
+            if (bc)
+                sym_at(sym_find(name))->quals |= SQ_CONST;
+            if (!accept(TK_COMMA))
+                break;
+            continue;
+        }
         if (count) {
             local_array(type, ext, name, count, line);
             if (bc)
@@ -4067,6 +4255,8 @@ static void break_statement(void)
     expect(TK_SEMI, "';'");
     if (jumps.break_mark < 0)
         acc_error_at(line, "'break' is not inside a loop or a switch");
+    if (vla_mark >= 0)
+        gen_stack_back(vla_mark);
     hole_push(&breaks, gen_jump());
 }
 
@@ -4079,6 +4269,8 @@ static void continue_statement(void)
     expect(TK_SEMI, "';'");
     if (jumps.continue_mark < 0)
         acc_error_at(line, "'continue' is not inside a loop");
+    if (vla_mark >= 0)
+        gen_stack_back(vla_mark);
     if (jumps.continue_to >= 0)
         gen_jump_to(jumps.continue_to);
     else
@@ -4487,8 +4679,10 @@ static void for_statement(void)
 static void block(void)
 {
     int mark = sym_scope_begin(), outer = scope_mark;
+    int outer_vla = vla_mark;
 
     scope_mark = mark;
+    vla_mark = -1;
     while (tok != TK_RBRACE && tok != TK_EOF) {
         if (starts_decl())
             declaration();
@@ -4496,6 +4690,9 @@ static void block(void)
             statement();
     }
     expect(TK_RBRACE, "'}'");
+    if (vla_mark >= 0)
+        gen_stack_back(vla_mark);       /* the room those arrays took */
+    vla_mark = outer_vla;
     sym_scope_end(mark);
     scope_mark = outer;
 }
