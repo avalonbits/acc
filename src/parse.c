@@ -204,6 +204,7 @@ static void global_address(const Sym *global)
         acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                      TY_PTR_MAX);
     vpush_const(global->val, type_ptr_to(global->type));
+    vset_addr();
     if (global->ext)
         vset_ext(global->ext);
     if (global->quals)
@@ -439,6 +440,7 @@ static int name_operand(int sym, NameRef name)
             acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                          TY_PTR_MAX);
         vpush_const(s->val, type_ptr_to(s->type));
+        vset_addr();
         vset_ext(s->ext);
         vset_quals(s->quals);
         object = 0;
@@ -665,6 +667,7 @@ static void late_address(const Sym *s)
     int ext = s->ext, quals = s->quals;
 
     vpush_const(s->val, type_ptr_to(type_ptr_to(elem)));
+    vset_addr();
     vderef();
     vset_ext(ext);
     vset_quals(quals);
@@ -807,6 +810,7 @@ static void string_value(void)
     int len = string_gather();
 
     vpush_const(gen_data(str_joined, len), type_ptr_to(TY_CHAR));
+    vset_addr();
     if (tok_postfix())
         subscript_value();
 }
@@ -5108,6 +5112,13 @@ static int push_global(NameRef name, int kind, int at)
     return sym;
 }
 
+/* That the value just read is an address inside the image -- another
+ * global's, a string's -- and so moves with it, which is a relocation
+ * wherever it lands. The companion to gen_pending_fn, which says the same of
+ * a function whose address is not known yet; a value is one or the other and
+ * never both. */
+static int init_address;
+
 /* A global's initial value, as the bytes it starts with.
  *
  * It has to be known now, because it is written into the image here, so it
@@ -5131,6 +5142,7 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
      * anything that leaves code behind, which is what the out_here check
      * catches -- a call, a variable, an address that is not a symbol's. */
     gen_pending_fn = SYM_NONE;
+    init_address = 0;
     gen_data_context = 1;
     expr();                     /* not comma_expr: in a braced list the
                                  * comma between values is a separator */
@@ -5144,6 +5156,7 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
     vconvert(type);
     if (!vconst_wide(&value, &from) || out_here() != before)
         acc_error_at(line, "a global's initial value has to be a constant");
+    init_address = vconst_addr();
     vdrop();
     gen_stmt_end();             /* the constants it used are done with */
 
@@ -5188,15 +5201,41 @@ static inline __attribute__((always_inline)) void init_room(int end)
         init_grow(end);
 }
 
-/* A function's address in a global's bytes, where the function is not yet
- * defined: the fixup that fills it in, once the bytes' address is known.
- * For a value written straight into the image, at `at`; for one built in
- * the initialiser's buffer, at its offset from where the buffer goes. */
-static struct { int fn, offset; } walk_fns[16];
-static int nwalk_fns;
+/* The addresses in a global's bytes, to be put in once the bytes have an
+ * address of their own: for a value written straight into the image, at `at`,
+ * and for one built in the initialiser's buffer, at its offset from where the
+ * buffer goes.
+ *
+ * `fn` is a function not yet defined, whose address only gen_finish will
+ * know, or SYM_NONE for an address that is already known and has only to be
+ * recorded as one so that it moves with the image.
+ *
+ * It grew from a fixed sixteen when that second kind arrived. Sixteen was
+ * generous for functions not yet defined; it is not for addresses, which is
+ * every entry of `char *names[] = { "a", "b", ... }`. */
+static struct { int fn, offset; } *walk_fns;
+static int nwalk_fns, walk_fns_cap;
+
+static void walk_fn_add(int fn, int offset)
+{
+    if (nwalk_fns == walk_fns_cap) {
+        walk_fns_cap = walk_fns_cap ? walk_fns_cap * 2 : 16;
+        walk_fns = realloc(walk_fns, (size_t) walk_fns_cap * sizeof *walk_fns);
+        if (!walk_fns)
+            acc_error("out of memory for an initialiser's addresses");
+    }
+    walk_fns[nwalk_fns].fn = fn;
+    walk_fns[nwalk_fns].offset = offset;
+    nwalk_fns++;
+}
 
 static void data_fn_at(int at)
 {
+    if (init_address) {
+        out_reloc(at);
+        init_address = 0;
+    }
+
     if (gen_pending_fn == SYM_NONE)
         return;
     gen_data_fixup(gen_pending_fn, at);
@@ -5207,8 +5246,12 @@ static void walk_fns_at(int at)
 {
     int i;
 
-    for (i = 0; i < nwalk_fns; i++)
-        gen_data_fixup(walk_fns[i].fn, at + walk_fns[i].offset);
+    for (i = 0; i < nwalk_fns; i++) {
+        if (walk_fns[i].fn == SYM_NONE)
+            out_reloc(at + walk_fns[i].offset);
+        else
+            gen_data_fixup(walk_fns[i].fn, at + walk_fns[i].offset);
+    }
     nwalk_fns = 0;
 }
 
@@ -5247,13 +5290,11 @@ static void global_put(Type scalar, int offset, int value)
     else
         global_initializer(scalar, init_bytes + offset, tok_line);
     if (gen_pending_fn != SYM_NONE) {
-        if (nwalk_fns == 16)
-            acc_error_at(tok_line, "more than 16 functions not yet defined in "
-                                   "one initialiser");
-        walk_fns[nwalk_fns].fn = gen_pending_fn;
-        walk_fns[nwalk_fns].offset = offset;
-        nwalk_fns++;
+        walk_fn_add(gen_pending_fn, offset);
         gen_pending_fn = SYM_NONE;
+    } else if (init_address) {
+        walk_fn_add(SYM_NONE, offset);
+        init_address = 0;
     }
 }
 
@@ -5297,16 +5338,19 @@ static void literal_bytes(Type type, int x, int count, Type elem, int elem_x,
 
         if (count) {
             vpush_const(at, type_ptr_to(elem));
+            vset_addr();
             vset_ext(elem_x);
             if (countp)
                 *countp = count;
         } else if (type_is_struct(type)) {
             vpush_const(at, type_ptr_to(TY_STRUCT));
+            vset_addr();
             vset_ext(x);
             if (!address)
                 vderef();
         } else {
             vpush_const(at, type_ptr_to(type));
+            vset_addr();
             if (!address)
                 vderef();
         }
@@ -5336,7 +5380,15 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
      * walk, with a buffer, it cost 1% of a compile of a program with a few
      * dozen small ones. A string for a char array goes the walk's way, which
      * already knows strings. */
-    if (!type_is_array(elem) && !type_is_struct(elem)
+    /* A pointer goes the other way, because an element's value may put bytes
+     * in the image before it is known -- a string's, a compound literal's --
+     * and the walk writes each element where the output happens to be. Those
+     * bytes would land between two elements of the array being built, which
+     * is how `char *names[] = { "a", "b" }` came out as a string, a pointer,
+     * a string and a pointer rather than as four pointers. Built in the
+     * buffer, the array's address is taken once everything it refers to has
+     * been written, and it is contiguous. */
+    if (!type_is_array(elem) && !type_is_struct(elem) && !type_pointer(elem)
         && !(init && tok == TK_STRING)) {
         int n = 0, designated = 0;
 
@@ -5370,6 +5422,13 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
                 } else {
                     global_initializer(elem, bytes, tok_line);
                 }
+                /* Nothing may have been written since the last element, or
+                 * this one is not where the array says it is. Only a value
+                 * that leaves bytes behind can do that, and the element
+                 * types that have such values were sent the other way. */
+                if (out_here() != at + n * step)
+                    acc_error_at(tok_line, "an initial value here would put "
+                                           "bytes inside the array");
                 data_fn_at(out_here());
                 for (i = 0; i < step; i++)
                     out_byte(bytes[i]);
@@ -5517,6 +5576,7 @@ static void global_late(Type type, int ext, NameRef name)
     if (nlate_arrays == 32)
         acc_error_at(tok_line, "more than 32 arrays declared with no size");
     sym = sym_push(name, SYM_GLOBAL_LATE, out_here());
+    out_reloc(out_here());              /* what the cell will hold */
     for (i = 0; i < ACC_INT_SIZE; i++)
         out_byte(0);
     sym_at(sym)->type = type;
@@ -5619,11 +5679,11 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         if (count < 0)
             count = sym_count(sym);
         saved = out_here();
-        out_rewind(sym_at(sym)->val);
+        out_seek(sym_at(sym)->val);
         redefining = sym;
         global_emit(type, ext, name, count, line);
         redefining = SYM_NONE;
-        out_rewind(saved);
+        out_seek(saved);
         sym_set_flags(sym, SYMF_DEFINED);
 
         return;
@@ -5789,10 +5849,15 @@ static void translation_unit(void)
 static void usage(void)
 {
     fprintf(stderr,
-        "usage: acc <source.c> -o <out.bin> [-I <dir>]... [-x]\n"
+        "usage: acc <source.c> -o <out.bin> [-I <dir>]... [-b <addr>]\n"
+        "                     [-r <file>] [-x]\n"
         "\n"
         "  -I  a directory to look in for an #include, after the one the\n"
         "      including file is in.\n"
+        "  -b  the address the image is loaded at, in hexadecimal. The\n"
+        "      default is 40000, where MOS loads a program.\n"
+        "  -r  write the addresses inside the image that -b moved, one\n"
+        "      hexadecimal offset a line.\n"
         "  The program prints what main returned, as six hex digits.\n"
         "  -x  report it to IO port 0 instead, which stops an emulator\n"
         "      with the low byte as its exit status.\n");
@@ -5882,7 +5947,7 @@ static void stack_report(void)
 
 int main(int argc, char **argv)
 {
-    const char *in = NULL, *out = NULL;
+    const char *in = NULL, *out = NULL, *relocs = NULL;
     int by_exit = 0;
     int i;
     clock_t begin;
@@ -5901,6 +5966,26 @@ int main(int argc, char **argv)
                 lex_add_include(argv[i] + 2);
             else if (++i < argc)
                 lex_add_include(argv[i]);
+            else
+                usage();
+        } else if (argv[i][0] == '-' && argv[i][1] == 'b') {
+            const char *arg = argv[i][2] ? argv[i] + 2
+                            : ++i < argc  ? argv[i] : NULL;
+            char *end;
+            long value;
+
+            if (!arg)
+                usage();
+            value = strtol(arg, &end, 16);
+            if (*end || value < 0 || value > 0xfe0000)
+                acc_error("-b wants an address in hexadecimal, and '%s' is "
+                          "not one", arg);
+            out_base = (int) value;
+        } else if (argv[i][0] == '-' && argv[i][1] == 'r') {
+            if (argv[i][2])
+                relocs = argv[i] + 2;
+            else if (++i < argc)
+                relocs = argv[i];
             else
                 usage();
         } else if (argv[i][0] == '-' && argv[i][1] == 'x' && !argv[i][2]) {
@@ -5932,6 +6017,8 @@ int main(int argc, char **argv)
     late_arrays_end();
     gen_finish();
     lex_close();
+    if (relocs)
+        out_relocs_write(relocs);
     out_close();
 
     /* Reported the way zap reports it, down to the wording, so that the two

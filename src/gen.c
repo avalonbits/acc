@@ -120,6 +120,7 @@ static void bitfield_read(void);
 static void bitfield_write(void);
 static void call_through(void);
 static void check_no_float_mix(Type to, const Value *from);
+static void no_float_address(const Value *from);
 static void materialise_long(int disp, Type type);
 static void evict_reg(int reg);
 static void vunary_long(int which, Type type);
@@ -402,6 +403,11 @@ void vpush_const(int val, Type type)
     vpush(VAL_CONST, type, val);
 }
 
+void vset_addr(void)
+{
+    (vsp - 1)->kind = VAL_ADDR;
+}
+
 void vpush_local(int offset, Type type)
 {
     vpush(VAL_LOCAL, type, offset);
@@ -429,7 +435,8 @@ void vconvert(Type to)
     if (top->type == to)
         return;
 
-    /* To _Bool is a comparison with zero, whatever it is from. */
+    /* To _Bool is a comparison with zero, whatever it is from. An address
+     * is never zero, and that answer is the same wherever it is loaded. */
     if (to == TY_BOOL) {
         bool_from();
 
@@ -441,10 +448,14 @@ void vconvert(Type to)
      * does, a long becoming a long long is its sign, and none of it is
      * emitted. Pointers and structs are not arithmetic and keep to the
      * paths below. */
-    if ((top->kind == VAL_CONST || top->kind == VAL_WIDE)
+    if ((val_const(top->kind) || top->kind == VAL_WIDE)
         && type_wide(to) && !type_pointer(to) && !type_pointer(top->type)
         && !type_is_struct(to) && !type_is_struct(top->type)) {
-        uint64_t bits = const_as(top, to);
+        uint64_t bits;
+
+        if (type_float(to))
+            no_float_address(top);
+        bits = const_as(top, to);
 
         vdrop();
         if (!wide_push(bits, to, 0))
@@ -457,8 +468,9 @@ void vconvert(Type to)
      * the label on it. Both directions go through an int, so a narrow type
      * widens first and a long is still refused. */
     if (type_float(to) != type_float(top->type)
-        && !(top->kind == VAL_CONST && top->val == 0)) {
+        && !(val_const(top->kind) && top->val == 0)) {
         if (type_float(to)) {
+            no_float_address(top);
             convert_int_to_float();
             if (to != TY_FLOAT)
                 (vsp - 1)->type = to;
@@ -526,9 +538,19 @@ void vconvert(Type to)
         return;
     }
 
-    if (top->kind == VAL_CONST) {
+    if (val_const(top->kind)) {
         int bits = type_size(to) * 8;
         int mask = (1 << bits) - 1;
+
+        /* An address cut down to a byte or two is no longer an address: the
+         * bytes that are left say nothing about where the thing is, and they
+         * would be different had it been put somewhere else. C leaves what
+         * comes out to the implementation, and the honest answer on a machine
+         * whose addresses are three bytes is that it does not fit. */
+        if (top->kind == VAL_ADDR)
+            acc_error_at(tok_line, "an address is %d bytes and this keeps "
+                                   "only %d of them", ACC_INT_SIZE,
+                         type_size(to));
 
         top->val &= mask;
         if (!type_unsigned(to) && (top->val & (1 << (bits - 1))))
@@ -665,8 +687,8 @@ static int vconst_pair(void)
     const Value *a = vsp - 2, *b = vsp - 1;
 
     return vtop >= 2
-        && (a->kind == VAL_CONST || a->kind == VAL_WIDE)
-        && (b->kind == VAL_CONST || b->kind == VAL_WIDE);
+        && (val_const(a->kind) || a->kind == VAL_WIDE)
+        && (val_const(b->kind) || b->kind == VAL_WIDE);
 }
 
 /* A constant of any kind as the bits `to` would hold: a narrow one widens by
@@ -723,7 +745,7 @@ int vconst_wide(uint64_t *bits, Type *type)
 
         return 1;
     }
-    if (top->kind == VAL_CONST) {       /* a narrow one widens here */
+    if (val_const(top->kind)) {       /* a narrow one widens here */
         *bits = type_unsigned(top->type) ? (uint64_t) (uint32_t) top->val
                                          : (uint64_t) (int64_t) top->val;
         *type = top->type;
@@ -734,11 +756,20 @@ int vconst_wide(uint64_t *bits, Type *type)
     return 0;
 }
 
+/* Whether the top is a constant that is an address inside the image -- the
+ * question a global's initial value asks once it has been folded, because
+ * what goes into the image then is bytes, and nothing about bytes says one
+ * of them is the start of an address. */
+int vconst_addr(void)
+{
+    return vtop > 0 && (vsp - 1)->kind == VAL_ADDR;
+}
+
 int vconst_top(int *val, Type *type)
 {
     const Value *top = vsp - 1;
 
-    if (vtop == 0 || top->kind != VAL_CONST)
+    if (vtop == 0 || !val_const(top->kind))
         return 0;
     *val = top->val;
     *type = top->type;
@@ -776,13 +807,20 @@ void gen_stmt_end(void)
 static inline __attribute__((always_inline))
 int reg_busy(int reg)
 {
-    /* Unsigned for the same reason as everywhere else here: a signed `<` is
-     * a helper call to repair the flags, and this runs for every register
-     * the allocator considers. */
-    unsigned i, n = (unsigned) vtop;
+    /* Walked as a pointer, not subscripted. `vstack[i]` is `vstack + i *
+     * sizeof (Value)`, and scaling a variable is a call into the runtime on
+     * this target whatever the width -- `__ishl` when it is a power of two
+     * and `__imulu` when it is not. Walking costs an add of a constant
+     * instead, and this and the three scans below are worth 1.5% of a
+     * compile between them.
+     *
+     * vsp is `vstack + vtop` and is kept in step with it, so the end of the
+     * walk is a pointer compare -- and an unsigned one, since a signed `<`
+     * is another helper call. */
+    const Value *v;
 
-    for (i = 0; i < n; i++)
-        if (vstack[i].kind == VAL_REG && vstack[i].val == reg)
+    for (v = vstack; v < vsp; v++)
+        if (v->kind == VAL_REG && v->val == reg)
             return 1;
 
     return 0;
@@ -797,16 +835,16 @@ int reg_busy(int reg)
  * busy the compiler then stopped with "no register after spilling". */
 static void spill_one_other(int avoid)
 {
-    int i;
+    Value *v;
 
-    for (i = 0; i < vtop; i++) {
-        if (vstack[i].kind == VAL_REG && vstack[i].val != avoid) {
+    for (v = vstack; v < vsp; v++) {
+        if (v->kind == VAL_REG && v->val != avoid) {
             int off = spill_slot();
 
             need_disp(off);
-            ld_ix_rr(off, vstack[i].val);
-            vstack[i].kind = VAL_LOCAL;
-            vstack[i].val = off;
+            ld_ix_rr(off, v->val);
+            v->kind = VAL_LOCAL;
+            v->val = off;
 
             return;
         }
@@ -818,16 +856,16 @@ static void spill_one_other(int avoid)
  * about to consume. */
 static void save_regs_below(int n)
 {
-    int i;
+    Value *v, *end = vsp - n;
 
-    for (i = 0; i < vtop - n; i++) {
-        if (vstack[i].kind == VAL_REG) {
+    for (v = vstack; v < end; v++) {
+        if (v->kind == VAL_REG) {
             int off = spill_slot();
 
             need_disp(off);
-            ld_ix_rr(off, vstack[i].val);
-            vstack[i].kind = VAL_LOCAL;
-            vstack[i].val = off;
+            ld_ix_rr(off, v->val);
+            v->kind = VAL_LOCAL;
+            v->val = off;
         }
     }
 }
@@ -918,7 +956,9 @@ static int force_reg(Value *val)
     }
 
     reg = reg_alloc();
-    if (val->kind == VAL_CONST) {
+    if (val_const(val->kind)) {
+        if (val->kind == VAL_ADDR)
+            out_reloc(out_here() + 1);
         ld_rr_imm(reg, val->val);
     } else if (val->kind == VAL_WIDE) {
         ld_rr_imm(reg, (int) (wide_value(val) & 0xffffff));
@@ -981,11 +1021,11 @@ static void move_out(Value *entry)
  * anything the expression still needs. */
 static void evict_reg(int reg)
 {
-    int i;
+    Value *v;
 
-    for (i = 0; i < vtop; i++)
-        if (vstack[i].kind == VAL_REG && vstack[i].val == reg)
-            move_out(&vstack[i]);
+    for (v = vstack; v < vsp; v++)
+        if (v->kind == VAL_REG && v->val == reg)
+            move_out(v);
 }
 
 /* Materialises the entry at `depth` into one particular register, moving
@@ -1020,7 +1060,9 @@ static void force_into(Value *target, int want)
     } else if (target->kind == VAL_REG) {
         if (target->val != want)
             mov_rr(want, target->val);
-    } else if (target->kind == VAL_CONST) {
+    } else if (val_const(target->kind)) {
+        if (target->kind == VAL_ADDR)
+            out_reloc(out_here() + 1);
         ld_rr_imm(want, target->val);
     } else if (target->kind == VAL_WIDE) {
         ld_rr_imm(want, (int) (wide_value(target) & 0xffffff));
@@ -1126,6 +1168,45 @@ static int either_unsigned(const Value *lhs, const Value *rhs)
     return type_unsigned(lhs->type) || type_unsigned(rhs->type);
 }
 
+static void no_addr_arithmetic(void)
+{
+    acc_error_at(tok_line, "only adding a number to an address, or taking "
+                           "one from it, gives something that still moves "
+                           "with the program, and this does not");
+}
+
+/* Whether the answer is still an address, given an operator and two
+ * constants -- and a refusal when it is neither an address nor a number that
+ * means the same wherever the program is put.
+ *
+ * A tagged constant is the base the image is loaded at plus so much. Adding a
+ * number to it, or taking one from it, changes the "so much" and leaves an
+ * address, which a relocation moves. One address taken from another is the
+ * distance between them, and that is the same at every base, so it is an
+ * ordinary number.
+ *
+ * Nothing else has an answer that moving the program could put right: `&a *
+ * 2` would move twice as far as the image does, `&a & 255` not at all, and
+ * `&a + &b` twice. Each of those is a number that silently depends on where
+ * the program was loaded, and the one thing a compiler that is about to gain
+ * a linker must not do is write one of them down. Said at run time -- the
+ * address into a variable first, the arithmetic after -- they all still
+ * work, because then the address in the image is a whole one. */
+static int fold_addr(int op, const Value *lhs, const Value *rhs)
+{
+    int left = lhs->kind == VAL_ADDR, right = rhs->kind == VAL_ADDR;
+
+    if (!left && !right)
+        return 0;
+    if (op == TK_PLUS && left != right)
+        return 1;
+    if (op == TK_MINUS && left)
+        return !right;
+    no_addr_arithmetic();
+
+    return 0;
+}
+
 static void vbinop(int op)
 {
     Value *lhs = vsp - 2;
@@ -1137,20 +1218,27 @@ static void vbinop(int op)
         acc_error("internal: binary operator with nothing to work on");
 
     /* Both sides known: the answer is known, and nothing is emitted. */
-    if (lhs->kind == VAL_CONST && rhs->kind == VAL_CONST
+    if (val_const(lhs->kind) && val_const(rhs->kind)
         && const_fold(op, lhs->val, rhs->val, &folded)) {
         Type folded_type = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
+        /* The kinds are in hand from the test above, and neither is an
+         * address in almost every fold a program does, so the question is
+         * asked here and the answer worked out elsewhere. */
+        int addr = (lhs->kind == VAL_ADDR || rhs->kind == VAL_ADDR)
+                   && fold_addr(op, lhs, rhs);
 
         vdrop();
         vdrop();
         vpush_const(folded, folded_type);
+        if (addr)
+            (vsp - 1)->kind = VAL_ADDR;
 
         return;
     }
 
     /* Adding or subtracting nothing is nothing. Worth the two lines: it is
      * what makes `p + 0` and the zero cases of generated code free. */
-    if (rhs->kind == VAL_CONST && rhs->val == 0
+    if (val_const(rhs->kind) && rhs->val == 0
         && (op == TK_PLUS || op == TK_MINUS)) {
         vdrop();
 
@@ -1322,7 +1410,9 @@ void vneg(void)
         return;
     }
 
-    if (top->kind == VAL_CONST) {
+    if (val_const(top->kind)) {
+        if (top->kind == VAL_ADDR)
+            no_addr_arithmetic();
         top->val = trunc_int(-top->val);
 
         return;
@@ -1407,6 +1497,7 @@ static void fixup_add(int fn, int at)
         if (!fixups)
             acc_error("out of memory for forward calls");
     }
+    out_reloc(at);
     fixups[nfixups].fn = fn;
     fixups[nfixups].at = at;
     fixups[nfixups].line = tok_line;
@@ -1482,7 +1573,9 @@ static void shift_a_once(int op, Type to)
 /* Is this value one the byte path can take as an operand? */
 static int narrow_operand(const Value *val, Type to, int as_left)
 {
-    if (val->kind == VAL_CONST)
+    if (val->kind == VAL_ADDR)
+        return 0;         /* masked into a byte it would no longer be one */
+    if (val_const(val->kind))
         return 1;                       /* any constant; it is masked in */
     if (val->kind == VAL_ACC)
         return as_left;                 /* A is the accumulator, not a source */
@@ -1517,7 +1610,7 @@ static int vnarrow_ready(int op, Type to)
     if (tok_pair(op, TK_SHL)) {
         /* Only a constant count, unrolled. A variable one is a loop, which is
          * what the helper already is. */
-        if (rhs->kind != VAL_CONST || rhs->val < 0 || rhs->val > 8)
+        if (!val_const(rhs->kind) || rhs->val < 0 || rhs->val > 8)
             return 0;
         return narrow_operand(lhs, to, 1);
     }
@@ -1533,7 +1626,7 @@ static void vbinop_narrow(int op, Type to)
     Value *rhs = vsp - 1;
 
     /* The left operand into A, unless it is already there. */
-    if (lhs->kind == VAL_CONST)
+    if (val_const(lhs->kind))
         ld_a_imm(lhs->val);
     else if (lhs->kind == VAL_LOCAL)
         ld_a_ix_b(lhs->val);
@@ -1543,7 +1636,7 @@ static void vbinop_narrow(int op, Type to)
 
         while (count-- > 0)
             shift_a_once(op, to);
-    } else if (rhs->kind == VAL_CONST) {
+    } else if (val_const(rhs->kind)) {
         out_byte(alu_imm_op(op));
         out_byte(rhs->val & 0xff);
     } else {
@@ -1655,7 +1748,7 @@ static void vcmp(int op)
 
     is_unsigned = either_unsigned(lhs, rhs);
 
-    if (lhs->kind == VAL_CONST && rhs->kind == VAL_CONST
+    if (val_const(lhs->kind) && val_const(rhs->kind)
         && !is_unsigned
         && const_fold(op, lhs->val, rhs->val, &folded)) {
         vdrop();
@@ -1864,6 +1957,17 @@ static void convert_float_to_int(Type to)
         (vsp - 1)->type = to;
 }
 
+/* An address moves with the image; the floating-point value made from one
+ * cannot, because its bytes are no longer an address for a relocation to
+ * name. Only the two paths that reach a float from an integer ask, so the
+ * conversion every argument of every call goes through does not. */
+static void no_float_address(const Value *from)
+{
+    if (from->kind == VAL_ADDR)
+        acc_error_at(tok_line, "an address cannot become a floating-point "
+                               "value");
+}
+
 /* The bytes of a float and of an integer mean different things, so moving a
  * value between them is arithmetic and not a copy. Every path that widens or
  * stores four bytes comes through here, which is why the check lives here
@@ -1872,7 +1976,7 @@ static void check_no_float_mix(Type to, const Value *from)
 {
     if (type_float(to) == type_float(from->type))
         return;
-    if (from->kind == VAL_CONST && from->val == 0)
+    if (val_const(from->kind) && from->val == 0)
         return;                 /* zero is all zero bits either way */
 
     acc_error_at(tok_line, "converting between floating-point and integer is "
@@ -1889,9 +1993,32 @@ static void materialise_long(int disp, Type type)
 
     check_no_float_mix(type, top);
 
+    /* An address is the exception, and goes through a register.
+     *
+     * The relocation that moves it with the image covers three bytes in a
+     * row, and a constant written the way below puts two instructions
+     * between each byte and the next -- so there would be nothing for a
+     * relocation to name. Loaded into a register and stored from it, the
+     * three bytes are together in the instruction that loads it, and the
+     * fourth is the zero every address has. */
+    if (top->kind == VAL_ADDR) {
+        int reg = force_reg(top);
+        int i;
+
+        need_disp(disp);
+        need_disp(disp + n - 1);
+        ld_ix_rr(disp, reg);
+        for (i = ACC_INT_SIZE; i < n; i++) {
+            ld_a_imm(0);
+            ld_ix_a(disp + i);
+        }
+
+        return;
+    }
+
     /* A constant goes in as its bytes, whatever width it came as: no load,
      * no sign extension, and for a long long no runtime call. */
-    if (top->kind == VAL_WIDE || top->kind == VAL_CONST) {
+    if (top->kind == VAL_WIDE || val_const(top->kind)) {
         wide_bytes_at(disp, const_as(top, type), n);
 
         return;
@@ -2562,6 +2689,7 @@ static int jump_op(int op)
 
     out_opcode24(op, 0);
     hole = out_here() - ACC_INT_SIZE;
+    out_reloc(hole);
 
     return hole;
 }
@@ -2578,6 +2706,7 @@ int gen_jump(void)
 
 void gen_jump_to(int target)
 {
+    out_reloc(out_here() + 1);
     out_opcode24(JP_ANY, target);
 }
 
@@ -2679,6 +2808,7 @@ void gen_switch_case(long value, uint32_t high, Type type, int target,
     or_a_a();
     sbc_hl_rr(R_DE);
     add_hl_rr(R_DE);
+    out_reloc(out_here() + 1);
     out_opcode24(JP_Z, target);
 }
 
@@ -2806,6 +2936,7 @@ static void rt_call(int which)
     out_opcode24(0xcd, 0);                       /* call nn */
     rt_fixups[nrt_fixups].which = (unsigned char) which;
     rt_fixups[nrt_fixups].at = out_here() - ACC_INT_SIZE;
+    out_reloc(rt_fixups[nrt_fixups].at);
     nrt_fixups++;
 }
 
@@ -2824,8 +2955,10 @@ static void rt_emit_used(void)
     /* The calls the routines make to each other, now that the blob has an
      * address -- those in the part that was laid down. */
     for (i = 0; i < RT_NFIX; i++)
-        if (rt_fix[i].at < len)
+        if (rt_fix[i].at < len) {
+            out_reloc(rt_base + rt_fix[i].at);
             out_patch24(rt_base + rt_fix[i].at, rt_base + rt_fix[i].to);
+        }
 
     /* And the calls the compiled program makes to them. */
     for (i = 0; i < nrt_fixups; i++)
@@ -2927,8 +3060,10 @@ void gen_startup(int report_by_exit)
     fixup_add(m, base + 1);
 
     if (!report_by_exit)
-        for (i = 0; i < (int) (sizeof print_calls / sizeof *print_calls); i++)
+        for (i = 0; i < (int) (sizeof print_calls / sizeof *print_calls); i++) {
+            out_reloc(base + print_calls[i].at);
             out_patch24(base + print_calls[i].at, base + print_calls[i].to);
+        }
 }
 
 int gen_local(int size)
@@ -3073,6 +3208,7 @@ void gen_copy_to_array(int array, int offset, int from, int count)
     }
     out_byte(0xeb);                      /* ex de, hl */
     out_byte(0x21);                      /* ld hl, from */
+    out_reloc(out_here());
     out_word24(from);
     out_byte(0x01);                      /* ld bc, count */
     out_word24(count);
@@ -3339,6 +3475,7 @@ void vpush_function(int fn)
 
     if (f->val) {
         vpush_const(f->val, type_ptr_to(TY_FUNC));
+        vset_addr();
 
         return;
     }
@@ -3490,6 +3627,7 @@ static void call_to(const Callee *callee, int nargs, int params_first,
     if (callee->fn == SYM_NONE) {
         call_through();
     } else if (sym_at(callee->fn)->val) {
+        out_reloc(out_here() + 1);
         out_opcode24(0xcd, sym_at(callee->fn)->val);    /* call nn */
     } else {
         /* Defined further down the file, or not at all. The site is recorded
@@ -3584,8 +3722,10 @@ static void call_through(void)
 {
     Value *fp = vsp - 1;
 
-    if (fp->kind == VAL_CONST) {
+    if (val_const(fp->kind)) {
         out_byte2(0xfd, 0x21);                  /* ld iy, nn */
+        if (fp->kind == VAL_ADDR)
+            out_reloc(out_here());
         out_word24(fp->val);
     } else if (fp->kind == VAL_LOCAL) {
         need_disp(fp->val);
@@ -3597,6 +3737,7 @@ static void call_through(void)
         out_byte2(0xfd, 0xe1);                  /* pop iy */
     }
     vdrop();
+    out_reloc(out_here() + 1);
     out_opcode24(0x21, out_here() + 7);         /* ld hl, back */
     push_rr(R_HL);
     out_byte2(0xfd, 0xe9);                      /* jp (iy) */
@@ -3901,7 +4042,7 @@ void vderef(void)
      * constant -- which keeps constant folding from mistaking it for a
      * number. */
     if (type_is_struct(to)) {
-        if (top->kind == VAL_CONST)
+        if (val_const(top->kind))
             force_reg(top);
         top->type = TY_STRUCT;
 
@@ -4471,7 +4612,7 @@ int gen_cond_middle(int *slot, Type *middle, int *middle_ext, int *middle_null)
         top->type = type_ptr_to(TY_STRUCT);
     *middle = top->type;
     *middle_ext = top->ext | top->quals << 8 | was_struct;  /* all, in one */
-    *middle_null = (top->kind == VAL_CONST && top->val == 0);
+    *middle_null = (val_const(top->kind) && top->val == 0);
 
     /* The slot begin made is a long's; a long long needs one of its own. */
     if (type_eight(top->type))
@@ -4499,7 +4640,7 @@ void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
                                "or union, or neither be one");
     if (was_struct)
         top->type = type_ptr_to(TY_STRUCT);
-    third_null = (top->kind == VAL_CONST && top->val == 0);
+    third_null = (val_const(top->kind) && top->val == 0);
     Type result = cond_type(middle, middle_null, top->type, third_null);
     int ext = third_null ? middle_ext & 0xff : top->ext; /* the side not 0 */
     int quals = (middle_ext >> 8 | top->quals) & 0xff;

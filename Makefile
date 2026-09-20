@@ -70,6 +70,7 @@ test: all unit $(BIN)/acc-asan agon
 	@test/buffer.sh
 	@test/include.sh
 	@test/macro.sh
+	@ACC=$(BIN)/acc-asan test/reloc.sh
 	@test/heap.sh || [ $$? -eq 77 ]
 	@test/cycles.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh

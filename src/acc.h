@@ -590,12 +590,32 @@ int  sym_declared_in(int sym, int mark);  /* in the scope from mark on; -1 is fi
  * `1 + 2` never reaches the code generator and `x + 1` loads x once. */
 enum {
     VAL_CONST,      /* a literal; val holds it */
+    VAL_ADDR,       /* and one that is an address inside the image: a
+                     * global's, a string's, a compound literal's. Wherever
+                     * one of these is written out it is a relocation, and
+                     * this is how the code generator knows to record one --
+                     * by the time the bytes are emitted there is nothing
+                     * else left to say so.
+                     *
+                     * A kind of its own rather than a flag in a field of
+                     * its own, because every place that asks "is this a
+                     * constant?" has the kind in hand already -- and because
+                     * a Value nine bytes wide is one whose width is not a
+                     * power of two. The two measured the same, so this is
+                     * the one that costs no room. It rides along with the
+                     * value through folding, so `&a[3]` is still an
+                     * address. */
     VAL_LOCAL,      /* a local at frame offset val */
     VAL_REG,        /* already in register val */
     VAL_ACC,        /* in A, still narrow: see the note on byte arithmetic */
     VAL_VOID,       /* what a void function returned, which is nothing */
     VAL_WIDE        /* a constant too wide for val: see wide_const */
 };
+
+/* Whether a value is a constant of either kind. VAL_CONST is zero and
+ * VAL_ADDR is one, so this is the same single compare that `kind ==
+ * VAL_CONST` was before an address became a kind of its own. */
+#define val_const(kind) ((unsigned) (kind) <= VAL_ADDR)
 
 /* What the parser knows about a value it has not had to emit yet: a constant,
  * a local at a frame offset, or something already in a register. `val` is the
@@ -648,6 +668,8 @@ extern int gen_data_bytes;                  /* how many gen_data has written */
 void gen_copy_to_array(int array, int offset, int from, int count);
 
 void vpush_const(int val, Type type);
+void vset_addr(void);                 /* the top is an address in the image */
+int  vconst_addr(void);               /* and whether it still is */
 void vpush_const_long(long val, Type type);  /* four bytes, so it goes to the frame */
 void vpush_const_wide(uint32_t low, uint32_t high, Type type);   /* eight */
 void vpush_const_float(float val);
@@ -755,12 +777,65 @@ void gen_startup(int report_by_exit);  /* the entry stub MOS lands on */
 
 void out_open(const char *path);
 void out_close(void);
+
+/* Where the image is loaded. Set before out_open and not after: every address
+ * the compiler writes is absolute and is worked out from this. */
+extern int out_base;
+
+/* The three bytes at `at` are an address inside the image, and would have to
+ * change if it were loaded somewhere else. Called where the slot is emitted
+ * rather than where it is filled in, so the offsets come out in order and a
+ * rewind can drop the ones it undoes.
+ *
+ * Inlined, and the table's three pointers visible for it, for the reason the
+ * byte emitters are: see src/out.c. */
+extern int *out_relocs, *out_reloc_put, *out_reloc_limit;
+void out_reloc_grow(void);
+void out_reloc_back(int at);
+
+static inline __attribute__((always_inline))
+void out_reloc(int at)
+{
+    if (out_reloc_put == out_reloc_limit)
+        out_reloc_grow();
+    at -= out_base;
+    /* Unsigned, and reading a slot that is always there: an offset is never
+     * negative, so the two compare the same either way, and a signed one is
+     * a helper call on this target. The table starts with a sentinel so that
+     * the first relocation has something behind it to compare with -- see
+     * src/out.c. */
+    if ((unsigned) out_reloc_put[-1] > (unsigned) at) {
+        out_reloc_back(at);
+
+        return;
+    }
+    *out_reloc_put++ = at;
+}
+
+int  out_nrelocs(void);
+int  out_reloc_at(int i);
+void out_relocs_write(const char *path);
+
 /* The output's write position and its end, and the growth that happens a
  * dozen times a compile. Visible so that the three emitters below can be
  * inlined: every byte the compiler emits goes through one of them, and as
  * calls each opened a frame on this target to do a compare and a store. */
 extern unsigned char *out_put, *out_limit;
 void out_grow(void);
+
+/* The first byte of the image, and the address the next one will have.
+ *
+ * out_here is asked wherever the compiler needs to know where it is -- every
+ * jump, every function, every global, and every relocation recorded beside
+ * one of those -- and as a call it opened a frame to do a subtraction and an
+ * add. */
+extern unsigned char *out_img;
+
+static inline __attribute__((always_inline))
+int out_here(void)
+{
+    return out_base + (int) (out_put - out_img);
+}
 
 /* The three bytes of a 24-bit value, lowest first, at `at`.
  *
@@ -863,8 +938,8 @@ static inline __attribute__((always_inline)) void out_byte3(int first, int secon
     out_put += 3;
 }
 void out_word24(int v);
-int  out_here(void);                  /* the address the next byte will have */
-void out_rewind(int here);            /* forget what came after out_here() was here */
+void out_rewind(int here);          /* forget what came after out_here() was here */
+void out_seek(int here);            /* back to it, keeping what came after */
 void out_copy(int at, unsigned char *to, int len);  /* bytes already written */
 void out_patch24(int at, int v);
 

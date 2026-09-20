@@ -18,6 +18,13 @@
 #define LOAD_ADDR    0x040000
 #define HEADER_SIZE  0x45
 
+/* Where the image will be loaded, which is 0x040000 for a program MOS runs
+ * and settable with -b so that the same program can be built for somewhere
+ * else. Nothing in the image is position-independent -- every call, jump and
+ * address is absolute -- so moving it means knowing where all of those are,
+ * which is what the relocation table below records. */
+int out_base = LOAD_ADDR;
+
 /* Held in memory and written at the end, because a call to a function defined
  * further down the file has to be patched once its address is known. The
  * image is small -- the previous compiler's output for four hundred lines of
@@ -28,13 +35,118 @@
  * `img[len++]` is an addition of two 24-bit values before the store, where a
  * pointer that walks is a store and an increment. The bound is the same
  * either way: one compare, against the end instead of against the size. */
-static unsigned char *img;
+unsigned char        *out_img;          /* the first byte of the image */
 unsigned char        *out_put;          /* where the next byte goes */
 unsigned char        *out_limit;        /* one past the last it may use */
 static int            cap;
 static const char    *out_path;
 
-#define OUT_LEN ((int) (out_put - img))
+#define OUT_LEN ((int) (out_put - out_img))
+
+/* ------------------------------------------------------------------ */
+/* relocations                                                         */
+
+/* Every three-byte slot in the image that holds an address inside the image.
+ *
+ * The eZ80 has no relative call and acc emits no relative jump, so an address
+ * is written out in full wherever one is needed: a call, a jump, a global's
+ * address loaded into a register, a function's address in a table. Each of
+ * those is one entry here, as an offset from the start of the image.
+ *
+ * Offsets, not addresses, because that is what survives the image being put
+ * somewhere else -- which is the point of recording them.
+ *
+ * Kept in increasing order, which out_rewind relies on to drop the ones it
+ * undoes. They nearly always arrive that way -- a slot is recorded where it
+ * is emitted, not where it is filled in -- so the loop that puts one in its
+ * place usually does not run at all. The exceptions are real, though: a
+ * variable said twice at file scope has its value written back at the address
+ * the first mention reserved, which is behind everything compiled since.
+ *
+ * A linker needs two more things than this: which slots refer to a symbol
+ * this object does not define, and what each one's addend is. Those come
+ * with the object format. What is here is the half that has no other home --
+ * only the code generator knows which of the numbers it writes are
+ * addresses, and it knows it exactly once, as it writes them.
+ *
+ * Held as a walking pointer and an end, as the image itself is, and for the
+ * same reason twice over. `relocs[nrelocs++]` scales an index by the width
+ * of an int, which is a call into the runtime on this target; and the three
+ * of them are visible so that out_reloc can be inlined, which for the same
+ * measured reason as the byte emitters is what it is worth -- as a call it
+ * opened a frame to do two compares and a store, and that was 0.9% of a
+ * compile of test/bench/operators.c.
+ *
+ * Recording them at all costs about 2.7% of a compile of the heaviest
+ * benchmark inputs, which is what a one-pass compiler that writes absolute
+ * addresses everywhere pays to be able to move what it wrote.
+ *
+ * out_relocs[0] is a sentinel and not a relocation: offset zero is the first
+ * byte of the header, which is never one, and having it there means the fast
+ * path can read the slot behind the one it is about to write without first
+ * asking whether the table is empty. The entries proper start at [1], which
+ * out_nrelocs and out_reloc_at hide. */
+int *out_relocs, *out_reloc_put, *out_reloc_limit;
+
+void out_reloc_grow(void)
+{
+    int used = (int) (out_reloc_put - out_relocs);
+    int cap = (int) (out_reloc_limit - out_relocs);
+
+    cap = cap ? cap * 2 : 256;
+    out_relocs = realloc(out_relocs, (size_t) cap * sizeof *out_relocs);
+    if (!out_relocs)
+        acc_error("out of memory for the relocations");
+    if (!used) {
+        out_relocs[0] = 0;      /* the sentinel, once there is room for it */
+        used = 1;
+    }
+    out_reloc_put = out_relocs + used;
+    out_reloc_limit = out_relocs + cap;
+}
+
+/* A slot behind the ones already recorded, which only a variable said twice
+ * at file scope brings about: it goes where it belongs, so that the table
+ * stays in order. */
+void out_reloc_back(int at)
+{
+    int *scan = out_reloc_put;
+
+    while (scan > out_relocs + 1 && scan[-1] > at) {
+        scan[0] = scan[-1];
+        scan--;
+    }
+    *scan = at;
+    out_reloc_put++;
+}
+
+int out_nrelocs(void)
+{
+    return (int) (out_reloc_put - out_relocs) - 1;
+}
+
+int out_reloc_at(int i)
+{
+    return out_relocs[i + 1];
+}
+
+/* The table, written out as one hexadecimal offset a line.
+ *
+ * A diagnostic, and the shape of what an object file will carry: it answers
+ * "what would have to change for this to run somewhere else" without a
+ * linker existing yet, and it is what test/reloc.sh reads to check that the
+ * answer is complete. */
+void out_relocs_write(const char *path)
+{
+    FILE *file = fopen(path, "w");
+    int i;
+
+    if (!file)
+        acc_error("cannot write '%s'", path);
+    for (i = 0; i < out_nrelocs(); i++)
+        fprintf(file, "%06x\n", out_reloc_at(i));
+    fclose(file);
+}
 
 void out_open(const char *path)
 {
@@ -42,16 +154,18 @@ void out_open(const char *path)
     const char *base, *scan;
 
     cap = 4096;
-    img = malloc(cap);
-    if (!img)
+    out_img = malloc(cap);
+    if (!out_img)
         acc_error("out of memory for the output");
-    out_put = img;
-    out_limit = img + cap;
+    out_put = out_img;
+    out_limit = out_img + cap;
+    out_reloc_grow();                   /* so the sentinel is there to read */
     out_path = path;
 
     /* jp 0x040045, over the header */
     out_byte(0xc3);
-    out_word24(LOAD_ADDR + HEADER_SIZE);
+    out_reloc(out_base + 1);
+    out_word24(out_base + HEADER_SIZE);
 
     memcpy(out_put, hdr, sizeof hdr);
     out_put += sizeof hdr;
@@ -67,13 +181,13 @@ void out_open(const char *path)
 
         if (name_len > 0x40 - 4 - 1)
             name_len = 0x40 - 4 - 1;
-        memcpy(img + 4, base, name_len);
+        memcpy(out_img + 4, base, name_len);
     }
-    img[0x40] = 'M';
-    img[0x41] = 'O';
-    img[0x42] = 'S';
-    img[0x43] = 0;        /* header version */
-    img[0x44] = 1;        /* ADL, 24-bit addressing */
+    out_img[0x40] = 'M';
+    out_img[0x41] = 'O';
+    out_img[0x42] = 'S';
+    out_img[0x43] = 0;        /* header version */
+    out_img[0x44] = 1;        /* ADL, 24-bit addressing */
 }
 
 /* Kept out of the emitters in acc.h, which are inlined wherever an
@@ -92,11 +206,11 @@ void out_grow(void)
     /* One doubling is always enough: cap starts at 4096 and the largest
      * single write is the four bytes of out_opcode24. */
     cap *= 2;
-    img = realloc(img, cap);
-    if (!img)
+    out_img = realloc(out_img, cap);
+    if (!out_img)
         acc_error("out of memory for the output");
-    out_put = img + used;
-    out_limit = img + cap;
+    out_put = out_img + used;
+    out_limit = out_img + cap;
 }
 
 
@@ -122,14 +236,22 @@ void out_word24(int value)
 }
 
 
-int out_here(void)
-{
-    return LOAD_ADDR + OUT_LEN;
-}
-
 void out_rewind(int here)
 {
-    out_put = img + (here - LOAD_ADDR);
+    /* The slots recorded in what is being undone go with it. The table is
+     * in increasing order, so the ones to drop are the last ones. */
+    while (out_reloc_put > out_relocs + 1 && out_reloc_put[-1] >= here - out_base)
+        out_reloc_put--;
+    out_put = out_img + (here - out_base);
+}
+
+/* Back to an address already written, to write over it: a variable said twice
+ * at file scope, whose value goes where the first mention reserved room for
+ * it. Nothing is being undone -- everything compiled since stays, relocations
+ * and all -- so this is not out_rewind, which forgets. */
+void out_seek(int here)
+{
+    out_put = out_img + (here - out_base);
 }
 
 /* Bytes already written, copied back out: an initialiser that turns out to
@@ -137,22 +259,22 @@ void out_rewind(int here)
  * buffer the walk builds. */
 void out_copy(int at, unsigned char *to, int len)
 {
-    int off = at - LOAD_ADDR;
+    int off = at - out_base;
 
     if (len <= 0)
         return;                 /* nothing written yet, and `to` may be null */
     if (off < 0 || off + len > OUT_LEN)
         acc_error("internal: a read at %06x is outside the image", at);
-    memcpy(to, img + off, (size_t) len);
+    memcpy(to, out_img + off, (size_t) len);
 }
 
 void out_patch24(int at, int value)
 {
-    int off = at - LOAD_ADDR;
+    int off = at - out_base;
 
     if (off < 0 || off + 3 > OUT_LEN)
         acc_error("internal: patch at %06x is outside the image", at);
-    put24(img + off, value);
+    put24(out_img + off, value);
 }
 
 void out_close(void)
@@ -161,9 +283,11 @@ void out_close(void)
 
     if (!file)
         acc_error("cannot write '%s'", out_path);
-    if ((int) fwrite(img, 1, (size_t) OUT_LEN, file) != OUT_LEN)
+    if ((int) fwrite(out_img, 1, (size_t) OUT_LEN, file) != OUT_LEN)
         acc_error("short write on '%s'", out_path);
     fclose(file);
-    free(img);
-    img = NULL;
+    free(out_img);
+    out_img = NULL;
+    free(out_relocs);
+    out_relocs = out_reloc_put = out_reloc_limit = NULL;
 }
