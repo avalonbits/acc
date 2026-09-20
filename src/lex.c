@@ -345,13 +345,22 @@ typedef struct {
     FILE       *src_file;
     const char *src_path;
     int         line;
-    int         owned;          /* whether src and src_path are this level's */
+    int         owned;          /* OWN_BUF and OWN_PATH, below */
     NameRef     macro;          /* the macro whose text this level is */
 } Source;
 
-/* Whether this level allocated what it is reading, and which macro it is
- * the expansion of. A file owns its window and its path and has no macro; a
- * macro's text is the definition itself, owned by the table it lives in. */
+/* What this level allocated, and which macro it is the expansion of.
+ *
+ * A file owns both its window and the copy of its name; a macro with
+ * parameters owns the text its expansion was built into, and has no name of
+ * its own; a macro without them owns neither, since its text is the
+ * definition in the table. The two are separate because a file's handle is
+ * closed as soon as it has been read to its end, which is before the level
+ * is popped -- so whether there is still a handle says nothing about
+ * whether there is a name to free. */
+#define OWN_BUF   1
+#define OWN_PATH  2
+
 static int     src_owned;
 static NameRef src_macro;
 
@@ -450,10 +459,50 @@ static int refill(void)
  * names came out of a hash table. Every identifier in the program asks this
  * question, so the first thing asked is whether there are any macros at
  * all. */
+/* The most parameters a macro may take, and so the most arguments a call
+ * may pass. */
+#define PARAMS_MAX 16
+
 typedef struct {
-    NameRef name;               /* NAME_NONE in an empty slot */
-    char   *text;
+    NameRef  name;              /* NAME_NONE in an empty slot */
+    char    *text;
+    NameRef *params;            /* null when the macro takes none */
+    short    nparams;           /* -1 when it is a name and not a call */
+    short    variadic;          /* whether the last parameter is `...` */
 } Macro;
+
+/* A buffer that grows, for the text an expansion is built into. On the
+ * heap rather than in a frame: the Agon's stack and heap grow towards each
+ * other out of one region, and a few hundred bytes of local buffer in
+ * something that can call itself is how that ends badly. */
+typedef struct {
+    char *text;
+    int   len, cap;
+} Buf;
+
+static void buf_put(Buf *b, const char *s, int n)
+{
+    if (b->len + n + 1 > b->cap) {
+        int want = b->cap ? b->cap * 2 : 128;
+
+        while (want < b->len + n + 1)
+            want *= 2;
+        b->text = realloc(b->text, (size_t) want);
+        if (!b->text)
+            acc_error("out of memory expanding a macro");
+        b->cap = want;
+    }
+    memcpy(b->text + b->len, s, (size_t) n);
+    b->len += n;
+    b->text[b->len] = '\0';
+}
+
+static void buf_putc(Buf *b, int c)
+{
+    char ch = (char) c;
+
+    buf_put(b, &ch, 1);
+}
 
 static Macro   *macros;
 static unsigned nmacro_slots, nmacros;
@@ -506,7 +555,8 @@ static void macros_grow(void)
     free(old);
 }
 
-static void macro_define(NameRef name, const char *text, int len)
+static void macro_define(NameRef name, const char *text, int len,
+                         NameRef *params, int nparams, int variadic)
 {
     Macro *m;
     char  *keep;
@@ -522,12 +572,17 @@ static void macro_define(NameRef name, const char *text, int len)
     keep[len] = '\0';
 
     m = macro_slot(name);
-    if (m->name != NAME_NONE)
+    if (m->name != NAME_NONE) {
         free(m->text);          /* defined again; C allows it if it matches */
-    else
+        free(m->params);
+    } else {
         nmacros++;
+    }
     m->name = name;
     m->text = keep;
+    m->params = params;
+    m->nparams = (short) nparams;
+    m->variadic = (short) variadic;
     any_macros = 1;
 }
 
@@ -541,8 +596,10 @@ static void macro_undef(NameRef name)
     if (!m)
         return;
     free(m->text);
+    free(m->params);
     m->name = NAME_NONE;
     m->text = NULL;
+    m->params = NULL;
     if (!--nmacros)
         any_macros = 0;
 
@@ -615,7 +672,7 @@ static void push_source(const char *path)
 
     src_file = f;
     src_path = keep;
-    src_owned = 1;
+    src_owned = OWN_BUF | OWN_PATH;
     src_macro = NAME_NONE;
     cursor = src_end = src_raw = src;
     src_held = '\0';
@@ -655,18 +712,28 @@ static void push_text(NameRef macro, char *text, int len)
     src_held = '\0';
 }
 
+/* The same, over text this level has to free when it ends: what a macro
+ * with parameters builds, which is made for the one call and nothing
+ * else. */
+static void push_owned_text(NameRef macro, char *text)
+{
+    push_text(macro, text, (int) strlen(text));
+    src = text;                 /* what pop_source will free */
+    src_owned = OWN_BUF;
+}
+
 /* Back to the file that included this one. Returns whether there was one. */
 static int pop_source(void)
 {
     if (!depth)
         return 0;
 
-    if (src_owned) {
-        if (src_file)
-            fclose(src_file);
+    if (src_file)
+        fclose(src_file);
+    if (src_owned & OWN_BUF)
         free(src);
+    if (src_owned & OWN_PATH)
         free((char *) src_path);
-    }
 
     depth--;
     src = open_files[depth].src;
@@ -823,6 +890,300 @@ static void skip_space(void);
  *
  * Out of line and off next()'s path: it runs once per 16 KB, and next() is
  * where a compile spends its time. */
+/* ------------------------------------------------------------------ */
+/* macros with parameters                                              */
+
+/* Whether a '(' comes next, over space and over the end of whatever window
+ * we are in: `f` and its `(` may come from different places, and a name
+ * that is a function-like macro with no '(' after it is not a use of it at
+ * all but an ordinary identifier.
+ *
+ * Only space is stepped over, which is never wrong to step over. */
+static int paren_follows(void)
+{
+    for (;;) {
+        const char *p = cursor;
+
+        while (is_space(*p))
+            p++;
+        if (*p)
+            return *p == '(';
+
+        /* The window ended. Reading more is safe here: whatever comes back
+         * is still ahead of the cursor, and nothing has been consumed. */
+        if (!refill() && !pop_source())
+            return 0;
+    }
+}
+
+/* One character of the argument list, with the window moved on when it
+ * runs out. Arguments can run over lines and, when one macro's expansion
+ * ends inside another's argument list, over the end of a window. */
+static int args_char(void)
+{
+    while (!*cursor) {
+        if (!refill() && !pop_source())
+            acc_error_at(line, "a macro's arguments are not closed");
+    }
+    if (*cursor == '\n')
+        line++;
+
+    return (unsigned char) *cursor++;
+}
+
+/* The arguments of a call, each as the text between the commas. Nesting is
+ * counted so that a comma inside parentheses or brackets belongs to what it
+ * is inside, and strings and character constants go over whole. */
+static char **collect_args(Macro *m, int *out_argc)
+{
+    char **argv;
+    Buf    arg;
+    int    argc = 0, depth = 0, i;
+
+    argv = calloc(PARAMS_MAX + 1, sizeof *argv);
+    if (!argv)
+        acc_error("out of memory for a macro's arguments");
+    arg.text = NULL; arg.len = 0; arg.cap = 0;
+
+    while (is_space(*cursor) || !*cursor) {
+        if (!*cursor) {
+            if (!refill() && !pop_source())
+                acc_error_at(line, "a macro's arguments are not closed");
+
+            continue;
+        }
+        if (*cursor == '\n')
+            line++;
+        cursor++;
+    }
+    cursor++;                           /* the '(' */
+
+    for (;;) {
+        int c = args_char();
+
+        if (c == '(' || c == '[') {
+            depth++;
+        } else if (c == ')' && depth == 0) {
+            break;
+        } else if (c == ')' || c == ']') {
+            depth--;
+        } else if (c == ',' && depth == 0
+                   && !(m->variadic && argc == m->nparams)) {
+            /* The comma that ends one argument -- unless the variadic one
+             * has started, where the commas are part of it. */
+            if (argc == PARAMS_MAX)
+                acc_error_at(line, "a macro takes at most %d arguments",
+                             PARAMS_MAX);
+            argv[argc++] = arg.text ? arg.text : strdup("");
+            arg.text = NULL; arg.len = 0; arg.cap = 0;
+
+            continue;
+        } else if (c == '"' || c == '\'') {
+            int quote = c;
+
+            buf_putc(&arg, c);
+            for (;;) {
+                c = args_char();
+                buf_putc(&arg, c);
+                if (c == '\\') {
+                    buf_putc(&arg, args_char());
+
+                    continue;
+                }
+                if (c == quote)
+                    break;
+            }
+
+            continue;
+        }
+
+        /* Runs of space become one, so that what a `#` makes of an argument
+         * is the same however it was written. */
+        if (is_space(c)) {
+            if (arg.len && !is_space((unsigned char) arg.text[arg.len - 1]))
+                buf_putc(&arg, ' ');
+
+            continue;
+        }
+        buf_putc(&arg, c);
+    }
+
+    argv[argc++] = arg.text ? arg.text : strdup("");
+
+    /* `f()` on a macro that takes nothing passes nothing, not one argument
+     * that happens to be empty. On one that takes a parameter the same text
+     * does pass an empty argument, which is why the macro decides. */
+    if (m->nparams == 0 && argc == 1 && !*argv[0]) {
+        free(argv[0]);
+        argv[0] = NULL;
+        argc = 0;
+    }
+
+    /* Blanks at either end are not part of an argument. */
+    for (i = 0; i < argc; i++) {
+        char *a = argv[i];
+        int   n = (int) strlen(a);
+
+        while (n && a[n - 1] == ' ')
+            a[--n] = '\0';
+        if (*a == ' ')
+            memmove(a, a + 1, strlen(a));
+    }
+
+    *out_argc = argc;
+
+    return argv;
+}
+
+static void free_args(char **argv, int argc)
+{
+    int i;
+
+    for (i = 0; i < argc; i++)
+        free(argv[i]);
+    free(argv);
+}
+
+/* Which parameter a name is, or -1. */
+static int param_index(Macro *m, const char *at, int len)
+{
+    int i;
+
+    for (i = 0; i < m->nparams; i++) {
+        const char *p = name_text(m->params[i]);
+
+        if ((int) strlen(p) == len && !memcmp(p, at, (size_t) len))
+            return i;
+    }
+    if (m->variadic && len == 11 && !memcmp(at, "__VA_ARGS__", 11))
+        return m->nparams;
+
+    return -1;
+}
+
+/* An argument with the macros in it expanded, which is what goes in
+ * wherever the parameter is used plainly. The operands of `#` and `##` skip
+ * this and go in as they were written.
+ *
+ * The expanding itself is the same walk an `#if` does over its condition,
+ * and lives with it further down. */
+static void expand_text_into(Buf *out, const char *text);
+
+static void put_expanded(Buf *out, const char *text)
+{
+    expand_text_into(out, text);
+}
+
+/* An argument as the string it was written as, for `#`. */
+static void put_stringified(Buf *out, const char *text)
+{
+    buf_putc(out, '"');
+    while (*text) {
+        if (*text == '"' || *text == '\\')
+            buf_putc(out, '\\');
+        buf_putc(out, *text++);
+    }
+    buf_putc(out, '"');
+}
+
+/* The body with the arguments put in: what the call becomes.
+ *
+ * `#p` is the argument as it was written, quoted. `a ## b` joins what is on
+ * either side of it with nothing between, and the result is read as tokens
+ * like anything else, since the buffer this builds is lexed from. */
+static char *build_expansion(Macro *m, char **argv, int argc)
+{
+    const char *p = m->text;
+    Buf out;
+
+    out.text = NULL; out.len = 0; out.cap = 0;
+
+    while (*p) {
+        const char *start;
+        int idx, paste_before = 0;
+
+        if (*p == '"' || *p == '\'') {          /* whole, names and all */
+            int quote = *p;
+
+            start = p++;
+            while (*p && *p != quote) {
+                if (*p == '\\' && p[1])
+                    p++;
+                p++;
+            }
+            if (*p)
+                p++;
+            buf_put(&out, start, (int) (p - start));
+
+            continue;
+        }
+
+        if (*p == '#' && p[1] == '#') {
+            /* Joined: whatever was put last stays, and the space before it
+             * goes, so that the two sides end up next to each other. */
+            while (out.len && out.text[out.len - 1] == ' ')
+                out.text[--out.len] = '\0';
+            p += 2;
+            while (*p == ' ' || *p == '\t')
+                p++;
+            paste_before = 1;
+        }
+
+        if (*p == '#' && !paste_before) {
+            const char *q = p + 1;
+
+            while (*q == ' ' || *q == '\t')
+                q++;
+            start = q;
+            while (is_alnum((unsigned char) *q))
+                q++;
+            idx = start == q ? -1 : param_index(m, start, (int) (q - start));
+            if (idx < 0)
+                acc_error_at(line, "'#' in a macro needs one of its "
+                                   "parameters after it");
+            put_stringified(&out, idx < argc ? argv[idx] : "");
+            p = q;
+
+            continue;
+        }
+
+        if (!is_alpha((unsigned char) *p)) {
+            buf_putc(&out, *p++);
+
+            continue;
+        }
+
+        start = p;
+        while (is_alnum((unsigned char) *p))
+            p++;
+        idx = param_index(m, start, (int) (p - start));
+        if (idx < 0) {
+            buf_put(&out, start, (int) (p - start));
+
+            continue;
+        }
+
+        /* A parameter. Next to a `##` it goes in as it was written; on its
+         * own it goes in expanded. */
+        {
+            const char *arg = idx < argc ? argv[idx] : "";
+            const char *q = p;
+
+            while (*q == ' ' || *q == '\t')
+                q++;
+            if (paste_before || (q[0] == '#' && q[1] == '#'))
+                buf_put(&out, arg, (int) strlen(arg));
+            else
+                put_expanded(&out, arg);
+        }
+    }
+
+    if (!out.text)
+        out.text = strdup("");
+
+    return out.text;
+}
+
 /* A name put back as the text it stands for. Returns whether it was one:
  * when it is, the caller reads again and gets the first token of the
  * expansion.
@@ -836,6 +1197,36 @@ static int expand(NameRef name)
 
     if (!m || expanding(name))
         return 0;
+
+    /* A macro with parameters is only used where a '(' follows it. Written
+     * on its own the name is an ordinary identifier, which is what lets a
+     * function and a macro over it share a name. */
+    if (m->nparams >= 0) {
+        char **argv;
+        char  *text;
+        int    argc;
+
+        if (!paren_follows())
+            return 0;
+
+        argv = collect_args(m, &argc);
+        if (argc < m->nparams || (argc > m->nparams && !m->variadic))
+            acc_error_at(line, "'%s' takes %d argument%s, not %d",
+                         name_text(name), m->nparams,
+                         m->nparams == 1 ? "" : "s", argc);
+
+        text = build_expansion(m, argv, argc);
+        free_args(argv, argc);
+
+        if (!*text) {
+            free(text);
+
+            return 1;           /* it came to nothing */
+        }
+        push_owned_text(name, text);
+
+        return 1;
+    }
 
     /* An empty definition expands to nothing at all, and a window over no
      * text is not worth pushing: saying it was expanded is enough, and the
@@ -1048,9 +1439,104 @@ static int     if_depth;
 
 static void if_expand(const char *text, int len);
 
-/* A name in the expression: expanded if it is a macro, and otherwise left
- * for the evaluator, which reads any name that is left as zero. */
-static void if_name(const char *at, int len)
+/* The arguments of a call written in text rather than read from the file:
+ * what a macro's expansion holds, and what an #if's condition holds. The
+ * nesting rules are the same as at a call the lexer reads. */
+static char **collect_args_text(Macro *m, const char **at, const char *end,
+                                int *out_argc)
+{
+    const char *p = *at;
+    char **argv;
+    Buf    arg;
+    int    argc = 0, depth = 0, i;
+
+    argv = calloc(PARAMS_MAX + 1, sizeof *argv);
+    if (!argv)
+        acc_error("out of memory for a macro's arguments");
+    arg.text = NULL; arg.len = 0; arg.cap = 0;
+
+    while (p < end && is_space((unsigned char) *p))
+        p++;
+    p++;                                /* the '(' */
+
+    for (;;) {
+        int c;
+
+        if (p == end)
+            acc_error_at(line, "a macro's arguments are not closed");
+        c = (unsigned char) *p++;
+
+        if (c == '(' || c == '[') {
+            depth++;
+        } else if (c == ')' && depth == 0) {
+            break;
+        } else if (c == ')' || c == ']') {
+            depth--;
+        } else if (c == ',' && depth == 0
+                   && !(m->variadic && argc == m->nparams)) {
+            if (argc == PARAMS_MAX)
+                acc_error_at(line, "a macro takes at most %d arguments",
+                             PARAMS_MAX);
+            argv[argc++] = arg.text ? arg.text : strdup("");
+            arg.text = NULL; arg.len = 0; arg.cap = 0;
+
+            continue;
+        } else if (c == '"' || c == '\'') {
+            int quote = c;
+
+            buf_putc(&arg, c);
+            while (p < end) {
+                c = (unsigned char) *p++;
+                buf_putc(&arg, c);
+                if (c == '\\' && p < end) {
+                    buf_putc(&arg, (unsigned char) *p++);
+
+                    continue;
+                }
+                if (c == quote)
+                    break;
+            }
+
+            continue;
+        }
+
+        if (is_space(c)) {
+            if (arg.len && !is_space((unsigned char) arg.text[arg.len - 1]))
+                buf_putc(&arg, ' ');
+
+            continue;
+        }
+        buf_putc(&arg, c);
+    }
+
+    argv[argc++] = arg.text ? arg.text : strdup("");
+    if (m->nparams == 0 && argc == 1 && !*argv[0]) {
+        free(argv[0]);                  /* as above: nothing, not one empty */
+        argv[0] = NULL;
+        argc = 0;
+    }
+    for (i = 0; i < argc; i++) {
+        char *a = argv[i];
+        int   n = (int) strlen(a);
+
+        while (n && a[n - 1] == ' ')
+            a[--n] = '\0';
+        if (*a == ' ')
+            memmove(a, a + 1, strlen(a));
+    }
+
+    *at = p;
+    *out_argc = argc;
+
+    return argv;
+}
+
+/* A name in text being expanded: put back as what it stands for, or left
+ * alone. `at` is the name; `after` is what follows it, which is what says
+ * whether a macro with parameters is being used or merely mentioned.
+ * Returns where to carry on from. */
+static const char *if_name(const char *at, int len, const char *after,
+                           const char *end)
 {
     NameRef name = name_intern(at, len);
     Macro  *m;
@@ -1060,20 +1546,54 @@ static void if_name(const char *at, int len)
         if (if_active[i] == name) {
             if_put(at, len);            /* already being expanded */
 
-            return;
+            return after;
         }
 
     m = macro_find(name);
     if (!m) {
         if_put(at, len);
 
-        return;
+        return after;
     }
     if (if_depth == INCLUDE_MAX)
         acc_error_at(line, "macros expanded more than %d deep", INCLUDE_MAX);
+
+    if (m->nparams >= 0) {
+        const char *p = after;
+        char **argv;
+        char  *built;
+        int    argc;
+
+        while (p < end && is_space((unsigned char) *p))
+            p++;
+        if (p == end || *p != '(') {
+            if_put(at, len);            /* mentioned, not used */
+
+            return after;
+        }
+
+        p = after;
+        argv = collect_args_text(m, &p, end, &argc);
+        if (argc < m->nparams || (argc > m->nparams && !m->variadic))
+            acc_error_at(line, "'%s' takes %d argument%s, not %d",
+                         name_text(name), m->nparams,
+                         m->nparams == 1 ? "" : "s", argc);
+        built = build_expansion(m, argv, argc);
+        free_args(argv, argc);
+
+        if_active[if_depth++] = name;
+        if_expand(built, (int) strlen(built));
+        if_depth--;
+        free(built);
+
+        return p;
+    }
+
     if_active[if_depth++] = name;
     if_expand(m->text, (int) strlen(m->text));
     if_depth--;
+
+    return after;
 }
 
 /* `defined X` and `defined(X)`, which are answered before anything is
@@ -1151,7 +1671,7 @@ static void if_expand(const char *text, int len)
 
             continue;
         }
-        if_name(start, (int) (p - start));
+        p = if_name(start, (int) (p - start), p, end);
     }
 }
 
@@ -1463,6 +1983,45 @@ static long long if_ternary(void)
     }
 }
 
+/* Text with the macros in it put back, into a buffer. The same walk an
+ * #if's condition goes through, and what a macro's argument goes through
+ * before it is put in where the parameter was.
+ *
+ * The buffer it builds in is one shared static, so what is in it is saved
+ * and put back: expanding an argument can reach a macro whose own argument
+ * has to be expanded, and the inner one would otherwise write over the
+ * outer one's work. */
+static void expand_text_into(Buf *out, const char *text)
+{
+    char *saved = NULL;
+    int   saved_len = if_len, saved_depth = if_depth, i;
+    NameRef saved_active[INCLUDE_MAX];
+
+    if (saved_len) {
+        saved = malloc((size_t) saved_len);
+        if (!saved)
+            acc_error("out of memory expanding a macro");
+        memcpy(saved, if_text, (size_t) saved_len);
+    }
+    for (i = 0; i < saved_depth; i++)
+        saved_active[i] = if_active[i];
+
+    if_len = 0;
+    if_depth = 0;
+    if_expand(text, (int) strlen(text));
+    if_put("", 1);
+    buf_put(out, if_text, if_len - 1);
+
+    if (saved) {
+        memcpy(if_text, saved, (size_t) saved_len);
+        free(saved);
+    }
+    if_len = saved_len;
+    if_depth = saved_depth;
+    for (i = 0; i < saved_depth; i++)
+        if_active[i] = saved_active[i];
+}
+
 /* The condition of an #if or an #elif: what is left of the line, expanded,
  * and then read. */
 static int if_condition(void)
@@ -1714,6 +2273,8 @@ static NameRef directive_target(const char *what)
 static void do_define(void)
 {
     NameRef name;
+    NameRef *params = NULL;
+    int nparams = -1, variadic = 0;
     const char *start;
     const char *end;
 
@@ -1722,9 +2283,41 @@ static void do_define(void)
 
     /* `#define f(x)` is a macro with parameters, which is a different thing
      * from a name standing for some text: the parenthesis has to follow the
-     * name with nothing between it and the name to mean that. */
-    if (*cursor == '(')
-        acc_error_at(line, "a macro with parameters is not supported yet");
+     * name with nothing between it and the name to mean that, which is why
+     * this is asked before any blanks are skipped. */
+    if (*cursor == '(') {
+        cursor++;
+        params = malloc(PARAMS_MAX * sizeof *params);
+        if (!params)
+            acc_error("out of memory for a macro's parameters");
+        nparams = 0;
+
+        skip_blanks();
+        if (*cursor == ')') {
+            cursor++;                   /* `f()`, which takes one empty one */
+        } else {
+            for (;;) {
+                skip_blanks();
+                if (cursor[0] == '.' && cursor[1] == '.' && cursor[2] == '.') {
+                    cursor += 3;
+                    variadic = 1;
+                    skip_blanks();
+                    break;
+                }
+                if (nparams == PARAMS_MAX)
+                    acc_error_at(line, "a macro takes at most %d parameters",
+                                 PARAMS_MAX);
+                params[nparams++] = directive_target("define");
+                skip_blanks();
+                if (*cursor != ',')
+                    break;
+                cursor++;
+            }
+            if (*cursor != ')')
+                acc_error_at(line, "the parameters of a macro need a ')'");
+            cursor++;
+        }
+    }
 
     skip_blanks();
     start = cursor;
@@ -1736,7 +2329,8 @@ static void do_define(void)
      * nothing can tell apart. When `#` arrives it will be able to -- what a
      * parameter stringifies to is spelled out -- and the trimming belongs
      * with it, where a test can show the difference. */
-    macro_define(name, start, (int) (end - start));
+    macro_define(name, start, (int) (end - start), params, nparams,
+                 variadic);
 }
 
 static void do_undef(void)

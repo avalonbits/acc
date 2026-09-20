@@ -8,6 +8,13 @@
 #
 # What is said when a definition is malformed is here too, since no second
 # compiler is needed to ask.
+#
+# Run against the sanitized build this looks for leaks as well, and that is
+# on purpose: the preprocessor allocates for every expansion and every file
+# it opens, so a leak here is one that grows with the program rather than a
+# one-off. The other suites turn leak checking off because acc frees
+# nothing it does not have to -- a compiler runs once and exits -- but what
+# this covers is the part where that reasoning does not hold.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -191,8 +198,154 @@ refuses "#undef with more than a name" "and nothing else" \
 #undef A B
 int main(void) { return 0; }
 '
-refuses "a macro with parameters, for now" "not supported yet" \
-'#define f(x) (x)
+# --- macros with parameters -------------------------------------------
+
+same "one parameter" \
+'#define TWICE(x) ((x) * 2)
+int main(void) { return TWICE(21); }
+' 'int main(void) { return ((21) * 2); }
+'
+
+same "two parameters" \
+'#define ADD(a, b) ((a) + (b))
+int main(void) { return ADD(40, 2); }
+' 'int main(void) { return ((40) + (2)); }
+'
+
+same "no parameters at all" \
+'#define NOW() 42
+int main(void) { return NOW(); }
+' 'int main(void) { return 42; }
+'
+
+# A comma inside parentheses belongs to what it is inside, or `f(a, b)` as
+# an argument would arrive as two.
+same "a comma inside an argument" \
+'#define PICK(a, b) (b)
+int main(void) { return PICK(f(1, 2), 42); }
+' 'int main(void) { return (42); }
+'
+
+same "an empty argument" \
+'#define SECOND(a, b) (b)
+int main(void) { return SECOND(, 42); }
+' 'int main(void) { return (42); }
+'
+
+same "a call spread over lines" \
+'#define ADD(a, b) ((a) + (b))
+int main(void) { return ADD(
+    40,
+    2); }
+' 'int main(void) { return ((40) + (2)); }
+'
+
+# An argument is expanded before it goes in, and the result is read again,
+# so a macro can be written in terms of another.
+same "a macro used as an argument" \
+'#define N 21
+#define TWICE(x) ((x) * 2)
+int main(void) { return TWICE(N); }
+' 'int main(void) { return ((21) * 2); }
+'
+
+same "a macro whose body uses another" \
+'#define TWICE(x) ((x) * 2)
+#define QUAD(x) TWICE(TWICE(x))
+int main(void) { return QUAD(10) + 2; }
+' 'int main(void) { return ((((10) * 2)) * 2) + 2; }
+'
+
+same "a macro that calls itself stops" \
+'#define f(x) f(x)
+int f(int v) { return v; }
+int main(void) { return f(42); }
+' 'int f(int v) { return v; }
+int main(void) { return f(42); }
+'
+
+# Without a '(' after it the name is an ordinary identifier, which is what
+# lets a variable and a macro over it share a spelling.
+same "the name on its own is not a use" \
+'#define twice(x) ((x) * 2)
+int main(void) { int twice = 42; return twice; }
+' 'int main(void) { int twice = 42; return twice; }
+'
+
+same "a macro with parameters in an #if" \
+'#define DOUBLE(x) ((x) * 2)
+#if DOUBLE(3) == 6
+int main(void) { return 42; }
+#endif
+' 'int main(void) { return 42; }
+'
+
+# --- # and ## ---------------------------------------------------------
+
+same "# makes a string of an argument" \
+'#define NAME(x) #x
+int main(void) { char *s = NAME(hello); return s[0] == 104 ? 42 : 0; }
+' 'int main(void) { char *s = "hello"; return s[0] == 104 ? 42 : 0; }
+'
+
+# What # quotes is what was written, not what it stands for: that is the
+# one place an argument is not expanded first.
+same "# quotes the argument unexpanded" \
+'#define N 7
+#define NAME(x) #x
+int main(void) { char *s = NAME(N); return s[0] == 78 ? 42 : 0; }
+' 'int main(void) { char *s = "N"; return s[0] == 78 ? 42 : 0; }
+'
+
+same "## joins two names" \
+'#define JOIN(a, b) a ## b
+int value42 = 42;
+int main(void) { return JOIN(value, 42); }
+' 'int value42 = 42;
+int main(void) { return value42; }
+'
+
+same "## joins two numbers" \
+'#define JOIN(a, b) a ## b
+int main(void) { return JOIN(4, 2); }
+' 'int main(void) { return 42; }
+'
+
+# --- a variable number of arguments -----------------------------------
+
+same "... with the rest thrown away" \
+'#define FIRST(a, ...) (a)
+int main(void) { return FIRST(42, 1, 2, 3); }
+' 'int main(void) { return (42); }
+'
+
+same "__VA_ARGS__, commas and all" \
+'#define SUM(a, ...) ((a) + rest(__VA_ARGS__))
+int rest(int x, int y) { return x + y; }
+int main(void) { return SUM(20, 10, 12); }
+' 'int rest(int x, int y) { return x + y; }
+int main(void) { return ((20) + rest(10, 12)); }
+'
+
+# --- what is refused --------------------------------------------------
+refuses "too few arguments" "takes 2 arguments, not 1" \
+'#define ADD(a, b) ((a)+(b))
+int main(void) { return ADD(1); }
+'
+refuses "too many arguments" "takes 1 argument, not 2" \
+'#define ONE(a) (a)
+int main(void) { return ONE(1, 2); }
+'
+refuses "arguments that are not closed" "not closed" \
+'#define ADD(a, b) ((a)+(b))
+int main(void) { return ADD(1, 2; }
+'
+refuses "# on something that is not a parameter" "needs one of its" \
+'#define BAD(x) # 3
+int main(void) { return BAD(1); }
+'
+refuses "a parameter list with no ')'" "need a" \
+'#define BAD(a, b (a)
 int main(void) { return 0; }
 '
 
