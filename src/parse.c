@@ -796,7 +796,11 @@ static int string_gather(void)
             if (!str_joined)
                 acc_error("out of memory for a string");
         }
-        memcpy(str_joined + len, tok_str, (size_t) tok_str_len);
+        /* Asked, because `""` is a string of no bytes and the lexer has
+         * nothing to point at for it -- and memcpy from a null pointer is
+         * undefined even when it is told to copy nothing. */
+        if (tok_str_len)
+            memcpy(str_joined + len, tok_str, (size_t) tok_str_len);
         len += tok_str_len;
         next();
     }
@@ -6016,8 +6020,12 @@ static void usage(void)
     fprintf(stderr,
         "usage: acc [-c] <source.c> -o <out> [-I <dir>]... [-b <addr>]\n"
         "                                    [-r <file>] [-x]\n"
-        "       acc <file.o>... -o <out.bin> [-x]\n"
+        "       acc <file.o|lib.a>... -o <out.bin> [-x]\n"
+        "       acc -a <lib.a> <file.o>...\n"
         "\n"
+        "  -a  put the objects that follow into that library rather than\n"
+        "      into a program. A link takes from a library only the\n"
+        "      members it turns out to need.\n"
         "  -c  compile to an object rather than to a program, to be\n"
         "      linked with others later. An object also records what the\n"
         "      compile read, so that a build can tell whether it has to\n"
@@ -6122,12 +6130,15 @@ static void stack_report(void)
  * tells them apart, and not by looking inside: a file called x.c that turns
  * out to hold an object is a mistake worth a clear complaint rather than a
  * clever recovery. */
-static int is_object(const char *path)
+static int ends_in(const char *path, char what)
 {
     size_t n = strlen(path);
 
-    return n > 2 && path[n - 2] == '.' && path[n - 1] == 'o';
+    return n > 2 && path[n - 2] == '.' && path[n - 1] == what;
 }
+
+#define is_object(path)  ends_in((path), 'o')
+#define is_archive(path) ends_in((path), 'a')
 
 /* A name from an object, as a symbol in the compiler's own table.
  *
@@ -6155,12 +6166,11 @@ static int link_symbol(const char *text, int flags)
 }
 
 /* One object, placed where the image has got to. */
-static void link_object(const char *path)
+static void place_object(Object *op, const char *path)
 {
-    Object o;
+    Object o = *op;
     int base, bss, i;
 
-    obj_read(path, &o);
     base = out_here();
     for (i = 0; i < o.text_len; i++)
         out_byte(o.text[i]);
@@ -6224,11 +6234,62 @@ static void link_object(const char *path)
     obj_free(&o);
 }
 
+static void link_object(const char *path)
+{
+    Object o;
+
+    obj_read(path, &o);
+    place_object(&o, path);
+}
+
+/* A library, which is asked only for what the link is short of.
+ *
+ * Round and round until it has nothing more to offer: a member pulled in may
+ * call something that nothing has called yet, and that something may be in
+ * this same library. Which is why a link takes more than one look at a
+ * library and only one at an object.
+ *
+ * A member is placed exactly as an object is, because it is one. */
+static void link_archive(const char *path)
+{
+    Archive a;
+    char *pulled;
+    int again = 1;
+
+    ar_open(path, &a);
+    pulled = calloc((size_t) a.nmembers + 1, 1);
+    if (!pulled)
+        acc_error("out of memory for '%s'", path);
+
+    while (again) {
+        int i, n = gen_nfixups();
+
+        again = 0;
+        for (i = 0; i < n; i++) {
+            int sym = gen_fixup_sym(i);
+            Object o;
+            int m;
+
+            if (!gen_no_address(sym))
+                continue;
+            m = ar_find(&a, name_text(sym_at(sym)->name));
+            if (m < 0 || pulled[m])
+                continue;
+            pulled[m] = 1;
+            ar_member(&a, m, &o);
+            place_object(&o, ar_member_name(&a, m));
+            again = 1;
+        }
+    }
+    free(pulled);
+    ar_close(&a);
+}
+
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL, *relocs = NULL;
     const char **objs;
-    int nobjs = 0, to_object = 0;
+    int nobjs = 0, to_object = 0, to_archive = 0;
     int by_exit = 0;
     int i;
     clock_t begin;
@@ -6275,11 +6336,21 @@ int main(int argc, char **argv)
                 usage();
         } else if (argv[i][0] == '-' && argv[i][1] == 'c' && !argv[i][2]) {
             to_object = 1;
+        } else if (argv[i][0] == '-' && argv[i][1] == 'a') {
+            /* The library to make, named here rather than with -o, so that
+             * what is being made is one word and reads left to right. */
+            if (argv[i][2])
+                out = argv[i] + 2;
+            else if (++i < argc)
+                out = argv[i];
+            else
+                usage();
+            to_archive = 1;
         } else if (argv[i][0] == '-' && argv[i][1] == 'x' && !argv[i][2]) {
             by_exit = 1;
         } else if (argv[i][0] == '-') {
             usage();
-        } else if (is_object(argv[i])) {
+        } else if (is_object(argv[i]) || is_archive(argv[i])) {
             objs[nobjs++] = argv[i];
         } else if (!in) {
             in = argv[i];
@@ -6291,6 +6362,8 @@ int main(int argc, char **argv)
         usage();
     if (to_object && !in)
         usage();
+    if (to_archive && (!nobjs || to_object))
+        usage();
 
     begin = clock();
     stack_paint();
@@ -6301,15 +6374,23 @@ int main(int argc, char **argv)
     sym_init();
     gen_init();
 
-    if (nobjs) {
+    if (to_archive) {
+        /* Nothing is compiled and nothing is linked: the objects are put
+         * together with a list of what each of them defines in front. */
+        ar_write(out, objs, nobjs);
+    } else if (nobjs) {
         /* Linking. The entry stub goes in first, as it does for a program
          * compiled in one piece, and its call to main is a fixup like any
          * other -- which is what makes the objects' own symbols do the work
          * of finding it. */
         out_open(out, 1);
         gen_startup(by_exit);
-        for (i = 0; i < nobjs; i++)
-            link_object(objs[i]);
+        for (i = 0; i < nobjs; i++) {
+            if (is_archive(objs[i]))
+                link_archive(objs[i]);
+            else
+                link_object(objs[i]);
+        }
         gen_finish();
         out_close();
     } else if (to_object && obj_current(out, in)) {

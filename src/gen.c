@@ -2924,7 +2924,12 @@ void gen_label(int hole)
  * and nothing above the cut calls anything below it, so a program that never
  * uses a long long does not carry them. */
 static int rt_base = 0;                 /* where the blob landed */
-static int rt_any_used;                 /* 1 for the first part, 2 for all */
+
+/* How much of the blob a program wants: 1 for what talks to the machine, 2
+ * for the arithmetic as well, 3 for the long long routines too. The blob is
+ * laid out in that order and nothing above a cut calls below it, so what is
+ * emitted is always a run from its first byte. */
+static int rt_any_used;
 
 typedef struct {
     unsigned char which;
@@ -2969,12 +2974,11 @@ static int rt_which(const char *name)
  * emitted here, or a name that came in from an object. */
 static void rt_wanted(int which)
 {
-    /* The long long routines are past RT_SPLIT, and only a program that
-     * calls one of them carries them. */
-    if (rt_entry[which] >= RT_SPLIT)
-        rt_any_used = 2;
-    else if (!rt_any_used)
-        rt_any_used = 1;
+    int want = rt_entry[which] >= RT_SPLIT ? 3
+             : rt_entry[which] >= RT_OPS   ? 2 : 1;
+
+    if (want > rt_any_used)
+        rt_any_used = want;
 }
 
 /* Its symbol, made the first time one is asked for. Only at the end of a
@@ -3034,7 +3038,8 @@ static void rt_emit_used(void)
     if (!rt_any_used)
         return;
 
-    len = rt_any_used == 2 ? (int) sizeof rt_code : RT_SPLIT;
+    len = rt_any_used == 3 ? (int) sizeof rt_code
+        : rt_any_used == 2 ? RT_SPLIT : RT_OPS;
     rt_base = out_here();
     for (i = 0; i < len; i++)
         out_byte(rt_code[i]);
@@ -3333,6 +3338,23 @@ static int no_address(int sym)
     return sym_at(sym)->kind == SYM_FUNC
            ? !(sym_flags(sym) & SYMF_DEFINED)
            : sym_at(sym)->val < 0;
+}
+
+/* The calls and addresses still waiting on something, which is how a link
+ * knows what to go looking for in a library. */
+int gen_nfixups(void)
+{
+    return nfixups;
+}
+
+int gen_fixup_sym(int i)
+{
+    return fixups[i].fn;
+}
+
+int gen_no_address(int sym)
+{
+    return no_address(sym);
 }
 
 void gen_finish(void)
@@ -4242,8 +4264,17 @@ static void call_through(void)
  * turned every comparison in every program into a call. */
 static void vcmp_pointer_check(Type left, Type right)
 {
-    if (type_pointer(left) && type_pointer(right) && left != right)
-        acc_error_at(tok_line, "these are pointers to different types");
+    if (!type_pointer(left) || !type_pointer(right) || left == right)
+        return;
+
+    /* A `void *` compares with a pointer to anything, which is what C says
+     * and what makes `p == NULL` work when NULL is `(void *) 0` -- which is
+     * how <stddef.h> spells it, and how every library that has ever been
+     * written spells it. */
+    if (type_deref(left) == TY_VOID || type_deref(right) == TY_VOID)
+        return;
+
+    acc_error_at(tok_line, "these are pointers to different types");
 }
 
 static void vbinop_pointer(int op, Type left, Type right)

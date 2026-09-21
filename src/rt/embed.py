@@ -49,10 +49,11 @@ def main(asm, out, tools):
         fixups.append((int(at, 16), int(addend, 16)))
 
     # Global symbols only: the entry points, in address order.
-    # And acc_rt_split, where the blob may be cut: what is below it is only
-    # emitted into a program that uses it.
+    # And the two places the blob may be cut, each of which only what is
+    # below it is emitted for: acc_rt_ops before the arithmetic, and
+    # acc_rt_split before the long long routines.
     entries = []
-    split = len(text)
+    cuts = {'acc_rt_ops': len(text), 'acc_rt_split': len(text)}
     for line in run(tools + '/ez80-none-elf-nm', obj).splitlines():
         parts = line.split()
         if len(parts) != 3:
@@ -60,13 +61,16 @@ def main(asm, out, tools):
         addr, kind, name = parts
         if kind == 'T' and name.startswith('_acc_rt_'):
             entries.append((int(addr, 16), name[len('_acc_rt_'):]))
-        if kind == 'T' and name == 'acc_rt_split':
-            split = int(addr, 16)
+        if kind == 'T' and name in cuts:
+            cuts[name] = int(addr, 16)
     entries.sort()
+    if cuts['acc_rt_ops'] > cuts['acc_rt_split']:
+        sys.exit('%s: acc_rt_ops comes after acc_rt_split' % asm)
     for at, to in fixups:
-        if at < split and to >= split:
-            sys.exit('%s: a helper above acc_rt_split calls one below it, '
-                     'which may not have been emitted' % asm)
+        for name, cut in cuts.items():
+            if at < cut and to >= cut:
+                sys.exit('%s: a helper above %s calls one below it, which '
+                         'may not have been emitted' % (asm, name))
 
     with open(out, 'w') as f:
         f.write('/* Generated from %s by %s. Do not edit.\n'
@@ -105,9 +109,12 @@ def main(asm, out, tools):
         f.write('/* Calls from one routine to another: the address at `at` is the\n'
                 ' * blob\'s base plus `to`. */\n')
         f.write('typedef struct { short at, to; } RtFix;\n\n')
-        f.write('/* Where the blob may be cut: the helpers from here on are\n'
-                ' * emitted only when a program uses one of them. */\n')
-        f.write('#define RT_SPLIT %d\n\n' % split)
+        f.write('/* Where the blob may be cut. What is below a cut is\n'
+                ' * emitted only when a program uses one of the helpers\n'
+                ' * below it, so that a program which only prints does not\n'
+                ' * carry the arithmetic. */\n')
+        f.write('#define RT_OPS %d\n' % cuts['acc_rt_ops'])
+        f.write('#define RT_SPLIT %d\n\n' % cuts['acc_rt_split'])
         f.write('#define RT_NFIX %d\n\n' % len(fixups))
         if fixups:
             f.write('static const RtFix rt_fix[RT_NFIX] = {\n')

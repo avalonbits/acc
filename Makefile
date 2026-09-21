@@ -23,8 +23,15 @@ SAN      = -fsanitize=address,undefined -fno-sanitize-recover=all \
 
 BIN = bin
 
+# The library acc links programs against, written in C and built by acc
+# itself -- which is what makes it something the Agon can build for itself,
+# and what keeps it honest: every line of it is a line acc has to compile.
+LIBSRC = lib/mem.c lib/str.c lib/stdio.c
+LIBHDR = include/stddef.h include/string.h include/stdio.h
+LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
+
 .PHONY: all clean test unit agon
-all: $(BIN)/acc
+all: $(BIN)/acc $(BIN)/libc.a
 
 # The runtime helpers are assembly, and the table acc emits them from is
 # generated rather than transcribed: getting a byte wrong in a page of opcodes
@@ -53,6 +60,16 @@ src/acc_build.h: $(SRC) $(HDR) src/build_id.sh
 
 $(BIN)/acc: $(SRC) $(HDR) src/acc_build.h | $(BIN)
 	$(CC) $(CFLAGS) $(WARN) -Isrc -o $@ $(SRC)
+
+$(BIN)/lib:
+	@mkdir -p $@
+
+$(BIN)/lib/%.o: lib/%.c $(LIBHDR) $(BIN)/acc | $(BIN)/lib
+	@$(BIN)/acc -c $< -o $@ -Iinclude >/dev/null
+
+$(BIN)/libc.a: $(LIBOBJ) $(BIN)/acc
+	@$(BIN)/acc -a $@ $(LIBOBJ) >/dev/null
+	@echo "[$@: $$(stat -c%s $@) bytes from $(words $(LIBOBJ)) objects]"
 
 # The compiler is where the bugs are, so the tests drive a sanitized build of
 # it rather than a sanitized unit test beside it. It found the use-after-
@@ -85,6 +102,7 @@ test: all unit $(BIN)/acc-asan agon
 	@ACC=$(BIN)/acc-asan test/object.sh
 	@ACC=$(BIN)/acc-asan test/bss.sh
 	@ACC=$(BIN)/acc-asan test/mos.sh || [ $$? -eq 77 ]
+	@ACC=$(BIN)/acc-asan test/lib.sh
 	@test/heap.sh || [ $$? -eq 77 ]
 	@test/cycles.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh

@@ -830,6 +830,12 @@ int  gen_bss_len(void);
 
 void gen_finish(void);          /* resolve calls to functions defined later */
 
+/* What is still waiting on something, which is what a link takes to a
+ * library to ask whether it has it. */
+int gen_nfixups(void);
+int gen_fixup_sym(int i);
+int gen_no_address(int sym);
+
 /* -c: what this file could not resolve, for the object to hand on. */
 extern int gen_objects;
 int gen_nexterns(void);
@@ -1036,7 +1042,26 @@ typedef struct {
     int            text_len, bss_len, nsyms, nrelocs, ndeps, strings_len;
 } Object;
 
+/* A library: objects end to end, with a list of what each defines in front
+ * of them. Only that list is read when one is opened; a member is read when
+ * the link turns out to want it. */
+typedef struct {
+    const char    *path;
+    unsigned char *front;                /* the list, as it is in the file */
+    unsigned char *members, *defs;
+    char          *strings;
+    int            build, nmembers, ndefs, strings_len, size;
+} Archive;
+
+void        ar_write(const char *path, const char **members, int nmembers);
+void        ar_open(const char *path, Archive *a);
+void        ar_close(Archive *a);
+int         ar_find(const Archive *a, const char *name);  /* which member, or -1 */
+void        ar_member(const Archive *a, int i, Object *o);
+const char *ar_member_name(const Archive *a, int i);
+
 void obj_write(const char *path);
+void obj_take(unsigned char *all, int len, const char *path, Object *o);
 int  obj_current(const char *path, const char *source);
 void obj_read(const char *path, Object *o);
 void obj_free(Object *o);

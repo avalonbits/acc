@@ -51,6 +51,35 @@
 	.assume adl=1
 	.section .text,"ax",@progbits
 
+; ================================================================ the machine
+; What the eZ80 cannot do on its own but MOS can, which is everything to do
+; with the world outside the program. First in the blob, and acc_rt_ops marks
+; where they end: a program that only prints carries these and not the four
+; kilobytes of arithmetic behind them.
+;
+; Called from C and not by the code generator, so the argument is where acc
+; puts one -- three bytes at (sp+3), past the return address -- rather than
+; in a register. What comes back comes back in HL, as from any function acc
+; compiles.
+
+	.global _acc_rt_putch
+
+; int acc_rt_putch(int c): the low byte of c to the console, and c back.
+_acc_rt_putch:
+	ld	hl, 3
+	add	hl, sp
+	ld	a, (hl)
+	ld	hl, 0
+	ld	l, a
+	push	hl
+	rst.lil	$10
+	pop	hl
+	ret
+
+; ================================================================ arithmetic
+	.global	acc_rt_ops
+acc_rt_ops:
+
 	.global _acc_rt_and
 	.global _acc_rt_or
 	.global _acc_rt_xor
