@@ -670,7 +670,7 @@ void vconvert(Type to)
      * the label on it. Both directions go through an int, so a narrow type
      * widens first and a long is still refused. */
     if (type_float(to) != type_float(top->type)
-        && !(val_const(top->kind) && top->val == 0)) {
+        && !(val_number(top->kind) && top->val == 0)) {
         if (type_float(to)) {
             no_float_address(top);
             convert_int_to_float();
@@ -1430,6 +1430,33 @@ static int fold_addr(int op, const Value *lhs, const Value *rhs)
     return VAL_CONST;
 }
 
+/* Whether both sides can be worked out now.
+ *
+ * A pending address carries where it will be and not what it is worth, so
+ * it can be folded only against something that moves with it: a plain
+ * number added to it or taken from it, or another address of the same kind,
+ * whose distance from it is settled however the two of them are placed.
+ *
+ * Against a number in any other way it cannot. The first object in the bss
+ * is at offset zero, and folding `first == 0` on the offsets decided it was
+ * the null pointer.
+ *
+ * Only comparisons ask. The arithmetic ones fold through fold_addr, which
+ * knows which kinds an address survives and says so about the rest -- and
+ * saying so is a better message than anything reached by declining to fold
+ * and letting whatever wanted a constant complain instead. */
+static int foldable(int op, const Value *lhs, const Value *rhs)
+{
+    int pending = val_pending(lhs->kind) + val_pending(rhs->kind);
+
+    if (!pending)
+        return 1;
+    if (op == TK_PLUS || op == TK_MINUS)
+        return 1;               /* fold_addr says what kind those leave */
+
+    return pending == 2 && lhs->kind == rhs->kind;
+}
+
 static void vbinop(int op)
 {
     Value *lhs = vsp - 2;
@@ -1461,7 +1488,7 @@ static void vbinop(int op)
 
     /* Adding or subtracting nothing is nothing. Worth the two lines: it is
      * what makes `p + 0` and the zero cases of generated code free. */
-    if (val_const(rhs->kind) && rhs->val == 0
+    if (val_number(rhs->kind) && rhs->val == 0
         && (op == TK_PLUS || op == TK_MINUS)) {
         vdrop();
 
@@ -1885,7 +1912,7 @@ static int vnarrow_ready(int op, Type to)
     if (tok_pair(op, TK_SHL)) {
         /* Only a constant count, unrolled. A variable one is a loop, which is
          * what the helper already is. */
-        if (!val_const(rhs->kind) || rhs->val < 0 || rhs->val > 8)
+        if (!val_number(rhs->kind) || rhs->val < 0 || rhs->val > 8)
             return 0;
         return narrow_operand(lhs, to, 1);
     }
@@ -2049,6 +2076,7 @@ static void vcmp(int op)
      * they are not. Which is what lets `sizeof x == 3` be a constant, since
      * a sizeof is unsigned and every size a program has is small. */
     if (val_const(lhs->kind) && val_const(rhs->kind)
+        && foldable(op, lhs, rhs)
         && (!is_unsigned || (lhs->val >= 0 && rhs->val >= 0))
         && const_fold(op, lhs->val, rhs->val, &folded)) {
         vdrop();
@@ -2281,7 +2309,7 @@ static void check_no_float_mix(Type to, const Value *from)
 {
     if (type_float(to) == type_float(from->type))
         return;
-    if (val_const(from->kind) && from->val == 0)
+    if (val_number(from->kind) && from->val == 0)
         return;                 /* zero is all zero bits either way */
 
     acc_error_at(tok_line, "converting between floating-point and integer is "
@@ -5541,12 +5569,20 @@ static void vbinop_pointer(int op, Type left, Type right)
         if (left != right || (vsp - 2)->ext != (vsp - 1)->ext)
             acc_error_at(tok_line, "these are pointers to different types");
 
+        /* Signed before the divide and not after it. A pointer counts as
+         * unsigned -- type_unsigned takes the pointer bits as well as the
+         * unsigned one -- so the difference came out of the subtraction
+         * labelled unsigned, and dividing it by the width of the element
+         * was an unsigned divide. That is the right answer whenever the
+         * left pointer is the further along, and 1290554 rather than -1
+         * when it is not. */
         vbinop(TK_MINUS);
+        (vsp - 1)->type = TY_INT;
         if ((unsigned) step > 1u) {
             vpush_const(step, TY_INT);
             vbinop(TK_SLASH);
+            (vsp - 1)->type = TY_INT;
         }
-        (vsp - 1)->type = TY_INT;
 
         return;
     }

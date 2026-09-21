@@ -667,6 +667,16 @@ enum {
  * slot for someone to put right. */
 #define val_pending(kind) ((unsigned) (kind) - VAL_ADDR <= 1u)
 
+/* Whether `val` is the number the operand stands for, rather than where the
+ * operand will be.
+ *
+ * val_const answers yes for an address and for a bss offset too, and their
+ * `val` is a place and not a worth: the first thing in the bss is at offset
+ * zero. Anything that compares `val` against a number wants this instead.
+ * Reading that zero as the number zero is what made `p - first_array` throw
+ * the subtraction away and compile to nothing but the divide. */
+#define val_number(kind) ((kind) == VAL_CONST)
+
 /* What the parser knows about a value it has not had to emit yet: a constant,
  * a local at a frame offset, or something already in a register. `val` is the
  * constant, the offset or the register number, according to `kind`. */
