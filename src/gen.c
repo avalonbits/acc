@@ -2747,15 +2747,88 @@ int gen_here(void)
     return out_here();
 }
 
+/* Every jump the compiler writes, so that the ones whose target turns out to
+ * be near can be written again in two bytes.
+ *
+ * `jr` reaches 127 bytes either way and most jumps in compiled code go no
+ * further -- the end of an if, the top of a loop -- but which ones do is not
+ * known when they are written: the target of a forward jump is wherever the
+ * statement after it ends up. So they are all written as `jp`, and the ones
+ * that turn out to be near are shortened at the end of the file, where the
+ * distance is a subtraction. See relax_jumps.
+ *
+ * Two arrays rather than one of pairs: on this chip an index into a table is
+ * a multiply by the width of an entry, and a byte's is not a multiply at
+ * all. And appended through a pointer rather than at an index, for the same
+ * reason: `jump_at[njumps] = ...` is that multiply, on every jump the
+ * compiler writes, and the count is kept beside the pointer rather than
+ * worked back out of it because undoing the multiply is a divide.
+ *
+ * jumps_rewind is the one way the count goes down other than one at a time,
+ * and it is what keeps the two in step. */
+/* Whether code is being written into a function. Jumps are recorded and
+ * shortened a function at a time, so one written outside any -- there are
+ * none today, and the guard in jump_op is what keeps it that way -- is
+ * recorded nowhere and has to say where it is at once. */
+static int in_function;
+
+static int           *jump_at, *jump_put;
+static unsigned char *jump_cc, *jump_cc_put;
+static int            njumps, jumps_cap;
+
+static void jumps_rewind(int n)
+{
+    njumps = n;
+    jump_put = jump_at + n;
+    jump_cc_put = jump_cc + n;
+}
+
 static int jump_op(int op)
 {
     int hole;
 
+    if (in_function) {
+        if (njumps == jumps_cap) {
+            jumps_cap = jumps_cap ? jumps_cap * 2 : 256;
+            jump_at = realloc(jump_at, (size_t) jumps_cap * sizeof *jump_at);
+            jump_cc = realloc(jump_cc, (size_t) jumps_cap);
+            if (!jump_at || !jump_cc)
+                acc_error("out of memory for the jumps");
+            jumps_rewind(njumps);       /* both of them may have moved */
+        }
+        *jump_put++ = out_here();
+        *jump_cc_put++ = (unsigned char) op;
+        njumps++;
+    }
+
     out_opcode24(op, 0);
     hole = out_here() - ACC_INT_SIZE;
-    out_reloc(hole);
+
+    /* Not recorded yet, when this is a function's jump: relax_function says
+     * where it ended up, and says it for the ones that are still four bytes
+     * only. Almost every relocation a function makes is a jump's operand --
+     * 1017 of 1073 in test/bench/compare.c -- so leaving them out until the
+     * function is done is what makes shortening them affordable: the pass
+     * walked each jump twice over, once as a jump and once as a relocation,
+     * and now walks it once. */
+    if (!in_function)
+        out_reloc(hole);
 
     return hole;
+}
+
+/* The jumps in bytes that are being taken back. A comparison whose answer is
+ * only wanted for the branch rewinds the two or three jumps that were making
+ * a one and a zero of it, and a sizeof rewinds whatever it compiled to find
+ * out how wide something is; either way what was written is not there any
+ * more, and neither is what it was. */
+static void jumps_forget(int here)
+{
+    while (njumps && jump_put[-1] >= here) {
+        jump_put--;
+        jump_cc_put--;
+        njumps--;
+    }
 }
 
 /* A jump's hole filled in with where it goes.
@@ -2786,10 +2859,16 @@ int gen_jump(void)
     return jump_op(JP_ANY);
 }
 
+/* A jump to somewhere already written: the top of a loop, a label a `goto`
+ * has passed, the default of a switch.
+ *
+ * Written as a hole and filled in at once rather than emitted with the
+ * address in it, so that it is recorded with the rest of the jumps and can
+ * be shortened with them. These are the ones most likely to be near: the
+ * back edge of a loop is as far as the loop is long. */
 void gen_jump_to(int target)
 {
-    out_reloc(out_here() + 1);
-    out_opcode24(JP_ANY, target);
+    patch_to(jump_op(JP_ANY), target);
 }
 
 /* Pop the top and jump when it is true (`when_true`) or when it is false.
@@ -2850,6 +2929,7 @@ static int jump_on_truth(int when_true)
         int op = when_true ? cmp_op : cmp_opposite(cmp_op);
 
         out_rewind(cmp_from);
+        jumps_forget(cmp_from);
         cmp_from = -1;
         vdrop();
 
@@ -3785,6 +3865,25 @@ static int dead_statics(Cut *cuts, const unsigned char *live)
     return n;
 }
 
+/* Where each of the lists acc keeps stood when a function began, so that
+ * shortening that function's jumps walks its own entries and not the ones
+ * every function before it left. Everything recorded before the first run is
+ * where it was. */
+typedef struct {
+    int reloc, fixup, rt, bss, jump;
+} Mark;
+
+static Mark func_mark;          /* where the lists stood at this function */
+
+static void mark_here(Mark *m)
+{
+    m->reloc = out_nrelocs();
+    m->fixup = nfixups;
+    m->rt = nrt_fixups;
+    m->bss = nbss_fixups;
+    m->jump = njumps;
+}
+
 /* The slots that do not hold an address yet, gathered and put in order.
  *
  * A call waiting on a function that is not defined holds the amount to add
@@ -3792,6 +3891,11 @@ static int dead_statics(Cut *cuts, const unsigned char *live)
  * all, and one waiting on the bss holds an offset into it. All three are
  * filled in after this pass has run, so what is in them now is not an
  * address and must not be moved as if it were.
+ *
+ * Only what was recorded since the function began, when it is a function's
+ * jumps being shortened: everything before that is where it was, and
+ * gathering it again for every function is the whole file's worth of it once
+ * per function.
  *
  * The three lists are each in the order they were written, which is rising,
  * so they are merged rather than sorted: a qsort over them cost three
@@ -3801,133 +3905,174 @@ static int dead_statics(Cut *cuts, const unsigned char *live)
  * that puts a slot behind ones already recorded, and fixup_add says so. The
  * merge is followed by an insertion pass, which is a walk when the merge
  * came out in order and a repair when it did not. */
-static int *pending_slots(int *count)
+static int *pending, pending_cap;
+
+static int *pending_slots(int *count, const Mark *from)
 {
-    int n = nfixups + nrt_fixups + nbss_fixups;
-    int *all = malloc((size_t) (n ? n : 1) * sizeof *all);
-    int fx = 0, rt = 0, bs = 0, i, j;
+    int n = (nfixups - from->fixup) + (nrt_fixups - from->rt)
+          + (nbss_fixups - from->bss);
+    int *all, *put, *b, *b_end, *scan;
+    const Fixup *f, *f_end;
+    const RtFixup *r, *r_end;
 
-    if (!all)
-        acc_error("out of memory taking the unused functions out");
-    n = 0;
-    while (fx < nfixups || rt < nrt_fixups || bs < nbss_fixups) {
-        int a = fx < nfixups ? fixups[fx].at : INT_MAX;
-        int b = rt < nrt_fixups ? rt_fixups[rt].at : INT_MAX;
-        int c = bs < nbss_fixups ? bss_fixups[bs] : INT_MAX;
+    /* Nothing is waiting, which is the usual answer once each function is
+     * asked about its own tail: most of them have no call left to fill in
+     * and nothing in the bss. Said here rather than left to the loops
+     * because the buffer is not there yet the first time through, and one
+     * past the start of a buffer that is not there is not a place. */
+    *count = 0;
+    if (n <= 0)
+        return pending;
 
-        if (a <= b && a <= c)
-            all[n++] = fixups[fx++].at;
-        else if (b <= c)
-            all[n++] = rt_fixups[rt++].at;
+    b = bss_fixups + from->bss;
+    b_end = bss_fixups + nbss_fixups;
+    f = fixups + from->fixup;
+    f_end = fixups + nfixups;
+    r = rt_fixups + from->rt;
+    r_end = rt_fixups + nrt_fixups;
+
+    /* Grown and kept: see the note in out_cut_sum. */
+    if (n > pending_cap) {
+        pending_cap = n * 2;
+        pending = realloc(pending, (size_t) pending_cap * sizeof *pending);
+        if (!pending)
+            acc_error("out of memory taking the unused functions out");
+    }
+    all = put = pending;
+
+    /* Walked with pointers and not indexed: an index into an array of
+     * anything three bytes wide is a multiply, and a multiply is a call. */
+    while (f < f_end || r < r_end || b < b_end) {
+        int x = f < f_end ? f->at : INT_MAX;
+        int y = r < r_end ? r->at : INT_MAX;
+        int z = b < b_end ? *b : INT_MAX;
+
+        if (x <= y && x <= z)
+            *put++ = f++->at;
+        else if (y <= z)
+            *put++ = r++->at;
         else
-            all[n++] = bss_fixups[bs++];
+            *put++ = *b++;
     }
 
-    for (i = 1; i < n; i++) {
-        int at = all[i];
+    for (scan = all + 1; scan < put; scan++) {
+        int at = *scan, *back = scan;
 
-        for (j = i; j > 0 && all[j - 1] > at; j--)
-            all[j] = all[j - 1];
-        all[j] = at;
+        while (back > all && back[-1] > at) {
+            back[0] = back[-1];
+            back--;
+        }
+        *back = at;
     }
-    *count = n;
+    *count = (int) (put - all);
 
     return all;
 }
 
 /* A list of positions, with what is gone taken out of it. */
-static int cut_positions(int *at, int n, const Cut *cuts, int ncuts)
+static int cut_positions(int *at, int n)
 {
-    int i, put = 0;
+    int *from = at, *put = at, i;
 
-    for (i = 0; i < n; i++) {
-        int to = out_cut_moved(cuts, ncuts, at[i]);
+    out_cut_rewind();
+    for (i = 0; i < n; i++, from++) {
+        int to = out_cut_next(*from);
 
         if (to >= 0)
-            at[put++] = to;
+            *put++ = to;
     }
 
-    return put;
+    return (int) (put - at);
 }
 
-static void drop_unused_statics(void)
+/* Runs of bytes taken out of the image, and everything acc knows about
+ * where things are brought along.
+ *
+ * Two passes want this: the one that leaves out the functions a file does
+ * not use, and the one that makes a jump two bytes when its target is near.
+ * What they cut differs; what has to be told afterwards does not.
+ *
+ * `holes` says whether a run may be pointed into. It may not, for a function
+ * that is going: an address inside one is a reference to something nothing
+ * was said to want, which is a mistake in the marking rather than something
+ * to carry on from. It may, for a jump being shortened: the run is the
+ * middle of its own operand, and the slot that holds it goes with it. */
+static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
 {
-    unsigned char *live;
-    Cut *cuts;
-    int *pending, *p, npending, seen = 0;
-    int ncuts, i, put;
+    int *slots, *p, *seen_at, npending, seen = 0, i;
 
-    if (!nstatic_fns)
-        return;
+    out_cut_sum(cuts, ncuts);
+    slots = pending_slots(&npending, from);
+    seen_at = slots;
 
-    cuts = malloc((size_t) nstatic_fns * sizeof *cuts);
-    live = calloc((size_t) nstatic_fns, 1);
-    pending = pending_slots(&npending);
-    if (!cuts || !live)
-        acc_error("out of memory taking the unused functions out");
-    mark_live(live);
-    ncuts = dead_statics(cuts, live);
-    free(live);
-    if (!ncuts) {
-        free(pending);
-        free(cuts);
-
-        return;
-    }
-
-    /* What the slots hold, while they are still where they were written. An
-     * address inside a run would be a reference to a function this has just
-     * decided nothing refers to, so it is a mistake in the marking rather
-     * than something to carry on from.
+    /* What the slots hold, while they are still where they were written.
      *
      * The relocations are in order and so is the list of slots to leave
      * alone, so telling them apart is one step through that list per slot. */
-    for (p = out_relocs + 1; p < out_reloc_put; p++) {
+    out_cut_rewind();
+    for (p = out_relocs + 1 + from->reloc; p < out_reloc_put; p++) {
         int slot = out_base + *p, to;
 
-        while (seen < npending && pending[seen] < slot)
-            seen++;
-        if (seen < npending && pending[seen] == slot)
+        while (seen < npending && *seen_at < slot)
+            seen++, seen_at++;
+        if (seen < npending && *seen_at == slot)
             continue;
-        if (out_cut_moved(cuts, ncuts, slot) < 0)
+        if (out_cut_next(slot) < 0)
             continue;                   /* going away with the code it is in */
-        to = out_cut_moved(cuts, ncuts, get24(out_img + *p));
-        if (to < 0)
+        to = out_cut_moved(get24(out_img + *p));
+        if (to < 0) {
+            if (holes)
+                continue;
             acc_error("internal: %06x holds the address of a function "
                       "nothing was said to want", slot);
+        }
         put24(out_img + *p, to);
     }
 
-    free(pending);
-    out_cut(cuts, ncuts);
+    out_cut(cuts, ncuts, from->reloc);
 
     /* And then every position and address acc is still holding. A fixup
      * inside a run goes with it: the call it was going to fill in is not
      * there any more, and neither is whatever it would have asked a library
      * for. */
-    put = 0;
-    for (i = 0; i < nfixups; i++) {
-        int to = out_cut_moved(cuts, ncuts, fixups[i].at);
+    {
+        Fixup *scan = fixups + from->fixup, *keep = scan;
+        RtFixup *rscan = rt_fixups + from->rt, *rkeep = rscan;
 
-        if (to < 0)
-            continue;
-        fixups[put] = fixups[i];
-        fixups[put++].at = to;
+        out_cut_rewind();
+        for (; scan < fixups + nfixups; scan++) {
+            int to = out_cut_next(scan->at);
+
+            if (to < 0)
+                continue;
+            *keep = *scan;
+            keep++->at = to;
+        }
+        nfixups = (int) (keep - fixups);
+
+        out_cut_rewind();
+        for (; rscan < rt_fixups + nrt_fixups; rscan++) {
+            int to = out_cut_next(rscan->at);
+
+            if (to < 0)
+                continue;
+            *rkeep = *rscan;
+            rkeep++->at = to;
+        }
+        nrt_fixups = (int) (rkeep - rt_fixups);
     }
-    nfixups = put;
 
-    put = 0;
-    for (i = 0; i < nrt_fixups; i++) {
-        int to = out_cut_moved(cuts, ncuts, rt_fixups[i].at);
+    nbss_fixups = from->bss
+                + cut_positions(bss_fixups + from->bss, nbss_fixups - from->bss);
 
-        if (to < 0)
-            continue;
-        rt_fixups[put] = rt_fixups[i];
-        rt_fixups[put++].at = to;
-    }
-    nrt_fixups = put;
+    /* The jumps are not brought along here. relax_function is the only
+     * caller that has any, and it works out where each one landed from the
+     * runs directly -- they and the jumps are both in rising order, so that
+     * is a running total and not a lookup, and it saves a third walk of a
+     * list that is as long as the function has jumps. */
 
-    nbss_fixups = cut_positions(bss_fixups, nbss_fixups, cuts, ncuts);
+    if (holes)
+        return;                 /* a jump shortened moves nothing outside it */
 
     /* How much of the runtime blob is wanted, asked again of what is left:
      * a function that has gone is not multiplying anything, and the blob is
@@ -3948,11 +4093,222 @@ static void drop_unused_statics(void)
             continue;
         if (sym->kind == SYM_FUNC && !(sym_flags(i) & SYMF_DEFINED))
             continue;
-        to = out_cut_moved(cuts, ncuts, sym->val);
+        to = out_cut_moved(sym->val);
         if (to >= 0)
             sym->val = to;
     }
+}
 
+/* The `jr` that says the same thing as a `jp`, or zero where there is none.
+ * This chip has a relative jump for the four conditions the flags register
+ * answers directly and none for the three a signed comparison needs. */
+/* Whether a distance fits in the one signed byte a `jr` carries.
+ *
+ * Written as one unsigned compare rather than two signed ones, because a
+ * signed compare is a call into the runtime on this chip and an unsigned
+ * one is not -- the same reason out_reloc compares offsets unsigned. This
+ * is asked twice for every jump the compiler writes. */
+#define JR_REACHES(d) ((unsigned) ((d) + 128) <= 255u)
+
+static int jr_of(int op)
+{
+    switch (op) {
+    case JP_ANY: return 0x18;
+    case JP_Z:   return 0x28;
+    case JP_NZ:  return 0x20;
+    case JP_C:   return 0x38;
+    case JP_NC:  return 0x30;
+    }
+
+    return 0;
+}
+
+/* The jumps of the function just compiled whose target is near enough,
+ * written again in two bytes.
+ *
+ * Done as each function ends rather than once at the end of the file, and
+ * that is the whole of why it is affordable. Nothing outside a function
+ * points into it -- C has no way to name a place inside one -- and nothing
+ * after it has been written yet, so taking bytes out of it moves nothing
+ * that is already down. What has to be brought back is the function's own
+ * relocations, its own fixups and its own jumps, and each of those lists is
+ * walked from where it stood when the function began.
+ *
+ * Done at the end of the file instead, every one of those lists had to be
+ * walked whole, and every address in the image looked up in a list of
+ * thousands of runs: it cost between a fifth and a half of the time it takes
+ * to compile, against the four percent of the image it saves.
+ *
+ * The two bytes taken out are the middle of the jump's own operand, so the
+ * opcode stays where it is and one byte of distance is left behind it.
+ *
+ * Nothing here looks a jump up in the relocation table, because a jump is
+ * not in it yet: jump_op leaves the operand unrecorded and this says where
+ * each surviving one ended up, in one rising run that out_reloc_merge puts
+ * in among the few relocations a function makes for anything else. That is
+ * what the pass costs and what it used to cost: walking the table meant
+ * walking every jump a second time, and the table is nearly all jumps. */
+static Cut           *relax_cuts;
+static int           *relax_target, *relax_slot;
+static unsigned char *relax_short;
+static int            relax_cap;
+
+static void relax_function(const Mark *from)
+{
+    Cut *cuts;
+    int *target, *slot, *put;
+    unsigned char *shrink;
+    int n = njumps - from->jump, ncuts = 0, nslots = 0, i;
+
+    if (n <= 0)
+        return;
+
+    /* Grown and kept, as everything on this path is: a function is a handful
+     * of jumps and there are hundreds of functions. */
+    if (n > relax_cap) {
+        relax_cap = n * 2;
+        relax_cuts = realloc(relax_cuts, (size_t) relax_cap * sizeof *relax_cuts);
+        relax_target = realloc(relax_target,
+                               (size_t) relax_cap * sizeof *relax_target);
+        relax_slot = realloc(relax_slot,
+                             (size_t) relax_cap * sizeof *relax_slot);
+        relax_short = realloc(relax_short, (size_t) relax_cap);
+        if (!relax_cuts || !relax_target || !relax_slot || !relax_short)
+            acc_error("out of memory shortening the jumps");
+    }
+    cuts = relax_cuts;
+    target = relax_target;
+    slot = relax_slot;
+    shrink = relax_short;
+
+    /* Where each jump goes, and which of them will reach in one byte.
+     *
+     * Decided against the function as it stands, before any of them have
+     * shrunk. That is the conservative answer and needs no second thought:
+     * taking bytes out from between a jump and its target only brings the
+     * two closer, whichever way round they are. Some that just miss would
+     * come into reach once their neighbours shrink, and they are left. */
+    {
+        const int *at = jump_at + from->jump;
+        const unsigned char *cc = jump_cc + from->jump;
+        unsigned char *fits = shrink;
+        Cut *cut = cuts;
+
+        put = target;
+        for (i = 0; i < n; i++, at++, cc++) {
+            int to = get24(out_img + (*at + 1 - out_base));
+            int d = to - (*at + 2);
+
+            *put++ = to;
+            *fits++ = jr_of(*cc) && JR_REACHES(d);
+            if (!fits[-1])
+                continue;
+            cut->at = *at + 1;
+            cut->len = 2;
+            cut++;
+            ncuts++;
+        }
+    }
+
+    if (ncuts)
+        cut_out(cuts, ncuts, 1, from);
+
+    /* Each jump written where it now is, and the ones still four bytes wide
+     * handed to the relocation table.
+     *
+     * Both of those come from a running total rather than from asking. The
+     * runs are the jumps' own operands, so walking the two together in
+     * rising order says how much has gone before each jump; a jump's own run
+     * begins a byte after the jump does, so it is never counted into its own
+     * position. And a target is a step or two from there either way -- a
+     * jump that is being shortened reaches 127 bytes and no further, and one
+     * that is not has a target that has moved by whatever its neighbours
+     * did -- so the same cursor answers for it, walked forward or back.
+     * Looking each target up among the runs instead was the single most
+     * expensive thing this pass did.
+     *
+     * A target is never inside a run: a run is the middle of a jump's
+     * operand and a label is at an instruction, so there is no case here for
+     * an address that does not land anywhere. */
+    {
+        const int *here = jump_at + from->jump, *want = target;
+        const unsigned char *cc = jump_cc + from->jump, *fits = shrink;
+        const Cut *run = cuts, *run_end = cuts + ncuts;
+        int gone = 0;
+
+        put = slot;
+        for (i = 0; i < n; i++, here++, cc++, want++, fits++) {
+            const Cut *r;
+            unsigned char *at;
+            int now, to, g;
+
+            while (run < run_end && (unsigned) run->at <= (unsigned) *here) {
+                gone += run->len;
+                run++;
+            }
+            now = *here - gone;
+
+            r = run;
+            g = gone;
+            if ((unsigned) *want > (unsigned) *here)
+                while (r < run_end && (unsigned) r->at <= (unsigned) *want) {
+                    g += r->len;
+                    r++;
+                }
+            else
+                while (r > cuts && (unsigned) r[-1].at > (unsigned) *want) {
+                    r--;
+                    g -= r->len;
+                }
+            to = *want - g;
+            at = out_img + (now - out_base);
+
+            if (*fits) {
+                int d = to - (now + 2);
+
+                if (!JR_REACHES(d))
+                    acc_error("internal: a jump at %06x reaches %d, which is "
+                              "further than it was", now, d);
+                at[0] = (unsigned char) jr_of(*cc);
+                at[1] = (unsigned char) d;
+
+                continue;
+            }
+            put24(at + 1, to);
+            *put++ = now + 1 - out_base;
+            nslots++;      /* counted, not measured: the difference of two
+                            * int pointers is a divide here */
+        }
+    }
+
+    out_reloc_merge(slot, nslots, from->reloc);
+
+    /* The function is written; what its jumps were is nobody's business now. */
+    jumps_rewind(from->jump);
+}
+
+static void drop_unused_statics(void)
+{
+    unsigned char *live;
+    Cut *cuts;
+    int ncuts;
+
+    if (!nstatic_fns)
+        return;
+
+    cuts = malloc((size_t) nstatic_fns * sizeof *cuts);
+    live = calloc((size_t) nstatic_fns, 1);
+    if (!cuts || !live)
+        acc_error("out of memory taking the unused functions out");
+    mark_live(live);
+    ncuts = dead_statics(cuts, live);
+    free(live);
+    if (ncuts) {
+        Mark start;
+
+        start.reloc = start.fixup = start.rt = start.bss = start.jump = 0;
+        cut_out(cuts, ncuts, 0, &start);
+    }
     free(cuts);
 }
 
@@ -4280,7 +4636,6 @@ void vaddr_array(int array, Type elem)
  * after the code with every use patched, makes the address unknown until the
  * end and a string no longer a constant. */
 int gen_data_bytes;
-static int in_function;
 
 int gen_data(const char *bytes, int len)
 {
@@ -4373,6 +4728,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
 
     sym_at(fn)->val = out_here();
     static_begin(fn);
+    mark_here(&func_mark);
     vtop = 0;
     vsp = vstack;
     locals_size = 0;
@@ -4409,7 +4765,6 @@ void gen_func_end(void)
     out_byte(0xc9);                              /* ret */
 
     out_patch24(frame_patch, -frame_size());
-    static_end();
     in_function = 0;
 
     {
@@ -4419,6 +4774,11 @@ void gen_func_end(void)
             out_patch24(array_patches[i].at,
                         -(above + array_end[array_patches[i].array]));
     }
+
+    /* Last, so that everything written into the function is written before
+     * any of it moves -- and before static_end measures how long it is. */
+    relax_function(&func_mark);
+    static_end();
 }
 
 void gen_return(int line)
@@ -5859,6 +6219,7 @@ void gen_rollback(GenMark *m)
      * forgotten would look like one left just now. */
     cmp_from = -1;
     out_rewind(m->at);
+    jumps_forget(m->at);
     nfixups = m->nfixups;
     nrt_fixups = m->nrt_fixups;
     nbss_fixups = m->nbss_fixups;

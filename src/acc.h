@@ -879,6 +879,7 @@ extern int out_base;
 extern int *out_relocs, *out_reloc_put, *out_reloc_limit;
 void out_reloc_grow(void);
 void out_reloc_back(int at);
+void out_reloc_merge(const int *add, int n, int first);
 
 static inline __attribute__((always_inline))
 void out_reloc(int at)
@@ -902,13 +903,20 @@ void out_reloc(int at)
 int  out_nrelocs(void);
 int  out_reloc_at(int i);
 
-/* A run of bytes taken out of the image: see out_cut. */
+/* A run of bytes taken out of the image: see out_cut. Two passes take runs
+ * out -- the one that leaves out the functions a file does not use, and the
+ * one that shortens a jump whose target is near -- and both hand the runs to
+ * out_cut_sum first, which works out what each one moves everything after it
+ * by and keeps that beside them. */
 typedef struct {
     int at, len;
 } Cut;
 
-void out_cut(const Cut *cuts, int n);
-int  out_cut_moved(const Cut *cuts, int n, int a);
+void out_cut_sum(const Cut *cuts, int n);   /* before out_cut_moved or out_cut */
+void out_cut(const Cut *cuts, int n, int first);
+int  out_cut_moved(int a);          /* an address, wherever it is */
+void out_cut_rewind(void);          /* and a run of them in rising order */
+int  out_cut_next(int a);
 void out_relocs_write(const char *path);
 
 /* The output's write position and its end, and the growth that happens a
