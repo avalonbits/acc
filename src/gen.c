@@ -185,6 +185,7 @@ static void rlc_l(void)         { out_byte2(0xcb, 0x05); }
 static void ld_a_hl(void)       { out_byte(0x7e); }      /* ld a, (hl) */
 static void ld_hl_a(void)       { out_byte(0x77); }      /* ld (hl), a */
 static void inc_hl(void)        { out_byte(0x23); }
+static void dec_hl(void)        { out_byte(0x2b); }
 static void inc_de(void)        { out_byte(0x13); }
 static void ld_de_a(void)       { out_byte(0x12); }      /* ld (de), a */
 static void ex_de_hl(void)      { out_byte(0xeb); }
@@ -309,6 +310,7 @@ static int bitwise_const(int op, int value)
  * a negative one, which would want a negation on the end. */
 static void add_hl_hl(void) { out_byte(0x29); }
 
+#define STEP_MAX 4             /* inc/dec, before ld bc,n and add wins */
 #define MUL_MAX_STEPS 12        /* doublings plus additions, before it is
                                  * cheaper to let the helper do it */
 
@@ -1462,6 +1464,38 @@ static void vbinop(int op)
     if (val_const(rhs->kind) && rhs->val == 0
         && (op == TK_PLUS || op == TK_MINUS)) {
         vdrop();
+
+        return;
+    }
+
+    /* Stepping by a little, one instruction at a time. `inc hl` is one byte
+     * and one cycle; putting the same amount in BC and adding it is five of
+     * each, because the immediate is the full width of a register here. So
+     * up to four steps is cheaper both ways, and `p++` and `i++` and every
+     * walk along a string are one step.
+     *
+     * The carry that `add hl, rr` would leave is not left, and nothing wants
+     * it: what this produces is a value, and every branch tests the value it
+     * is given rather than flags it inherited. */
+    if (rhs->kind == VAL_CONST && (op == TK_PLUS || op == TK_MINUS)
+        && rhs->val >= -STEP_MAX && rhs->val <= STEP_MAX
+        && !type_float(lhs->type)) {
+        int n = op == TK_PLUS ? rhs->val : -rhs->val;
+
+        force_into(vsp - 2, R_HL);
+        while (n > 0) {
+            inc_hl();
+            n--;
+        }
+        while (n < 0) {
+            dec_hl();
+            n++;
+        }
+        result = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
+        vdrop();
+        vdrop();
+        vpush_reg(R_HL);
+        (vsp - 1)->type = result;
 
         return;
     }
