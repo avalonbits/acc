@@ -6241,9 +6241,47 @@ void vprefix_local(int offset, Type type, int ext, int op)
     vstore_local(offset, type);
 }
 
+/* Whether x++ can be done by stepping back rather than by keeping a copy.
+ *
+ * The answer x++ wants is the value x had, so the obvious shape reads x
+ * twice: once for the answer and once for the sum. Reading a local is six
+ * cycles and three bytes, and there is no cheap way to duplicate a register
+ * here either -- `ex de, hl` swaps rather than copies, and a push with a pop
+ * costs more than the second read did.
+ *
+ * So: change x, store it, and step back to what it was. One read, and the
+ * step back is the same one byte the step forward is.
+ *
+ * Only where stepping back lands exactly where it started. A type narrower
+ * than a register does not: the store truncates, and an unsigned char at 255
+ * stores 0, where stepping back gives -1 and not 255. A float does not
+ * either, once the value is large enough that adding one to it changes
+ * nothing. And the step has to be one of the small ones written out as
+ * `inc hl`, or the way back costs more than the read it saved -- which for a
+ * pointer means the thing it points at has to be small. */
+static int postfix_steps_back(Type type)
+{
+    if (type_wide(type) || type_float(type) || type_size(type) != ACC_INT_SIZE)
+        return 0;
+    if (type_pointer(type))
+        return type_size(type_deref(type)) <= STEP_MAX;
+
+    return 1;
+}
+
 /* x++ and x-- on a local: x changed, and the answer is its old value. */
 void vpostfix_local(int offset, Type type, int ext, int op)
 {
+    if (postfix_steps_back(type)) {
+        vpush_local(offset, type);
+        vset_ext(ext);
+        vstep(op, type);
+        vstore_local(offset, type);
+        vstep(op == TK_PLUS ? TK_MINUS : TK_PLUS, type);
+
+        return;
+    }
+
     vpush_local(offset, type);
     vsnapshot();
     vpush_local(offset, type);

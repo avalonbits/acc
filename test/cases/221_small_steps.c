@@ -56,11 +56,15 @@ int main(void)
     if (m5(x) != 5) return 9;
     if (m9(x) != 1) return 10;
 
-    /* Off the ends, where the step has to wrap the way an add would. */
-    if (p1(id(8388607)) != -8388608) return 11;
-    if (m1(id(-8388608)) != 8388607) return 12;
+    /* Off the ends, where the step has to wrap the way an add would.
+     * Unsigned only: a signed int stepping past its largest value is
+     * undefined, and agondev's optimiser takes that as a promise it will not
+     * happen while acc simply wraps, so the two disagree and neither is
+     * wrong. Twenty-four bits is twenty-four bits either way round. */
     if (up1(uid(16777215u)) != 0u) return 13;
     if (um1(uid(0u)) != 16777215u) return 14;
+    if (up1(uid(8388607u)) != 8388608u) return 11;
+    if (um1(uid(8388608u)) != 8388607u) return 12;
 
     if (stepped_then_branched(id(0)) != 5) return 15;
     if (stepped_then_branched(id(-1)) != 6) return 16;
