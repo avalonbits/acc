@@ -101,6 +101,29 @@ one, names live in one arena that is never freed, and the output is a flat
 MOS image written directly rather than ELF sections assembled and then
 relocated.
 
+## What the code costs
+
+zap, the assembler this compiler is meant to build on the machine, is twelve
+files and 7,900 lines of C. acc compiles and links all of it, and what it
+produces assembles zap's own test sources to the byte that agondev's build
+of the same source produces. Against that build, at `-Oz`, on an emulated
+Agon:
+
+| | agondev | acc | |
+| --- | --- | --- | --- |
+| the image | 84,893 bytes | 310,820 bytes | 3.7x |
+| assembling a 6 KB source, six runs | 0.62s | 3.40s | 5.5x |
+
+Both figures are the assembler's own, taken alternately in one boot so that
+neither side pays for a warm-up the other did not.
+
+The size is the one that bites first, and not because of the disc. A program
+gets 448 KB for everything, so an image three and a half times larger is a
+heap three times smaller: acc's zap has about 128 KB to allocate from where
+agondev's has about 360 KB, and it runs out of room on a 25 KB source that
+the reference build assembles in half a second. That is the number to move,
+and moving it means emitting less code rather than emitting faster code.
+
 ## Testing, without an oracle
 
 zap could be checked against ez80asm byte for byte. Two C compilers may emit
