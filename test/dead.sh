@@ -44,22 +44,6 @@ same() {
     fi
 }
 
-# differs <name> <source> <source>: the two are not the same image, which is
-# how "it was kept" is said.
-differs() {
-    local what=$1 err
-
-    printf '%s' "$2" > "$tmp/a/x.c"
-    printf '%s' "$3" > "$tmp/b/x.c"
-    "$ACC" "$tmp/a/x.c" -o "$tmp/a/x.bin" -x >/dev/null 2>&1
-    "$ACC" "$tmp/b/x.c" -o "$tmp/b/x.bin" -x >/dev/null 2>&1
-    if cmp -s "$tmp/a/x.bin" "$tmp/b/x.bin"; then
-        bad "$what" "it was taken out and should have been kept"
-    else
-        ok
-    fi
-}
-
 # runs <name> <source>: it compiles, and the Agon says 42.
 runs() {
     local what=$1 err
@@ -101,14 +85,23 @@ same "one that would have wanted a helper" \
 'static long spare(long a, long b) { return a * b / 3; }
 '"$MAIN" "$MAIN"
 
-# A static that only a dead static calls is kept: the walk is one pass, and
-# saying so here is what stops that being a surprise.
-differs "one that only a dead one calls" \
-'static int inner(int n) { return n + 1; }
-static int outer(int n) { return inner(n) * 2; }
-'"$MAIN" \
-'static int inner(int n) { return n + 1; }
-'"$MAIN"
+# A chain of them, where each is wanted only by the one before it and the
+# first is wanted by nobody: all of it goes. That is what the walk being
+# repeated until it settles buys -- one pass would keep everything the first
+# one called.
+same "a chain nothing calls" \
+'static int one(int n) { return n + 1; }
+static int two(int n) { return one(n) * 2; }
+static int three(int n) { return two(n) + one(n); }
+'"$MAIN" "$MAIN"
+
+# Two that call each other and nothing else, which one pass would keep for
+# ever on the strength of each other.
+same "two that only call each other" \
+'static int ping(int n);
+static int pong(int n) { return n > 0 ? ping(n - 1) : 0; }
+static int ping(int n) { return pong(n) + 1; }
+'"$MAIN" "$MAIN"
 
 # --- and everything that has to be kept -------------------------------
 
