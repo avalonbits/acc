@@ -88,6 +88,42 @@ rm -f "$sd/stop.c"
 # being measured.
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
+# One translation unit of a real program, alongside the generated inputs.
+#
+# The generated ones are the same shapes over and over, at the sizes and name
+# lengths real C has, and what they cannot be is a real program's proportions:
+# how much of a file is declarations against statements, how deep its
+# expressions go, how many of the names in a header it happens not to use.
+# zap is the program acc exists to build on the machine, so zap is where that
+# is taken from.
+#
+# Not committed here: zap is under the GPL and acc is not, and a benchmark
+# input is no reason to mix them. It is taken from a checkout, at a tag rather
+# than at whatever is checked out, so that the input is the same bytes today
+# as last week -- and left out, with a note, when there is no checkout to take
+# it from. It is a unit and not a program, so it is compiled and not run.
+ZAP=${ZAP:-$HOME/code/zap}
+ZAP_REV=${ZAP_REV:-v1.0.3}
+ZAP_UNIT=${ZAP_UNIT:-buf_reader.c}
+UNITS=
+
+if [ -z "${ACC_BENCH_SRC:-}" ] && [ $# -eq 0 ] \
+   && git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}" >/dev/null 2>&1; then
+    mkdir -p "$tmp/zap"
+    if git -C "$ZAP" archive "$ZAP_REV" src | tar -x -C "$tmp/zap" 2>/dev/null \
+       && test/bench/amalgamate.py "$tmp/zap/src" "$ZAP_UNIT" include \
+            > "$tmp/zap-$ZAP_UNIT" 2>/dev/null; then
+        SRCS="$SRCS $tmp/zap-$ZAP_UNIT"
+        UNITS="$tmp/zap-$ZAP_UNIT"
+    else
+        echo "note: $ZAP $ZAP_REV has no $ZAP_UNIT -- the real-code input is" \
+             "left out" >&2
+    fi
+else
+    [ -n "$UNITS" ] || echo "note: no zap at $ZAP ($ZAP_REV) -- the real-code" \
+        "input is left out" >&2
+fi
+
 # Searched with the comments stripped. Every input opens with one, so a bare
 # `*` or `/` matched the `/*` of a comment and every input looked to use both
 # -- and the word "long" in a sentence covered the keyword.
@@ -176,31 +212,58 @@ status=0
 total_all=0
 bytes_all=0
 cycles_all=0
+estimated=
 
 for SRC in $SRCS; do
     [ -f "$SRC" ] || { echo "no such input: $SRC" >&2; status=1; continue; }
 
     # The benchmark is also a test. A miscompiled input would be timed just as
-    # happily as a correct one, and the number would mean nothing; every input
-    # is written to return 42, and this says so before the clock is read.
-    if ! bin/acc "$SRC" -o "$sd/check.bin" -x >/dev/null 2>&1; then
-        echo "$(basename "$SRC"): the host acc cannot compile it" >&2
-        status=1; continue
+    # happily as a correct one, and the number would mean nothing; every
+    # generated input is written to return 42, and this says so before the
+    # clock is read. A unit has no main to run, so what is asked of it is that
+    # it compiles -- which is the whole of what is being timed.
+    case " $UNITS " in
+      *" $SRC "*) unit=1 ;;
+      *)          unit=0 ;;
+    esac
+    if [ "$unit" = 1 ]; then
+        if ! bin/acc -c "$SRC" -o "$sd/check.o" >/dev/null 2>&1; then
+            echo "$(basename "$SRC"): the host acc cannot compile it" >&2
+            status=1; continue
+        fi
+        rm -f "$sd/check.o"
+    else
+        if ! bin/acc "$SRC" -o "$sd/check.bin" -x >/dev/null 2>&1; then
+            echo "$(basename "$SRC"): the host acc cannot compile it" >&2
+            status=1; continue
+        fi
+        test/agon.sh "$sd/check.bin" >/dev/null 2>&1; v=$?
+        if [ "$v" -ne 42 ] && [ "$v" -ne 77 ]; then
+            echo "$(basename "$SRC"): returns $v, not 42 -- not timing a miscompile" >&2
+            status=1; continue
+        fi
+        rm -f "$sd/check.bin"
     fi
-    test/agon.sh "$sd/check.bin" >/dev/null 2>&1; v=$?
-    if [ "$v" -ne 42 ] && [ "$v" -ne 77 ]; then
-        echo "$(basename "$SRC"): returns $v, not 42 -- not timing a miscompile" >&2
-        status=1; continue
-    fi
-    rm -f "$sd/check.bin"
 
     cp "$SRC" "$sd/in.c"
 
     # One compile more than is read. Halting the machine drops whatever the
     # console still has in flight, which is reliably the last line; the spare
     # one flushes the ones that count. Only the first RUNS are the measurement.
+    # A unit is compiled to an object, and every run to an object of its own:
+    # acc records in one what it was made from, and a second compile over an
+    # unchanged source says it is up to date and does no work at all. Timed
+    # over one name, the first run was the compile and the rest were that
+    # answer -- which is what a spread of nine million cycles was saying.
     : > "$sd/autoexec.txt"
-    for _ in $(seq $((RUNS + 1))); do printf 'acc in.c -o out.bin\r\n' >> "$sd/autoexec.txt"; done
+    rm -f "$sd"/out*.o
+    for i in $(seq $((RUNS + 1))); do
+        if [ "$unit" = 1 ]; then
+            printf 'acc -c in.c -o out%s.o\r\n' "$i" >> "$sd/autoexec.txt"
+        else
+            printf 'acc in.c -o out.bin\r\n' >> "$sd/autoexec.txt"
+        fi
+    done
     printf 'stop\r\n' >> "$sd/autoexec.txt"
 
     out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-600} emu_run "$sd" -z)
@@ -216,7 +279,6 @@ for SRC in $SRCS; do
     total=$(printf '%s\n' "$times" | head -n "$RUNS" | awk '{t+=$1} END {print t}')
     total_all=$((total_all + total))
     bytes=$(stat -c%s "$SRC")
-    bytes_all=$((bytes_all + bytes))
 
     # A build made with CYCLES=1 also says how many cycles each compile took,
     # counted by the eZ80's own timer. Where it does, that is the figure: the
@@ -227,6 +289,7 @@ for SRC in $SRCS; do
         csum=$(printf '%s\n' "$cycles" | awk '{t+=$1} END {printf "%d", t}')
         spread=$(printf '%s\n' "$cycles" | sort -n | sed -n '1p;$p' | paste -sd' ' | awk '{print $2 - $1}')
         cycles_all=$((cycles_all + csum))
+        bytes_all=$((bytes_all + bytes))
         printf '%-16s %-14s %2d runs  %d cycles each, spread %d  %d.%d cycles/byte\n' \
             "$(basename "$ACC")" "$(basename "$SRC")" "$RUNS" \
             $((csum / RUNS)) "$spread" $((csum / (RUNS * bytes))) \
@@ -238,6 +301,16 @@ for SRC in $SRCS; do
     # The readings are hundredths of a second for RUNS compiles, so
     #   cycles/byte = total/100/RUNS * CLOCK / bytes
     # and CLOCK/100 is exact, which keeps this in integers.
+    #
+    # This is where an input lands when it takes longer than one pass of the
+    # timer, which is 16.7 million cycles: the count is not to be had and the
+    # seconds are what is left. They come from a clock the emulator keeps on
+    # another thread and wander by a few percent, so the aggregate says when
+    # any of it was arrived at this way -- otherwise a number that is mostly
+    # exact reads as if it were entirely so.
+    bytes_all=$((bytes_all + bytes))
+    cycles_all=$((cycles_all + total * (CLOCK / 100)))
+    estimated="$estimated $(basename "$SRC")"
     printf '%-16s %-14s %2d runs  %d.%02d s  %d.%03d s each  %d cycles/byte\n' \
         "$(basename "$ACC")" "$(basename "$SRC")" "$RUNS" \
         $((total / 100)) $((total % 100)) \
@@ -245,17 +318,12 @@ for SRC in $SRCS; do
         $((total * (CLOCK / 100) / (RUNS * bytes)))
 done
 
-if [ "$cycles_all" -gt 0 ]; then
+if [ "$bytes_all" -gt 0 ]; then
     printf '%-16s %-14s %2d runs  %*s%d.%d cycles/byte\n' \
         "$(basename "$ACC")" "(all)" "$RUNS" 21 "" \
         $((cycles_all / (RUNS * bytes_all))) \
         $((cycles_all * 10 / (RUNS * bytes_all) % 10))
-    exit $status
+    [ -z "$estimated" ] || echo "note: from seconds rather than a count:$estimated" >&2
 fi
-
-printf '%-16s %-14s %2d runs  %d.%02d s%*s%d cycles/byte\n' \
-    "$(basename "$ACC")" "(all)" "$RUNS" \
-    $((total_all / 100)) $((total_all % 100)) 17 "" \
-    $((bytes_all == 0 ? 0 : total_all * (CLOCK / 100) / (RUNS * bytes_all)))
 
 exit $status
