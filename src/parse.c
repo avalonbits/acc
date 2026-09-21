@@ -56,6 +56,10 @@ static void comma_expr(void);
 static int current_fn = SYM_NONE;
 static void deref_rest(void);
 static void conditional_rest(void);
+static void static_assert_declaration(void);
+/* Which tokens are `+=` and its kin, filled in below: paren_deref_step asks
+ * before that point, so the table is named here. */
+static const unsigned char compound_op[TK_COUNT];
 static void primary(void);
 static void binary_rest(int min_prec);
 
@@ -658,6 +662,12 @@ int paren_deref_step(void)
         if (tok == TK_INC || tok == TK_DEC) {
             vpostfix_indirect(tok == TK_INC ? TK_PLUS : TK_MINUS);
             next();
+        } else if (tok == TK_ASSIGN || compound_op[tok]) {
+            /* `(*p) = x` and `(*p) += x`, which are `*p = x` and `*p += x`
+             * with a parenthesis round the left -- and C lets one be put
+             * there. The address is on the stack either way, so what
+             * follows is what follows a star. */
+            deref_rest();
         } else {
             vderef();
         }
@@ -700,18 +710,26 @@ static void readonly_address(int sym)
  * larger frame. */
 __attribute__((noinline))
 static void address_of_literal(int line);
+static void address_of_operand(void);
 
 static void address_of(void)
+{
+    next();
+    address_of_operand();
+}
+
+/* What `&` is being applied to, with the `&` already read. */
+static void address_of_operand(void)
 {
     NameRef name;
     int sym, line;
 
-    next();
-
     /* `&(struct s){ ... }`: a compound literal is an object, and this is
-     * the address of the one it makes. Out of line, next to the rest of the
-     * literals: starts_decl has to stay inlined into its callers, and a
-     * call to it from here is one more of those on a path that is rare. */
+     * the address of the one it makes. A parenthesis round anything else is
+     * handled there too, since the two are told apart by what follows the
+     * `(`. Out of line, next to the rest of the literals: starts_decl has to
+     * stay inlined into its callers, and a call to it from here is one more
+     * of those on a path that is rare. */
     if (tok == TK_LPAREN) {
         address_of_literal(tok_line);
 
@@ -1767,7 +1785,15 @@ static Type enum_specifier(void)
         if (val > 0x7fffff)
             acc_error_at(cline, "an enum constant has to fit in an int");
         not_redeclared(constant, cline);
-        sym_at(push_here(constant, SYM_CONST, val))->type = TY_INT;
+
+        /* The push on its own line, and its answer used after it. Written as
+         * `sym_at(push_here(...))->type = ...` the compiler was free to read
+         * the table's address before making the call that moves it, and then
+         * wrote the type into memory the table no longer owned. Which is the
+         * hazard sym.c names: a Sym * is only good until the next push, and
+         * that holds for one the same expression is still working out. */
+        sym = push_here(constant, SYM_CONST, val);
+        sym_at(sym)->type = TY_INT;
         if (val < 0)
             negative = 1;
         val++;
@@ -2112,6 +2138,7 @@ static unsigned char decl_start[TK_COUNT] = {
     [TK_KW_FLOAT] = 1, [TK_KW_DOUBLE] = 1,
     [TK_KW_ENUM] = 1, [TK_KW_STRUCT] = 1, [TK_KW_UNION] = 1,
     [TK_KW_TYPEDEF] = 1, [TK_KW_STATIC] = 1, [TK_KW_EXTERN] = 1,
+    [TK_KW_STATIC_ASSERT] = 1,
     [TK_KW_AUTO] = 1, [TK_KW_REGISTER] = 1, [TK_KW_CONST] = 1,
     [TK_KW_VOLATILE] = 1, [TK_KW_INLINE] = 1, [TK_KW_BOOL] = 1,
     [TK_KW_VA_LIST] = 1
@@ -2546,9 +2573,16 @@ static void address_of_literal(int line)
     Type elem, type;
 
     next();
-    if (!starts_decl())
-        acc_error_at(line, "'&' takes the address of a variable, and this is "
-                           "an expression");
+
+    /* Not a type after the `(`, so this is `&(x)` -- a parenthesis round
+     * what the address is being taken of, which C allows and which says
+     * nothing beyond where the operand ends. */
+    if (!starts_decl()) {
+        address_of_operand();
+        expect(TK_RPAREN, "')'");
+
+        return;
+    }
     type = type_name_elem(&x, &count, &elem, &elem_x);
     expect(TK_RPAREN, "')'");
     if (tok != TK_LBRACE)
@@ -3908,6 +3942,7 @@ static int static_local;
 static int redefining = SYM_NONE;
 static unsigned char decl_const;    /* the variable being declared is const */
 static int decl_extern;             /* and its declaration said extern */
+static int decl_static;             /* or static, which keeps it to this file */
 static unsigned char decl_bottom_const; /* and SQ_CONST, when its type is */
 
 /* `typedef`, and names for types rather than objects: each declarator names
@@ -3937,6 +3972,23 @@ static void typedef_declaration(void)
         if (count) {
             ext = ext_array(type, ext, count);
             type = TY_EXT;
+        }
+        /* The same typedef again is not a mistake: two headers that refer
+         * to each other's types each say `typedef struct _u u;` so that the
+         * other's pointers have a name, and then one of them completes it.
+         * C11 says as much outright, and every compiler accepted it long
+         * before that, so code written for any of them relies on it. The
+         * types have to agree; naming the same word for two things is the
+         * mistake this is still here to catch. */
+        sym = sym_find(name);
+        if (sym != SYM_NONE && sym_declared_in(sym, scope_mark)
+            && sym_at(sym)->kind == SYM_TYPEDEF
+            && sym_at(sym)->type == type && sym_at(sym)->ext == ext) {
+            decl_start[TK_IDENT] = 1;
+            if (!accept(TK_COMMA))
+                break;
+
+            continue;
         }
         not_redeclared(name, line);
         sym = push_here(name, SYM_TYPEDEF, 0);
@@ -4059,6 +4111,12 @@ void declaration(void)
     Type base;
     int bx;
     unsigned char bc;
+
+    if (tok == TK_KW_STATIC_ASSERT) {
+        static_assert_declaration();
+
+        return;
+    }
 
     /* typedef, static, extern, auto and register, one range. */
     if ((unsigned char) (tok_low - TK_KW_TYPEDEF) < 5u) {
@@ -5070,8 +5128,9 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
         sym_scope_end(mark);
         if (!declared || !(sym_flags(fn) & SYMF_PARAMS)) {
             sym_set_params(fn, params_first, nparams);
-            sym_set_flags(fn, params ? SYMF_DECLARED | SYMF_PARAMS | variadic
-                                     : SYMF_DECLARED);
+            sym_set_flags(fn, (params ? SYMF_DECLARED | SYMF_PARAMS | variadic
+                                      : SYMF_DECLARED)
+                              | (decl_static ? SYMF_STATIC : 0));
         }
 
         return 0;
@@ -5088,7 +5147,8 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     next();                     /* the body's `{` */
 
     sym_set_params(fn, params_first, nparams);
-    sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED | variadic);
+    sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED | variadic
+                      | (decl_static ? SYMF_STATIC : 0));
     current_fn = fn;
     gen_func_begin(fn, nparams, ret_type);
 
@@ -5129,6 +5189,8 @@ static int push_global(NameRef name, int kind, int at)
     sym = static_local ? sym_push_local(name, kind, at)
                        : sym_push(name, kind, at);
     sym_at(sym)->quals = decl_bottom_const;
+    if (decl_static)
+        sym_set_flags(sym, SYMF_STATIC);
 
     return sym;
 }
@@ -5929,7 +5991,8 @@ static int function_from_type(int x, NameRef name, int line)
     next();                     /* the body's `{` */
     sym_set_params(fn, first, count);
     sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED
-                      | (ext_func_variadic(x) ? SYMF_VARIADIC : 0));
+                      | (ext_func_variadic(x) ? SYMF_VARIADIC : 0)
+                      | (decl_static ? SYMF_STATIC : 0));
     current_fn = fn;
     gen_func_begin(fn, count, ret);
     if (nstruct_params)
@@ -5948,12 +6011,42 @@ static int function_from_type(int x, NameRef name, int line)
  * Which one shows only once the name has been read, by whether a '(' comes
  * next -- the type and the stars in front of the name are the same for
  * both. */
+/* `_Static_assert(expression, "what is wrong")`: a claim about a constant
+ * that the compile has to agree with, and stops over if it does not. Nothing
+ * is emitted either way -- what it leaves behind is the message, or nothing
+ * at all. */
+static void static_assert_declaration(void)
+{
+    int line = tok_line, value;
+
+    next();
+    expect(TK_LPAREN, "'('");
+    value = constant_int("a _Static_assert's condition", line);
+    expect(TK_COMMA, "','");
+    if (tok != TK_STRING)
+        acc_error_at(tok_line, "a _Static_assert needs a message to give if "
+                               "it does not hold");
+    if (!value)
+        acc_error_at(line, "%.*s", tok_str_len, tok_str);
+    next();
+    while (tok == TK_STRING)             /* "a" "b", joined as C joins them */
+        next();
+    expect(TK_RPAREN, "')'");
+    expect(TK_SEMI, "';'");
+}
+
 static void external_declaration(void)
 {
     Type base, type;
     int line, count = 0, ext, bx;
     unsigned char bc;
     NameRef name;
+
+    if (tok == TK_KW_STATIC_ASSERT) {
+        static_assert_declaration();
+
+        return;
+    }
 
     if (tok == TK_KW_TYPEDEF) {
         typedef_declaration();
@@ -5966,9 +6059,10 @@ static void external_declaration(void)
      * one that gives the value, if any does, fills in. inline asks that
      * calls be fast, and a call is what they are: C lets that be the
      * answer. In any order, as C allows. */
-    decl_extern = 0;
+    decl_extern = decl_static = 0;
     while (tok == TK_KW_STATIC || tok == TK_KW_EXTERN || tok == TK_KW_INLINE) {
         decl_extern |= tok == TK_KW_EXTERN;
+        decl_static |= tok == TK_KW_STATIC;
         next();
     }
     if (tok == TK_KW_AUTO || tok == TK_KW_REGISTER)

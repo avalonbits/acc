@@ -360,6 +360,7 @@ enum {
     TK_KW_INLINE, TK_KW_BOOL,
     TK_ELLIPSIS,
     TK_KW_VA_LIST, TK_KW_VA_START, TK_KW_VA_ARG, TK_KW_VA_END, TK_KW_VA_COPY,
+    TK_KW_STATIC_ASSERT,
 
     /* The two names that stand for something the lexer knows and the
      * program does not write: the line it is on and the file it is in.
@@ -558,6 +559,10 @@ enum {
                                  * where `()` in a declaration says nothing
                                  * about them */
     SYMF_VARIADIC = 8,          /* a function: and more of them, `...` */
+    SYMF_STATIC   = 32,         /* said static at file scope, so its name is
+                                 * this file's alone: it is not put in the
+                                 * object for another file to find, and two
+                                 * files may each have one */
     SYMF_EXTERN   = 16          /* a variable: a declaration said extern, so
                                  * some other file defines it. What tells it
                                  * apart from one this file declared and
@@ -816,6 +821,11 @@ void gen_return(int line);            /* `return`, at the line it is on */
 /* What a program has of the Agon's memory: the image, what it leaves at
  * zero, and then its heap and its stack. */
 #define ACC_RAM_BYTES 458752
+
+/* Kept between the heap's top and the top of memory, for the stack to come
+ * down into. The same figure src/agon.ld reserves for acc's own stack, for
+ * the same reason and with as little to go on. */
+#define ACC_STACK_RESERVE 16384
 
 /* Variables that start at zero and so take no room in the file. */
 int  gen_bss_reserve(int bytes);      /* room in it; returns where */

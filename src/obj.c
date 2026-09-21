@@ -168,7 +168,10 @@ void obj_write(const char *path)
 
     for (s = 0, n = 0; s < nglobals; s += step, n++) {
         index_of[n] = -1;
-        if (!exported(sym_at(s)))
+        /* What `static` said is this file's alone stays in it: two files may
+         * each have one of that name, and a `static inline` in a header gives
+         * every file that includes it a copy. */
+        if (!exported(sym_at(s)) || (sym_flags(s) & SYMF_STATIC))
             continue;
         index_of[n] = nsyms++;
         name_at[n] = string_add(name_text(sym_at(s)->name));

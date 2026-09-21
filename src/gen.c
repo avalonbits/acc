@@ -1777,8 +1777,12 @@ static void vcmp(int op)
 
     is_unsigned = either_unsigned(lhs, rhs);
 
+    /* An unsigned comparison folds too, as long as neither side has its top
+     * bit set: below that the two orderings are the same one, and above it
+     * they are not. Which is what lets `sizeof x == 3` be a constant, since
+     * a sizeof is unsigned and every size a program has is small. */
     if (val_const(lhs->kind) && val_const(rhs->kind)
-        && !is_unsigned
+        && (!is_unsigned || (lhs->val >= 0 && rhs->val >= 0))
         && const_fold(op, lhs->val, rhs->val, &folded)) {
         vdrop();
         vdrop();
@@ -3140,6 +3144,7 @@ static BssSym *bss_syms;
 static int     nbss_syms, bss_syms_cap;
 static int     bss_len;
 static int     bss_init_hole = -1;      /* the stub's call to the clearing */
+static int     bss_top;                 /* the first byte past everything */
 
 /* Slots holding an offset into the bss, which want the start of it added.
  *
@@ -3293,6 +3298,7 @@ static void bss_emit(void)
     out_patch24(bss_init_hole, out_here());
     if (!bss_len) {
         out_byte(0xc9);                 /* ret */
+        bss_top = out_here();
 
         return;
     }
@@ -3326,6 +3332,27 @@ static void bss_emit(void)
      * folding went: `a[3]` put nine there, and this makes it an address. */
     for (i = 0; i < nbss_fixups; i++)
         out_patch24(bss_fixups[i], out_read24(bss_fixups[i]) + base);
+
+    bss_top = base + bss_len;
+}
+
+/* Two names the link answers for, because only it knows them: where the
+ * program's own memory ends and where the machine's does. What is between
+ * them is nobody's, which is what makes it a heap -- and the stack comes
+ * down from above it, so the top is kept clear of where the stack will be.
+ *
+ * A program that never asks for them costs nothing for their being here:
+ * they are only ever looked for among the names nothing has defined. */
+static int link_given(int sym)
+{
+    const char *name = name_text(sym_at(sym)->name);
+
+    if (strcmp(name, "acc_heap_start") == 0)
+        return bss_top;
+    if (strcmp(name, "acc_heap_end") == 0)
+        return out_base + ACC_RAM_BYTES - ACC_STACK_RESERVE;
+
+    return 0;
 }
 
 /* A symbol the fixups are waiting on that nothing here has given an address
@@ -3386,6 +3413,17 @@ void gen_finish(void)
     } else {
         rt_emit_used();
         bss_emit();
+
+        /* And the two the link itself answers for, now that there is an
+         * answer: everything else has been laid down. */
+        for (i = 0; i < nfixups; i++) {
+            int sym = fixups[i].fn, at;
+
+            if (!no_address(sym) || (at = link_given(sym)) == 0)
+                continue;
+            sym_at(sym)->val = at;
+            sym_set_flags(sym, SYMF_DEFINED);
+        }
     }
 
     for (i = 0; i < nfixups; i++) {

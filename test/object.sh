@@ -334,6 +334,36 @@ int main(void) { return *p; }
 int arr[4] = { 1, 2, 42, 4 };
 '
 
+# A static function is this file's alone, so two objects may each have one
+# of that name -- which is what a `static inline` in a header gives every
+# file that includes it. Neither is offered to the other, and each calls its
+# own. Not compared against the same program written as one file, because
+# there it would be one function and here it is two.
+cat > "$work/sa.c" <<'C'
+static int helper(int n) { return n + 1; }
+int a(void) { return helper(20); }
+C
+cat > "$work/sb.c" <<'C'
+static int helper(int n) { return n + 1; }
+int a(void);
+int main(void) { return a() + helper(20); }
+C
+"$ACC" -c "$work/sa.c" -o "$work/sa.o" >/dev/null 2>&1
+"$ACC" -c "$work/sb.c" -o "$work/sb.o" >/dev/null 2>&1
+if err=$("$ACC" "$work/sa.o" "$work/sb.o" -o "$work/two/x.bin" -x 2>&1); then
+    if emu_available >/dev/null 2>&1; then
+        test/agon.sh "$work/two/x.bin" >/dev/null 2>&1
+        ok "a static of the same name" "$?" 42
+    else
+        pass=$((pass + 1))
+    fi
+else
+    printf '  FAIL %-32s %s\n' "a static of the same name" \
+        "$(printf '%s' "$err" | head -1)"
+    fail=$((fail + 1))
+fi
+
+
 # An extern said inside a block, with nothing of that name at file scope: it
 # introduces the name and reserves nothing, as an extern anywhere does. Its
 # bytes used to go in the middle of the function, with a jump over them.

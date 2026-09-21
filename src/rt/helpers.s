@@ -76,6 +76,92 @@ _acc_rt_putch:
 	pop	hl
 	ret
 
+	.global _acc_rt_mos
+	.global _acc_rt_mos_de
+	.global _acc_rt_mos_hl
+	.global _acc_rt_mos_ix
+	.global _acc_rt_puts
+
+; A MOS call: the number in A, and HL, DE and BC as that call wants them.
+;
+; Four ways out, because MOS answers in whichever register suits what was
+; asked -- an error code in A, a count of bytes in DE, a pointer in HL, the
+; system variables in IX -- and a C function answers in HL.
+;
+; The arguments are where acc leaves them, which is where agondev leaves them
+; too: three bytes each, the first at (ix+6) once ix is the stack pointer and
+; the saved ix and the return address are behind it. IX is saved and put back
+; because MOS is free with it, which is what libagon does here as well.
+
+_acc_rt_mos:
+	push	ix
+	ld	ix, 0
+	add	ix, sp
+	ld	hl, (ix+9)
+	ld	de, (ix+12)
+	ld	bc, (ix+15)
+	ld	a, (ix+6)
+	rst.lil	$08
+	ld	hl, 0
+	ld	l, a
+	pop	ix
+	ret
+
+_acc_rt_mos_de:
+	push	ix
+	ld	ix, 0
+	add	ix, sp
+	ld	hl, (ix+9)
+	ld	de, (ix+12)
+	ld	bc, (ix+15)
+	ld	a, (ix+6)
+	rst.lil	$08
+	ex	de, hl
+	pop	ix
+	ret
+
+_acc_rt_mos_hl:
+	push	ix
+	ld	ix, 0
+	add	ix, sp
+	ld	hl, (ix+9)
+	ld	de, (ix+12)
+	ld	bc, (ix+15)
+	ld	a, (ix+6)
+	rst.lil	$08
+	pop	ix
+	ret
+
+; The system variables come back in IX, which has to be got out from under
+; the saved one: push what MOS gave, take it into HL, then put the old one
+; back.
+_acc_rt_mos_ix:
+	push	ix
+	ld	ix, 0
+	add	ix, sp
+	ld	hl, (ix+9)
+	ld	de, (ix+12)
+	ld	bc, (ix+15)
+	ld	a, (ix+6)
+	rst.lil	$08
+	push	ix
+	pop	hl
+	pop	ix
+	ret
+
+; Writing a run of bytes is a different restart: the buffer in HL, how many
+; in BC, and the byte it stops at in A.
+_acc_rt_puts:
+	push	ix
+	ld	ix, 0
+	add	ix, sp
+	ld	hl, (ix+6)
+	ld	bc, (ix+9)
+	ld	a, (ix+12)
+	rst.lil	$18
+	pop	ix
+	ret
+
 ; ================================================================ arithmetic
 	.global	acc_rt_ops
 acc_rt_ops:

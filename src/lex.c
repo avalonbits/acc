@@ -730,7 +730,11 @@ static void macro_define(NameRef name, const char *text, int len,
     keep = malloc((size_t) len + 1);
     if (!keep)
         acc_error("out of memory for a macro");
-    memcpy(keep, text, (size_t) len);
+    /* Asked, because `#define X` with nothing after it is a macro of no
+     * bytes and there is nothing to point at for it -- and memcpy from a
+     * null pointer is undefined even when it is told to copy nothing. */
+    if (len)
+        memcpy(keep, text, (size_t) len);
     keep[len] = '\0';
 
     m = macro_slot(name);
@@ -1537,6 +1541,57 @@ static void skip_blanks(void)
 
 /* The rest of the directive's line, thrown away. The newline is left for
  * skip_space, which is what counts the lines. */
+/* A macro's replacement text, gathered rather than pointed at.
+ *
+ * Two reasons it is copied. A line ending in a backslash is joined to the
+ * one after it, which is how a macro of more than one line is written, and
+ * the join has to take the backslash and the newline out of the text. And
+ * the window may be refilled in the middle of a long one, which moves what
+ * is left of it to the front of the buffer -- so a pointer to where the text
+ * started would no longer be pointing at it.
+ *
+ * The buffer is grown and kept, since a file full of macros would otherwise
+ * ask for one per macro. macro_define copies what it is given. */
+static char *body;
+static int   body_cap;
+
+static int define_body(void)
+{
+    int len = 0;
+
+    for (;;) {
+        while (*cursor && *cursor != '\n') {
+            if (len == body_cap) {
+                body_cap = body_cap ? body_cap * 2 : 256;
+                body = realloc(body, (size_t) body_cap);
+                if (!body)
+                    acc_error("out of memory for a macro");
+            }
+            body[len++] = *cursor++;
+        }
+
+        /* A backslash last on the line, bar the carriage return a file
+         * written on another machine leaves there, joins this line to the
+         * next. The two become one line with a space where the join was. */
+        if (*cursor == '\n') {
+            int end = len;
+
+            if (end && body[end - 1] == '\r')
+                end--;
+            if (end && body[end - 1] == '\\') {
+                body[end - 1] = ' ';
+                len = end;
+                cursor++;
+                line++;
+
+                continue;
+            }
+        }
+        if (*cursor || !refill())
+            return len;
+    }
+}
+
 static void rest_of_line(void)
 {
     for (;;) {
@@ -2539,8 +2594,7 @@ static void do_define(void)
     NameRef name;
     NameRef *params = NULL;
     int nparams = -1, variadic = 0;
-    const char *start;
-    const char *end;
+    int len;
 
     skip_blanks();
     name = directive_target("define");
@@ -2587,17 +2641,14 @@ static void do_define(void)
     }
 
     skip_blanks();
-    start = cursor;
-    rest_of_line();
-    end = cursor;
+    len = define_body();
 
     /* Blanks at either end are left in. Nothing reads the text but the
      * lexer, which skips them; trimming them would be work whose result
      * nothing can tell apart. When `#` arrives it will be able to -- what a
      * parameter stringifies to is spelled out -- and the trimming belongs
      * with it, where a test can show the difference. */
-    macro_define(name, start, (int) (end - start), params, nparams,
-                 variadic);
+    macro_define(name, body, len, params, nparams, variadic);
 }
 
 static void do_undef(void)
@@ -2901,6 +2952,7 @@ static void keywords_init(void)
     keyword("union", 5, TK_KW_UNION);
     keyword("volatile", 8, TK_KW_VOLATILE);
     keyword("_Bool", 5, TK_KW_BOOL);
+    keyword("_Static_assert", 14, TK_KW_STATIC_ASSERT);
 
     /* What <stdarg.h> would give, taken as words of the language: acc has
      * no preprocessor to include it with, and a program that reads its
