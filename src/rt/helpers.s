@@ -162,6 +162,84 @@ _acc_rt_puts:
 	pop	ix
 	ret
 
+; Copying and filling, which the eZ80 does in one instruction where C does
+; it a byte at a time. acc calls these where a program says memcpy, memmove
+; or memset: the library still has its own, for a program that takes their
+; address, but nothing reaches them by name any more.
+;
+; ldir and lddr read the count as the full twenty-four bits of BC, so a count
+; of nothing copies sixteen megabytes rather than nothing at all. The guard
+; is here and not at the call, because here it is written once.
+;
+;	hl = source, de = destination, bc = how many
+;	returns hl = the destination, which is what memcpy answers
+
+	.global _acc_rt_memcpy
+	.global _acc_rt_memmove
+	.global _acc_rt_memset
+
+_acc_rt_memcpy:
+	push	de			; the answer
+	call	_rt_bc_is_zero
+	jr	z, _rt_copy_done
+	ldir
+_rt_copy_done:
+	pop	hl
+	ret
+
+; The same, but right to left when the blocks overlap the wrong way round.
+; Overlapping forwards is what ldir already does correctly.
+_acc_rt_memmove:
+	push	de
+	call	_rt_bc_is_zero
+	jr	z, _rt_copy_done
+	push	hl			; source below destination: go backwards
+	sbc	hl, de			; carry is clear, from bc_is_zero
+	pop	hl
+	jr	nc, _rt_move_up
+	add	hl, bc			; both ends, one past the last byte
+	dec	hl
+	ex	de, hl
+	add	hl, bc
+	dec	hl
+	ex	de, hl
+	lddr
+	pop	hl
+	ret
+_rt_move_up:
+	ldir
+	pop	hl
+	ret
+
+;	hl = where, a = the byte, bc = how many
+;	returns hl = where, which is what memset answers
+_acc_rt_memset:
+	push	hl
+	call	_rt_bc_is_zero
+	jr	z, _rt_fill_done
+	ld	(hl), a			; the first one by hand, then copy it
+	dec	bc			; along, which is how ldir fills
+	call	_rt_bc_is_zero
+	jr	z, _rt_fill_done
+	push	hl
+	pop	de
+	inc	de
+	ldir
+_rt_fill_done:
+	pop	hl
+	ret
+
+; Z when BC is nothing. Clears the carry either way, which memmove reads.
+; HL is wanted by all three callers, so the test goes through the stack
+; rather than through it.
+_rt_bc_is_zero:
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	pop	hl
+	ret
+
 ; ================================================================ arithmetic
 	.global	acc_rt_ops
 acc_rt_ops:

@@ -5187,10 +5187,75 @@ typedef struct {
 static void call_to(const Callee *callee, int nargs, int params_first,
                     int nparams);
 
+/* memcpy, memmove and memset, done by the instruction that does them.
+ *
+ * The eZ80 copies a block with ldir and fills one with ldir reading its own
+ * output a byte behind; C says it a byte at a time, and acc compiled that
+ * faithfully into a loop that cost zap seven percent of everything it ran.
+ * So a call to one of the three by name goes to a helper written in the
+ * instruction instead, with the operands in the registers it wants rather
+ * than on the stack.
+ *
+ * By name, which C allows: these three are the implementation's to define,
+ * and a program that writes its own means the library's, not something of
+ * its own that happens to be spelled the same. The library still has all
+ * three compiled from C, for a program that takes one's address.
+ *
+ * Returns 0 when this is not one of them, or not the shape of one, and the
+ * ordinary call is emitted instead. */
+static int mem_builtin(const Sym *f, int nargs)
+{
+    const char *name;
+    int which;
+
+    if (nargs != 3 || !type_pointer(f->type))
+        return 0;
+    name = name_text(f->name);
+    if (strcmp(name, "memcpy") == 0)
+        which = RT_MEMCPY;
+    else if (strcmp(name, "memmove") == 0)
+        which = RT_MEMMOVE;
+    else if (strcmp(name, "memset") == 0)
+        which = RT_MEMSET;
+    else
+        return 0;
+
+    /* Nothing below the arguments may be left in a register: ldir takes
+     * three of them and the helper is free with the rest, exactly as a call
+     * would be. */
+    save_regs_below(nargs);
+
+    /* How many, first: it is the last argument and the top of the stack, so
+     * taking it now leaves the other two where force_into expects them. */
+    force_into(vsp - 1, R_BC);
+
+    if (which == RT_MEMSET) {
+        force_into(vsp - 2, R_HL);      /* the byte, which goes in A */
+        ld_a_l();
+        force_into(vsp - 3, R_HL);      /* and where to put it */
+    } else {
+        force_into(vsp - 2, R_HL);      /* the source, which ldir reads */
+        force_into(vsp - 3, R_DE);      /* and the destination it writes */
+    }
+
+    rt_call(which);
+    vdrop();
+    vdrop();
+    vdrop();
+    vpush_reg(R_HL);
+    (vsp - 1)->type = f->type;
+    (vsp - 1)->ext = (unsigned char) f->ext;
+
+    return 1;
+}
+
 void gen_call(int fn, int nargs, int params_first, int nparams)
 {
     Callee callee;
     const Sym *f = sym_at(fn);
+
+    if (mem_builtin(f, nargs))
+        return;
 
     callee.type = f->type;
     callee.ext = f->ext;
