@@ -1706,9 +1706,30 @@ static void vbinop_narrow(int op, Type to)
 #define JP_P    0xf2            /* sign clear */
 #define JP_M    0xfa            /* sign set */
 #define JP_C    0xda            /* carry set: a borrow, so unsigned less */
+#define JP_NC   0xd2            /* and clear, so unsigned not less */
 
 static int jump_op(int op);
 static void patch_to_here(int hole);
+
+/* The comparison last emitted, and the bytes it spent turning the flags into
+ * a one or a zero.
+ *
+ * Most of the time that value is what was wanted. In `if`, `while`, `for`,
+ * `&&`, `||` and `?:` it is wanted only to be tested again against zero --
+ * and the flags the subtract left already say the same thing. So vcmp leaves
+ * a mark, and a branch that comes straight after it rewinds those bytes and
+ * jumps on the flags instead. It is worth nineteen bytes a comparison, which
+ * on a real program is a fifth of the image.
+ *
+ * "Straight after" is read off the image rather than tracked: if anything at
+ * all has been emitted since, out_here() has moved and the mark says nothing.
+ * The value stack is asked too, so that the answer being still where vcmp
+ * put it is part of the bargain. */
+static int cmp_from = -1;       /* where the making of the value began */
+static int cmp_to;              /* and where it ended */
+static int cmp_op;              /* the comparison it was */
+static int cmp_was_unsigned;
+
 
 /* The equality half: Z is the whole answer. `when_equal` is what to leave
  * when the two were equal, which is 1 for `==` and 0 for `!=`. */
@@ -1811,6 +1832,10 @@ static void vcmp(int op)
     vdrop();
     vdrop();
 
+    cmp_from = out_here();
+    cmp_op = op;
+    cmp_was_unsigned = is_unsigned;
+
     switch (op) {
     case TK_EQ: cmp_equal(1); break;
     case TK_NE: cmp_equal(0); break;
@@ -1820,6 +1845,7 @@ static void vcmp(int op)
         acc_error("internal: %s is not a comparison", tok_spelling(op));
     }
 
+    cmp_to = out_here();
     vpush_reg(R_HL);
 }
 
@@ -2728,9 +2754,26 @@ static int jump_op(int op)
     return hole;
 }
 
+/* A jump's hole filled in with where it goes.
+ *
+ * More than one jump may be waiting on the same place -- a signed comparison
+ * jumped on directly needs two, since this chip answers it in two pieces --
+ * and they are chained through the holes themselves: each one holds where
+ * the one before it is, and the last holds the zero jump_op left. So a
+ * caller still has one thing to remember and one thing to patch. */
+static void patch_to(int hole, int target)
+{
+    while (hole) {
+        int next = out_read24(hole);
+
+        out_patch24(hole, target);
+        hole = next;
+    }
+}
+
 static void patch_to_here(int hole)
 {
-    out_patch24(hole, out_here());
+    patch_to(hole, out_here());
 }
 
 int gen_jump(void)
@@ -2756,9 +2799,57 @@ void gen_jump_to(int target)
  * its four bytes, so a long of 0x1000000 was false; and a float is not an
  * integer at all -- -0.0 is false and 0.5 is true, neither of which its bytes
  * say. */
+/* The comparison that is true exactly when this one is not. */
+static int cmp_opposite(int op)
+{
+    return op == TK_EQ ? TK_NE
+         : op == TK_NE ? TK_EQ
+         : op == TK_LT ? TK_GE : TK_LT;
+}
+
+/* A jump taken on the flags a comparison's subtract left. `op` is the
+ * comparison as the caller wants it: the branch is taken when it holds.
+ *
+ * All but the signed case are one conditional jump. The signed case is the
+ * difficulty cmp_signed has -- the sign is the answer when the subtract did
+ * not overflow, and the other way round when it did -- so it is two jumps to
+ * the same place, chained through the first's hole. */
+static int jump_on_flags(int op, int is_unsigned)
+{
+    int to_over, first, to_done, second;
+
+    if (op == TK_EQ)
+        return jump_op(JP_Z);
+    if (op == TK_NE)
+        return jump_op(JP_NZ);
+    if (is_unsigned)
+        return jump_op(op == TK_LT ? JP_C : JP_NC);
+
+    to_over = jump_op(JP_PE);                           /* it overflowed */
+    first = jump_op(op == TK_LT ? JP_M : JP_P);
+    to_done = jump_op(JP_ANY);
+    patch_to_here(to_over);
+    second = jump_op(op == TK_LT ? JP_P : JP_M);
+    patch_to_here(to_done);
+    out_patch24(second, first);         /* the two, as one thing to patch */
+
+    return second;
+}
+
 static int jump_on_truth(int when_true)
 {
     int reg;
+
+    if (cmp_from >= 0 && out_here() == cmp_to && vtop == 1
+        && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
+        int op = when_true ? cmp_op : cmp_opposite(cmp_op);
+
+        out_rewind(cmp_from);
+        cmp_from = -1;
+        vdrop();
+
+        return jump_on_flags(op, cmp_was_unsigned);
+    }
 
     if (type_wide(vtype()))
         vtruth(TK_NE);
@@ -2792,7 +2883,7 @@ void gen_jump_if_true_to(int target)
     if (vtop != 1)
         acc_error("internal: %d values live at a branch", vtop);
 
-    out_patch24(jump_on_truth(1), target);
+    patch_to(jump_on_truth(1), target);
 }
 
 /* The value a switch compares its cases with, into HL -- and for a long its
@@ -5632,6 +5723,9 @@ void gen_mark(GenMark *m)
 
 void gen_rollback(GenMark *m)
 {
+    /* The image goes back to where it was, so a mark left in what is being
+     * forgotten would look like one left just now. */
+    cmp_from = -1;
     out_rewind(m->at);
     nfixups = m->nfixups;
     nrt_fixups = m->nrt_fixups;
