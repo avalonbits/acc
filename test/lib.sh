@@ -272,6 +272,90 @@ int main(void) {
 }
 '
 
+runs "files, in <stdio.h>" \
+'#include <stdio.h>
+#include <string.h>
+
+/* What a compiler asks of a file: write one a piece at a time, read
+ * it back whole, and find out how long it is. The writes go through a
+ * buffer, so the pieces here are smaller than one and the whole is
+ * larger. */
+int main(void) {
+    FILE *f;
+    char buf[1200];
+    long size;
+    int i;
+
+    f = fopen("/libtest.bin", "wb");
+    if (!f) return 1;
+    if (fwrite("hello ", 1, 6, f) != 6) return 2;
+    if (fputc(119, f) != 119) return 3;          /* w */
+    if (fprintf(f, "orld %d/%s!", 42, "x") < 0) return 4;
+
+    /* Past the buffer, so that it has to be handed over and filled again. */
+    for (i = 0; i < 1000; i++)
+        if (fputc(97 + (i % 26), f) != 97 + (i % 26)) return 5;
+    /* Where it has got to, while some of what was written is still held in
+     * the buffer: telling has to hand that over first or it reports the
+     * file as shorter than the program has made it. */
+    if (ftell(f) != 17 + 1000) return 22;
+    if (fputc(33, f) != 33) return 23;
+    if (ftell(f) != 17 + 1001) return 24;
+    if (fclose(f) != 0) return 6;
+
+    f = fopen("/libtest.bin", "rb");
+    if (!f) return 7;
+    if (fseek(f, 0, SEEK_END) != 0) return 8;
+    size = ftell(f);
+    if (size != 17 + 1001) return 9;
+    if (fseek(f, 0, SEEK_SET) != 0) return 10;
+    memset(buf, 0, sizeof buf);
+    if ((long) fread(buf, 1, (size_t) size, f) != size) return 11;
+    if (fclose(f) != 0) return 12;
+    if (strncmp(buf, "hello world 42/x!", 17) != 0) return 13;
+    if (buf[17] != 97 || buf[17 + 25] != 122 || buf[17 + 26] != 97) return 14;
+
+    /* Seeking into the middle and reading from there. */
+    f = fopen("/libtest.bin", "rb");
+    if (!f) return 15;
+    if (fseek(f, 17, SEEK_SET) != 0) return 16;
+    if (ftell(f) != 17) return 17;
+    if (fread(buf, 1, 4, f) != 4) return 18;
+    if (strncmp(buf, "abcd", 4) != 0) return 19;
+    if (fclose(f) != 0) return 20;
+
+    /* One that is not there answers nothing rather than wandering off. */
+    if (fopen("/nosuchfile.xyz", "rb") != NULL) return 21;
+
+    return 42;
+}
+' 42
+
+runs "snprintf, in <stdio.h>" \
+'#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    char buf[32];
+    int n;
+
+    n = snprintf(buf, sizeof buf, "%s=%d", "n", 7);
+    if (n != 3 || strcmp(buf, "n=7") != 0) return 1;
+
+    /* It answers with the length the whole thing would have been, which is
+     * what lets a caller ask with no room and then find some. */
+    n = snprintf(buf, 3, "%s=%d", "n", 7);
+    if (n != 3 || strcmp(buf, "n=") != 0) return 2;
+    n = snprintf(buf, 1, "%s=%d", "n", 7);
+    if (n != 3 || buf[0] != 0) return 3;
+
+    n = snprintf(buf, sizeof buf, "%08lx", 3735928559UL);
+    if (n != 8 || strcmp(buf, "deadbeef") != 0) return 4;
+
+    return 42;
+}
+' 42
+
 runs "what is in <time.h>" \
 '#include <time.h>
 

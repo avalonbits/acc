@@ -26,8 +26,9 @@ BIN = bin
 # The library acc links programs against, written in C and built by acc
 # itself -- which is what makes it something the Agon can build for itself,
 # and what keeps it honest: every line of it is a line acc has to compile.
-LIBSRC = lib/mem.c lib/str.c lib/stdio.c lib/printf.c lib/stdlib.c \
-         lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c lib/time.c
+LIBSRC = lib/mem.c lib/str.c lib/stdio.c lib/printf.c lib/file.c \
+         lib/stdlib.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c \
+         lib/time.c
 LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          include/stdbool.h include/stdlib.h include/time.h \
          include/agon/mos.h include/agon/vdp.h include/agon/keyboard.h

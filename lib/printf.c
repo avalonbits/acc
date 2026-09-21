@@ -27,9 +27,28 @@ int acc_rt_putch(int c);
 /* How many characters have gone out, which is what printf answers with. */
 static int written;
 
+/* Where they go. The screen when both of these are nothing, which is what
+ * printf wants; a file for fprintf; a buffer with a size for snprintf. One
+ * formatter serves all three because every character it produces passes
+ * through emit, and only emit has to know the difference. */
+static FILE  *sink_file;
+static char  *sink_buf;
+static size_t sink_cap, sink_at;
+
 static void emit(int c)
 {
-    acc_rt_putch(c);
+    if (sink_buf) {
+        /* Counted whether it fits or not: snprintf answers with the length
+         * the whole thing would have been, which is what lets a caller ask
+         * with no buffer at all and then allocate. */
+        if (sink_at + 1 < sink_cap)
+            sink_buf[sink_at] = (char) c;
+        sink_at++;
+    } else if (sink_file) {
+        fputc(c, sink_file);
+    } else {
+        acc_rt_putch(c);
+    }
     written++;
 }
 
@@ -118,14 +137,13 @@ static int format_number(const char **pp)
     return n;
 }
 
-int printf(const char *fmt, ...)
+/* The whole of the formatting, over a list someone else has started. */
+static int format(const char *fmt, va_list ap)
 {
-    va_list ap;
     char digits[DIGITS_MAX];
     const char *p = fmt;
 
     written = 0;
-    va_start(ap, fmt);
     while (*p) {
         int flags = 0, width = 0, prec = -1, longs = 0, upper = 0;
         unsigned long long value;
@@ -290,7 +308,71 @@ int printf(const char *fmt, ...)
             digits[ndigits++] = '0';
         emit_number(digits, ndigits, prefix, nprefix, width, prec, flags);
     }
+    return written;
+}
+
+int printf(const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+
+    sink_file = NULL;
+    sink_buf = NULL;
+    va_start(ap, fmt);
+    n = format(fmt, ap);
     va_end(ap);
 
-    return written;
+    return n;
+}
+
+int vfprintf(FILE *f, const char *fmt, va_list ap)
+{
+    int n;
+
+    sink_file = f;
+    sink_buf = NULL;
+    n = format(fmt, ap);
+    sink_file = NULL;
+
+    return n;
+}
+
+int fprintf(FILE *f, const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vfprintf(f, fmt, ap);
+    va_end(ap);
+
+    return n;
+}
+
+int vsnprintf(char *to, size_t n, const char *fmt, va_list ap)
+{
+    int wanted;
+
+    sink_file = NULL;
+    sink_buf = to;
+    sink_cap = n;
+    sink_at = 0;
+    wanted = format(fmt, ap);
+    if (n)
+        to[sink_at < n ? sink_at : n - 1] = '\0';
+    sink_buf = NULL;
+
+    return wanted;
+}
+
+int snprintf(char *to, size_t n, const char *fmt, ...)
+{
+    va_list ap;
+    int wanted;
+
+    va_start(ap, fmt);
+    wanted = vsnprintf(to, n, fmt, ap);
+    va_end(ap);
+
+    return wanted;
 }
