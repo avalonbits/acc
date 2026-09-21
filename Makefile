@@ -34,7 +34,15 @@ LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
 LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 
 .PHONY: all clean test unit agon
-all: $(BIN)/acc $(BIN)/libc.a
+
+# acc-asan is part of the ordinary build and not only of `test`, because
+# every scripted test defaults to running it and none of them rebuild it.
+# Left out, `make && ACC=bin/acc-asan test/relax.sh` runs whatever the last
+# full `make test` happened to leave behind -- a compiler without the change
+# under test, reporting green. It is worst when checking that a new test
+# bites: breaking the line it covers and watching the test still pass reads
+# as "the test does not cover this" when the truth is "that binary is old".
+all: $(BIN)/acc $(BIN)/acc-asan $(BIN)/libc.a
 
 # The runtime helpers are assembly, and the table acc emits them from is
 # generated rather than transcribed: getting a byte wrong in a page of opcodes
@@ -78,7 +86,8 @@ $(BIN)/libc.a: $(LIBOBJ) $(BIN)/acc
 # it rather than a sanitized unit test beside it. It found the use-after-
 # realloc in the symbol table that the ordinary build compiled straight past:
 # glibc left the freed block readable and the answer came out right, while on
-# the Agon the block was reused and 'main' came out undefined.
+# the Agon the block was reused and 'main' came out undefined. Built by `all`:
+# see the note there.
 $(BIN)/acc-asan: $(SRC) $(HDR) | $(BIN)
 	$(CC) $(SAN) $(WARN) -Isrc -o $@ $(SRC)
 
@@ -94,7 +103,7 @@ $(BIN):
 # generates and checks it against the same table. The differential tests
 # cannot do that job -- acc links with nothing, so a convention it gets
 # consistently wrong agrees with itself everywhere.
-test: all unit $(BIN)/acc-asan agon
+test: all unit agon
 	@test/abi.sh || [ $$? -eq 77 ]
 	@test/helpers.sh || [ $$? -eq 77 ]
 	@test/startup.sh || [ $$? -eq 77 ]
@@ -102,6 +111,7 @@ test: all unit $(BIN)/acc-asan agon
 	@test/buffer.sh
 	@test/include.sh
 	@test/macro.sh
+	@test/build.sh
 	@ACC=$(BIN)/acc-asan test/reloc.sh
 	@ACC=$(BIN)/acc-asan test/object.sh
 	@ACC=$(BIN)/acc-asan test/bss.sh
