@@ -54,6 +54,15 @@ LDFLAGS = -defsym=RAM_START=0x40000 -defsym=RAM_SIZE=0x70000 \
           -T src/agon.ld --oformat binary
 
 SRCS = src/obj.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c
+
+# The same headers the host build lists. Naming only src/acc.h here left the
+# Agon build carrying whatever src/rt_helpers.h said when it was last
+# compiled: regenerating the runtime from src/rt/helpers.s changed the blob
+# the host build emitted and not the one the Agon build did, and target.sh
+# reported eighty-one programs where the two builds disagreed -- which they
+# did, about a runtime one of them had not been told about.
+HDRS = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h
+
 OBJS = $(patsubst src/%.c,$(OBJ)/%.o,$(SRCS))
 
 .PHONY: all clean size
@@ -74,7 +83,7 @@ src/acc_build.h: $(SRCS) src/acc.h src/rt_helpers.h src/build_id.sh
 	@cmp -s $@.tmp $@ || mv $@.tmp $@
 	@$(RM) $@.tmp
 
-$(OBJ)/%.o: src/%.c src/acc.h | $(OBJ)
+$(OBJ)/%.o: src/%.c $(HDRS) | $(OBJ)
 	@echo [compiling $<]
 	$(CC) $(CFLAGS) -c $< -o $@
 
