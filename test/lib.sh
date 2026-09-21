@@ -152,6 +152,59 @@ int main(void) {
 }
 '
 
+runs "the heap, in <stdlib.h>" \
+'#include <stdlib.h>
+#include <string.h>
+
+int main(void) {
+    char *a, *b, *c, *both;
+    int r = 0;
+
+    a = malloc(100);
+    b = malloc(100);
+    c = malloc(100);
+    if (a && b && c) r++;
+    memset(a, 1, 100);
+    memset(b, 2, 100);
+    memset(c, 3, 100);
+    if (a[99] == 1 && b[0] == 2 && c[99] == 3) r++;
+
+    /* The one in the middle comes back, and is handed out again. */
+    free(b);
+    b = malloc(100);
+    if (b) r++;
+
+    /* Two blocks that touch, the earlier one freed first: they are one
+     * block afterwards, which is what makes a request too big for either of
+     * them alone come back at the first one and not from somewhere else. */
+    free(b);
+    free(c);
+    both = malloc(208);
+    if (both == b) r++;
+    free(both);
+
+    /* And freed the other way round, which is the join in the other
+     * direction -- the one that costs a walk without a link backwards. */
+    b = malloc(100);
+    c = malloc(100);
+    free(c);
+    free(b);
+    both = malloc(208);
+    if (both == b) r++;
+    free(both);
+
+    a = realloc(a, 200);
+    if (a && a[99] == 1) r++;           /* what was there is still there */
+    c = calloc(50, 2);
+    if (c && c[0] == 0 && c[99] == 0) r++;
+    free(a);
+    free(c);
+    if (malloc(0) == NULL && realloc(NULL, 10) != NULL) r++;
+
+    return r + 34;                      /* 8 checks */
+}
+'
+
 runs "qsort, in <stdlib.h>" \
 '#include <stdlib.h>
 #include <string.h>
