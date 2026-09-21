@@ -710,7 +710,7 @@ static void readonly_address(int sym)
  * larger frame. */
 __attribute__((noinline))
 static void address_of_literal(int line);
-static void address_of_operand(void);
+static int  address_of_operand(void);
 
 static void address_of(void)
 {
@@ -718,8 +718,10 @@ static void address_of(void)
     address_of_operand();
 }
 
-/* What `&` is being applied to, with the `&` already read. */
-static void address_of_operand(void)
+/* What `&` is being applied to, with the `&` already read. Answers whether
+ * what it left is a whole array's address rather than an object's, which is
+ * a difference to whatever follows a parenthesis round it. */
+static int address_of_operand(void)
 {
     NameRef name;
     int sym, line;
@@ -733,7 +735,24 @@ static void address_of_operand(void)
     if (tok == TK_LPAREN) {
         address_of_literal(tok_line);
 
-        return;
+        return 0;
+    }
+
+    /* `&*p`: the address of what a pointer leads to is the pointer, so the
+     * two cancel and what is left is the pointer. The stars are counted the
+     * way a dereference counts them -- all but the last is a read -- and
+     * what binds tighter than the `*` has already been read by primary(),
+     * so `&*p[i]` is the address of p[i] and not of p. */
+    if (tok == TK_STAR) {
+        int stars = 0;
+
+        while (accept(TK_STAR))
+            stars++;
+        primary();
+        while (--stars != 0)
+            vderef();
+
+        return 0;
     }
 
     if (tok != TK_IDENT)
@@ -754,13 +773,13 @@ static void address_of_operand(void)
         vset_ext(local->ext);
         vset_quals(local->quals);
 
-        return;
+        return 0;
     }
     case NAME_OBJECT:
         if (vbits())
             acc_error_at(line, "a bit-field has no address to take");
 
-        return;                 /* the address is what is wanted */
+        return 0;               /* the address is what is wanted */
     case NAME_CONST:
         acc_error_at(line, "'%s' is a constant, which has no address",
                      name_text(name));
@@ -768,9 +787,9 @@ static void address_of_operand(void)
         vdrop();
         readonly_address(sym);
 
-        return;
+        return 0;
     case NAME_FUNC:
-        return;                 /* `&f` is f's address, as `f` is */
+        return 0;               /* `&f` is f's address, as `f` is */
     case NAME_RESULT:
         acc_error_at(line, "what a call comes to has no address to take");
     }
@@ -780,7 +799,7 @@ static void address_of_operand(void)
      * C gives the first -- a pointer to an array of n -- is not one acc has
      * a way of writing down. */
     if (sym_at(sym)->kind == SYM_LOCAL_VLA)
-        return;
+        return 0;
 
     /* A whole array: the same address as its first element, as a pointer to
      * the array, which steps over all of it at once. */
@@ -794,6 +813,8 @@ static void address_of_operand(void)
         vset_type(type_ptr_to(TY_EXT),
                   ext_array(array->type, array->ext, sym_count(sym)));
     }
+
+    return 1;
 }
 
 /* Adjacent string literals, joined as C joins them: "ab" "cd" is "abcd".
@@ -843,6 +864,7 @@ static void string_value(void)
 static void cast_rest(void);
 static void cast_operand(Type to, int x, int quals);
 static void sizeof_value(void);
+static void offsetof_value(void);
 static void compound_literal(Type type, int x, int count, Type elem,
                              int elem_x, int line, int address, int *countp);
 static int  local_array_object(Type elem, int elem_x, int *countp, int line,
@@ -990,6 +1012,12 @@ static void primary(void)
 
     if (tok == TK_KW_SIZEOF) {
         sizeof_value();
+
+        return;
+    }
+
+    if (tok == TK_KW_OFFSETOF) {
+        offsetof_value();
 
         return;
     }
@@ -2087,6 +2115,7 @@ static Type base_type_other(void)
     case TK_KW_ENUM: {
         Type t = enum_specifier();
 
+        base_const = 0;
         qualifiers();
 
         return t;
@@ -2095,6 +2124,14 @@ static Type base_type_other(void)
     case TK_KW_UNION: {
         Type t = struct_specifier();
 
+        /* A body of its own was read here, and every member in it went
+         * through base_type -- so what base_const holds now is the last
+         * member's and has nothing to do with this declaration. Left alone,
+         * `struct { const char *p; }` made a const of everything declared
+         * with it, and a typedef of it made a const of everything declared
+         * with that. The same goes for an enum, whose constants can be
+         * written with a sizeof or a cast in them. */
+        base_const = 0;
         qualifiers();
 
         return t;
@@ -2578,8 +2615,21 @@ static void address_of_literal(int line)
      * what the address is being taken of, which C allows and which says
      * nothing beyond where the operand ends. */
     if (!starts_decl()) {
-        address_of_operand();
+        int array = address_of_operand();
+
         expect(TK_RPAREN, "')'");
+
+        /* `&(*p)[i]`, `&(*p).m`: the parenthesis ended the operand, and the
+         * subscripts and members after it bind to what was inside. What is
+         * on the stack is that object's address, which is where the chain
+         * starts from -- unless it was a whole array, whose address is its
+         * first element's already and is a value to add to rather than an
+         * object to read. */
+        if (tok_postfix()) {
+            if (array)
+                vset_type(type_ptr_to(ext_elem(vext())), ext_elem_x(vext()));
+            postfix_chain(array ? POST_VALUE : POST_OBJECT);
+        }
 
         return;
     }
@@ -2915,6 +2965,61 @@ static void va_form(void)
 /* `sizeof operand` and `sizeof (type)`, as a constant of type size_t, which
  * is unsigned int here as it is in agondev. */
 __attribute__((noinline))
+/* `__builtin_offsetof(type, member)`: how far into the type the member
+ * starts, as a constant.
+ *
+ * A builtin rather than the macro <stddef.h> would have, because the macro
+ * is `&((type *) 0)->member` and what that asks of a compiler -- the address
+ * of a member of an object at address zero, folded rather than emitted -- is
+ * more than acc has. This is the same answer without the pretence.
+ *
+ * The member may be reached through others and through subscripts, since
+ * `__builtin_offsetof(t, a.b[2].c)` is as much a place in the type as a
+ * plain name is. */
+static void offsetof_value(void)
+{
+    int line = tok_line, x, count, elem_x, at = 0;
+    Type elem, type;
+
+    next();
+    expect(TK_LPAREN, "'('");
+    type = type_name_elem(&x, &count, &elem, &elem_x);
+    if (!type_is_struct(type))
+        acc_error_at(line, "__builtin_offsetof wants a struct or a union, "
+                           "and this is not one");
+    expect(TK_COMMA, "','");
+
+    for (;;) {
+        NameRef name = declared_name();
+        int member = member_find(x, name);
+
+        if (member < 0)
+            acc_error_at(line, "'%s' is not a member of it", name_text(name));
+        at += member_offset(member);
+        type = member_type(member);
+        x = member_ext(member);
+
+        /* Into an array of them, or into one of them. */
+        while (accept(TK_LBRACKET)) {
+            int index = constant_int("an index in __builtin_offsetof", line);
+
+            expect(TK_RBRACKET, "']'");
+            at += index * type_bytes(ext_elem(x), ext_elem_x(x));
+            type = ext_elem(x);
+            x = ext_elem_x(x);
+        }
+        if (!accept(TK_DOT))
+            break;
+        if (!type_is_struct(type))
+            acc_error_at(line, "what is before the '.' is not a struct");
+    }
+    expect(TK_RPAREN, "')'");
+    vpush_const(at, TY_UINT);
+    (void) count;
+    (void) elem;
+    (void) elem_x;
+}
+
 static void sizeof_value(void)
 {
     int line = tok_line, paren, x;

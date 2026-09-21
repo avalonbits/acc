@@ -127,6 +127,123 @@ int main(void) {
 }
 '
 
+runs "what is in <stddef.h>" \
+'#include <stddef.h>
+
+struct parts { char tag; int count; char name[6]; };
+
+int main(void) {
+    char *nothing = NULL;
+    size_t n = sizeof(struct parts);
+    ptrdiff_t d;
+    char room[8];
+    int r = 0;
+
+    if (nothing == NULL) r++;
+    if (offsetof(struct parts, tag) == 0) r++;
+    if (offsetof(struct parts, count) == 1) r++;
+    if (offsetof(struct parts, name) == 4) r++;
+    if (offsetof(struct parts, name[2]) == 6) r++;
+    if (n == 10) r++;
+    d = &room[5] - &room[1];
+    if (d == 4) r++;
+
+    return r + 35;                      /* 7 checks */
+}
+'
+
+runs "qsort, in <stdlib.h>" \
+'#include <stdlib.h>
+#include <string.h>
+
+static int by_int(const void *a, const void *b) {
+    int x = *(const int *) a, y = *(const int *) b;
+
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+static int by_int_down(const void *a, const void *b) {
+    return by_int(b, a);
+}
+
+struct row { int key; char tag; };
+
+static int by_key(const void *a, const void *b) {
+    return ((const struct row *) a)->key - ((const struct row *) b)->key;
+}
+
+/* Longer than the first gap, so more than one pass runs, and with the
+ * largest first and the smallest last so that nothing is in place. */
+static int many[40];
+
+int main(void) {
+    int few[7];
+    struct row rows[5];
+    int r = 0, i, ok;
+
+    few[0] = 5; few[1] = 3; few[2] = 9; few[3] = 1; few[4] = 9; few[5] = 0;
+    few[6] = 4;
+    qsort(few, 7, sizeof(int), by_int);
+    if (few[0] == 0 && few[1] == 1 && few[2] == 3 && few[3] == 4
+        && few[4] == 5 && few[5] == 9 && few[6] == 9) r++;
+
+    qsort(few, 7, sizeof(int), by_int_down);
+    if (few[0] == 9 && few[6] == 0) r++;
+
+    for (i = 0; i < 40; i++)
+        many[i] = 39 - i;
+    qsort(many, 40, sizeof(int), by_int);
+    ok = 1;
+    for (i = 0; i < 40; i++)
+        if (many[i] != i) ok = 0;
+    if (ok) r++;
+
+    rows[0].key = 3; rows[0].tag = 99;
+    rows[1].key = 1; rows[1].tag = 97;
+    rows[2].key = 4; rows[2].tag = 100;
+    rows[3].key = 1; rows[3].tag = 98;
+    rows[4].key = 2; rows[4].tag = 101;
+    qsort(rows, 5, sizeof(struct row), by_key);
+    if (rows[0].key == 1 && rows[1].key == 1 && rows[2].key == 2
+        && rows[3].key == 3 && rows[4].key == 4) r++;
+    /* The whole element moves, not just the key it was sorted on. */
+    if ((rows[3].tag == 99 && rows[4].tag == 100)
+        && (rows[2].tag == 101)) r++;
+
+    /* Nothing to do, and nothing broken by asking. */
+    qsort(few, 0, sizeof(int), by_int);
+    qsort(few, 1, sizeof(int), by_int);
+    if (few[0] == 9) r++;
+
+    return r + 36;                      /* 6 checks */
+}
+'
+
+runs "what is in <time.h>" \
+'#include <time.h>
+
+int main(void) {
+    clock_t start = clock();
+    clock_t now = start;
+    long spins = 0;
+    int r = 0;
+
+    if (CLOCKS_PER_SEC == 100UL) r++;
+
+    /* It has to move on its own: MOS counts the frames, so waiting is all
+     * that is needed. Bounded, so that a clock that never ticks is a
+     * failure rather than a program that never ends. */
+    while (now == start && spins < 200000L) {
+        now = clock();
+        spins++;
+    }
+    if (now != start) r++;
+    if (now - start < 100UL) r++;       /* within a second of starting */
+
+    return r + 39;                      /* 3 checks */
+}
+'
+
 # ------------------------------------------------------------------
 # And that a link takes only what it wants.
 

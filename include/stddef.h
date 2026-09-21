@@ -7,8 +7,13 @@
 typedef unsigned int size_t;
 typedef int          ptrdiff_t;
 
+#ifndef NULL
 #define NULL ((void *) 0)
+#endif
 
-#define offsetof(type, member) ((size_t) &((type *) 0)->member)
+/* The compiler works this out: the usual `&((type *) 0)->member` takes the
+ * address of something through a null pointer, which acc refuses as the
+ * mistake it is everywhere else. */
+#define offsetof(type, member) __builtin_offsetof(type, member)
 
 #endif

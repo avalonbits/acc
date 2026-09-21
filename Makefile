@@ -26,9 +26,11 @@ BIN = bin
 # The library acc links programs against, written in C and built by acc
 # itself -- which is what makes it something the Agon can build for itself,
 # and what keeps it honest: every line of it is a line acc has to compile.
-LIBSRC = lib/mem.c lib/str.c lib/stdio.c lib/stdlib.c lib/mos.c lib/vdp.c lib/keyboard.c
+LIBSRC = lib/mem.c lib/str.c lib/stdio.c lib/printf.c lib/stdlib.c \
+         lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c lib/time.c
 LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
-         include/stdbool.h include/stdlib.h include/agon/mos.h include/agon/vdp.h include/agon/keyboard.h
+         include/stdbool.h include/stdlib.h include/time.h \
+         include/agon/mos.h include/agon/vdp.h include/agon/keyboard.h
 LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 
 .PHONY: all clean test unit agon
@@ -104,6 +106,7 @@ test: all unit $(BIN)/acc-asan agon
 	@ACC=$(BIN)/acc-asan test/bss.sh
 	@ACC=$(BIN)/acc-asan test/mos.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/lib.sh
+	@ACC=$(BIN)/acc-asan test/printf.sh || [ $$? -eq 77 ]
 	@test/heap.sh || [ $$? -eq 77 ]
 	@test/cycles.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh

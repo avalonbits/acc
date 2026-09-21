@@ -9,6 +9,9 @@ void *calloc(size_t count, size_t size);
 void *realloc(void *p, size_t n);
 void  free(void *p);
 
+void  qsort(void *base, size_t nmemb, size_t size,
+            int (*cmp)(const void *, const void *));
+
 int   abs(int n);
 long  labs(long n);
 int   atoi(const char *s);

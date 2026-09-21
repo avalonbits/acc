@@ -18,6 +18,13 @@ typedef unsigned long      uint32_t;
 typedef int                intptr_t;
 typedef unsigned int       uintptr_t;
 
+/* Here as well as in <stddef.h>, because that is where agondev's puts it and
+ * programs written against those headers reach for it after including this
+ * one. Guarded, so that including both says it once. */
+#ifndef NULL
+#define NULL ((void *) 0)
+#endif
+
 #define INT8_MIN   (-128)
 #define INT8_MAX   127
 #define UINT8_MAX  255

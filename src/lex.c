@@ -1539,9 +1539,8 @@ static void skip_blanks(void)
         cursor++;
 }
 
-/* The rest of the directive's line, thrown away. The newline is left for
- * skip_space, which is what counts the lines. */
-/* A macro's replacement text, gathered rather than pointed at.
+/* What is left of a directive's line, gathered rather than pointed at: a
+ * macro's replacement text, or the condition of an #if.
  *
  * Two reasons it is copied. A line ending in a backslash is joined to the
  * one after it, which is how a macro of more than one line is written, and
@@ -1551,11 +1550,12 @@ static void skip_blanks(void)
  * started would no longer be pointing at it.
  *
  * The buffer is grown and kept, since a file full of macros would otherwise
- * ask for one per macro. macro_define copies what it is given. */
+ * ask for one per macro. What is in it lasts until the next directive, so
+ * macro_define copies what it is given. */
 static char *body;
 static int   body_cap;
 
-static int define_body(void)
+static int logical_line(void)
 {
     int len = 0;
 
@@ -1592,6 +1592,8 @@ static int define_body(void)
     }
 }
 
+/* The rest of the directive's line, thrown away. The newline is left for
+ * skip_space, which is what counts the lines. */
 static void rest_of_line(void)
 {
     for (;;) {
@@ -2353,16 +2355,15 @@ static void expand_text_into(Buf *out, const char *text)
  * and then read. */
 static int if_condition(void)
 {
-    const char *start;
     long long v;
+    int len;
 
     skip_blanks();
-    start = cursor;
-    rest_of_line();
+    len = logical_line();
 
     if_len = 0;
     if_depth = 0;
-    if_expand(start, (int) (cursor - start));
+    if_expand(body ? body : "", len);
     if_put("", 1);                      /* the terminator */
 
     ep = if_text;
@@ -2641,7 +2642,7 @@ static void do_define(void)
     }
 
     skip_blanks();
-    len = define_body();
+    len = logical_line();
 
     /* Blanks at either end are left in. Nothing reads the text but the
      * lexer, which skips them; trimming them would be work whose result
@@ -2953,6 +2954,8 @@ static void keywords_init(void)
     keyword("volatile", 8, TK_KW_VOLATILE);
     keyword("_Bool", 5, TK_KW_BOOL);
     keyword("_Static_assert", 14, TK_KW_STATIC_ASSERT);
+    keyword("__builtin_offsetof", 18, TK_KW_OFFSETOF);
+    keyword("__attribute__", 13, TK_KW_ATTRIBUTE);
 
     /* What <stdarg.h> would give, taken as words of the language: acc has
      * no preprocessor to include it with, and a program that reads its
@@ -3518,6 +3521,30 @@ static void lex_two(int c)
     }
 }
 
+/* The parentheses after `__attribute__`, which the standard doubles: read
+ * tokens and count depth until the pair that opened it closes. Recursing
+ * into next() is what lets the contents be anything at all, including a
+ * macro that expands to more of them. */
+__attribute__((noinline))
+static void skip_attribute(void)
+{
+    int depth = 1;
+
+    next();
+    if (tok != TK_LPAREN)
+        acc_error_at(tok_line, "expected '(' after '__attribute__'");
+
+    while (depth > 0) {
+        next();
+        if (tok == TK_LPAREN)
+            depth++;
+        else if (tok == TK_RPAREN)
+            depth--;
+        else if (tok == TK_EOF)
+            acc_error_at(tok_line, "unterminated '__attribute__'");
+    }
+}
+
 void next(void)
 {
     int c;
@@ -3579,6 +3606,21 @@ restart:
              * path every keyword in the program takes. */
             if (tok >= TK_FILE)
                 predefined();
+
+            /* An attribute says nothing acc acts on -- `noinline` and
+             * `always_inline` are advice to an optimiser that is not here,
+             * and `noreturn` only lets one be quieter about a return that
+             * never happens. It is thrown away here rather than in the
+             * parser because it is allowed in more places than a parser this
+             * shape has hooks for: before a declaration, after it, between
+             * the specifiers, on a struct member, on a parameter. Skipping
+             * whole tokens also means the text inside it -- strings, commas,
+             * numbers -- needs no rules of its own. */
+            if (tok == TK_KW_ATTRIBUTE) {
+                skip_attribute();
+
+                goto restart;
+            }
 
             return;
         }

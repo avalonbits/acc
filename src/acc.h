@@ -360,7 +360,8 @@ enum {
     TK_KW_INLINE, TK_KW_BOOL,
     TK_ELLIPSIS,
     TK_KW_VA_LIST, TK_KW_VA_START, TK_KW_VA_ARG, TK_KW_VA_END, TK_KW_VA_COPY,
-    TK_KW_STATIC_ASSERT,
+    TK_KW_STATIC_ASSERT, TK_KW_OFFSETOF,
+    TK_KW_ATTRIBUTE,
 
     /* The two names that stand for something the lexer knows and the
      * program does not write: the line it is on and the file it is in.
