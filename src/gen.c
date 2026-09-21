@@ -4043,21 +4043,57 @@ static void static_end(void)
  * placed at is the address they will keep, and so that the bss and the heap
  * begin as far down as the shortened image allows. */
 /* Where in the list a symbol's function is, or -1 for one that is not the
- * file's own. Both this list and the symbols are in the order the file
- * defined them, so one search settles it. */
+ * file's own, through the file's own functions in the order of the symbols
+ * that name them.
+ *
+ * static_fns is in the order the functions were defined; a symbol's number
+ * is the order it was first named. A forward declaration names one function
+ * before a later line defines another, and from then on the two orders
+ * disagree -- so searching the definition order as though it were sorted by
+ * symbol found nothing. What it could not find it took to be a function
+ * outside the file, and the call stayed while the function it called was
+ * dropped. That is how aed's cmd_ops.c stopped compiling.
+ *
+ * Built once, before the marking, and insertion-sorted because the two
+ * orders agree except where a forward declaration parts them: the walk is
+ * the whole of it for a file that declares nothing ahead of itself. */
+static int *by_sym, by_sym_cap;
+
+static void sort_by_sym(void)
+{
+    int i;
+
+    if (nstatic_fns > by_sym_cap) {
+        by_sym_cap = nstatic_fns * 2;
+        by_sym = realloc(by_sym, (size_t) by_sym_cap * sizeof *by_sym);
+        if (!by_sym)
+            acc_error("out of memory ordering the file's own functions");
+    }
+    for (i = 0; i < nstatic_fns; i++) {
+        int at = static_fns[i].sym, j = i;
+
+        while (j > 0 && static_fns[by_sym[j - 1]].sym > at) {
+            by_sym[j] = by_sym[j - 1];
+            j--;
+        }
+        by_sym[j] = i;
+    }
+}
+
 static int static_index(int sym)
 {
     int lo = 0, hi = nstatic_fns - 1;
 
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
+        int at = static_fns[by_sym[mid]].sym;
 
-        if (sym < static_fns[mid].sym)
+        if (sym < at)
             hi = mid - 1;
-        else if (sym > static_fns[mid].sym)
+        else if (sym > at)
             lo = mid + 1;
         else
-            return mid;
+            return by_sym[mid];
     }
 
     return -1;
@@ -4083,6 +4119,7 @@ static void mark_live(unsigned char *live)
         live[i] = (sym_flags(static_fns[i].sym) & SYMF_USED) != 0;
     if (!nwants)
         return;
+    sort_by_sym();
 
     head = malloc((size_t) nstatic_fns * sizeof *head);
     next = malloc((size_t) nwants * sizeof *next);
