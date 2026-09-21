@@ -111,18 +111,21 @@ Agon:
 
 | | agondev | acc | |
 | --- | --- | --- | --- |
-| the image | 84,893 bytes | 310,820 bytes | 3.7x |
-| assembling a 6 KB source, six runs | 0.62s | 3.40s | 5.5x |
+| the image | 84,893 bytes | 168,582 bytes | 2.0x |
+| assembling a 6 KB source, six runs | 0.64s | 3.12s | 4.9x |
 
 Both figures are the assembler's own, taken alternately in one boot so that
 neither side pays for a warm-up the other did not.
 
-The size is the one that bites first, and not because of the disc. A program
-gets 448 KB for everything, so an image three and a half times larger is a
-heap three times smaller: acc's zap has about 128 KB to allocate from where
-agondev's has about 360 KB, and it runs out of room on a 25 KB source that
-the reference build assembles in half a second. That is the number to move,
-and moving it means emitting less code rather than emitting faster code.
+The size is the one that bites, and not because of the disc. A program gets
+448 KB for everything, so every byte of image is a byte of heap: zap has
+about 250 KB to allocate from where the reference build has about 360 KB.
+
+It used to be 310,820 bytes and 113 KB, which was not enough to assemble a
+25 KB source at all. What closed most of that gap was leaving things out
+rather than emitting them better -- the functions a file does not use, which
+a header full of `static inline` helpers has a great many of, and the value
+a comparison makes when all that was wanted was the branch.
 
 ## Testing, without an oracle
 
