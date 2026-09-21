@@ -3144,6 +3144,9 @@ static BssSym *bss_syms;
 static int     nbss_syms, bss_syms_cap;
 static int     bss_len;
 static int     bss_init_hole = -1;      /* the stub's call to the clearing */
+static int     args_hole = -1;          /* and the one to the arguments */
+static int     bss_extra;               /* room past it that is not cleared */
+static const char *exec_name;           /* what is being built, for argv[0] */
 static int     bss_top;                 /* the first byte past everything */
 
 /* Slots holding an offset into the bss, which want the start of it added.
@@ -3298,42 +3301,160 @@ static void bss_emit(void)
     out_patch24(bss_init_hole, out_here());
     if (!bss_len) {
         out_byte(0xc9);                 /* ret */
-        bss_top = out_here();
+        base = out_here();
+    } else {
+        base = out_here() + (bss_len == 1 ? BSS_INIT_ONE : BSS_INIT_LEN);
+        out_byte(0x21);                         /* ld hl, base */
+        out_reloc(out_here());
+        out_word24(base);
+        out_byte2(0x36, 0x00);                  /* ld (hl), 0 */
+        if (bss_len > 1) {
+            out_byte(0x11);                     /* ld de, base + 1 */
+            out_reloc(out_here());
+            out_word24(base + 1);
+            out_byte(0x01);                     /* ld bc, bss_len - 1 */
+            out_word24(bss_len - 1);
+            out_byte2(0xed, 0xb0);              /* ldir */
+        }
+        out_byte(0xc9);                         /* ret */
 
-        return;
+        for (i = 0; i < nbss_syms; i++) {
+            sym_at(bss_syms[i].sym)->val = base + bss_syms[i].at;
+            sym_set_flags(bss_syms[i].sym, SYMF_DEFINED);
+        }
     }
 
-    base = out_here() + (bss_len == 1 ? BSS_INIT_ONE : BSS_INIT_LEN);
-    if (base - out_base + bss_len > ACC_RAM_BYTES)
+    if (base - out_base + bss_len + bss_extra > ACC_RAM_BYTES)
         acc_error("the program and what it leaves at zero come to %d bytes, "
                   "and the Agon has %d for both",
-                  base - out_base + bss_len, ACC_RAM_BYTES);
+                  base - out_base + bss_len + bss_extra, ACC_RAM_BYTES);
 
-    out_byte(0x21);                             /* ld hl, base */
-    out_reloc(out_here());
-    out_word24(base);
-    out_byte2(0x36, 0x00);                      /* ld (hl), 0 */
-    if (bss_len > 1) {
-        out_byte(0x11);                         /* ld de, base + 1 */
-        out_reloc(out_here());
-        out_word24(base + 1);
-        out_byte(0x01);                         /* ld bc, bss_len - 1 */
-        out_word24(bss_len - 1);
-        out_byte2(0xed, 0xb0);                  /* ldir */
-    }
-    out_byte(0xc9);                             /* ret */
-
-    for (i = 0; i < nbss_syms; i++) {
-        sym_at(bss_syms[i].sym)->val = base + bss_syms[i].at;
-        sym_set_flags(bss_syms[i].sym, SYMF_DEFINED);
-    }
-
-    /* And every slot that holds an offset into it, which is where the
-     * folding went: `a[3]` put nine there, and this makes it an address. */
+    /* Every slot that holds an offset into it, which is where the folding
+     * went: `a[3]` put nine there, and this makes it an address. The table
+     * the argument routine keeps is one of them, and it is there whether the
+     * program left anything at zero or not -- so this runs even when there
+     * was nothing to clear. */
     for (i = 0; i < nbss_fixups; i++)
         out_patch24(bss_fixups[i], out_read24(bss_fixups[i]) + base);
 
-    bss_top = base + bss_len;
+    bss_top = base + bss_len + bss_extra;
+}
+
+/* argc and argv, out of what MOS passed.
+ *
+ * MOS enters a program with HL pointing at the rest of the command line --
+ * everything after the name that was typed, which is why the name is not in
+ * it and has to come from somewhere else. The routine below walks that text,
+ * writes a zero over each separator so that every word is a string of its
+ * own, and fills a table of pointers to them. It is the same walk agondev's
+ * startup makes, down to the sixteen-argument limit, because a program that
+ * works under one has to work under the other.
+ *
+ * It is written whether main asks for it or not. Whether it does is not a
+ * question the link can answer -- main arrives from an object, and an object
+ * says what its symbols are called and not what they take -- and a program
+ * that works compiled in one piece and not linked from two would be a worse
+ * thing than the ninety bytes. A main that takes no parameters is handed two
+ * values it never reads.
+ *
+ * The bytes come from src/rt/startup.s, as the stub's do. */
+#define ARGV_MAX  16            /* as agondev's startup has it */
+
+static const unsigned char args_code[] = {
+    0xdd, 0x21, 0x00, 0x00, 0x00,               /* ld ix, argv */
+    0x01, 0x00, 0x00, 0x00,                     /* ld bc, the name */
+    0xdd, 0x0f, 0x00,                           /* ld (ix+0), bc */
+    0xed, 0x32, 0x03,                           /* lea ix, ix+3 */
+    0xcd, 0x00, 0x00, 0x00,                     /* call spaces */
+    0x0e, 0x01, 0x06, ARGV_MAX,                 /* ld c, 1 / ld b, 16 */
+    0xc5, 0xe5,                                 /* next: push bc / push hl */
+    0xcd, 0x00, 0x00, 0x00,                     /* call token */
+    0x79, 0xd1, 0xc1,                           /* ld a, c / pop de / pop bc */
+    0xb7, 0x28, 0x13,                           /* or a, a / jr z, done */
+    0xdd, 0x1f, 0x00,                           /* ld (ix+0), de */
+    0xe5, 0xd1,                                 /* push hl / pop de */
+    0xcd, 0x00, 0x00, 0x00,                     /* call spaces */
+    0xaf, 0x12,                                 /* xor a, a / ld (de), a */
+    0xed, 0x32, 0x03,                           /* lea ix, ix+3 */
+    0x0c, 0x79, 0xb8, 0x38, 0xe1,               /* inc c / cp b / jr c, next */
+    0x11, 0x00, 0x00, 0x00, 0x59,               /* done: ld de, 0 / ld e, c */
+    0x21, 0x00, 0x00, 0x00,                     /* ld hl, argv */
+    0xc9,
+    0x0e, 0x00,                                 /* token: ld c, 0 */
+    0x7e, 0xb7, 0xc8,                           /* ld a, (hl) / ret z */
+    0xfe, 0x0d, 0xc8,                           /* cp 13 / ret z */
+    0xfe, 0x20, 0xc8,                           /* cp ' ' / ret z */
+    0x23, 0x0c, 0x18, 0xf3,                     /* inc hl / inc c / jr */
+    0x7e, 0xfe, 0x20, 0xc0,                     /* spaces: ld a,(hl) / ret */
+    0x23, 0x18, 0xf9                            /* inc hl / jr */
+};
+
+/* Its holes, as offsets from its first byte: the table of pointers, which is
+ * in the bss and so wants the bss added; the name, which is in the image;
+ * and the table again, where it is answered with. */
+#define ARGS_ARGV_AT    0x02
+#define ARGS_NAME_AT    0x06
+#define ARGS_ARGV2_AT   0x3c
+
+static const struct { int at, to; } args_calls[] = {
+    { 0x10, 0x4f },                             /* spaces */
+    { 0x1a, 0x40 },                             /* token */
+    { 0x29, 0x4f }                              /* spaces */
+};
+
+/* The name argv[0] is given. MOS does not pass one -- what was typed is not
+ * in the text it hands over -- so this is the name of the file being built,
+ * which is the nearest thing to the truth that is known here. agondev puts a
+ * fixed string there instead. */
+static const char *base_name(const char *path)
+{
+    const char *at = path, *p;
+
+    for (p = path; *p; p++)
+        if (*p == '/' || *p == '\\' || *p == ':')
+            at = p + 1;
+
+    return at;
+}
+
+static void args_emit(void)
+{
+    const char *name;
+    int base, argv_at, name_at, i;
+
+    if (args_hole < 0)
+        return;                         /* no entry stub: nothing calls it */
+
+    out_patch24(args_hole, out_here());
+
+    /* The table goes past everything that is cleared rather than among it.
+     * Nothing reads a slot the routine has not written -- argc says how many
+     * there are -- so zeroing forty-eight bytes at every start would be work
+     * for no one, and leaving them out keeps a program whose own bss is one
+     * byte a program whose bss is one byte. */
+    argv_at = bss_len;
+    bss_extra = ARGV_MAX * ACC_INT_SIZE;
+    base = out_here();
+    for (i = 0; i < (int) sizeof args_code; i++)
+        out_byte(args_code[i]);
+
+    name = base_name(exec_name ? exec_name : "");
+    name_at = out_here();
+    for (i = 0; name[i]; i++)
+        out_byte((unsigned char) name[i]);
+    out_byte(0);
+
+    out_patch24(base + ARGS_NAME_AT, name_at);
+    out_reloc(base + ARGS_NAME_AT);
+    out_patch24(base + ARGS_ARGV_AT, argv_at);
+    gen_bss_fixup(base + ARGS_ARGV_AT);
+    out_patch24(base + ARGS_ARGV2_AT, argv_at);
+    gen_bss_fixup(base + ARGS_ARGV2_AT);
+
+    for (i = 0; i < (int) (sizeof args_calls / sizeof *args_calls); i++) {
+        out_patch24(base + args_calls[i].at, base + args_calls[i].to);
+        out_reloc(base + args_calls[i].at);
+    }
 }
 
 /* Two names the link answers for, because only it knows them: where the
@@ -3412,6 +3533,7 @@ void gen_finish(void)
             extern_add(rt_fixups[i].at, rt_symbol(rt_fixups[i].which));
     } else {
         rt_emit_used();
+        args_emit();
         bss_emit();
 
         /* And the two the link itself answers for, now that there is an
@@ -3509,7 +3631,13 @@ void gen_init(void)
  * contract. */
 static const unsigned char startup_exit[] = {
     0xfd, 0xe5,                                 /* push iy */
+    0xe5,                                       /* push hl: MOS's line */
+    0xcd, 0x00, 0x00, 0x00,                     /* call the clearing */
+    0xe1,                                       /* pop hl */
+    0xcd, 0x00, 0x00, 0x00,                     /* call the arguments */
+    0xe5, 0xd5,                                 /* push hl / push de */
     0xcd, 0x00, 0x00, 0x00,                     /* call main */
+    0xc1, 0xc1,                                 /* pop bc / pop bc */
     0x7d, 0xd3, 0x00,                           /* ld a, l / out (0), a */
     0xfd, 0xe1,                                 /* pop iy */
     0xc9
@@ -3517,7 +3645,13 @@ static const unsigned char startup_exit[] = {
 
 static const unsigned char startup_print[] = {
     0xfd, 0xe5,                                 /* push iy */
+    0xe5,                                       /* push hl: MOS's line */
+    0xcd, 0x00, 0x00, 0x00,                     /* call the clearing */
+    0xe1,                                       /* pop hl */
+    0xcd, 0x00, 0x00, 0x00,                     /* call the arguments */
+    0xe5, 0xd5,                                 /* push hl / push de */
     0xcd, 0x00, 0x00, 0x00,                     /* call main */
+    0xc1, 0xc1,                                 /* pop bc / pop bc */
     0xe5,                                       /* push hl */
     0xfd, 0x21, 0x00, 0x00, 0x00, 0xfd, 0x39,   /* ld iy, 0 / add iy, sp */
     0xfd, 0x7e, 0x02, 0xcd, 0x00, 0x00, 0x00,   /* ld a, (iy+2) / hexbyte */
@@ -3534,39 +3668,48 @@ static const unsigned char startup_print[] = {
     0x38, 0x02, 0xc6, 0x07, 0x5b, 0xd7, 0xc9
 };
 
+/* The three holes in either stub, as offsets from its first byte: the call
+ * into the routine that clears what starts at zero, the one that turns MOS's
+ * command line into argc and argv, and the one into main. */
+#define STUB_CLEAR_AT   4
+#define STUB_ARGS_AT    9
+#define STUB_MAIN_AT   15
+
 /* Where the print stub calls within itself, as offsets from its first byte.
  * They are absolute calls, so they have to be filled in once the stub's
  * address is known. */
 static const struct { int at, to; } print_calls[] = {
-    { 0x12, 0x2f }, { 0x19, 0x2f }, { 0x20, 0x2f },   /* hexbyte */
-    { 0x35, 0x39 }                                    /* hexnib */
+    { 0x20, 0x3d }, { 0x27, 0x3d }, { 0x2e, 0x3d },   /* hexbyte */
+    { 0x43, 0x47 }                                    /* hexnib */
 };
 
-void gen_startup(int report_by_exit)
+void gen_startup(int by_exit, const char *program)
 {
     int m = sym_push(name_intern("main", 4), SYM_FUNC, 0);
-    const unsigned char *stub = report_by_exit ? startup_exit : startup_print;
-    int n = report_by_exit ? (int) sizeof startup_exit : (int) sizeof startup_print;
+    const unsigned char *stub = by_exit ? startup_exit : startup_print;
+    int n = by_exit ? (int) sizeof startup_exit : (int) sizeof startup_print;
     int base;
     int i;
 
-    /* Clearing what starts at zero comes first, and is a routine emitted at
-     * the end once there is an address and a length for it. The call is
-     * here whether there turns out to be anything to clear or not: four
-     * bytes and a `ret`, against working out how to not have made the call. */
-    out_reloc(out_here() + 1);
-    out_opcode24(0xcd, 0);                       /* call the clearing */
-    bss_init_hole = out_here() - ACC_INT_SIZE;
+    exec_name = program;
 
     base = out_here();
     for (i = 0; i < n; i++)
         out_byte(stub[i]);
 
-    /* The call to main is the second instruction in either version; the
-     * first is the one that saves MOS's IY. */
-    fixup_add(m, base + 3);
+    /* The two routines that are written at the end, once there is an address
+     * and a length for what they work on: clearing what starts at zero, and
+     * making argc and argv out of what MOS passed. Both calls are here
+     * whether they turn out to have anything to do or not -- four bytes and
+     * a `ret` each, against working out how to not have made the call. */
+    out_reloc(base + STUB_CLEAR_AT);
+    bss_init_hole = base + STUB_CLEAR_AT;
+    out_reloc(base + STUB_ARGS_AT);
+    args_hole = base + STUB_ARGS_AT;
 
-    if (!report_by_exit)
+    fixup_add(m, base + STUB_MAIN_AT);
+
+    if (!by_exit)
         for (i = 0; i < (int) (sizeof print_calls / sizeof *print_calls); i++) {
             out_reloc(base + print_calls[i].at);
             out_patch24(base + print_calls[i].at, base + print_calls[i].to);

@@ -6583,7 +6583,7 @@ int main(int argc, char **argv)
          * other -- which is what makes the objects' own symbols do the work
          * of finding it. */
         out_open(out, 1);
-        gen_startup(by_exit);
+        gen_startup(by_exit, out);
         for (i = 0; i < nobjs; i++) {
             if (is_archive(objs[i]))
                 link_archive(objs[i]);
@@ -6618,7 +6618,7 @@ int main(int argc, char **argv)
         out_free();
     } else {
         out_open(out, 1);
-        gen_startup(by_exit);
+        gen_startup(by_exit, out);
         lex_open(in);
         translation_unit();
         lex_end();

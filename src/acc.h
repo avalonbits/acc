@@ -852,7 +852,7 @@ extern int gen_objects;
 int gen_nexterns(void);
 int gen_extern_at(int i);
 int gen_extern_sym(int i);
-void gen_startup(int report_by_exit);  /* the entry stub MOS lands on */
+void gen_startup(int by_exit, const char *program); /* the entry stub */
 
 /* ------------------------------------------------------------------ */
 /* output                                                              */

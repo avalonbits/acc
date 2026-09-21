@@ -6,13 +6,19 @@ needs memory that is dirty first, and the only way to dirty it is to run
 another program -- which means returning to MOS, which an acc-compiled
 program does not yet survive.
 
-What is checked is the whole of the arrangement: the first thing the program
-does is call a routine, that routine clears from the image's last byte on,
-and it clears exactly as many bytes as the variables that wanted them."""
+What is checked is the whole of the arrangement: the program calls a routine
+before it calls anything else, that routine clears from the image's last byte
+on, and it clears exactly as many bytes as the variables that wanted them --
+no more, so that the table the argument routine keeps past the end of it is
+not being zeroed for nothing."""
 import sys
 
 LOAD = 0x040000
 ENTRY = 0x45
+
+# The call to the clearing is not the first instruction: the stub saves what
+# MOS wants back and the command line it was given before anything else runs.
+CLEAR = ENTRY + 3
 
 
 def u24(b, at):
@@ -22,9 +28,9 @@ def u24(b, at):
 def main(path, bss_bytes):
     b = open(path, 'rb').read()
 
-    if b[ENTRY] != 0xcd:
-        return 'the program does not start with a call (%02x)' % b[ENTRY]
-    at = u24(b, ENTRY + 1) - LOAD
+    if b[CLEAR] != 0xcd:
+        return 'the program does not call the clearing (%02x)' % b[CLEAR]
+    at = u24(b, CLEAR + 1) - LOAD
     if not 0 <= at < len(b):
         return 'it calls %06x, which is outside the image' % (at + LOAD)
 

@@ -26,10 +26,12 @@
 ; reason: acc copies this code into every program it compiles, and a program
 ; does not take on acc's license by being compiled by it.
 ;
-; The entry stub acc puts at the front of every image.
+; The entry stub acc puts at the front of every image, and the routine that
+; makes argc and argv out of what MOS passed.
 ;
-; MOS lands on the first byte after the header, so this is what runs. It calls
-; main and then says what came back, in one of two ways:
+; MOS lands on the first byte after the header, so this is what runs. It saves
+; what MOS wants back, clears what starts at zero, turns the command line into
+; arguments, calls main and then says what came back, in one of two ways:
 ;
 ;   printing   the result as six hex digits and returning to MOS. This is the
 ;              default, because it is the one that works on a real Agon and at
@@ -38,22 +40,46 @@
 ;              its exit status. That is how the test suite reads an answer
 ;              without a C library, and acc emits it for -x.
 ;
+; Three addresses in the stub are not known when it is written -- the two
+; routines that are emitted at the end of the image and main itself -- and are
+; left as holes for gen.c to fill. The same goes for the table of pointers and
+; the name in the argument routine.
+;
 ; Assembled to get the bytes that gen.c embeds; see the comment there.
 ;
 	.assume adl=1
 	.section .text,"ax",@progbits
 	.global _acc_startup_print
 	.global _acc_startup_exit
-	.extern _main
+	.global _acc_args
 
 _acc_startup_exit:
-	call	_main
+	push	iy			; MOS wants it back as it left it
+	push	hl			; and hands over its command line in it
+	call	0			; [hole] clear what starts at zero
+	pop	hl
+	call	0			; [hole] argc and argv
+	push	hl			; argv
+	push	de			; argc, which main reads first
+	call	0			; [hole] main
+	pop	bc			; the caller takes the arguments back
+	pop	bc
 	ld	a, l
 	out	(0), a
+	pop	iy
 	ret
 
 _acc_startup_print:
-	call	_main
+	push	iy
+	push	hl
+	call	0			; [hole] clear what starts at zero
+	pop	hl
+	call	0			; [hole] argc and argv
+	push	hl
+	push	de
+	call	0			; [hole] main
+	pop	bc
+	pop	bc
 	push	hl			; the result, so its bytes can be read
 	ld	iy, 0
 	add	iy, sp
@@ -68,6 +94,7 @@ _acc_startup_print:
 	rst.lil	$10
 	ld	a, 10
 	rst.lil	$10
+	pop	iy
 	ret
 
 hexbyte:
@@ -87,3 +114,65 @@ hexnib:
 emit:
 	rst.lil	$10
 	ret
+
+; hl holds what MOS passed: the command line past the name that was typed.
+; Each word in it is given a zero of its own and a slot in the table, and the
+; name -- which MOS does not pass -- is put in front as argv[0]. Answers with
+; hl = argv and de = argc, which the stub pushes in that order.
+;
+; The sixteen-argument limit is agondev's, and is here for the same reason the
+; walk is: a program that works under one startup has to work under the other.
+_acc_args:
+	ld	ix, 0			; [hole] the table of pointers
+	ld	bc, 0			; [hole] the name this was built under
+	ld	(ix + 0), bc		; argv[0]
+	lea	ix, ix + 3
+	call	args_spaces
+	ld	c, 1			; argc
+	ld	b, 16			; and the most there is room for
+args_next:
+	push	bc
+	push	hl
+	call	args_token		; c = its length, hl = past it
+	ld	a, c
+	pop	de			; where it started
+	pop	bc
+	or	a, a
+	jr	z, args_done
+	ld	(ix + 0), de
+	push	hl
+	pop	de			; where it ended, to be zeroed
+	call	args_spaces		; hl = the next one
+	xor	a, a
+	ld	(de), a			; and this one ends here
+	lea	ix, ix + 3
+	inc	c
+	ld	a, c
+	cp	a, b
+	jr	c, args_next
+args_done:
+	ld	de, 0
+	ld	e, c
+	ld	hl, 0			; [hole] the table of pointers
+	ret
+
+args_token:
+	ld	c, 0
+args_token_1:
+	ld	a, (hl)
+	or	a, a
+	ret	z
+	cp	a, 13
+	ret	z
+	cp	a, ' '
+	ret	z
+	inc	hl
+	inc	c
+	jr	args_token_1
+
+args_spaces:
+	ld	a, (hl)
+	cp	a, ' '
+	ret	nz
+	inc	hl
+	jr	args_spaces

@@ -97,6 +97,7 @@ $(BIN):
 test: all unit $(BIN)/acc-asan agon
 	@test/abi.sh || [ $$? -eq 77 ]
 	@test/helpers.sh || [ $$? -eq 77 ]
+	@test/startup.sh || [ $$? -eq 77 ]
 	@test/flags.sh || [ $$? -eq 77 ]
 	@test/buffer.sh
 	@test/include.sh
@@ -105,6 +106,7 @@ test: all unit $(BIN)/acc-asan agon
 	@ACC=$(BIN)/acc-asan test/object.sh
 	@ACC=$(BIN)/acc-asan test/bss.sh
 	@ACC=$(BIN)/acc-asan test/mos.sh || [ $$? -eq 77 ]
+	@ACC=$(BIN)/acc-asan test/args.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/lib.sh
 	@ACC=$(BIN)/acc-asan test/printf.sh || [ $$? -eq 77 ]
 	@test/heap.sh || [ $$? -eq 77 ]
