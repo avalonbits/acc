@@ -379,23 +379,25 @@ int hidden = 42;
 int main(void) { return use(); }
 '
 
-# Both halves multiply, which is a call to a helper. One copy of the runtime
-# goes into the program, not one into each object -- which is what lets this
-# come out as the same bytes as the one file.
+# Both halves multiply by something that is not known until it runs, which is
+# a call to a helper -- a constant multiplier is written out as doublings and
+# would not reach the runtime at all. One copy of the runtime goes into the
+# program, not one into each object, which is what lets this come out as the
+# same bytes as the one file.
 split "both halves use a helper" \
-'int twice(int n) { return n * 2; }
+'int times(int n, int m) { return n * m; }
 ' \
-'int twice(int n);
-int main(void) { return twice(3) * 7; }
+'int times(int n, int m);
+int main(void) { return times(3, 7); }
 ' \
-'int twice(int n) { return n * 2; }
-int main(void) { return twice(3) * 7; }
+'int times(int n, int m) { return n * m; }
+int main(void) { return times(3, 7); }
 '
 
 # And that it really is a name rather than a copy: the object that multiplies
 # says what it wants and does not carry the runtime, which is five kilobytes
 # of it.
-printf 'int twice(int n) { return n * 2; }\n' > "$work/h.c"
+printf 'int times(int n, int m) { return n * m; }\n' > "$work/h.c"
 "$ACC" -c "$work/h.c" -o "$work/h.o" >/dev/null 2>&1
 if grep -q acc_rt_mul "$work/h.o" 2>/dev/null; then
     pass=$((pass+1))

@@ -53,13 +53,36 @@ static void add_hl_rr(int reg) { out_byte(0x09 + reg_code[reg]); }
 static void sbc_hl_rr(int reg) { out_byte2(0xed, 0x42 + reg_code[reg]); }
 static void or_a_a(void)     { out_byte(0xb7); }
 
-/* There is no ld rr, rr' on this chip. Always through the stack and never
- * `ex de, hl`: that is a byte shorter but it swaps, and the register
- * allocator is entitled to believe the source still holds what it held. */
+/* There is no ld rr, rr' on this chip, so a move is a push and a pop -- two
+ * bytes and nine cycles to copy a register, which zap spent six percent of
+ * its time doing.
+ *
+ * Between HL and DE there is `ex de, hl`, one byte and one cycle. It swaps
+ * rather than copies, which is why this used to avoid it: the allocator is
+ * entitled to believe a register still holds what it held. So the swap is
+ * told to the allocator rather than hidden from it -- whatever either
+ * register holds changes places with the other -- and then nothing is
+ * believed that is not true. A value that was in the destination used to be
+ * quietly destroyed by the pop; now it moves to the source, which is a
+ * better answer as well as a cheaper one.
+ *
+ * Callers set the moved value's register themselves afterwards, which is
+ * what the swap has already done: saying it twice costs nothing. */
+static void ex_de_hl(void);
+static void check_reg_free(int reg);
+
 static void mov_rr(int dst, int src)
 {
     if (dst == src)
         return;
+
+    if ((dst == R_HL && src == R_DE) || (dst == R_DE && src == R_HL)) {
+        check_reg_free(dst);
+        ex_de_hl();
+
+        return;
+    }
+
     push_rr(src);
     pop_rr(dst);
 }
@@ -181,6 +204,149 @@ static void fill_hl_with_zero(void)
 {
     or_a_a();                   /* clear the carry */
     sbc_hl_hl();
+}
+
+/* HL = HL OP a constant, written out rather than called for.
+ *
+ * The helpers take both operands on the stack and walk them a byte at a
+ * time, because on this chip only the low two bytes of HL have names and the
+ * third has no way to be reached. A constant does not need that: every byte
+ * of it is known here, and a byte that is the operator's identity -- 0xff for
+ * AND, 0 for OR and XOR -- is one there is no code to write at all.
+ *
+ * Which is nearly always the top byte. In zap, 83% of the ANDs executed have
+ * a constant on the right and every mask among the hot ones is a bit or two
+ * in the low byte: `& 1`, `& 0x10`, `& 0x0f`. So the third byte is left as
+ * it is, or the whole of HL is cleared, and neither needs a name for it.
+ *
+ * Returns 0 for the rest -- a constant that really does reach into the third
+ * byte -- and the caller falls back to the helper.
+ *
+ * AND clears the carry, so a mask confined to the low byte can zero the two
+ * bytes above it with the sbc hl, hl that (unsigned char) already uses, and
+ * comes to six bytes against the eight of loading BC and calling. */
+static int and_a_imm(int v)  { out_byte2(0xe6, v & 0xff); return 0; }
+static int or_a_imm(int v)   { out_byte2(0xf6, v & 0xff); return 0; }
+static int xor_a_imm(int v)  { out_byte2(0xee, v & 0xff); return 0; }
+
+static int bitwise_const(int op, int value)
+{
+    int c0 = value & 0xff, c1 = (value >> 8) & 0xff, c2 = (value >> 16) & 0xff;
+    int identity = op == TK_AMP ? 0xff : 0x00;
+    int low, high;
+
+    /* A mask that keeps nothing above the low byte, which is what nearly
+     * every AND in a program is: whatever the two bytes above held, the
+     * answer there is zero, and sbc hl, hl says so in two bytes because AND
+     * has just cleared the carry. */
+    if (op == TK_AMP && c1 == 0x00 && c2 == 0x00) {
+        if (c0 == 0x00) {
+            fill_hl_with_zero();
+
+            return 1;
+        }
+        ld_a_l();
+        and_a_imm(c0);
+        sbc_hl_hl();            /* and cleared the carry, so this is 0 */
+        ld_l_a();
+
+        return 1;
+    }
+
+    /* Otherwise the third byte has to be left alone, because there is no way
+     * to name it: what the operator would do to it must be nothing. */
+    if (c2 != identity)
+        return 0;
+
+    low = c0 != identity;
+    high = c1 != identity;
+    if (!low && !high)
+        return 1;               /* the operator would change nothing */
+
+    if (low) {
+        ld_a_l();
+        if (op == TK_AMP)
+            and_a_imm(c0);
+        else if (op == TK_PIPE)
+            or_a_imm(c0);
+        else
+            xor_a_imm(c0);
+        ld_l_a();
+    }
+    if (high) {
+        ld_a_h();
+        if (op == TK_AMP)
+            and_a_imm(c1);
+        else if (op == TK_PIPE)
+            or_a_imm(c1);
+        else
+            xor_a_imm(c1);
+        ld_h_a();
+    }
+
+    return 1;
+}
+
+/* HL = HL * a constant, as doublings and additions rather than a call.
+ *
+ * Every multiply zap executes has a constant on the right, and the one it
+ * does most often is by 13 -- the width of a struct it keeps an array of,
+ * which is what a multiply in C source usually is once the subscripts are
+ * counted. 13 is 1101 in binary, so: start with x, and for each bit below
+ * the top one double what is in hand and add x back where the bit is set.
+ * Nine bytes against the eight of loading BC and calling, and about a
+ * thirtieth of the time.
+ *
+ * DE holds the untouched x and is saved and restored around the whole thing,
+ * so this needs no register to be free and cannot disturb what the allocator
+ * is holding: the push of DE is consumed by the pop at the end, and the push
+ * of HL in between by the pop that loads DE.
+ *
+ * A power of two needs no copy of x at all, just the doublings, and comes to
+ * fewer bytes than the call as well as less time.
+ *
+ * Returns 0 for a constant that would take more code than it saves, and for
+ * a negative one, which would want a negation on the end. */
+static void add_hl_hl(void) { out_byte(0x29); }
+
+#define MUL_MAX_STEPS 12        /* doublings plus additions, before it is
+                                 * cheaper to let the helper do it */
+
+static int mul_const(int value)
+{
+    int top, bit, pc = 0, steps;
+
+    if (value <= 0 || value > 0xffff)
+        return 0;               /* zero and one are folded before this */
+
+    for (top = 23; top > 0 && !(value & (1 << top)); top--)
+        ;
+    for (bit = 0; bit <= top; bit++)
+        if (value & (1 << bit))
+            pc++;
+
+    steps = top + (pc - 1);
+    if (steps > MUL_MAX_STEPS)
+        return 0;
+
+    if (pc == 1) {              /* a power of two: doublings and nothing else */
+        while (top--)
+            add_hl_hl();
+
+        return 1;
+    }
+
+    push_rr(R_DE);
+    push_rr(R_HL);
+    pop_rr(R_DE);               /* de = x, whatever de held is under it */
+    for (bit = top - 1; bit >= 0; bit--) {
+        add_hl_hl();
+        if (value & (1 << bit))
+            add_hl_rr(R_DE);
+    }
+    pop_rr(R_DE);
+
+    return 1;
 }
 
 /* Load a local of the given type into HL, widened to int. */
@@ -314,6 +480,31 @@ static int   vtop;               /* number of live entries */
  * that scale is still a scale. Those are left as subscripts, which say what
  * they mean. */
 static Value *vsp = vstack;
+
+/* That nothing the allocator is holding lives in this register.
+ *
+ * mov_rr leans on it: `ex de, hl` gives the destination what the source
+ * held, which is the move that was asked for, but it hands the source
+ * whatever the destination held, which is only harmless when that was
+ * nothing. Every caller frees the destination first -- force_into evicts it,
+ * move_out picks a register that is already free, and the branches are
+ * emitted with an empty stack -- so this says so rather than paying at every
+ * move to make it true a second time.
+ *
+ * Checked in the sanitized build the tests run and not in the compiler,
+ * which is where vcheck draws the same line. */
+static void check_reg_free(int reg)
+{
+#ifdef ACC_CHECK_VSTACK
+    const Value *v;
+
+    for (v = vstack; v < vsp; v++)
+        if (v->kind == VAL_REG && v->val == reg)
+            acc_error("internal: a register move into %d, which is live", reg);
+#else
+    (void) reg;
+#endif
+}
 
 /* Locals are at negative offsets from IX and grow downwards. Arguments are
  * above the saved IX and the return address, so the first one is at ix+6. */
@@ -1281,6 +1472,22 @@ static void vbinop(int op)
      * register chosen without asking whether anything already lives in it is
      * how `f(a,b,c) + f(1,2,3)` lost an argument. */
     force_into(vsp - 2, R_HL);
+
+    /* A bitwise operator with a constant on the right is written out here
+     * rather than called for: see bitwise_const. */
+    if (val_const(rhs->kind)
+        && ((op == TK_AMP || op == TK_PIPE || op == TK_CARET)
+            ? bitwise_const(op, rhs->val)
+            : op == TK_STAR && mul_const(rhs->val))) {
+        result = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
+        vdrop();
+        vdrop();
+        vpush_reg(R_HL);
+        (vsp - 1)->type = result;
+
+        return;
+    }
+
     if (needs_helper(op)) {
         /* The helpers take their right operand in BC, by the convention
          * agondev uses for the same operations. */
