@@ -258,7 +258,13 @@ void sym_set_params(int sym, int first, int count)
     fn_room((unsigned) sym);
     fn_sig(sym)->s.first = first;
     fn_sig(sym)->s.count = (unsigned char) count;
-    fn_sig(sym)->s.flags = 0;   /* whoever sets the parameters says the rest */
+
+    /* Whoever sets the parameters says the rest of what is known about the
+     * declaration -- but not whether something has already wanted it. A
+     * `static` called before it is defined is called all the same, and the
+     * definition clearing that took it out of the image from under the
+     * call. */
+    fn_sig(sym)->s.flags &= SYMF_USED;
 }
 
 void sym_set_flags(int sym, int flags)

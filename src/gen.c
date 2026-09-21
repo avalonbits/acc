@@ -10,6 +10,7 @@
  * than loading both and adding registers.
  */
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1518,8 +1519,12 @@ typedef struct {
 static Fixup *fixups;
 static int    nfixups, fixups_cap;
 
+/* Whatever is being compiled has just named a function: see want(). */
+static void want(int fn);
+
 static void fixup_add(int fn, int at)
 {
+    want(fn);
     if (nfixups == fixups_cap) {
         fixups_cap = fixups_cap ? fixups_cap * 2 : 32;
         fixups = realloc(fixups, fixups_cap * sizeof *fixups);
@@ -2763,9 +2768,10 @@ static int jump_op(int op)
 static void patch_to(int hole, int target)
 {
     while (hole) {
-        int next = out_read24(hole);
+        unsigned char *at = out_img + (hole - out_base);
+        int next = get24(at);
 
-        out_patch24(hole, target);
+        put24(at, target);
         hole = next;
     }
 }
@@ -3615,6 +3621,41 @@ typedef struct {
 static StaticFn *static_fns;
 static int       nstatic_fns, static_fns_cap, static_now = -1;
 
+/* One of them holding another's address: which one said it, and which one it
+ * named. Recorded where the reference is made, because that is the one place
+ * both are known without looking. Read back out of the image afterwards, it
+ * was a search of the relocation table for every one of them, and the search
+ * cost more than the pass saved: on this chip an index into a table is a
+ * multiply and the length of one is a divide, and both are calls.
+ *
+ * A reference from anywhere else -- a function the whole program can name, a
+ * global's bytes -- is not recorded at all. It is marked on the symbol as it
+ * is made, and that mark is what a walk of these starts from. */
+typedef struct {
+    int from, sym;
+} Want;
+
+static Want *wants;
+static int   nwants, wants_cap;
+
+static void want(int fn)
+{
+    if (static_now < 0 || !(sym_flags(fn) & SYMF_STATIC)) {
+        sym_set_flags(fn, SYMF_USED);
+
+        return;
+    }
+    if (nwants == wants_cap) {
+        wants_cap = wants_cap ? wants_cap * 2 : 64;
+        wants = realloc(wants, (size_t) wants_cap * sizeof *wants);
+        if (!wants)
+            acc_error("out of memory for what the file's functions want");
+    }
+    wants[nwants].from = static_now;
+    wants[nwants].sym = fn;
+    nwants++;
+}
+
 static void static_begin(int fn)
 {
     static_now = -1;
@@ -3652,20 +3693,19 @@ static void static_end(void)
  * runtime blob, the argument routine, the clearing -- so that what those are
  * placed at is the address they will keep, and so that the bss and the heap
  * begin as far down as the shortened image allows. */
-/* The static function whose bytes are at `a`, or -1 for an address that is
- * not in one -- a global's, or a place in a function the whole file can
- * name. The runs are in the order they were written, which is rising, so
- * this is a search and not a walk. */
-static int static_at(int a)
+/* Where in the list a symbol's function is, or -1 for one that is not the
+ * file's own. Both this list and the symbols are in the order the file
+ * defined them, so one search settles it. */
+static int static_index(int sym)
 {
     int lo = 0, hi = nstatic_fns - 1;
 
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
 
-        if (a < static_fns[mid].at)
+        if (sym < static_fns[mid].sym)
             hi = mid - 1;
-        else if (a >= static_fns[mid].at + static_fns[mid].len)
+        else if (sym > static_fns[mid].sym)
             lo = mid + 1;
         else
             return mid;
@@ -3674,61 +3714,60 @@ static int static_at(int a)
     return -1;
 }
 
-/* One place holding one address, said to whatever is keeping score.
- *
- * A function that is going cannot keep anything else here: two helpers that
- * call each other and nothing else would otherwise keep each other in the
- * image for ever. Nor can a function keep itself, which is what every jump
- * inside one is. */
-static void wanted_by(int slot, int target, unsigned char *live, int *changed)
-{
-    int from = static_at(slot), to = static_at(target);
-
-    if (to < 0 || live[to] || from == to)
-        return;
-    if (from >= 0 && !live[from])
-        return;
-    live[to] = 1;
-    *changed = 1;
-}
-
 /* Which of the file's own functions anything that is staying still wants.
  *
- * Read out of the image rather than counted as the references were emitted,
- * because what counts as a reference depends on what else is going: the walk
- * is repeated until it settles, and each turn of it may keep something that
- * the turn before had nothing to say about.
+ * The ones something outside them named are marked already, and each of the
+ * rest is wanted only if the function that named it is itself staying -- so
+ * this is a walk out from those, and not a question that can be answered one
+ * function at a time. Two helpers that call each other and nothing else are
+ * wanted by nobody, however loudly they say otherwise.
  *
- * Every address acc writes down is in the relocation table -- which is what
- * test/reloc.sh is for -- bar the ones that are not addresses yet, and those
- * are the fixups, which name the symbol they are waiting on and so are read
- * from the other end. */
-static void mark_live(unsigned char *live, const int *pending, int npending)
+ * The references are bucketed by who made them first, so that the walk is
+ * one step per reference rather than a pass over all of them per function.
+ * A function cannot want itself: the edge is not recorded when it would.
+ */
+static void mark_live(unsigned char *live)
 {
-    int changed = 1;
+    int *head, *next, *stack, top = 0, i;
 
-    while (changed) {
-        int i, seen = 0;
+    for (i = 0; i < nstatic_fns; i++)
+        live[i] = (sym_flags(static_fns[i].sym) & SYMF_USED) != 0;
+    if (!nwants)
+        return;
 
-        changed = 0;
-        for (i = 0; i < out_nrelocs(); i++) {
-            int slot = out_base + out_reloc_at(i);
+    head = malloc((size_t) nstatic_fns * sizeof *head);
+    next = malloc((size_t) nwants * sizeof *next);
+    stack = malloc((size_t) nstatic_fns * sizeof *stack);
+    if (!head || !next || !stack)
+        acc_error("out of memory taking the unused functions out");
 
-            while (seen < npending && pending[seen] < slot)
-                seen++;
-            if (seen < npending && pending[seen] == slot)
+    for (i = 0; i < nstatic_fns; i++)
+        head[i] = -1;
+    for (i = 0; i < nwants; i++) {
+        next[i] = head[wants[i].from];
+        head[wants[i].from] = i;
+    }
+
+    for (i = 0; i < nstatic_fns; i++)
+        if (live[i])
+            stack[top++] = i;
+
+    while (top) {
+        int from = stack[--top], e;
+
+        for (e = head[from]; e >= 0; e = next[e]) {
+            int to = static_index(wants[e].sym);
+
+            if (to < 0 || live[to])
                 continue;
-            wanted_by(slot, out_read24(slot), live, &changed);
-        }
-        for (i = 0; i < nfixups; i++) {
-            int fn = fixups[i].fn;
-
-            if (sym_at(fn)->kind != SYM_FUNC
-                || !(sym_flags(fn) & SYMF_DEFINED))
-                continue;
-            wanted_by(fixups[i].at, sym_at(fn)->val, live, &changed);
+            live[to] = 1;
+            stack[top++] = to;
         }
     }
+
+    free(head);
+    free(next);
+    free(stack);
 }
 
 static int dead_statics(Cut *cuts, const unsigned char *live)
@@ -3754,31 +3793,43 @@ static int dead_statics(Cut *cuts, const unsigned char *live)
  * filled in after this pass has run, so what is in them now is not an
  * address and must not be moved as if it were.
  *
- * Sorted rather than walked in step with the relocations, whose order they
- * nearly share: a variable said twice at file scope has its value written
- * back over the room the first mention reserved, which puts a slot behind
- * ones already recorded -- and a classification that quietly went wrong
- * there would leave a program with an address three bytes out. */
-static int by_position(const void *a, const void *b)
-{
-    return *(const int *) a - *(const int *) b;
-}
-
+ * The three lists are each in the order they were written, which is rising,
+ * so they are merged rather than sorted: a qsort over them cost three
+ * quarters of a million cycles on the Agon, which is more than the pass it
+ * belongs to. The one exception is a variable said twice at file scope,
+ * whose value is written back over the room the first mention reserved --
+ * that puts a slot behind ones already recorded, and fixup_add says so. The
+ * merge is followed by an insertion pass, which is a walk when the merge
+ * came out in order and a repair when it did not. */
 static int *pending_slots(int *count)
 {
-    int n = nfixups + nrt_fixups + nbss_fixups, i;
+    int n = nfixups + nrt_fixups + nbss_fixups;
     int *all = malloc((size_t) (n ? n : 1) * sizeof *all);
+    int fx = 0, rt = 0, bs = 0, i, j;
 
     if (!all)
         acc_error("out of memory taking the unused functions out");
     n = 0;
-    for (i = 0; i < nfixups; i++)
-        all[n++] = fixups[i].at;
-    for (i = 0; i < nrt_fixups; i++)
-        all[n++] = rt_fixups[i].at;
-    for (i = 0; i < nbss_fixups; i++)
-        all[n++] = bss_fixups[i];
-    qsort(all, (size_t) n, sizeof *all, by_position);
+    while (fx < nfixups || rt < nrt_fixups || bs < nbss_fixups) {
+        int a = fx < nfixups ? fixups[fx].at : INT_MAX;
+        int b = rt < nrt_fixups ? rt_fixups[rt].at : INT_MAX;
+        int c = bs < nbss_fixups ? bss_fixups[bs] : INT_MAX;
+
+        if (a <= b && a <= c)
+            all[n++] = fixups[fx++].at;
+        else if (b <= c)
+            all[n++] = rt_fixups[rt++].at;
+        else
+            all[n++] = bss_fixups[bs++];
+    }
+
+    for (i = 1; i < n; i++) {
+        int at = all[i];
+
+        for (j = i; j > 0 && all[j - 1] > at; j--)
+            all[j] = all[j - 1];
+        all[j] = at;
+    }
     *count = n;
 
     return all;
@@ -3803,7 +3854,7 @@ static void drop_unused_statics(void)
 {
     unsigned char *live;
     Cut *cuts;
-    int *pending, npending, seen = 0;
+    int *pending, *p, npending, seen = 0;
     int ncuts, i, put;
 
     if (!nstatic_fns)
@@ -3814,7 +3865,7 @@ static void drop_unused_statics(void)
     pending = pending_slots(&npending);
     if (!cuts || !live)
         acc_error("out of memory taking the unused functions out");
-    mark_live(live, pending, npending);
+    mark_live(live);
     ncuts = dead_statics(cuts, live);
     free(live);
     if (!ncuts) {
@@ -3831,8 +3882,8 @@ static void drop_unused_statics(void)
      *
      * The relocations are in order and so is the list of slots to leave
      * alone, so telling them apart is one step through that list per slot. */
-    for (i = 0; i < out_nrelocs(); i++) {
-        int slot = out_base + out_reloc_at(i), to;
+    for (p = out_relocs + 1; p < out_reloc_put; p++) {
+        int slot = out_base + *p, to;
 
         while (seen < npending && pending[seen] < slot)
             seen++;
@@ -3840,11 +3891,11 @@ static void drop_unused_statics(void)
             continue;
         if (out_cut_moved(cuts, ncuts, slot) < 0)
             continue;                   /* going away with the code it is in */
-        to = out_cut_moved(cuts, ncuts, out_read24(slot));
+        to = out_cut_moved(cuts, ncuts, get24(out_img + *p));
         if (to < 0)
             acc_error("internal: %06x holds the address of a function "
                       "nothing was said to want", slot);
-        out_patch24(slot, to);
+        put24(out_img + *p, to);
     }
 
     free(pending);
@@ -3909,7 +3960,9 @@ void gen_finish(void)
 {
     int i;
 
+#ifndef ACC_NODROP
     drop_unused_statics();
+#endif
 
     /* A helper wanted by name, which is how one arrives from an object: that
      * object used it and did not carry the blob. Claimed before anything is
@@ -4555,6 +4608,8 @@ void vpush_function(int fn)
 {
     const Sym *f = sym_at(fn);
 
+    want(fn);
+
     /* Asked of the flag rather than of the address, here and at the call
      * below, because an object puts its first function at offset zero --
      * and zero is also what a function that has not been defined has. Taking
@@ -4716,6 +4771,7 @@ static void call_to(const Callee *callee, int nargs, int params_first,
     if (callee->fn == SYM_NONE) {
         call_through();
     } else if (sym_flags(callee->fn) & SYMF_DEFINED) {
+        want(callee->fn);
         out_reloc(out_here() + 1);
         out_opcode24(0xcd, sym_at(callee->fn)->val);    /* call nn */
     } else {

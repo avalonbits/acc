@@ -564,6 +564,9 @@ enum {
                                  * this file's alone: it is not put in the
                                  * object for another file to find, and two
                                  * files may each have one */
+    SYMF_USED     = 64,         /* a function: something outside the file's
+                                 * own functions holds its address, so it
+                                 * stays whatever else goes */
     SYMF_EXTERN   = 16          /* a variable: a declaration said extern, so
                                  * some other file defines it. What tells it
                                  * apart from one this file declared and
