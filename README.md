@@ -26,7 +26,9 @@ It is being written towards C99. What works today:
   * `static`, `extern`, `const`, `volatile`, `register`, `auto` and
     `inline`, with `const` checked through pointers, elements and members,
     and `static` and the qualifiers inside a parameter's brackets
-  * string and character literals with their escapes, `__func__`, and both
+  * string and character literals with their escapes, `__func__`,
+    `_Static_assert`, `__builtin_offsetof`, `__attribute__` (read and
+    thrown away: there is no optimiser here for it to advise), and both
     comment forms
 
 Of the preprocessor there is `#include` -- a quoted name is looked for
@@ -36,16 +38,15 @@ for some text or taking parameters, with `#` and `##` and a variable number
 of arguments, and the conditionals -- `#if` and `#elif` on an expression,
 with `defined`, as well as `#ifdef`, `#ifndef`, `#else` and `#endif` --
 `#error`, `#pragma` and `#line`, and `__FILE__` and `__LINE__`. That is the
-whole of it; there is still no C library. Nor `long double`,
-because libagon has no arithmetic for a double at all and half a type is
-worse than none; nor wide characters and strings, `_Complex`, or function
-definitions written the way K&R wrote them.
+whole of it. What is not here is `long double`, because libagon has no
+arithmetic for a double at all and half a type is worse than none; nor wide
+characters and strings, `_Complex`, or function definitions written the way
+K&R wrote them.
 
-One `.c` file in, whatever it includes, a runnable MOS binary out: no
-linker and no library. `* / % & | ^ << >>` have no eZ80 instruction on a
-24-bit value, and nothing wider than a register has one at all, so acc
-carries those
-routines and emits the ones a program uses into that program's image.
+One `.c` file in, whatever it includes, a runnable MOS binary out.
+`* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value, and nothing
+wider than a register has one at all, so acc carries those routines and emits
+the ones a program uses into that program's image.
 
     $ cat t.c
     int add(int a, int b) { return a + b; }
@@ -54,6 +55,20 @@ routines and emits the ones a program uses into that program's image.
     $ bin/acc t.c -o t.bin
     $ test/agon.sh t.bin ; echo $?
     42
+
+Or in pieces: `-c` compiles one file to an object, `-a` puts objects into a
+library, and naming objects and libraries instead of a source links them. An
+object records what it was built from, so a second `-c` over an unchanged
+source says so and does nothing.
+
+    $ bin/acc -c t.c -o t.o
+    $ bin/acc t.o bin/libc.a -o t.bin
+
+The library that comes with it is `bin/libc.a`, written in C and compiled by
+acc: `<string.h>`, `<stdlib.h>` with a heap and `qsort`, `<stdio.h>` with
+`printf`, `<stddef.h>`, `<stdint.h>`, `<stdbool.h>`, `<time.h>`, and
+`<agon/mos.h>`, `<agon/vdp.h>` and `<agon/keyboard.h>` for the machine
+itself. A program's `main` is handed the command line as `argc` and `argv`.
 
 ## Why not tinycc
 
@@ -115,8 +130,9 @@ Each step is meant to be finished and measured before the next one starts.
 | `long`, `float`, `long long`, `_Bool` | done |
 | bit-fields, pointers to functions, `...` and `va_list` | done |
 | designated initialisers, compound literals, arrays with a length worked out | done |
-| a preprocessor | next |
-| linking against libagon, so there is a C library | |
+| a preprocessor | done |
+| objects, a linker, and a C library of its own | done |
+| compiling itself on the machine | next |
 
 ## License
 
