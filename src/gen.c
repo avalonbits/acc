@@ -1520,6 +1520,7 @@ static int    nfixups, fixups_cap;
 
 static void fixup_add(int fn, int at)
 {
+    sym_set_flags(fn, SYMF_USED);
     if (nfixups == fixups_cap) {
         fixups_cap = fixups_cap ? fixups_cap * 2 : 32;
         fixups = realloc(fixups, fixups_cap * sizeof *fixups);
@@ -3505,9 +3506,238 @@ int gen_no_address(int sym)
     return no_address(sym);
 }
 
+/* The file's own functions, and the run of bytes each of them is.
+ *
+ * A `static` at file scope is this file's alone, so if nothing in the file
+ * wanted it, nothing ever can -- and it does not have to be in the image.
+ * That matters more than it sounds: a header full of `static inline`
+ * helpers is compiled into every file that includes it, whether that file
+ * calls them or not, and acc does not inline. Six files of zap include one
+ * such header and were carrying fifteen kilobytes of it each.
+ *
+ * They cannot be left out as they are read -- a call may come later in the
+ * file -- so they are written like any other function and taken out again at
+ * the end, which is what the runs below are for. */
+typedef struct {
+    int sym, at, len;
+} StaticFn;
+
+static StaticFn *static_fns;
+static int       nstatic_fns, static_fns_cap, static_now = -1;
+
+static void static_begin(int fn)
+{
+    static_now = -1;
+    if (!(sym_flags(fn) & SYMF_STATIC))
+        return;
+
+    if (nstatic_fns == static_fns_cap) {
+        static_fns_cap = static_fns_cap ? static_fns_cap * 2 : 32;
+        static_fns = realloc(static_fns,
+                             (size_t) static_fns_cap * sizeof *static_fns);
+        if (!static_fns)
+            acc_error("out of memory for the file's own functions");
+    }
+    static_now = nstatic_fns++;
+    static_fns[static_now].sym = fn;
+    static_fns[static_now].at = out_here();
+}
+
+static void static_end(void)
+{
+    if (static_now >= 0)
+        static_fns[static_now].len = out_here() - static_fns[static_now].at;
+    static_now = -1;
+}
+
+/* The file's own functions that nothing in it wanted, taken back out.
+ *
+ * Every address acc has written down is in one of four places: the
+ * relocation table, which names each slot in the image holding one; the
+ * fixups, the runtime's and the bss's, which name slots that hold something
+ * else until gen_finish fills them in; and the symbols. So the walk is over
+ * those, and nothing else has to be told.
+ *
+ * It runs before anything is laid down at the end of the image -- the
+ * runtime blob, the argument routine, the clearing -- so that what those are
+ * placed at is the address they will keep, and so that the bss and the heap
+ * begin as far down as the shortened image allows. */
+static int dead_statics(Cut *cuts)
+{
+    int i, n = 0;
+
+    for (i = 0; i < nstatic_fns; i++) {
+        if (sym_flags(static_fns[i].sym) & SYMF_USED)
+            continue;
+        if (!static_fns[i].len)
+            continue;
+        cuts[n].at = static_fns[i].at;
+        cuts[n].len = static_fns[i].len;
+        n++;
+    }
+
+    return n;
+}
+
+/* The slots that do not hold an address yet, gathered and put in order.
+ *
+ * A call waiting on a function that is not defined holds the amount to add
+ * to that function's address, one waiting on the runtime holds nothing at
+ * all, and one waiting on the bss holds an offset into it. All three are
+ * filled in after this pass has run, so what is in them now is not an
+ * address and must not be moved as if it were.
+ *
+ * Sorted rather than walked in step with the relocations, whose order they
+ * nearly share: a variable said twice at file scope has its value written
+ * back over the room the first mention reserved, which puts a slot behind
+ * ones already recorded -- and a classification that quietly went wrong
+ * there would leave a program with an address three bytes out. */
+static int by_position(const void *a, const void *b)
+{
+    return *(const int *) a - *(const int *) b;
+}
+
+static int *pending_slots(int *count)
+{
+    int n = nfixups + nrt_fixups + nbss_fixups, i;
+    int *all = malloc((size_t) (n ? n : 1) * sizeof *all);
+
+    if (!all)
+        acc_error("out of memory taking the unused functions out");
+    n = 0;
+    for (i = 0; i < nfixups; i++)
+        all[n++] = fixups[i].at;
+    for (i = 0; i < nrt_fixups; i++)
+        all[n++] = rt_fixups[i].at;
+    for (i = 0; i < nbss_fixups; i++)
+        all[n++] = bss_fixups[i];
+    qsort(all, (size_t) n, sizeof *all, by_position);
+    *count = n;
+
+    return all;
+}
+
+/* A list of positions, with what is gone taken out of it. */
+static int cut_positions(int *at, int n, const Cut *cuts, int ncuts)
+{
+    int i, put = 0;
+
+    for (i = 0; i < n; i++) {
+        int to = out_cut_moved(cuts, ncuts, at[i]);
+
+        if (to >= 0)
+            at[put++] = to;
+    }
+
+    return put;
+}
+
+static void drop_unused_statics(void)
+{
+    Cut *cuts;
+    int *pending, npending, seen = 0;
+    int ncuts, i, put;
+
+    if (!nstatic_fns)
+        return;
+
+    cuts = malloc((size_t) nstatic_fns * sizeof *cuts);
+    if (!cuts)
+        acc_error("out of memory taking the unused functions out");
+    ncuts = dead_statics(cuts);
+    if (!ncuts) {
+        free(cuts);
+
+        return;
+    }
+
+    /* What the slots hold, while they are still where they were written. An
+     * address inside a run would be a reference to a function this has just
+     * decided nothing refers to, so it is a mistake in the marking rather
+     * than something to carry on from.
+     *
+     * The relocations are in order and so is the list of slots to leave
+     * alone, so telling them apart is one step through that list per slot. */
+    pending = pending_slots(&npending);
+    for (i = 0; i < out_nrelocs(); i++) {
+        int slot = out_base + out_reloc_at(i), to;
+
+        while (seen < npending && pending[seen] < slot)
+            seen++;
+        if (seen < npending && pending[seen] == slot)
+            continue;
+        if (out_cut_moved(cuts, ncuts, slot) < 0)
+            continue;                   /* going away with the code it is in */
+        to = out_cut_moved(cuts, ncuts, out_read24(slot));
+        if (to < 0)
+            acc_error("internal: %06x holds the address of a function "
+                      "nothing was said to want", slot);
+        out_patch24(slot, to);
+    }
+
+    free(pending);
+    out_cut(cuts, ncuts);
+
+    /* And then every position and address acc is still holding. A fixup
+     * inside a run goes with it: the call it was going to fill in is not
+     * there any more, and neither is whatever it would have asked a library
+     * for. */
+    put = 0;
+    for (i = 0; i < nfixups; i++) {
+        int to = out_cut_moved(cuts, ncuts, fixups[i].at);
+
+        if (to < 0)
+            continue;
+        fixups[put] = fixups[i];
+        fixups[put++].at = to;
+    }
+    nfixups = put;
+
+    put = 0;
+    for (i = 0; i < nrt_fixups; i++) {
+        int to = out_cut_moved(cuts, ncuts, rt_fixups[i].at);
+
+        if (to < 0)
+            continue;
+        rt_fixups[put] = rt_fixups[i];
+        rt_fixups[put++].at = to;
+    }
+    nrt_fixups = put;
+
+    nbss_fixups = cut_positions(bss_fixups, nbss_fixups, cuts, ncuts);
+
+    /* How much of the runtime blob is wanted, asked again of what is left:
+     * a function that has gone is not multiplying anything, and the blob is
+     * laid down in one piece up to the furthest routine any call in the
+     * program reaches. */
+    rt_any_used = 0;
+    for (i = 0; i < nrt_fixups; i++)
+        rt_wanted(rt_fixups[i].which);
+
+    for (i = 0; i < sym_nglobals(); i += (int) sizeof(Sym)) {
+        Sym *sym = sym_at(i);
+        int to;
+
+        /* Only what is at an address in this image: a constant's value is a
+         * value, and a variable waiting for the bss holds an offset that is
+         * negative until bss_emit turns it into one. */
+        if (sym->val < 0 || sym->kind == SYM_CONST || sym->kind == SYM_TYPEDEF)
+            continue;
+        if (sym->kind == SYM_FUNC && !(sym_flags(i) & SYMF_DEFINED))
+            continue;
+        to = out_cut_moved(cuts, ncuts, sym->val);
+        if (to >= 0)
+            sym->val = to;
+    }
+
+    free(cuts);
+}
+
 void gen_finish(void)
 {
     int i;
+
+    drop_unused_statics();
 
     /* A helper wanted by name, which is how one arrives from an object: that
      * object used it and did not carry the blob. Claimed before anything is
@@ -3917,6 +4147,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
     (void) nparams;
 
     sym_at(fn)->val = out_here();
+    static_begin(fn);
     vtop = 0;
     vsp = vstack;
     locals_size = 0;
@@ -3953,6 +4184,7 @@ void gen_func_end(void)
     out_byte(0xc9);                              /* ret */
 
     out_patch24(frame_patch, -frame_size());
+    static_end();
     in_function = 0;
 
     {
@@ -4151,6 +4383,8 @@ void vpush_function(int fn)
 {
     const Sym *f = sym_at(fn);
 
+    sym_set_flags(fn, SYMF_USED);
+
     /* Asked of the flag rather than of the address, here and at the call
      * below, because an object puts its first function at offset zero --
      * and zero is also what a function that has not been defined has. Taking
@@ -4312,6 +4546,9 @@ static void call_to(const Callee *callee, int nargs, int params_first,
     if (callee->fn == SYM_NONE) {
         call_through();
     } else if (sym_flags(callee->fn) & SYMF_DEFINED) {
+        /* Marked as wanted, which is what keeps a `static` this file calls
+         * from being taken back out of the image at the end of it. */
+        sym_set_flags(callee->fn, SYMF_USED);
         out_reloc(out_here() + 1);
         out_opcode24(0xcd, sym_at(callee->fn)->val);    /* call nn */
     } else {

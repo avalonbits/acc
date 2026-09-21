@@ -564,6 +564,9 @@ enum {
                                  * this file's alone: it is not put in the
                                  * object for another file to find, and two
                                  * files may each have one */
+    SYMF_USED     = 64,         /* a function: something in this file called
+                                 * it or took its address, so it has to stay
+                                 * even if it is this file's alone */
     SYMF_EXTERN   = 16          /* a variable: a declaration said extern, so
                                  * some other file defines it. What tells it
                                  * apart from one this file declared and
@@ -898,6 +901,14 @@ void out_reloc(int at)
 
 int  out_nrelocs(void);
 int  out_reloc_at(int i);
+
+/* A run of bytes taken out of the image: see out_cut. */
+typedef struct {
+    int at, len;
+} Cut;
+
+void out_cut(const Cut *cuts, int n);
+int  out_cut_moved(const Cut *cuts, int n, int a);
 void out_relocs_write(const char *path);
 
 /* The output's write position and its end, and the growth that happens a

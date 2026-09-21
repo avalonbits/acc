@@ -105,6 +105,7 @@ test: all unit $(BIN)/acc-asan agon
 	@ACC=$(BIN)/acc-asan test/reloc.sh
 	@ACC=$(BIN)/acc-asan test/object.sh
 	@ACC=$(BIN)/acc-asan test/bss.sh
+	@ACC=$(BIN)/acc-asan test/dead.sh
 	@ACC=$(BIN)/acc-asan test/mos.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/args.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/lib.sh

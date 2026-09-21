@@ -135,6 +135,65 @@ int out_reloc_at(int i)
     return out_relocs[i + 1];
 }
 
+/* Where an address lands once the runs in `cuts` are taken out of the image,
+ * or -1 for one that is inside a run and so does not land anywhere.
+ *
+ * The runs are in rising order and do not touch, so this is a walk over them
+ * rather than a search: there are a few dozen at the most, and each of the
+ * thousands of addresses asked about walks all of them once. */
+int out_cut_moved(const Cut *cuts, int n, int a)
+{
+    int gone = 0, i;
+
+    for (i = 0; i < n && cuts[i].at <= a; i++) {
+        if (a < cuts[i].at + cuts[i].len)
+            return -1;
+        gone += cuts[i].len;
+    }
+
+    return a - gone;
+}
+
+/* Runs of bytes taken out of the middle of the image, and the relocation
+ * table brought along: an entry inside a run goes with it, and every other
+ * entry comes back by as much as was taken out before it.
+ *
+ * What the slots hold is not touched. out.c knows where the addresses in the
+ * image are and not which of them are addresses yet -- a slot waiting on a
+ * function that has not been defined holds nothing of the sort -- so moving
+ * what is in them is the caller's, which does it before calling this. */
+void out_cut(const Cut *cuts, int n)
+{
+    int *put = out_relocs + 1, *scan = out_relocs + 1;
+    unsigned char *dst;
+    int i;
+
+    if (!n)
+        return;
+
+    /* The table holds offsets and the runs are addresses, so each entry goes
+     * out to one and comes back as the other. */
+    for (; scan < out_reloc_put; scan++) {
+        int at = out_cut_moved(cuts, n, *scan + out_base);
+
+        if (at >= 0)
+            *put++ = at - out_base;
+    }
+    out_reloc_put = put;
+
+    dst = out_img + (cuts[0].at - out_base);
+    for (i = 0; i < n; i++) {
+        unsigned char *from = out_img + (cuts[i].at + cuts[i].len - out_base);
+        unsigned char *to = i + 1 < n ? out_img + (cuts[i + 1].at - out_base)
+                                      : out_put;
+
+        if (to > from)
+            memmove(dst, from, (size_t) (to - from));
+        dst += to - from;
+    }
+    out_put = dst;
+}
+
 /* The table, written out as one hexadecimal offset a line.
  *
  * A diagnostic, and the shape of what an object file will carry: it answers
