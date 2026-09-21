@@ -574,6 +574,16 @@ void sym_set_count(int sym, int count);
 int  sym_count(int sym);
 
 void sym_init(void);
+/* Where a variable is, as its symbol's val says it.
+ *
+ * An address, when something has given it one. -1 when nothing has yet: a
+ * declaration that only said extern, or one whose size is not known yet.
+ * And otherwise where in the bss it starts, written so that the start of the
+ * bss is told apart from having no address at all. */
+#define sym_in_bss(v)    ((v) <= -2)
+#define sym_bss_at(v)    (-(v) - 2)
+#define sym_bss_val(at)  (-(at) - 2)
+
 /* Symbols are referred to by index. A Sym * is only good until the next push,
  * because the table is grown with realloc; see sym.c. */
 #define SYM_NONE (-1)
@@ -622,6 +632,15 @@ enum {
                      * the one that costs no room. It rides along with the
                      * value through folding, so `&a[3]` is still an
                      * address. */
+    VAL_BSS,        /* and one that is an offset into the bss, which starts
+                     * where the image ends. The two are told apart because
+                     * neither is known as it is compiled and they are not
+                     * known in the same way: an address inside the image
+                     * moves with the image, and an offset into the bss has
+                     * the start of the bss added to it. Folding works on
+                     * both, which is the point of carrying the offset
+                     * rather than loading the variable's address and adding
+                     * to it: `a[3]` stays one load. */
     VAL_LOCAL,      /* a local at frame offset val */
     VAL_REG,        /* already in register val */
     VAL_ACC,        /* in A, still narrow: see the note on byte arithmetic */
@@ -629,10 +648,15 @@ enum {
     VAL_WIDE        /* a constant too wide for val: see wide_const */
 };
 
-/* Whether a value is a constant of either kind. VAL_CONST is zero and
- * VAL_ADDR is one, so this is the same single compare that `kind ==
- * VAL_CONST` was before an address became a kind of its own. */
-#define val_const(kind) ((unsigned) (kind) <= VAL_ADDR)
+/* Whether a value is a constant of any of the three kinds. VAL_CONST is
+ * zero and the other two follow it, so this is the same single compare that
+ * `kind == VAL_CONST` was before an address became a kind of its own. */
+#define val_const(kind) ((unsigned) (kind) <= VAL_BSS)
+
+/* Whether it is one whose value is not known as it is compiled: an address
+ * inside the image, or an offset into the bss. Both fold, and both leave a
+ * slot for someone to put right. */
+#define val_pending(kind) ((unsigned) (kind) - VAL_ADDR <= 1u)
 
 /* What the parser knows about a value it has not had to emit yet: a constant,
  * a local at a frame offset, or something already in a register. `val` is the
@@ -686,7 +710,9 @@ void gen_copy_to_array(int array, int offset, int from, int count);
 
 void vpush_const(int val, Type type);
 void vset_addr(void);                 /* the top is an address in the image */
+void vpush_bss(int at, Type type);    /* and one that is `at` into the bss */
 int  vconst_addr(void);               /* and whether it still is */
+int  vconst_bss(void);                /* or an offset into the bss */
 void vpush_const_long(long val, Type type);  /* four bytes, so it goes to the frame */
 void vpush_const_wide(uint32_t low, uint32_t high, Type type);   /* eight */
 void vpush_const_float(float val);
@@ -748,7 +774,7 @@ void vcast(Type to, int ext, int quals);
  * were too, since making room for it may have moved them out of registers
  * by code that no longer exists. */
 typedef struct {
-    int    at, nfixups, nrt_fixups, narray_patches, spill_used, vtop;
+    int    at, nfixups, nrt_fixups, nbss_fixups, narray_patches, spill_used, vtop;
     int    nwide_consts;
     int    rt_any_used;
     Value *saved;
@@ -795,6 +821,11 @@ void gen_return(int line);            /* `return`, at the line it is on */
 int  gen_bss_reserve(int bytes);      /* room in it; returns where */
 void gen_bss_symbol(int sym, int at); /* and which symbol is there */
 int  gen_bss_offset(int sym);         /* where one is, or -1 */
+int  gen_bss_used(int at, int bytes); /* whether anything reaches into it */
+void gen_bss_forget(int sym);         /* it is not in the bss after all */
+void gen_bss_fixup(int at);           /* a slot that wants the bss's start */
+int  gen_nbss_fixups(void);
+int  gen_bss_fixup_at(int i);
 int  gen_bss_len(void);
 
 void gen_finish(void);          /* resolve calls to functions defined later */

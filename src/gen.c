@@ -408,6 +408,14 @@ void vset_addr(void)
     (vsp - 1)->kind = VAL_ADDR;
 }
 
+/* A variable in the bss, as its offset into it. Where the bss starts is
+ * added to whatever this folds into, wherever that is written out. */
+void vpush_bss(int at, Type type)
+{
+    vpush_const(at, type);
+    (vsp - 1)->kind = VAL_BSS;
+}
+
 void vpush_local(int offset, Type type)
 {
     vpush(VAL_LOCAL, type, offset);
@@ -547,7 +555,7 @@ void vconvert(Type to)
          * would be different had it been put somewhere else. C leaves what
          * comes out to the implementation, and the honest answer on a machine
          * whose addresses are three bytes is that it does not fit. */
-        if (top->kind == VAL_ADDR)
+        if (val_pending(top->kind))
             acc_error_at(tok_line, "an address is %d bytes and this keeps "
                                    "only %d of them", ACC_INT_SIZE,
                          type_size(to));
@@ -765,6 +773,11 @@ int vconst_addr(void)
     return vtop > 0 && (vsp - 1)->kind == VAL_ADDR;
 }
 
+int vconst_bss(void)
+{
+    return vtop > 0 && (vsp - 1)->kind == VAL_BSS;
+}
+
 int vconst_top(int *val, Type *type)
 {
     const Value *top = vsp - 1;
@@ -959,6 +972,8 @@ static int force_reg(Value *val)
     if (val_const(val->kind)) {
         if (val->kind == VAL_ADDR)
             out_reloc(out_here() + 1);
+        else if (val->kind == VAL_BSS)
+            gen_bss_fixup(out_here() + 1);
         ld_rr_imm(reg, val->val);
     } else if (val->kind == VAL_WIDE) {
         ld_rr_imm(reg, (int) (wide_value(val) & 0xffffff));
@@ -1063,6 +1078,8 @@ static void force_into(Value *target, int want)
     } else if (val_const(target->kind)) {
         if (target->kind == VAL_ADDR)
             out_reloc(out_here() + 1);
+        else if (target->kind == VAL_BSS)
+            gen_bss_fixup(out_here() + 1);
         ld_rr_imm(want, target->val);
     } else if (target->kind == VAL_WIDE) {
         ld_rr_imm(want, (int) (wide_value(target) & 0xffffff));
@@ -1194,17 +1211,29 @@ static void no_addr_arithmetic(void)
  * work, because then the address in the image is a whole one. */
 static int fold_addr(int op, const Value *lhs, const Value *rhs)
 {
-    int left = lhs->kind == VAL_ADDR, right = rhs->kind == VAL_ADDR;
+    int left = lhs->kind, right = rhs->kind;
 
-    if (!left && !right)
-        return 0;
-    if (op == TK_PLUS && left != right)
-        return 1;
-    if (op == TK_MINUS && left)
-        return !right;
+    if (!val_pending(left) && !val_pending(right))
+        return VAL_CONST;
+
+    /* A number added to one of them, or taken from one, moves it along and
+     * leaves it the kind it was. */
+    if (op == TK_PLUS && !val_pending(right))
+        return left;
+    if (op == TK_PLUS && !val_pending(left))
+        return right;
+    if (op == TK_MINUS && val_pending(left) && !val_pending(right))
+        return left;
+
+    /* And one taken from another of the same kind is the distance between
+     * them, which is the same wherever the two of them end up. Two of
+     * different kinds are not: one is in the image and one is past its end,
+     * and how far apart they are is not known until the image is finished. */
+    if (op == TK_MINUS && left == right)
+        return VAL_CONST;
     no_addr_arithmetic();
 
-    return 0;
+    return VAL_CONST;
 }
 
 static void vbinop(int op)
@@ -1221,17 +1250,17 @@ static void vbinop(int op)
     if (val_const(lhs->kind) && val_const(rhs->kind)
         && const_fold(op, lhs->val, rhs->val, &folded)) {
         Type folded_type = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
-        /* The kinds are in hand from the test above, and neither is an
-         * address in almost every fold a program does, so the question is
-         * asked here and the answer worked out elsewhere. */
-        int addr = (lhs->kind == VAL_ADDR || rhs->kind == VAL_ADDR)
-                   && fold_addr(op, lhs, rhs);
+        /* The kinds are in hand from the test above, and neither is waiting
+         * on anything in almost every fold a program does, so the question
+         * is asked here and the answer worked out elsewhere. */
+        int kind = val_pending(lhs->kind) || val_pending(rhs->kind)
+                   ? fold_addr(op, lhs, rhs) : VAL_CONST;
 
         vdrop();
         vdrop();
         vpush_const(folded, folded_type);
-        if (addr)
-            (vsp - 1)->kind = VAL_ADDR;
+        if (kind != VAL_CONST)
+            (vsp - 1)->kind = (unsigned char) kind;
 
         return;
     }
@@ -1411,7 +1440,7 @@ void vneg(void)
     }
 
     if (val_const(top->kind)) {
-        if (top->kind == VAL_ADDR)
+        if (val_pending(top->kind))
             no_addr_arithmetic();
         top->val = trunc_int(-top->val);
 
@@ -1573,7 +1602,7 @@ static void shift_a_once(int op, Type to)
 /* Is this value one the byte path can take as an operand? */
 static int narrow_operand(const Value *val, Type to, int as_left)
 {
-    if (val->kind == VAL_ADDR)
+    if (val_pending(val->kind))
         return 0;         /* masked into a byte it would no longer be one */
     if (val_const(val->kind))
         return 1;                       /* any constant; it is masked in */
@@ -1963,7 +1992,7 @@ static void convert_float_to_int(Type to)
  * conversion every argument of every call goes through does not. */
 static void no_float_address(const Value *from)
 {
-    if (from->kind == VAL_ADDR)
+    if (val_pending(from->kind))
         acc_error_at(tok_line, "an address cannot become a floating-point "
                                "value");
 }
@@ -2001,7 +2030,7 @@ static void materialise_long(int disp, Type type)
      * relocation to name. Loaded into a register and stored from it, the
      * three bytes are together in the instruction that loads it, and the
      * fourth is the zero every address has. */
-    if (top->kind == VAL_ADDR) {
+    if (val_pending(top->kind)) {
         int reg = force_reg(top);
         int i;
 
@@ -3084,16 +3113,20 @@ int gen_extern_sym(int i)
  * there before main runs. `int big[1000];` was three thousand bytes of zeros
  * to read off the card; now it is three thousand bytes of nothing.
  *
- * Where any of it goes is not known until the whole image has been written,
- * so each one is a symbol without an address until then -- which is what a
- * variable another file defines already was, and rides the same fixups. What
- * that costs is the folding: `a[3]` is a load and an add where a variable
- * whose address was known as it was compiled is one load.
+ * Where the bss starts is not known until the whole image has been written,
+ * but where in it each variable goes is known as it is declared. So a use of
+ * one is its offset, which folds like any other constant -- `a[3]` is one
+ * load with the nine already in it -- and the slot is written down for the
+ * start of the bss to be added to it at the end. One number, the same for
+ * all of them, which is why these are a list of places and not fixups
+ * against a symbol.
  *
- * Only what is at file scope, for now. A block's `static` still takes its
- * zeros in the file, because it is a local symbol that is gone by the time
- * the addresses are handed out, and reaching it needs a relocation against
- * the start of the bss rather than against a symbol of its own. */
+ * That is also what lets a block's `static` live here. It has no name
+ * outside its function and its symbol is dropped at the end of it, so there
+ * would be nothing to hang a symbol on -- and it needs none.
+ *
+ * File-scope ones are written down as symbols as well, because another
+ * object may want to name them. */
 typedef struct {
     int sym, at;
 } BssSym;
@@ -3102,6 +3135,50 @@ static BssSym *bss_syms;
 static int     nbss_syms, bss_syms_cap;
 static int     bss_len;
 static int     bss_init_hole = -1;      /* the stub's call to the clearing */
+
+/* Slots holding an offset into the bss, which want the start of it added.
+ *
+ * The same shape as the calls into the runtime blob: a list of places,
+ * settled in one pass once there is an address to settle them with. Not
+ * fixups against a symbol, because there is no symbol -- every one of them
+ * wants the same one number, and a block's `static` has no name outside the
+ * function it is in to hang a symbol on. */
+static int *bss_fixups;
+static int  nbss_fixups, bss_fixups_cap;
+
+/* Kept in order of where they are, as the relocation table is and for the
+ * same reason: the object writer walks the two together to say which of the
+ * slots it is writing down want the bss rather than the image. They nearly
+ * always arrive in order -- a slot is recorded where it is emitted -- and a
+ * global's initial values are the exception, since a designated one is
+ * written out of order. */
+void gen_bss_fixup(int at)
+{
+    int i;
+
+    if (nbss_fixups == bss_fixups_cap) {
+        bss_fixups_cap = bss_fixups_cap ? bss_fixups_cap * 2 : 32;
+        bss_fixups = realloc(bss_fixups,
+                             (size_t) bss_fixups_cap * sizeof *bss_fixups);
+        if (!bss_fixups)
+            acc_error("out of memory for the offsets into the bss");
+    }
+    out_reloc(at);
+    for (i = nbss_fixups; i > 0 && bss_fixups[i - 1] > at; i--)
+        bss_fixups[i] = bss_fixups[i - 1];
+    bss_fixups[i] = at;
+    nbss_fixups++;
+}
+
+int gen_nbss_fixups(void)
+{
+    return nbss_fixups;
+}
+
+int gen_bss_fixup_at(int i)
+{
+    return bss_fixups[i];
+}
 
 /* Room in the bss, and where in it. The linker asks for a whole object's
  * worth at once and hands out the pieces itself. */
@@ -3146,6 +3223,44 @@ int gen_bss_offset(int sym)
 int gen_bss_len(void)
 {
     return bss_len;
+}
+
+/* Whether anything has already been compiled that reaches into [at, at +
+ * bytes] of the bss.
+ *
+ * Asked when a variable that was given room there turns out, further down
+ * the file, to have a value after all: its bytes then go in the file and the
+ * room here is abandoned, which is fine -- unless something in between was
+ * compiled to look in the room. The range is closed at both ends on purpose:
+ * the address one past the end of an array is a real thing to have taken,
+ * and it is not worth being clever about whose it is. */
+int gen_bss_used(int at, int bytes)
+{
+    int i;
+
+    for (i = 0; i < nbss_fixups; i++) {
+        int to = out_read24(bss_fixups[i]);
+
+        if (to >= at && to <= at + bytes)
+            return 1;
+    }
+
+    return 0;
+}
+
+/* And that it is no longer there, so that the addresses handed out at the
+ * end leave it alone. What it was given stays reserved: a hole in an area
+ * that is all zeros anyway. */
+void gen_bss_forget(int sym)
+{
+    int i;
+
+    for (i = 0; i < nbss_syms; i++)
+        if (bss_syms[i].sym == sym) {
+            bss_syms[i] = bss_syms[--nbss_syms];
+
+            return;
+        }
 }
 
 /* The routine that clears the bss, and the addresses of everything in it.
@@ -3201,6 +3316,11 @@ static void bss_emit(void)
         sym_at(bss_syms[i].sym)->val = base + bss_syms[i].at;
         sym_set_flags(bss_syms[i].sym, SYMF_DEFINED);
     }
+
+    /* And every slot that holds an offset into it, which is where the
+     * folding went: `a[3]` put nine there, and this makes it an address. */
+    for (i = 0; i < nbss_fixups; i++)
+        out_patch24(bss_fixups[i], out_read24(bss_fixups[i]) + base);
 }
 
 /* A symbol the fixups are waiting on that nothing here has given an address
@@ -4088,6 +4208,8 @@ static void call_through(void)
         out_byte2(0xfd, 0x21);                  /* ld iy, nn */
         if (fp->kind == VAL_ADDR)
             out_reloc(out_here());
+        else if (fp->kind == VAL_BSS)
+            gen_bss_fixup(out_here());
         out_word24(fp->val);
     } else if (fp->kind == VAL_LOCAL) {
         need_disp(fp->val);
@@ -5044,6 +5166,7 @@ void gen_mark(GenMark *m)
     m->at = out_here();
     m->nfixups = nfixups;
     m->nrt_fixups = nrt_fixups;
+    m->nbss_fixups = nbss_fixups;
     m->narray_patches = narray_patches;
     m->spill_used = spill_used;
     m->nwide_consts = nwide_consts;
@@ -5063,6 +5186,7 @@ void gen_rollback(GenMark *m)
     out_rewind(m->at);
     nfixups = m->nfixups;
     nrt_fixups = m->nrt_fixups;
+    nbss_fixups = m->nbss_fixups;
     narray_patches = m->narray_patches;
     spill_used = m->spill_used;
     nwide_consts = m->nwide_consts;

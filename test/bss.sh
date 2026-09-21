@@ -100,9 +100,12 @@ clears "one of each" 3 \
 int not_given;
 int main(void) { return given + not_given + 41; }
 '
-# A variable said twice and given a value the second time is not in the bss:
-# the file has its bytes, because by the end of the file it had a value.
-clears "said twice, then given a value" 0 \
+# A variable said twice and given a value the second time has its bytes in
+# the file, because by the end of the file it had a value -- but the room the
+# first mention was given in the bss stays reserved, and is cleared along
+# with everything else. Three bytes of an area that is all zeros anyway, in
+# exchange for every use of a variable that does start at zero folding.
+clears "said twice, then given a value" 3 \
 'int x;
 int x = 42;
 int main(void) { return x; }
@@ -124,6 +127,31 @@ clears "an array of structs" 24 \
 'struct pair { int a, b; };
 struct pair v[4];
 int main(void) { return v[3].b + 42; }
+'
+
+# A block's static, which has no name outside its function and so no symbol
+# to be reached by -- only its offset, which is all it needs.
+clears "a block's static" 3 \
+'int bump(void) { static int n; return ++n; }
+int main(void) { bump(); return bump() + 40; }
+'
+# One with a value takes its bytes in the file, as any variable with a value
+# does.
+clears "a block's static with a value" 0 \
+'int bump(void) { static int n = 20; return ++n; }
+int main(void) { bump(); return bump() + 20; }
+'
+# Two of the same name in two functions are two variables, and get two
+# places.
+clears "statics in two functions" 6 \
+'int a(void) { static int n; return ++n; }
+int b(void) { static int n; return ++n; }
+int main(void) { return a() + b() + 40; }
+'
+# And a big one, which is the shape the whole thing is for.
+clears "a big one in a block" 4096 \
+'int fill(int i) { static char buf[4096]; buf[i] = 1; return buf[i]; }
+int main(void) { return fill(9) + 41; }
 '
 
 # An enum constant's value is its own, and a negative one looks exactly like
@@ -213,6 +241,18 @@ C
 else
     echo "  [no emulator: the clearing is read, not watched]"
 fi
+
+# And the one shape that cannot be allowed: something compiled between the
+# two was told where in the bss to look, and the value it has been given is
+# somewhere else entirely.
+printf 'int x;\nint peek(void) { return x; }\nint x = 42;\nint main(void) { return peek(); }\n' \
+    > "$tmp/moved.c"
+err=$("$ACC" "$tmp/moved.c" -o "$tmp/moved.bin" -x 2>&1)
+case $err in
+  *"is used above and given a value here"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL %-36s %s\n' "used, then given a value" \
+         "$(printf '%s' "$err" | head -1)"; fail=$((fail + 1)) ;;
+esac
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

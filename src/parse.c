@@ -206,9 +206,16 @@ static void global_address(int sym)
         acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                      TY_PTR_MAX);
 
-    /* -1 is what a declaration that only said extern left: nothing here
-     * knows where the variable is, so the address is written down for
-     * gen_finish or the linker to fill in.
+    /* In the bss, whose start is not known until the image is finished --
+     * but where in it this variable is, is. So the offset is what goes on
+     * the value stack, and it folds like any other constant: `a[3]` is one
+     * load with nine in it, and the start of the bss is added to the nine
+     * wherever it is written out.
+     *
+     * -1 is what a declaration that only said extern left, and what one
+     * whose size is not known yet leaves: nothing here knows where the
+     * variable is at all, so the address is written down for gen_finish or
+     * the linker to fill in.
      *
      * Against the file-scope symbol, not against this one. An `extern` in a
      * block is a copy of the file-scope symbol taken when the declaration
@@ -216,7 +223,9 @@ static void global_address(int sym)
      * it -- and is dropped at the end of the block, long before gen_finish
      * comes looking. For a symbol that is already the file-scope one this
      * finds the same symbol again. */
-    if (global->val < 0) {
+    if (sym_in_bss(global->val)) {
+        vpush_bss(sym_bss_at(global->val), type_ptr_to(global->type));
+    } else if (global->val < 0) {
         int g = name_global(global->name);
 
         vpush_global_addr(g == SYM_NONE ? sym : g);
@@ -5127,6 +5136,13 @@ static int push_global(NameRef name, int kind, int at)
  * never both. */
 static int init_address;
 
+/* And that it is an offset into the bss, which wants the start of the bss
+ * added to it wherever the bytes end up. walk_fn_add's `fn` is WALK_BSS for
+ * one of these: there is no symbol, since every one of them wants the same
+ * one number. */
+static int init_bss;
+#define WALK_BSS (-2)
+
 /* A global's initial value, as the bytes it starts with.
  *
  * It has to be known now, because it is written into the image here, so it
@@ -5150,7 +5166,7 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
      * anything that leaves code behind, which is what the out_here check
      * catches -- a call, a variable, an address that is not a symbol's. */
     gen_pending_sym = SYM_NONE;
-    init_address = 0;
+    init_address = init_bss = 0;
     gen_data_context = 1;
     expr();                     /* not comma_expr: in a braced list the
                                  * comma between values is a separator */
@@ -5165,6 +5181,7 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
     if (!vconst_wide(&value, &from) || out_here() != before)
         acc_error_at(line, "a global's initial value has to be a constant");
     init_address = vconst_addr();
+    init_bss = vconst_bss();
     vdrop();
     gen_stmt_end();             /* the constants it used are done with */
 
@@ -5243,6 +5260,10 @@ static void data_fn_at(int at)
         out_reloc(at);
         init_address = 0;
     }
+    if (init_bss) {
+        gen_bss_fixup(at);
+        init_bss = 0;
+    }
 
     if (gen_pending_sym == SYM_NONE)
         return;
@@ -5255,7 +5276,9 @@ static void walk_fns_at(int at)
     int i;
 
     for (i = 0; i < nwalk_fns; i++) {
-        if (walk_fns[i].fn == SYM_NONE)
+        if (walk_fns[i].fn == WALK_BSS)
+            gen_bss_fixup(at + walk_fns[i].offset);
+        else if (walk_fns[i].fn == SYM_NONE)
             out_reloc(at + walk_fns[i].offset);
         else
             gen_data_fixup(walk_fns[i].fn, at + walk_fns[i].offset);
@@ -5303,6 +5326,9 @@ static void global_put(Type scalar, int offset, int value)
     } else if (init_address) {
         walk_fn_add(SYM_NONE, offset);
         init_address = 0;
+    } else if (init_bss) {
+        walk_fn_add(WALK_BSS, offset);
+        init_bss = 0;
     }
 }
 
@@ -5611,6 +5637,21 @@ static void global_emit(Type type, int ext, NameRef name, int count, int line)
     sym_at(sym)->ext = (unsigned char) ext;
 }
 
+/* How many bytes a variable takes, worked out from what its declaration
+ * said. The same three cases global_emit writes out, asked the other way
+ * round: it is the declaration that is remembered, not the size. */
+static int global_bytes(int sym)
+{
+    const Sym *s = sym_at(sym);
+
+    if (s->kind == SYM_GLOBAL_ARRAY)
+        return sym_count(sym) * type_bytes(s->type, s->ext);
+    if (type_is_struct(s->type))
+        return ext_bytes(s->ext);
+
+    return type_scalar_bytes(s->type);
+}
+
 /* A name with everything the type says and no address at all: a variable
  * some other file defines, or an array with no size yet, which is the same
  * thing said another way -- there is nothing to reserve room by.
@@ -5639,8 +5680,35 @@ static void global_undefined(Type type, int ext, NameRef name, int count,
     sym_at(sym)->quals = decl_bottom_const;
     if (kind == SYM_GLOBAL_ARRAY)
         sym_set_count(sym, count);
-    if (is_extern)
+    if (is_extern) {
         sym_set_flags(sym, SYMF_EXTERN);
+
+        return;
+    }
+
+    /* Room in the bss now, rather than at the end of the file, so that every
+     * use of it between here and there knows where in the bss it is and can
+     * fold that into whatever is done to it. An array declared with no size
+     * has to wait -- there is nothing to reserve room by -- and bss_end
+     * gives it room once a later declaration has said how long it is.
+     *
+     * If a later declaration gives this one a value after all, its bytes go
+     * in the file and the room reserved here is left empty. That costs a few
+     * bytes of an area that is all zeros anyway, and it is the price of
+     * every other use of it folding. */
+    if (count >= 0) {
+        int at = gen_bss_reserve(global_bytes(sym));
+
+        sym_at(sym)->val = sym_bss_val(at);
+
+        /* Only what is at file scope is written down as a symbol. A block's
+         * static is a local one, dropped at the end of its function and its
+         * place in the table handed to somebody else's local -- so nothing
+         * may hold on to it. Nothing needs to: it is reached by its offset,
+         * and no other file can name it. */
+        if (!static_local)
+            gen_bss_symbol(sym, at);
+    }
 }
 
 /* One file-scope variable, or a block's `static` one.
@@ -5698,6 +5766,24 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         if (sym_at(sym)->val < 0) {
             if (!again)
                 return;
+
+            /* It was given room in the bss when it was first declared, and
+             * now it has a value, so its bytes go in the file instead. The
+             * room is abandoned -- unless something compiled in between was
+             * told to look in it, and then there is nowhere for that to be
+             * put right. */
+            if (sym_in_bss(sym_at(sym)->val)) {
+                int at = sym_bss_at(sym_at(sym)->val);
+
+                if (gen_bss_used(at, global_bytes(sym)))
+                    acc_error_at(line, "'%s' is used above and given a value "
+                                       "here, and what is above it was "
+                                       "compiled to find it where a variable "
+                                       "with no value goes; give it its value "
+                                       "where it is first declared",
+                                 name_text(name));
+                gen_bss_forget(sym);
+            }
             redefining = sym;
             global_emit(type, ext, name, count, line);
             redefining = SYM_NONE;
@@ -5719,11 +5805,16 @@ static void global_variable(Type type, int ext, NameRef name, int count,
     }
 
     /* No initial value, so C says it starts at zero -- and zeros do not have
-     * to be in the file. It reserves nothing here; bss_end gives it room
-     * past the image's last byte, unless a later declaration in this file
-     * gives it a value after all. A block's static still takes its zeros in
-     * the file: see the note on the bss in src/gen.c. */
-    if (!init && !static_local) {
+     * to be in the file. It is given room past the image's last byte -- at
+     * its declaration when its size is known, and by bss_end otherwise.
+     *
+     * A block's static goes the same way. It has no name outside the
+     * function it is in and its symbol is dropped at the end of that
+     * function, so there is nothing to hang a symbol on at the end -- but it
+     * needs none: a use of it is a slot holding its offset into the bss, and
+     * what puts those right is the start of the bss, which is the same one
+     * number for all of them. */
+    if (!init) {
         global_undefined(type, ext, name, count, line, 0);
 
         return;
@@ -5731,21 +5822,6 @@ static void global_variable(Type type, int ext, NameRef name, int count,
     global_emit(type, ext, name, count, line);
     if (init && !static_local)
         sym_set_flags(name_global(name), SYMF_DEFINED);
-}
-
-/* How many bytes a variable takes, worked out from what its declaration
- * said. The same three cases global_emit writes out, asked the other way
- * round: it is the declaration that is remembered, not the size. */
-static int global_bytes(int sym)
-{
-    const Sym *s = sym_at(sym);
-
-    if (s->kind == SYM_GLOBAL_ARRAY)
-        return sym_count(sym) * type_bytes(s->type, s->ext);
-    if (type_is_struct(s->type))
-        return ext_bytes(s->ext);
-
-    return type_scalar_bytes(s->type);
 }
 
 /* At the end of the file: every variable it declared, never gave a value to,
@@ -5761,8 +5837,8 @@ static void bss_end(void)
     int s;
 
     for (s = 0; s < sym_nglobals(); s += step) {
-        const Sym *sym = sym_at(s);
-        int bytes;
+        Sym *sym = sym_at(s);
+        int at;
 
         /* Variables, and only variables. A function has an address or does
          * not; a typedef and a tag have no room of their own; and an enum
@@ -5772,15 +5848,16 @@ static void bss_end(void)
         if (sym->kind != SYM_GLOBAL && sym->kind != SYM_GLOBAL_ARRAY
             && sym->kind != SYM_GLOBAL_CONST)
             continue;
-        if (sym->val >= 0)
+        if (sym->val != -1)             /* placed already, here or in the bss */
             continue;
         if (sym_flags(s) & SYMF_EXTERN)
             continue;                   /* another file's to define */
         if (sym->kind == SYM_GLOBAL_ARRAY && sym_count(s) < 0)
             acc_error("'%s' is declared with no size and never given one",
                       name_text(sym->name));
-        bytes = global_bytes(s);
-        gen_bss_symbol(s, gen_bss_reserve(bytes));
+        at = gen_bss_reserve(global_bytes(s));
+        sym_at(s)->val = sym_bss_val(at);
+        gen_bss_symbol(s, at);
     }
 }
 
@@ -6127,11 +6204,22 @@ static void link_object(const char *path)
 
             continue;
         }
+
+        /* An offset into this object's bss, which is that far along the
+         * queue of them -- and then the start of the whole bss, once every
+         * object has been placed and there is one to add. */
+        if (which == 1) {
+            out_patch24(base + at, get24(o.text + at) + bss);
+            gen_bss_fixup(base + at);
+
+            continue;
+        }
+
         /* Whatever the slot holds is the amount to add to the symbol's
          * address, and it is already in the image: gen_finish reads it back
          * when it fills the slot in. */
-        gen_data_fixup(link_symbol(obj_sym_name(&o, which - 1),
-                                   obj_sym_flags(&o, which - 1)), base + at);
+        gen_data_fixup(link_symbol(obj_sym_name(&o, which - 2),
+                                   obj_sym_flags(&o, which - 2)), base + at);
     }
     obj_free(&o);
 }

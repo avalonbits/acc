@@ -24,7 +24,7 @@
  * read and write in one move. Names are a blob of NUL-terminated strings
  * that everything else points into by offset.
  *
- *   0   4   'A', 'C', 'C', 3        what it is, and the version of this
+ *   0   4   'A', 'C', 'C', 4        what it is, and the version of this
  *   4   3   build                   which acc made it: see src/build_id.sh
  *   7   3   text_len
  *   10  3   bss_len                 room it wants past the image, at zero
@@ -46,18 +46,26 @@
  * object's bss it starts, and the address it ends up with is not known until
  * every object has been placed and the bss laid out after them all.
  *
- * A relocation's `sym` is zero for a slot that holds an address inside this
- * object -- which is nearly all of them -- and otherwise one more than the
- * symbol whose address the slot wants, with what is in the slot as the
- * amount to add to it. One more, so that zero can mean "no symbol" without
- * spending a byte on saying which of the two kinds it is.
+ * A relocation's `sym` says what the slot wants added to what is in it:
+ *
+ *   0   the start of this object's text, which is nearly all of them, and
+ *       what is there is an address inside that text.
+ *   1   the start of this object's bss, and what is there is an offset into
+ *       it -- which is how a variable that starts at zero is reached, and
+ *       the only way a block's `static` can be, having no name to give.
+ *   2+  the address of symbol (sym - 2), with what is there as the amount
+ *       to add to it.
+ *
+ * Two reserved values rather than a byte saying which kind, because there is
+ * one of these for every address the compiler wrote and a byte each is more
+ * than the whole of the rest of the table.
  *
  * The dependencies are every file the compile read. They are not needed to
  * link, and they are here rather than anywhere else because the question
  * they answer -- "does this object have to be made again?" -- is about the
  * object. An answer kept in a file of its own is one that can be lost, or go
  * stale, on its own. */
-#define OBJ_VERSION  3
+#define OBJ_VERSION  4
 #define OBJ_HEADER   25
 #define OBJ_SYM      7
 #define OBJ_RELOC    6
@@ -107,14 +115,20 @@ static int exported(const Sym *s)
     return 0;
 }
 
-/* The symbol a relocation wants, one more than its place in the table, or
- * zero when the slot holds an address inside this object.
+/* What a relocation at `at` wants: see the note on the format above.
  *
  * The calls a file cannot resolve are a handful -- most objects have none --
- * so they are walked rather than indexed. */
-static int reloc_symbol(int at, const int *slot_of, int nexterns)
+ * so they are walked. The slots that want the bss are not a handful, so they
+ * are merged: both they and the relocations are in order of where they are,
+ * and `bss` is how far along that walk has got. */
+static int reloc_wants(int at, const int *slot_of, int nexterns, int *bss)
 {
     int i;
+
+    while (*bss < gen_nbss_fixups() && gen_bss_fixup_at(*bss) < at)
+        ++*bss;
+    if (*bss < gen_nbss_fixups() && gen_bss_fixup_at(*bss) == at)
+        return 1;
 
     for (i = 0; i < nexterns; i++)
         if (gen_extern_at(i) == at)
@@ -166,7 +180,7 @@ void obj_write(const char *path)
      * by its byte offset into the compiler's table, so its place in the walk
      * above is that offset divided by the width of one. */
     for (i = 0; i < nexterns; i++)
-        slot_of[i] = index_of[gen_extern_sym(i) / step] + 1;
+        slot_of[i] = index_of[gen_extern_sym(i) / step] + 2;
 
     f = fopen(path, "wb");
     if (!f)
@@ -215,11 +229,11 @@ void obj_write(const char *path)
         fputc((defined ? OBJ_DEFINED : 0) | kind, f);
     }
 
-    for (i = 0; i < nrelocs; i++) {
+    for (i = 0, n = 0; i < nrelocs; i++) {
         int at = out_reloc_at(i);
 
         put_num(f, at);
-        put_num(f, reloc_symbol(at, slot_of, nexterns));
+        put_num(f, reloc_wants(at, slot_of, nexterns, &n));
     }
 
     for (i = 0; i < ndeps; i++) {
