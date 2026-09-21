@@ -177,6 +177,7 @@ _acc_rt_puts:
 	.global _acc_rt_memcpy
 	.global _acc_rt_memmove
 	.global _acc_rt_memset
+	.global _acc_rt_memchr
 
 _acc_rt_memcpy:
 	push	de			; the answer
@@ -227,6 +228,24 @@ _acc_rt_memset:
 	ldir
 _rt_fill_done:
 	pop	hl
+	ret
+
+; Looking for a byte, which cpir does in one instruction: compare A with
+; what HL points at, step HL on, count BC down, and stop at the first match
+; or when the count runs out. It leaves HL one past what it found, and Z set
+; only if it found it.
+;
+;	hl = where to look, a = the byte, bc = how many
+;	returns hl = the byte, or nothing at all
+_acc_rt_memchr:
+	call	_rt_bc_is_zero
+	jr	z, _rt_chr_none
+	cpir
+	jr	nz, _rt_chr_none
+	dec	hl			; cpir stepped past what it matched
+	ret
+_rt_chr_none:
+	ld	hl, 0
 	ret
 
 ; Z when BC is nothing. Clears the carry either way, which memmove reads.
@@ -469,42 +488,35 @@ _acc_rt_mul:
 
 ; hl = hl / bc, de = hl % bc, both unsigned. The common core.
 _acc_rt_udivmod:
-	push	iy
-	ld	a, b
-	or	a, c
-	jr	nz, .div_go
-	ld	hl, 0			; divide by zero: undefined, so say zero
-	ld	de, 0
-	pop	iy
+	call	_rt_bc_is_zero		; all twenty-four bits of it: `ld a, b`
+	jr	nz, .div_go		; with `or a, c` reads only sixteen, and
+	ld	hl, 0			; called every divisor that is a multiple
+	ld	de, 0			; of 65536 nothing at all
 	ret
 .div_go:
-	push	bc			; the divisor, so (iy+0..2) reaches it
-	ld	iy, 0
-	add	iy, sp
 	ld	de, 0			; the remainder
 	ld	a, 24
 .div_loop:
 	add	hl, hl			; the quotient shifts in at the bottom
 	ex	de, hl
 	adc	hl, hl			; remainder = remainder * 2 + the bit out
-	; remainder - divisor, keeping it only if it does not borrow
-	push	hl
-	ld	bc, (iy + 0)
-	or	a, a
+	; That shift cannot carry out of twenty-four bits. Before round i the
+	; remainder holds the top i-1 bits of the dividend taken modulo the
+	; divisor, so it is below 2^(i-1); at the last round that is below
+	; 2^23, and twice it still fits. So the carry is clear here and the
+	; subtract below needs nothing to clear it.
 	sbc	hl, bc
-	jr	c, .div_too_small
-	pop	bc			; discard the old remainder
+	jr	nc, .div_fits
+	add	hl, bc			; it did not fit: put the remainder back
 	ex	de, hl
-	inc	l			; the bit fits, so record it
 	jr	.div_next
-.div_too_small:
-	pop	hl
+.div_fits:
 	ex	de, hl
+	inc	l			; the bit fits, so record it. L is even
+					; here, so this cannot carry into H
 .div_next:
 	dec	a
 	jr	nz, .div_loop
-	pop	bc
-	pop	iy
 	ret
 
 _acc_rt_divu:

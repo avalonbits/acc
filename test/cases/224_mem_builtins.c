@@ -15,6 +15,7 @@
  * over what it has not read yet; copying down is what ldir already does.
  */
 void *memcpy(void *, const void *, unsigned long);
+void *memchr(const void *, int, unsigned long);
 void *memmove(void *, const void *, unsigned long);
 void *memset(void *, int, unsigned long);
 
@@ -83,6 +84,18 @@ int main(void)
     memmove(b + opaque(4), a + opaque(1), (unsigned long) n);
     for (i = 0; i < n; i++) if (b[4 + i] != (unsigned char) (i + 2)) return 16;
     if (b[3] != 0 || b[4 + n] != 0) return 17;
+
+    /* memchr, which cpir does: it stops on the first match or when the count
+     * runs out, and leaves the answer one past what it matched. */
+    fill();
+    if (memchr(a, 1, 40) != a) return 19;               /* the first byte */
+    if (memchr(a, 40, 40) != a + 39) return 20;         /* the last one */
+    if (memchr(a, 8, 40) != a + 7) return 21;
+    if (memchr(a, 99, 40) != 0) return 22;              /* not there */
+    if (memchr(a, 8, 7) != 0) return 23;                /* just out of reach */
+    if (memchr(a, 8, 8) != a + 7) return 24;            /* just in it */
+    if (memchr(a + 5, 8, 35) != a + 7) return 25;       /* not from the start */
+    if (memchr(a, 1, (unsigned long) opaque(0)) != 0) return 26;  /* none at all */
 
     /* A longer run, past anything a byte of count could hold. */
     fill();

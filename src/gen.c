@@ -5224,7 +5224,7 @@ typedef struct {
 static void call_to(const Callee *callee, int nargs, int params_first,
                     int nparams);
 
-/* memcpy, memmove and memset, done by the instruction that does them.
+/* memcpy, memmove, memset and memchr, done by the instructions that do them.
  *
  * The eZ80 copies a block with ldir and fills one with ldir reading its own
  * output a byte behind; C says it a byte at a time, and acc compiled that
@@ -5254,6 +5254,8 @@ static int mem_builtin(const Sym *f, int nargs)
         which = RT_MEMMOVE;
     else if (strcmp(name, "memset") == 0)
         which = RT_MEMSET;
+    else if (strcmp(name, "memchr") == 0)
+        which = RT_MEMCHR;
     else
         return 0;
 
@@ -5266,10 +5268,10 @@ static int mem_builtin(const Sym *f, int nargs)
      * taking it now leaves the other two where force_into expects them. */
     force_into(vsp - 1, R_BC);
 
-    if (which == RT_MEMSET) {
+    if (which == RT_MEMSET || which == RT_MEMCHR) {
         force_into(vsp - 2, R_HL);      /* the byte, which goes in A */
         ld_a_l();
-        force_into(vsp - 3, R_HL);      /* and where to put it */
+        force_into(vsp - 3, R_HL);      /* and where to put it or find it */
     } else {
         force_into(vsp - 2, R_HL);      /* the source, which ldir reads */
         force_into(vsp - 3, R_DE);      /* and the destination it writes */
