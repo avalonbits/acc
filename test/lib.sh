@@ -38,9 +38,18 @@ ok() {
 # runs <name> <source>: compile it, link it against the library, run it, and
 # require 42 back.
 runs() {
+    printf '%s' "$2" > "$tmp/p.c"
+    runs_file "$1" "$tmp/p.c"
+}
+
+# The same, for a program already in a file. A program with a character
+# constant in it cannot be written inside the single quotes above -- there is
+# no way to put a single quote in a single-quoted shell string -- so those
+# are written with a heredoc and handed over by name.
+runs_file() {
     local what=$1 err
 
-    printf '%s' "$2" > "$tmp/p.c"
+    [ "$2" = "$tmp/p.c" ] || cp "$2" "$tmp/p.c"
     if ! err=$("$ACC" -c "$tmp/p.c" -o "$tmp/p.o" -Iinclude 2>&1); then
         printf '  FAIL %-36s %s\n' "$what" "$(printf '%s' "$err" | head -1)"
         fail=$((fail + 1)); return
@@ -487,6 +496,117 @@ int main(void) {
     return 9;
 }
 '
+
+cat > "$tmp/ctype.c" <<'CTYPE'
+#include <ctype.h>
+
+int main(void) {
+    int r = 0, c, letters = 0, digits = 0, spaces = 0, printing = 0;
+
+    if (isalpha('a') && isalpha('Z') && !isalpha('0') && !isalpha(' ')) r++;
+    if (isdigit('7') && !isdigit('a') && isxdigit('f') && isxdigit('F')) r++;
+    if (isspace(' ') && isspace('\n') && isspace('\t') && !isspace('x')) r++;
+    if (ispunct('!') && ispunct('~') && !ispunct('a') && !ispunct(' ')) r++;
+    if (iscntrl(0) && iscntrl(127) && !iscntrl(' ')) r++;
+    if (isprint(' ') && !isprint('\n') && isgraph('!') && !isgraph(' ')) r++;
+    if (isblank(' ') && isblank('\t') && !isblank('\n')) r++;
+    if (isalnum('a') && isalnum('9') && !isalnum('-')) r++;
+    if (islower('q') && !islower('Q') && isupper('Q') && !isupper('q')) r++;
+
+    /* Changing case, and leaving alone what has none. */
+    if (tolower('A') == 'a' && toupper('z') == 'Z') r++;
+    if (tolower('5') == '5' && toupper('5') == '5' && tolower('a') == 'a') r++;
+
+    /* EOF is none of them, which is what the int in the signature is for. */
+    if (!isalpha(-1) && !isdigit(-1) && !isprint(-1) && !iscntrl(-1)) r++;
+
+    /* How many of the 256 bytes each says yes to, which pins the ranges
+     * rather than the handful of characters above. Nothing past 127 is any
+     * of these things in the only locale there is. */
+    for (c = 0; c < 256; c++) {
+        letters += isalpha(c) != 0;
+        digits += isdigit(c) != 0;
+        spaces += isspace(c) != 0;
+        printing += isprint(c) != 0;
+    }
+    if (letters == 52 && digits == 10) r++;
+    if (spaces == 6 && printing == 95) r++;
+
+    /* Each is a function, so each has an address. */
+    {
+        int (*f)(int) = isdigit;
+
+        if (f('3') && !f('x')) r++;
+    }
+
+    return r + 27;                      /* 15 checks */
+}
+CTYPE
+runs_file "what is in <ctype.h>" "$tmp/ctype.c"
+
+cat > "$tmp/assert.c" <<'ASSERT'
+#include <assert.h>
+
+static int side_effects;
+
+static int bump(void) { return ++side_effects; }
+
+int main(void) {
+    assert(1);
+    assert(bump() == 1);                /* evaluated, and only once */
+    assert(side_effects == 1);
+
+    return 42;
+}
+ASSERT
+runs_file "assert that holds, in <assert.h>" "$tmp/assert.c"
+
+# NDEBUG turns the macro into nothing at all, which C99 asks for and which is
+# why <assert.h> has no include guard round the macro: the header is included
+# again here with NDEBUG on and has to give the other definition.
+cat > "$tmp/ndebug.c" <<'NDEBUG'
+#include <assert.h>
+#define NDEBUG
+#include <assert.h>
+
+static int side_effects;
+
+static int bump(void) { return ++side_effects; }
+
+int main(void) {
+    assert(bump() == 99);               /* false, and not evaluated either */
+    if (side_effects != 0)
+        return 1;
+
+    return 42;
+}
+NDEBUG
+runs_file "assert with NDEBUG, in <assert.h>" "$tmp/ndebug.c"
+
+# One that fails, which cannot go through runs_file: it stops the program
+# with the status abort gives and not with 42.
+cat > "$tmp/af.c" <<'AF'
+#include <assert.h>
+
+int main(void) {
+    int n = 1;
+
+    assert(n == 2);
+
+    return 42;
+}
+AF
+if ! err=$("$ACC" -c "$tmp/af.c" -o "$tmp/af.o" -Iinclude 2>&1) \
+   || ! err=$("$ACC" "$tmp/af.o" "$LIB" -o "$tmp/af.bin" -x 2>&1); then
+    printf '  FAIL %-36s %s\n' "an assert that fails" \
+        "$(printf '%s' "$err" | head -1)"
+    fail=$((fail + 1))
+elif ! emu_available >/dev/null 2>&1; then
+    pass=$((pass + 1))
+else
+    test/agon.sh "$tmp/af.bin" >/dev/null 2>&1
+    ok "an assert that fails stops the program" "$?" 134
+fi
 
 # A name no member defines is still a name nothing defines.
 printf 'int missing(void);\nint main(void) { return missing(); }\n' > "$tmp/gone.c"

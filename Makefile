@@ -27,12 +27,13 @@ BIN = bin
 # itself -- which is what makes it something the Agon can build for itself,
 # and what keeps it honest: every line of it is a line acc has to compile.
 LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c \
-         lib/abort.c \
+         lib/abort.c lib/assert.c lib/ctype.c \
          lib/file.c \
          lib/stdlib.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c \
          lib/time.c
 LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          include/stdbool.h include/stdlib.h include/time.h \
+         include/ctype.h include/assert.h \
          include/agon/mos.h include/agon/vdp.h include/agon/keyboard.h
 LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 
