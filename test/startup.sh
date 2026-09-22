@@ -95,8 +95,23 @@ for name, (lo, hi) in spans.items():
         bad += 1
         continue
     allowed = set()
+    holed = 0
     for h in holes(name):
         allowed |= {h, h + 1, h + 2}
+
+        # A hole is three zero bytes in the array: gen.c writes the address
+        # over them once it knows it. An offset that is one byte out points
+        # at the opcode instead, so the array has the opcode there -- and
+        # the patch then writes the address over the instruction. Which the
+        # comparison below cannot see, because the opcode in the array is
+        # the opcode in the assembly.
+        if got[h:h + 3] != [0, 0, 0]:
+            print('  FAIL %-14s the hole at %d is 0x%02x 0x%02x 0x%02x in '
+                  'gen.c, not three zeros' % (name, h, *got[h:h + 3]))
+            bad += 1
+            holed = 1
+    if holed:
+        continue
     for i, (a, b) in enumerate(zip(want, got)):
         if a == b:
             continue

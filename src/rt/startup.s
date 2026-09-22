@@ -40,10 +40,22 @@
 ;              its exit status. That is how the test suite reads an answer
 ;              without a C library, and acc emits it for -x.
 ;
-; Three addresses in the stub are not known when it is written -- the two
-; routines that are emitted at the end of the image and main itself -- and are
-; left as holes for gen.c to fill. The same goes for the table of pointers and
-; the name in the argument routine.
+; Six addresses in the stub are not known when it is written -- the two
+; routines that are emitted at the end of the image, main itself, the two
+; cells behind this stub that exit unwinds through, and the place in here that
+; it unwinds to -- and are left as holes for gen.c to fill. The same goes
+; for the table of pointers and the name in the argument routine.
+;
+; The two cells are written just before main is called, so that exit has a
+; stack to go back to and somewhere to carry on from: it puts them into SP and
+; the program counter, and the tail below then runs exactly as though main had
+; returned. That is why the arguments are pushed before the stack is saved --
+; the two pops after the call take them off either way.
+;
+; iy is saved here and not left to main's prologue for the same reason: exit
+; unwinds past every epilogue that would have put it back. ix is not, because
+; MOS does not ask for it -- the program that returns normally gives it back
+; only because main's epilogue happens to.
 ;
 ; Assembled to get the bytes that gen.c embeds; see the comment there.
 ;
@@ -61,6 +73,9 @@ _acc_startup_exit:
 	call	0			; [hole] argc and argv
 	push	hl			; argv
 	push	de			; argc, which main reads first
+	ld	(0), sp			; [hole] the stack main is called on
+	ld	hl, 0			; [hole] where main returns to
+	ld	(0), hl			; [hole] the cell that remembers it
 	call	0			; [hole] main
 	pop	bc			; the caller takes the arguments back
 	pop	bc
@@ -77,6 +92,9 @@ _acc_startup_print:
 	call	0			; [hole] argc and argv
 	push	hl
 	push	de
+	ld	(0), sp			; [hole] the stack main is called on
+	ld	hl, 0			; [hole] where main returns to
+	ld	(0), hl			; [hole] the cell that remembers it
 	call	0			; [hole] main
 	pop	bc
 	pop	bc

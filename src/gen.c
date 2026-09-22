@@ -4755,6 +4755,9 @@ static const unsigned char startup_exit[] = {
     0xe1,                                       /* pop hl */
     0xcd, 0x00, 0x00, 0x00,                     /* call the arguments */
     0xe5, 0xd5,                                 /* push hl / push de */
+    0xed, 0x73, 0x00, 0x00, 0x00,               /* ld (exit_sp), sp */
+    0x21, 0x00, 0x00, 0x00,                     /* ld hl, after main */
+    0x22, 0x00, 0x00, 0x00,                     /* ld (exit_pc), hl */
     0xcd, 0x00, 0x00, 0x00,                     /* call main */
     0xc1, 0xc1,                                 /* pop bc / pop bc */
     0x7d, 0xd3, 0x00,                           /* ld a, l / out (0), a */
@@ -4769,6 +4772,9 @@ static const unsigned char startup_print[] = {
     0xe1,                                       /* pop hl */
     0xcd, 0x00, 0x00, 0x00,                     /* call the arguments */
     0xe5, 0xd5,                                 /* push hl / push de */
+    0xed, 0x73, 0x00, 0x00, 0x00,               /* ld (exit_sp), sp */
+    0x21, 0x00, 0x00, 0x00,                     /* ld hl, after main */
+    0x22, 0x00, 0x00, 0x00,                     /* ld (exit_pc), hl */
     0xcd, 0x00, 0x00, 0x00,                     /* call main */
     0xc1, 0xc1,                                 /* pop bc / pop bc */
     0xe5,                                       /* push hl */
@@ -4792,15 +4798,55 @@ static const unsigned char startup_print[] = {
  * command line into argc and argv, and the one into main. */
 #define STUB_CLEAR_AT   4
 #define STUB_ARGS_AT    9
-#define STUB_MAIN_AT   15
+/* Where exit comes back to, and where the stack was when main was called:
+ * see gen_exit. The stub writes both before calling main, so that exit has
+ * somewhere to go and a stack to go there on. */
+#define STUB_SP_AT     16
+#define STUB_PC_AT     20
+#define STUB_PCSTORE_AT 24
+#define STUB_MAIN_AT   28
+#define STUB_AFTER_MAIN 31
 
 /* Where the print stub calls within itself, as offsets from its first byte.
  * They are absolute calls, so they have to be filled in once the stub's
  * address is known. */
 static const struct { int at, to; } print_calls[] = {
-    { 0x20, 0x3d }, { 0x27, 0x3d }, { 0x2e, 0x3d },   /* hexbyte */
-    { 0x43, 0x47 }                                    /* hexnib */
+    { 0x2d, 0x4a }, { 0x34, 0x4a }, { 0x3b, 0x4a },   /* hexbyte */
+    { 0x50, 0x54 }                                    /* hexnib */
 };
+
+/* The two cells the stub writes. See gen_startup and gen_exit.
+ *
+ * They are known by name, because a file compiled to an object has never
+ * seen the stub: the link lays that down, and until it does there is no
+ * saying where the cells are. So the object leaves a name behind and the
+ * link answers it -- which is what a call to a helper does, for the same
+ * reason.
+ *
+ * The names are acc's own. A program that spells one of them means this. */
+static const char *const exit_cell_name[2] = {
+    "__acc_exit_sp", "__acc_exit_pc"
+};
+
+static int exit_cell_syms[2] = { SYM_NONE, SYM_NONE };
+
+static int exit_cell(int which)
+{
+    if (exit_cell_syms[which] == SYM_NONE) {
+        const char *name = exit_cell_name[which];
+        int sym = sym_push(name_intern(name, (int) strlen(name)),
+                           SYM_GLOBAL, -1);
+
+        /* extern, so that the pass over the globals that gives a tentative
+         * definition its room in the bss leaves these alone: gen_startup
+         * puts them in the image instead, and a file compiled to an object
+         * wants them left for the link to find. */
+        sym_set_flags(sym, SYMF_DECLARED | SYMF_EXTERN);
+        exit_cell_syms[which] = sym;
+    }
+
+    return exit_cell_syms[which];
+}
 
 void gen_startup(int by_exit, const char *program)
 {
@@ -4825,6 +4871,34 @@ void gen_startup(int by_exit, const char *program)
     bss_init_hole = base + STUB_CLEAR_AT;
     out_reloc(base + STUB_ARGS_AT);
     args_hole = base + STUB_ARGS_AT;
+
+    /* Where exit unwinds to, and the stack it unwinds onto. Two cells
+     * written by the stub just before it calls main: the stack pointer
+     * then, and the address of the instruction that main returns to. exit
+     * puts the second in the program counter with the first in the stack
+     * pointer, and the tail below runs as though main had returned. See
+     * gen_exit.
+     *
+     * They live here, in the image behind the stub, and not in the bss.
+     * Six bytes of RAM either way, and here they cost nothing to clear:
+     * the stub writes both before anything reads either, so zero is not a
+     * value they ever have to start at. A program with nothing else at
+     * zero then still has nothing there, and the routine that clears it is
+     * still a bare `ret`.
+     *
+     * The stub writes them whether the program calls exit or not, which is
+     * nineteen bytes a program. Working out whether it does would mean
+     * knowing before the file is read. */
+    for (i = 0; i < 2 * ACC_INT_SIZE; i++)
+        out_byte(0);
+    sym_at(exit_cell(0))->val = out_here() - 2 * ACC_INT_SIZE;
+    sym_at(exit_cell(1))->val = out_here() - ACC_INT_SIZE;
+    sym_set_flags(exit_cell(0), SYMF_DEFINED);
+    sym_set_flags(exit_cell(1), SYMF_DEFINED);
+    fixup_add(exit_cell(0), base + STUB_SP_AT);
+    fixup_add(exit_cell(1), base + STUB_PCSTORE_AT);
+    out_reloc(base + STUB_PC_AT);
+    out_patch24(base + STUB_PC_AT, base + STUB_AFTER_MAIN);
 
     fixup_add(m, base + STUB_MAIN_AT);
 
@@ -5226,6 +5300,42 @@ typedef struct {
 static void call_to(const Callee *callee, int nargs, int params_first,
                     int nparams);
 
+/* exit: back to the stub that called main, as though main had returned.
+ *
+ * Not a library routine, because there is nothing in C to write it with: it
+ * has to put the stack back where it was before main was entered and carry
+ * on from where main would have returned to. The stub left both of those
+ * in two cells behind itself -- see gen_startup -- so this is four
+ * instructions with the answer already in HL, written out at the call
+ * rather than called, which saves the return nobody comes back for.
+ *
+ * Whatever main's arguments left on the stack is still above the restored
+ * pointer, and the stub's `pop bc` twice takes them off, exactly as if main
+ * had returned in the ordinary way. */
+static int exit_builtin(const Sym *f, int nargs)
+{
+    if (nargs != 1 || f->type != TY_VOID
+        || strcmp(name_text(f->name), "exit") != 0)
+        return 0;
+
+    save_regs_below(nargs);
+    force_into(vsp - 1, R_HL);          /* the status, which the tail reads */
+    vdrop();
+
+    out_byte(0xed);
+    out_opcode24(0x5b, 0);              /* ld de, (carry on at) */
+    fixup_add(exit_cell(1), out_here() - ACC_INT_SIZE);
+    out_byte(0xed);
+    out_opcode24(0x7b, 0);              /* ld sp, (the stack main was on) */
+    fixup_add(exit_cell(0), out_here() - ACC_INT_SIZE);
+    push_rr(R_DE);
+    out_byte(0xc9);                     /* ret, into what DE was */
+
+    vpush(VAL_VOID, TY_VOID, 0);
+
+    return 1;
+}
+
 /* memcpy, memmove, memset and memchr, done by the instructions that do them.
  *
  * The eZ80 copies a block with ldir and fills one with ldir reading its own
@@ -5295,7 +5405,7 @@ void gen_call(int fn, int nargs, int params_first, int nparams)
     Callee callee;
     const Sym *f = sym_at(fn);
 
-    if (mem_builtin(f, nargs))
+    if (mem_builtin(f, nargs) || exit_builtin(f, nargs))
         return;
 
     callee.type = f->type;

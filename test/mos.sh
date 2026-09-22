@@ -115,5 +115,43 @@ int main(void) {
 }
 '
 
+# exit does not return: it puts the stack back where main was called on and
+# carries on just after the call, so the tail below runs as though main had
+# returned and MOS gets its machine back in the same state. Everything in
+# between -- five frames of it -- is skipped, epilogues and all.
+#
+# Which is what the reboot check above is here for: when this was first
+# written the two cells exit reads were addressed as an offset into the bss,
+# and an object compiled on its own has no idea where the link will put them.
+# It read two addresses out of somewhere else's variables, jumped to whatever
+# was in them and the machine came up again. Repeatedly.
+returns "exit from five frames down" 00002a \
+'void exit(int status);
+
+static short scratch[2] = { 1, 2 };
+
+static void f5(void) { exit(40 + scratch[1]); }
+static void f4(void) { f5(); }
+static void f3(void) { f4(); }
+static void f2(void) { f3(); }
+static void f1(void) { f2(); }
+
+int main(void) {
+    f1();
+
+    return 9;
+}
+'
+# And straight from main, where there is nothing to unwind past.
+returns "exit from main itself" 000007 \
+'void exit(int status);
+
+int main(void) {
+    exit(7);
+
+    return 9;
+}
+'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

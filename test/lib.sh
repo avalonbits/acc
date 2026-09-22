@@ -426,6 +426,35 @@ else
     fail=$((fail + 1))
 fi
 
+# exit, which the compiler emits rather than the library defining: it puts
+# the stack back where main was called on and carries on from just after the
+# call, so the status arrives at the stub's tail as though main had returned
+# it. Here rather than with the other cases because it is the link that this
+# is about -- the two cells it reads through are a name, and a file compiled
+# on its own has not seen the stub that gives them room. Addressed as an
+# offset into the bss instead, the object read two addresses out of whatever
+# the link happened to put at that offset and jumped to one of them.
+runs "exit, in <stdlib.h>" \
+'#include <stdlib.h>
+#include <string.h>
+
+static void deeper(int n, const char *text) {
+    if (n == 0)
+        exit(atoi(text));
+
+    deeper(n - 1, text);
+}
+
+int main(void) {
+    char *text = malloc(8);
+
+    strcpy(text, "42");
+    deeper(5, text);
+
+    return 9;
+}
+'
+
 # A name no member defines is still a name nothing defines.
 printf 'int missing(void);\nint main(void) { return missing(); }\n' > "$tmp/gone.c"
 "$ACC" -c "$tmp/gone.c" -o "$tmp/gone.o" >/dev/null 2>&1
