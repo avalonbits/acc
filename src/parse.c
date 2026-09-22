@@ -2025,14 +2025,11 @@ static void record_complete(int x, int line)
 static int bitfield_width(Type type, NameRef name, int line)
 {
     int width = constant_int("a bit-field's width", line);
-    int most = type == TY_BOOL ? 1 : type_size(type) * 8;
+    int most = type == TY_BOOL ? 1 : type_scalar_bytes(type) * 8;
 
     if (type_pointer(type) || type_float(type) || type_is_struct(type)
         || type_is_array(type) || type == TY_VOID)
         acc_error_at(line, "a bit-field has to have an integer type");
-    if (type_eight(type))
-        acc_error_at(line, "a bit-field of 'long long' is not supported: C99 "
-                           "leaves the types past 'int' to the implementation");
     if (width < 0 || width > most)
         acc_error_at(line, "a bit-field of this type is 0 to %d bits wide",
                      most);
@@ -2114,7 +2111,7 @@ static void record_members(int x, int is_union, int line)
                  * byte if not -- every type is aligned to a byte, so a
                  * unit can start at any of them. Measured against agondev
                  * on a thousand and a half structs made at random. */
-                int unit = type == TY_BOOL ? 8 : type_size(type) * 8;
+                int unit = type == TY_BOOL ? 8 : type_scalar_bytes(type) * 8;
 
                 has_bits = 1;
                 if (is_union) {
@@ -5610,15 +5607,17 @@ __attribute__((noinline))
 static void global_bits(Type scalar, int offset)
 {
     const BitField *bf = bitfield_at(init_bits);
-    unsigned char bytes[ACC_LONG_SIZE] = { 0 };
-    uint32_t value = 0;
-    int i;
+    unsigned char bytes[8] = { 0 };
+    uint64_t value = 0;
+    int i, n = bf->bytes > ACC_LONG_SIZE ? 8 : ACC_LONG_SIZE;
 
-    global_initializer(scalar == TY_BOOL ? TY_BOOL : TY_ULONG, bytes, tok_line);
-    for (i = ACC_LONG_SIZE - 1; i >= 0; i--)
+    global_initializer(scalar == TY_BOOL ? TY_BOOL
+                       : n > ACC_LONG_SIZE ? TY_ULLONG : TY_ULONG,
+                       bytes, tok_line);
+    for (i = n - 1; i >= 0; i--)
         value = value << 8 | bytes[i];
-    if (bf->width < 32)
-        value &= (1UL << bf->width) - 1;
+    if (bf->width < 64)
+        value &= ((uint64_t) 1 << bf->width) - 1;
     init_room(offset + bf->bytes);
     for (i = 0; i < bf->width; i++)
         if (value >> i & 1)

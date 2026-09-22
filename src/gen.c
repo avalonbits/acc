@@ -6305,12 +6305,35 @@ static void vpick(int depth)
 }
 
 /* The unit a bit-field is read from and written to: its bytes, as the
- * unsigned type that many bytes are. */
+ * unsigned type that many bytes are.
+ *
+ * Five, six and seven bytes are no type, so a field that spans them is
+ * reached as eight -- which is one to three bytes past what the field
+ * occupies, and can be one to three bytes past the object it is in. Reading
+ * them is harmless here: there is no memory that faults on being read. They
+ * are then written back with the value they were read with, the mask below
+ * having kept every bit that is not the field's, so nothing beyond it
+ * changes. What the mask must not be taken from is the field's own byte
+ * count, which is why the unit's width is asked for separately. */
 static Type bitfield_unit(const BitField *bf)
 {
-    static const Type units[5] = { 0, TY_UCHAR, TY_USHORT, TY_UINT, TY_ULONG };
+    static const Type units[9] = { 0, TY_UCHAR, TY_USHORT, TY_UINT, TY_ULONG,
+                                   TY_ULLONG, TY_ULLONG, TY_ULLONG,
+                                   TY_ULLONG };
 
     return units[bf->bytes];
+}
+
+/* A bit-field's mask, or the weight of its sign bit, as a constant of the
+ * type it is about to be applied to. */
+static void bitfield_const(uint64_t bits, Type type)
+{
+    if (type_eight(type))
+        vpush_const_wide((uint32_t) bits, (uint32_t) (bits >> 32), type);
+    else if (type_wide(type))
+        vpush_const_long((long) (uint32_t) bits, type);
+    else
+        vpush_const((int) bits, type);
 }
 
 /* A bit-field's value, from its address on the stack: its unit read, shifted
@@ -6320,8 +6343,9 @@ static void bitfield_read(void)
 {
     const BitField *bf = bitfield_at((vsp - 1)->bits);
     Type unit = bitfield_unit(bf);
-    unsigned long mask = bf->width >= 32 ? 0xffffffffUL
-                                         : (1UL << bf->width) - 1;
+    int unit_bits = type_scalar_bytes(unit) * 8;
+    uint64_t mask = bf->width >= 64 ? ~(uint64_t) 0
+                                    : ((uint64_t) 1 << bf->width) - 1;
 
     (vsp - 1)->bits = 0;
     (vsp - 1)->type = type_ptr_to(unit);
@@ -6330,29 +6354,22 @@ static void bitfield_read(void)
         vpush_const(bf->pos, TY_INT);
         vapply(TK_SHR, 0);
     }
-    if (bf->pos + bf->width < bf->bytes * 8) {
-        if (unit == TY_ULONG)
-            vpush_const_long((long) mask, TY_ULONG);
-        else
-            vpush_const((int) mask, TY_UINT);
+    if (bf->pos + bf->width < unit_bits) {
+        bitfield_const(mask, type_wide(unit) ? unit : TY_UINT);
         vapply(TK_AMP, 0);
     }
-    if (unit == TY_ULONG && bf->width <= ACC_INT_SIZE * 8)
+    if (type_wide(unit) && bf->width <= ACC_INT_SIZE * 8)
         vconvert(TY_UINT);
-    if (bf->is_signed && bf->width < (unit == TY_ULONG ? 32 : ACC_INT_SIZE * 8)) {
+    if (bf->is_signed
+        && bf->width < (type_wide(unit) ? unit_bits : ACC_INT_SIZE * 8)) {
         /* (v ^ sign) - sign: the sign bit's weight made negative. */
-        Type t = type_wide(vtype()) ? TY_LONG : TY_INT;
-        long sign = 1L << (bf->width - 1);
+        Type t = type_eight(vtype()) ? TY_LLONG
+                 : type_wide(vtype()) ? TY_LONG : TY_INT;
+        uint64_t sign = (uint64_t) 1 << (bf->width - 1);
 
-        if (t == TY_LONG) {
-            vpush_const_long(sign, TY_LONG);
-            vapply(TK_CARET, 0);
-            vpush_const_long(sign, TY_LONG);
-        } else {
-            vpush_const((int) sign, TY_INT);
-            vapply(TK_CARET, 0);
-            vpush_const((int) sign, TY_INT);
-        }
+        bitfield_const(sign, t);
+        vapply(TK_CARET, 0);
+        bitfield_const(sign, t);
         vapply(TK_MINUS, 0);
     }
     if (!type_wide(vtype()))
@@ -6368,22 +6385,20 @@ static void bitfield_write(void)
 {
     const BitField *bf = bitfield_at((vsp - 2)->bits);
     Type unit = bitfield_unit(bf);
-    int wide = unit == TY_ULONG;
-    unsigned long mask = bf->width >= 32 ? 0xffffffffUL
-                                         : (1UL << bf->width) - 1;
-    unsigned long keep = ~(mask << bf->pos)
-                         & (bf->bytes >= 4 ? 0xffffffffUL
-                                           : (1UL << bf->bytes * 8) - 1);
+    int unit_bits = type_scalar_bytes(unit) * 8;
+    Type wide = type_wide(unit) ? unit : TY_UINT;
+    uint64_t mask = bf->width >= 64 ? ~(uint64_t) 0
+                                    : ((uint64_t) 1 << bf->width) - 1;
+    uint64_t keep = ~(mask << bf->pos)
+                    & (unit_bits >= 64 ? ~(uint64_t) 0
+                                       : ((uint64_t) 1 << unit_bits) - 1);
 
     /* The value, cut to the width: [addr, v]. A _Bool field is 0 or 1
      * first, as any _Bool is. */
     if (type_deref((vsp - 2)->type) == TY_BOOL)
         vconvert(TY_BOOL);
-    vconvert(wide ? TY_ULONG : TY_UINT);
-    if (wide)
-        vpush_const_long((long) mask, TY_ULONG);
-    else
-        vpush_const((int) mask, TY_UINT);
+    vconvert(wide);
+    bitfield_const(mask, wide);
     vapply(TK_AMP, 0);
 
     /* Two copies of the address, to read the unit through and to write it
@@ -6394,10 +6409,7 @@ static void bitfield_write(void)
     (vsp - 1)->type = type_ptr_to(unit);
     vdup();
     vderef();
-    if (wide)
-        vpush_const_long((long) keep, TY_ULONG);
-    else
-        vpush_const((int) keep, TY_UINT);
+    bitfield_const(keep, wide);
     vapply(TK_AMP, 0);
 
     /* v moved into place and put in, [addr, v, addr, new], and written
@@ -6414,21 +6426,18 @@ static void bitfield_write(void)
     /* The answer, v as the field reads: signed, when it is. [v]. */
     vswap();
     vdrop();
-    if (bf->is_signed && bf->width < (wide ? 32 : ACC_INT_SIZE * 8)) {
-        long sign = 1L << (bf->width - 1);
+    if (bf->is_signed
+        && bf->width < (type_wide(unit) ? unit_bits : ACC_INT_SIZE * 8)) {
+        uint64_t sign = (uint64_t) 1 << (bf->width - 1);
+        Type t = type_eight(unit) ? TY_LLONG
+                 : type_wide(unit) ? TY_LONG : TY_INT;
 
-        if (wide) {
-            vpush_const_long(sign, TY_LONG);
-            vapply(TK_CARET, 0);
-            vpush_const_long(sign, TY_LONG);
-        } else {
-            vpush_const((int) sign, TY_INT);
-            vapply(TK_CARET, 0);
-            vpush_const((int) sign, TY_INT);
-        }
+        bitfield_const(sign, t);
+        vapply(TK_CARET, 0);
+        bitfield_const(sign, t);
         vapply(TK_MINUS, 0);
     }
-    if (wide && bf->width <= ACC_INT_SIZE * 8)
+    if (type_wide(unit) && bf->width <= ACC_INT_SIZE * 8)
         vconvert(bf->is_signed ? TY_INT : TY_UINT);
 }
 
