@@ -489,6 +489,10 @@ enum {
                          * array area, where it lives as an array does */
     SYM_LOCAL_CONST,    /* a const local or parameter: as SYM_LOCAL, but it
                          * reads as a value, which cannot be assigned to */
+    SYM_LOCAL_FAR,      /* a local the frame pointer cannot reach: val is its
+                         * number in the array area, where it lives as a
+                         * struct does, and every use of it works out its
+                         * address. See NEAR_LOCALS */
     SYM_LOCAL_VLA,      /* an array whose length the program works out: val
                          * is the frame offset of the pointer to its room,
                          * taken from the stack where it was declared, and
@@ -711,6 +715,8 @@ void gen_init(void);
 void gen_func_begin(int fn, int nparams, Type returns);
 void gen_func_end(void);
 int  gen_local(int size);
+int  gen_local_fits(int size);        /* whether (ix+d) still reaches */
+int  gen_local_far(int size);         /* one it does not: its array number */
 
 /* An array whose length is not known until it runs: the room comes off the
  * stack where it is declared and goes back when the block ends.
@@ -796,7 +802,8 @@ void vcast(Type to, int ext, int quals);
  * were too, since making room for it may have moved them out of registers
  * by code that no longer exists. */
 typedef struct {
-    int    at, nfixups, nrt_fixups, nbss_fixups, narray_patches, spill_used, vtop;
+    int    at, nfixups, nrt_fixups, nbss_fixups, narray_patches, spill_used;
+    int    spill_locked, vtop;
     int    nwide_consts;
     int    rt_any_used;
     Value *saved;
@@ -829,14 +836,14 @@ void vprefix_local(int offset, Type type, int ext, int op);   /* ++x, --x */
 void vpostfix_local(int offset, Type type, int ext, int op);  /* x++, x-- */
 void vprefix_indirect(int op);        /* ++*p, with p on the stack */
 void vpostfix_indirect(int op);       /* (*p)++, with p on the stack */
-int  gen_cond_begin(int *slot);       /* ?: after the condition */
+int  gen_cond_begin(int *slot, int *lock);    /* ?: after the condition */
 int  gen_cond_middle(int *slot, Type *middle, int *middle_ext, int *middle_null);
-void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
-                  int middle_null);
+void gen_cond_end(int to_stub, int slot, int lock, Type middle,
+                  int middle_ext, int middle_null);
 void gen_label(int hole);             /* fill a hole in with here */
 void gen_cond_same(Type middle, int middle_ext);  /* the two sides agree */
 int  gen_cond_middle_void(void);      /* `c ? f() : g()`, both of them void */
-void gen_cond_end_void(int to_stub);
+void gen_cond_end_void(int to_stub, int lock);
 void gen_return(int line);            /* `return`, at the line it is on */
 /* What a program has of the Agon's memory: the image, what it leaves at
  * zero, and then its heap and its stack. */

@@ -528,6 +528,7 @@ static void check_reg_free(int reg)
 static int locals_size;          /* the declared locals */
 static int spill_used;           /* the scratch in use right now */
 static int spill_peak;           /* the most it ever held */
+static int spill_locked;         /* held by something not on the value stack */
 static int frame_patch;          /* where the prologue's frame size is written */
 
 /* Local arrays, which go below everything else in the frame.
@@ -1022,6 +1023,7 @@ void vdrop(void)
 void gen_stmt_end(void)
 {
     spill_used = 0;
+    spill_locked = 0;
     nwide_consts = 0;
 }
 
@@ -4932,6 +4934,43 @@ int gen_local(int size)
     return -locals_size;
 }
 
+/* How many bytes of declared locals are kept where (ix+d) can reach them.
+ *
+ * (ix+d) reaches 128 bytes below the frame pointer, and the scratch area
+ * shares them with the locals -- which is what used to make a function with
+ * a few dozen variables in it refuse to compile at all.
+ *
+ * The line is drawn from measurement, and drawn so that nothing that
+ * compiles today gets slower. Over the 1012 functions in acc's own source,
+ * its library and its test cases, the most any of them declares is 84 bytes
+ * of locals, and the scratch -- now that its slots are reused -- wants four
+ * on average. So the locals keep 96 of the 128 and the scratch has the rest:
+ * every function in that corpus keeps every one of its locals in reach of
+ * (ix+d), which is the fast way to touch one and the only reason to have a
+ * frame pointer at all.
+ *
+ * What a function declares past 96 goes where the arrays and the structs
+ * already go, and is reached by a computed address -- ten bytes and a couple
+ * of dozen cycles on every use of it, against the alternative, which was to
+ * refuse to compile the function at all. A function whose scratch then wants
+ * more than the 32 left over is still refused, which is what it was before;
+ * that is the remaining half of this, and it is the scratch's half. */
+#define NEAR_LOCALS 96
+
+int gen_local_fits(int size)
+{
+    return locals_size + size <= NEAR_LOCALS;
+}
+
+int gen_local_far(int size)
+{
+    int array = gen_local_array();
+
+    gen_local_array_size(array, size);
+
+    return array;
+}
+
 /* The stack, as an array whose length only the program knows.
  *
  * The frame itself is reached through ix and does not move, so taking room
@@ -5095,13 +5134,41 @@ void gen_zero_array(int array, int from, int size)
     }
 }
 
-/* A slot for a spilled register, which lasts until the end of the statement.
- * They are handed out in order and all released together, so this is a
- * high-water mark and not a free list -- there is nothing to free, since the
- * whole area goes at once. */
+/* Where the scratch area is free from: past the end of everything in it that
+ * is still wanted.
+ *
+ * What a spilled register holds is on the value stack -- that is why it was
+ * spilled -- so a slot the stack does not point at is nobody's. The slots
+ * used to be handed out in order and all released together at the end of the
+ * statement, which made the area as large as everything a statement ever
+ * spilled rather than as large as it holds at its worst moment. One call
+ * with six arguments and a `?:` in each wanted 55 bytes that way, a function
+ * full of them 580, and (ix+d) reaches 128: that is what made a function
+ * with a few dozen variables in it refuse to compile.
+ *
+ * spill_locked is for the one thing that lives in the scratch without the
+ * stack saying so: the slot a `?:` parks its middle operand in has to
+ * survive the compiling of the third operand, and nothing on the stack
+ * points at it while that happens. */
+static int spill_free_from(void)
+{
+    int floor = spill_locked, i, size;
+
+    for (i = 0; i < vtop; i++) {
+        int start = spill_start_of(vstack + i, &size);
+
+        if (start >= 0 && start + size > floor)
+            floor = start + size;
+    }
+
+    return floor;
+}
+
 static int spill_slot_of(int size)
 {
-    spill_used += size;
+    int start = spill_free_from();
+
+    spill_used = start + size;
     if (spill_used > spill_peak)
         spill_peak = spill_used;
 
@@ -5110,11 +5177,7 @@ static int spill_slot_of(int size)
 
 static int spill_slot(void)
 {
-    spill_used += ACC_INT_SIZE;
-    if (spill_used > spill_peak)
-        spill_peak = spill_used;
-
-    return -(locals_size + spill_used);
+    return spill_slot_of(ACC_INT_SIZE);
 }
 
 void gen_func_begin(int fn, int nparams, Type returns)
@@ -5132,6 +5195,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
     locals_size = 0;
     spill_used = 0;
     spill_peak = 0;
+    spill_locked = 0;
     arrays_size = 0;
     narrays = 0;
     narray_patches = 0;
@@ -6657,11 +6721,17 @@ static void cond_park(int slot)
 /* After the condition: a home for the answer, and a jump to the third
  * operand when the condition is false. Everything below the condition goes
  * to the frame first, because from here the two paths diverge. */
-int gen_cond_begin(int *slot)
+int gen_cond_begin(int *slot, int *lock)
 {
+    *lock = spill_locked;
     *slot = long_scratch(TY_LONG);
     need_disp(*slot);
     need_disp(*slot + ACC_LONG_SIZE - 1);
+
+    /* Nothing else may build in the scratch below where the middle operand
+     * is about to be parked, because the third operand is compiled over the
+     * top of it and the stack will not be saying that the slot is taken. */
+    spill_locked = spill_used;
     save_regs_below(1);
 
     return jump_on_truth(0);
@@ -6698,8 +6768,9 @@ int gen_cond_middle_void(void)
     return jump_op(JP_ANY);
 }
 
-void gen_cond_end_void(int to_stub)
+void gen_cond_end_void(int to_stub, int lock)
 {
+    spill_locked = lock;
     if (vtype() != TY_VOID)
         acc_error_at(tok_line, "one side of ?: gives a value and the other "
                                "is void, so there is no answer to give");
@@ -6736,9 +6807,11 @@ int gen_cond_middle(int *slot, Type *middle, int *middle_ext, int *middle_null)
  * it finds the middle's value exactly where it was left -- nothing between
  * the jump and here ran on that path -- converts it the same way, and parks
  * it in the same place. */
-void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
+void gen_cond_end(int to_stub, int slot, int lock, Type middle,
+                  int middle_ext,
                   int middle_null)
 {
+    spill_locked = lock;
     Value *top = vsp - 1;
     int was_struct = middle_ext & COND_STRUCT;
     int third_null;
@@ -6794,6 +6867,7 @@ void gen_mark(GenMark *m)
     m->nbss_fixups = nbss_fixups;
     m->narray_patches = narray_patches;
     m->spill_used = spill_used;
+    m->spill_locked = spill_locked;
     m->nwide_consts = nwide_consts;
     m->vtop = vtop;
     m->rt_any_used = rt_any_used;
@@ -6818,6 +6892,7 @@ void gen_rollback(GenMark *m)
     nbss_fixups = m->nbss_fixups;
     narray_patches = m->narray_patches;
     spill_used = m->spill_used;
+    spill_locked = m->spill_locked;
     nwide_consts = m->nwide_consts;
     vtop = m->vtop;
     vsp = vstack + vtop;

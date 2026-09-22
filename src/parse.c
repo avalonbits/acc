@@ -482,6 +482,14 @@ static int name_operand(int sym, NameRef name)
         vset_quals(s->quals);
         object = 1;
         break;
+    case SYM_LOCAL_FAR:
+        /* A local past what (ix+d) reaches: it lives where the arrays do,
+         * so what a use of it starts from is its address. */
+        vaddr_array(s->val, s->type);
+        vset_ext(s->ext);
+        vset_quals(s->quals);
+        object = 1;
+        break;
     case SYM_GLOBAL_ARRAY:
         global_address(sym);
         object = 0;
@@ -1623,7 +1631,7 @@ static void conditional_rest(void)
 {
     Type outer = narrow_dest;
     Type middle;
-    int slot, to_third, to_stub, middle_null, middle_ext;
+    int slot, lock, to_third, to_stub, middle_null, middle_ext;
     int cond;
     Type cond_type;
 
@@ -1671,7 +1679,7 @@ static void conditional_rest(void)
     }
 
     next();
-    to_third = gen_cond_begin(&slot);
+    to_third = gen_cond_begin(&slot, &lock);
 
     narrow_dest = 0;
     comma_expr();
@@ -1683,7 +1691,7 @@ static void conditional_rest(void)
         to_stub = gen_cond_middle_void();
         gen_label(to_third);
         conditional();
-        gen_cond_end_void(to_stub);
+        gen_cond_end_void(to_stub, lock);
         narrow_dest = outer;
 
         return;
@@ -1693,7 +1701,7 @@ static void conditional_rest(void)
 
     gen_label(to_third);
     conditional();
-    gen_cond_end(to_stub, slot, middle, middle_ext, middle_null);
+    gen_cond_end(to_stub, slot, lock, middle, middle_ext, middle_null);
     narrow_dest = outer;
 }
 
@@ -4406,7 +4414,7 @@ void declaration(void)
         return;
 
     for (;;) {
-        int line = tok_line, count, ext, off, sym;
+        int line = tok_line, count, ext, off, sym, far = 0;
         Type type, stars = declarator_stars(base);
         NameRef name = direct_declarator(stars, bx, &type, &ext, &count);
 
@@ -4449,23 +4457,35 @@ void declaration(void)
         }
         not_void(type, "a variable", line);
 
-        off = gen_local(type_scalar_bytes(type));
+        /* Past what the frame pointer reaches, a local goes where the
+         * arrays and the structs go: see gen_local_fits. Everything about
+         * it is the same afterwards except that its address is worked out
+         * rather than being a displacement. */
+        far = !gen_local_fits(type_scalar_bytes(type));
+        off = far ? gen_local_far(type_scalar_bytes(type))
+                  : gen_local(type_scalar_bytes(type));
         if (accept(TK_ASSIGN)) {
             Type outer = narrow_dest;
 
             narrow_dest = type_narrow(type);
             expr();
             narrow_dest = outer;
-            vstore_local(off, type);
+            if (far) {
+                vaddr_array(off, type);
+                vswap();
+                vstore_indirect();
+            } else {
+                vstore_local(off, type);
+            }
             vdrop();            /* a declaration is not an expression */
         }
         /* Pushed after the initialiser, so `int x = x;` does not see itself. */
-        sym = sym_push(name, SYM_LOCAL, off);
+        sym = sym_push(name, far ? SYM_LOCAL_FAR : SYM_LOCAL, off);
         sym_at(sym)->type = type;
         sym_at(sym)->ext = (unsigned char) ext;
         sym_at(sym)->quals = decl_quals | (bc ? SQ_CONST : 0);
         if (stars != base ? stars_const : bc)
-            sym_at(sym)->kind = SYM_LOCAL_CONST;
+            sym_at(sym)->kind = far ? SYM_LOCAL_FAR : SYM_LOCAL_CONST;
 
         if (!accept(TK_COMMA))
             break;
