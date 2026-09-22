@@ -9,7 +9,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "acc.h"
 #include "ctype.h"
@@ -1485,51 +1484,25 @@ static char *build_expansion(Macro *m, char **argv, int argc)
     return out.text;
 }
 
-/* __DATE__ and __TIME__, worked out once: C says both stand for when the
- * translation unit was translated, and a unit translated in two moments
- * whose names differ would be a strange thing to hand a program.
+/* __DATE__ and __TIME__.
  *
- * C allows an implementation with no clock to supply a valid date of its
- * own, which is what the fallback is for: the Agon has a real-time clock
- * but not always a battery behind it, and a compile that cannot say when
- * it happened should still say something a program can parse. */
-static char date_text[12];      /* "Mmm dd yyyy" */
-static char time_text[9];       /* "hh:mm:ss" */
-
-/* Worked out when one of the two is first asked for rather than at startup.
- * Reading the clock is not free -- on the Agon it is a call into MOS and a
- * walk from 1970 to now, which is more cycles than compiling a small file --
- * and almost no program mentions either name. Doing it up front also made
- * every compile take a different number of cycles from the last, since the
- * seconds move between runs, and a compiler whose cost depends on the time
- * of day cannot be measured. */
-static int when_done;
-
-static void when(void)
-{
-    static const char month[12][4] = {
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-    };
-    time_t now;
-    struct tm *t;
-
-    if (when_done)
-        return;
-    when_done = 1;
-    now = time(NULL);
-    t = now == (time_t) -1 ? NULL : localtime(&now);
-
-    if (!t || t->tm_mon < 0 || t->tm_mon > 11) {
-        strcpy(date_text, "Jan  1 1970");
-        strcpy(time_text, "00:00:00");
-
-        return;
-    }
-    sprintf(date_text, "%s %2d %4d", month[t->tm_mon], t->tm_mday,
-            t->tm_year + 1900);
-    sprintf(time_text, "%02d:%02d:%02d", t->tm_hour, t->tm_min, t->tm_sec);
-}
+ * C says both stand for when the translation unit was translated, and lets
+ * an implementation that cannot find that out supply a valid date of its
+ * own instead. What acc supplies is when acc itself was built, which is
+ * the date the compiler that built it gave it -- and, when acc is built by
+ * acc, the date this reports.
+ *
+ * Not the clock, on purpose. Reading it is not free: on the Agon it is a
+ * call into MOS, and doing it up front cost more than compiling a small
+ * file and made every compile take a different number of cycles from the
+ * last, which is a compiler that cannot be measured. It also makes a
+ * compile unrepeatable -- a program that names either would compile to
+ * different bytes every second, where acc's own tests rest on the same
+ * source giving the same image twice. A date that is fixed for a given acc
+ * is worth more here than one that is right to the second.
+ */
+static const char date_text[] = __DATE__;
+static const char time_text[] = __TIME__;
 
 /* A name the compiler defines as what it stands for: the file being read,
  * the line the token is on, when the compile happened, or the 1 that says
@@ -1551,8 +1524,6 @@ static void predefined(void)
         return;
     }
 
-    if (tok != TK_FILE)
-        when();
     tok_str = tok == TK_FILE ? (src_path ? src_path : "")
             : tok == TK_DATE ? date_text : time_text;
     tok = TK_STRING;
@@ -2065,16 +2036,16 @@ static const char *if_name(const char *at, int len, const char *after,
 
         switch ((unsigned char) name_arena[name - 3]) {
         case TK_LINE:
-            sprintf(num, "%d", line);
+            snprintf(num, sizeof num, "%d", line);
             if_put(num, (int) strlen(num));
             break;
         case TK_STDC:
             if_put("1", 1);
             break;
-        case TK_DATE: when(); if_put("\"", 1);
+        case TK_DATE: if_put("\"", 1);
                       if_put(date_text, (int) strlen(date_text));
                       if_put("\"", 1); break;
-        case TK_TIME: when(); if_put("\"", 1);
+        case TK_TIME: if_put("\"", 1);
                       if_put(time_text, (int) strlen(time_text));
                       if_put("\"", 1); break;
         default: {

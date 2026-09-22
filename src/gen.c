@@ -898,10 +898,26 @@ static int vconst_pair(void)
  * becoming a float is arithmetic, not a relabelling. */
 static uint64_t const_as(const Value *v, Type to)
 {
-    uint64_t bits = v->kind == VAL_WIDE ? wide_value(v)
-                  : type_unsigned(v->type) ? (uint64_t) (uint32_t) v->val
-                  : (uint64_t) (int64_t) v->val;
+    uint64_t bits;
     int from_float = type_float(v->type), to_float = type_float(to);
+
+    if (v->kind == VAL_WIDE) {
+        bits = wide_value(v);
+    } else if (type_unsigned(v->type)) {
+        /* The stack holds a narrow constant the way the machine would, with
+         * its top bit run up through the host's word: 0x800000u is kept as
+         * the same bits a 24-bit int of that value has, which read as a
+         * number is negative. Widening it has to stop at its own width, or
+         * the sign it does not have arrives in the bytes above -- and
+         * `unsigned long x = 0x800000u` came out 0xff800000. */
+        int n = type_size(v->type);
+
+        bits = (uint64_t) (int64_t) v->val;
+        if (n < 8)
+            bits &= ((uint64_t) 1 << (8 * n)) - 1;
+    } else {
+        bits = (uint64_t) (int64_t) v->val;
+    }
 
     if (to_float && !from_float) {
         int negative = !type_unsigned(v->type)
