@@ -834,12 +834,6 @@ int  gen_cond_middle(int *slot, Type *middle, int *middle_ext, int *middle_null)
 void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
                   int middle_null);
 void gen_label(int hole);             /* fill a hole in with here */
-
-/* Computed goto, which is not C but is what a threaded interpreter is
- * written with: `&&label` is the address of a place inside a function, and
- * `goto *p` jumps to one. See label_address in the parser. */
-int  gen_label_ref(void);             /* &&label not reached yet: the hole */
-void gen_jump_indirect(void);         /* goto *p, with p on the stack */
 void gen_cond_same(Type middle, int middle_ext);  /* the two sides agree */
 int  gen_cond_middle_void(void);      /* `c ? f() : g()`, both of them void */
 void gen_cond_end_void(int to_stub);

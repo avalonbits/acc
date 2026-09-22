@@ -3368,41 +3368,6 @@ void gen_label(int hole)
     patch_to_here(hole);
 }
 
-/* `&&label` for a label the compiler has not reached yet: the address is
- * loaded from an immediate left as a hole, which gen_label fills in exactly
- * as it fills in a forward jump's -- the two are the same three bytes and
- * the same chain through the image.
- *
- * A label already reached needs none of this: its address is known, and the
- * parser pushes it as the constant it is.
- *
- * Shortening the function's jumps afterwards moves the label along, and the
- * address written down here moves with it: the immediate is handed to the
- * relocation table, and cut_out rewrites what every relocation in the
- * function holds. That is the same machinery that keeps a string's address
- * right, and it is why a function whose labels have had their addresses
- * taken needs no special treatment. */
-int gen_label_ref(void)
-{
-    int reg = reg_alloc(), hole = out_here() + 1;
-
-    out_reloc(hole);
-    ld_rr_imm(reg, 0);
-    vpush(VAL_REG, type_ptr_to(TY_VOID), reg);
-
-    return hole;
-}
-
-/* `goto *p`: the address goes in HL and the chip jumps to it. Nothing is
- * saved first -- the jump leaves this statement for good, and where a value
- * was living stops mattering once it has. */
-void gen_jump_indirect(void)
-{
-    force_into(vsp - 1, R_HL);
-    vdrop();
-    out_byte(0xe9);                             /* jp (hl) */
-}
-
 /* ------------------------------------------------------------------ */
 /* the runtime helpers                                                 */
 
