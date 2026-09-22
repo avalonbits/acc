@@ -236,6 +236,8 @@ static unsigned       fn_cap;           /* bytes */
 
 static void fn_room(unsigned want)
 {
+    unsigned was = fn_cap;
+
     if (want < fn_cap)
         return;
     while (fn_cap <= want)
@@ -243,14 +245,25 @@ static void fn_room(unsigned want)
     fn_sigs = realloc(fn_sigs, fn_cap);
     if (!fn_sigs)
         acc_error("out of memory for the function signatures");
+
+    /* What realloc hands back is whatever was last in it. A slot read
+     * before anything wrote it is read all the same -- sym_set_params keeps
+     * the bit that says something holds this function's address, so a slot
+     * that came back with it set made an uncalled `static` look wanted and
+     * kept it in the image. On a host the memory is a fresh page and reads
+     * as zeros, which is why this only ever showed on the Agon. */
+    memset(fn_sigs + was, 0, fn_cap - was);
 }
 
 /* The records from `at` on, `bytes` of them, one symbol's width further up:
- * see sym_push. */
+ * see sym_push. The slot they leave is cleared, because the move leaves a
+ * copy of what was there and the symbol about to take it is one nobody has
+ * said anything about yet. */
 static void fn_shift(int at, int bytes)
 {
     fn_room((unsigned) (at + bytes + sizeof(FnSig)));
     memmove(fn_sigs + at + sizeof(FnSig), fn_sigs + at, (size_t) bytes);
+    memset(fn_sigs + at, 0, sizeof(FnSig));
 }
 
 void sym_set_params(int sym, int first, int count)
