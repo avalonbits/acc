@@ -363,14 +363,15 @@ enum {
     TK_KW_STATIC_ASSERT, TK_KW_OFFSETOF,
     TK_KW_ATTRIBUTE,
 
-    /* The two names that stand for something the lexer knows and the
-     * program does not write: the line it is on and the file it is in.
-     * They are interned with the keywords, which is what makes them free --
-     * a keyword is already a name whose token code sits in the arena, so
+    /* The names that stand for something the lexer knows and the program
+     * does not write: the file it is in, the line it is on, when the
+     * compile happened, and that this is a C compiler at all. They are
+     * interned with the keywords, which is what makes them free -- a
+     * keyword is already a name whose token code sits in the arena, so
      * recognising one costs nothing that was not being paid. Last in the
      * enum, and so the highest codes there are, so that telling them from
      * every other keyword is one compare. */
-    TK_FILE, TK_LINE,
+    TK_FILE, TK_LINE, TK_DATE, TK_TIME, TK_STDC,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };

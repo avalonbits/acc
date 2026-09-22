@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "acc.h"
 #include "ctype.h"
@@ -334,6 +335,8 @@ static char *src_raw;       /* one past the last byte read into the buffer */
 static char  src_held;      /* the byte the sentinel replaced */
 static FILE *src_file;      /* null once the file has been read to its end */
 static const char *src_path;
+/* The path it was opened under, which #line does not change: see once_add. */
+static const char *src_real;
 static int   line;
 
 /* The files an `#include` is inside, innermost last.
@@ -356,6 +359,7 @@ typedef struct {
     char        src_held;
     FILE       *src_file;
     const char *src_path;
+    const char *src_real;
     int         line;
     int         owned;          /* OWN_BUF and OWN_PATH, below */
     NameRef     macro;          /* the macro whose text this level is */
@@ -562,6 +566,63 @@ int      tok_prev_line;
  * Out of line and off the hot path: it runs once per 16 KB of source, where
  * skip_space runs once per token. */
 __attribute__((noinline))
+/* Backslash-newline, out of the window, before anything reads it.
+ *
+ * C deletes the two characters in the second of its translation phases --
+ * before the file is a sequence of tokens at all -- which is what makes a
+ * name split over two lines one name, a string that runs over two lines one
+ * string, and a join between two tokens leave nothing behind.
+ *
+ * Doing it here rather than in each scanner is what keeps it free. A test
+ * for a backslash in the loop that walks a name and in the one that walks
+ * white space cost eleven percent of a compile between them, for something
+ * almost no file has; a window with no join in it pays one search instead,
+ * which is the instruction the chip has for exactly that.
+ *
+ * The newlines taken out are put back at the end of the logical line rather
+ * than dropped, so that the count of lines is what it was and a diagnostic
+ * still names the line the token was written on. There is always room: each
+ * join frees two characters and gives back one.
+ *
+ * `end` is one past the last newline in the window, so a join is never
+ * split across a refill -- its newline is what a window ends after. */
+static void unsplice(char **end)
+{
+    char *r, *w, *stop = *end;
+    int extra = 0;
+
+    for (r = src;;) {
+        r = memchr(r, '\\', (size_t) (stop - r));
+        if (!r)
+            return;                     /* nothing to take out */
+        if (r[1] == '\n' || (r[1] == '\r' && r[2] == '\n'))
+            break;
+        r++;
+    }
+
+    for (w = r; r < stop;) {
+        if (r[0] == '\\' && (r[1] == '\n' || (r[1] == '\r' && r[2] == '\n'))) {
+            r += r[1] == '\r' ? 3 : 2;
+            extra++;
+
+            continue;
+        }
+        *w++ = *r++;
+        if (w[-1] != '\n')
+            continue;
+        while (extra) {
+            *w++ = '\n';
+            extra--;
+        }
+    }
+
+    /* What was past the window's end is still to be read, and moves down
+     * with everything else. */
+    memmove(w, stop, (size_t) (src_raw - stop));
+    src_raw -= stop - w;
+    *end = w;
+}
+
 static int refill(void)
 {
     size_t keep, room, got;
@@ -591,7 +652,6 @@ static int refill(void)
         fclose(src_file);
         src_file = NULL;
         nl = src_raw;
-        src_held = '\0';
     } else {
         /* Whole lines only. A full window with no newline in it is a line
          * longer than the window, which there is nowhere to put. */
@@ -599,9 +659,13 @@ static int refill(void)
             ;
         if (nl == src)
             acc_error_at(line, "a line longer than %d characters", src_cap);
-        src_held = *nl;
     }
 
+    /* Joined lines go before the end is settled: taking one out moves
+     * everything behind it down, the end with it, and the byte the
+     * sentinel is about to hide is whichever one ends up there. */
+    unsplice(&nl);
+    src_held = src_file ? *nl : '\0';
     src_end = nl;
     *src_end = '\0';
 
@@ -839,6 +903,7 @@ static void push_source(const char *path)
     open_files[depth].src_held = src_held;
     open_files[depth].src_file = src_file;
     open_files[depth].src_path = src_path;
+    open_files[depth].src_real = src_real;
     open_files[depth].line = line;
     open_files[depth].owned = src_owned;
     open_files[depth].macro = src_macro;
@@ -871,6 +936,7 @@ static void push_source(const char *path)
 
     src_file = f;
     src_path = keep;
+    src_real = keep;
     src_dep = dep_add(path);
     src_cap = INCLUDE_CAP;
     src_owned = OWN_BUF | OWN_PATH;
@@ -900,6 +966,7 @@ static void push_text(NameRef macro, char *text, int len)
     open_files[depth].src_held = src_held;
     open_files[depth].src_file = src_file;
     open_files[depth].src_path = src_path;
+    open_files[depth].src_real = src_real;
     open_files[depth].line = line;
     open_files[depth].owned = src_owned;
     open_files[depth].macro = src_macro;
@@ -964,6 +1031,7 @@ static int pop_source(void)
     src_held = open_files[depth].src_held;
     src_file = open_files[depth].src_file;
     src_path = open_files[depth].src_path;
+    src_real = open_files[depth].src_real;
     line = open_files[depth].line;
     src_owned = open_files[depth].owned;
     src_macro = open_files[depth].macro;
@@ -992,7 +1060,7 @@ void lex_open(const char *path)
             acc_error("out of memory for the source buffer");
     }
 
-    src_path = path;
+    src_path = src_real = path;
     src_dep = dep_add(path);
     src_cap = SRC_CAP;
     cursor = src_end = src_raw = src;
@@ -1417,27 +1485,77 @@ static char *build_expansion(Macro *m, char **argv, int argc)
     return out.text;
 }
 
-/* __FILE__ and __LINE__ as what they stand for: a string of the file being
- * read and the line the token is on.
+/* __DATE__ and __TIME__, worked out once: C says both stand for when the
+ * translation unit was translated, and a unit translated in two moments
+ * whose names differ would be a strange thing to hand a program.
+ *
+ * C allows an implementation with no clock to supply a valid date of its
+ * own, which is what the fallback is for: the Agon has a real-time clock
+ * but not always a battery behind it, and a compile that cannot say when
+ * it happened should still say something a program can parse. */
+static char date_text[12];      /* "Mmm dd yyyy" */
+static char time_text[9];       /* "hh:mm:ss" */
+
+/* Worked out when one of the two is first asked for rather than at startup.
+ * Reading the clock is not free -- on the Agon it is a call into MOS and a
+ * walk from 1970 to now, which is more cycles than compiling a small file --
+ * and almost no program mentions either name. Doing it up front also made
+ * every compile take a different number of cycles from the last, since the
+ * seconds move between runs, and a compiler whose cost depends on the time
+ * of day cannot be measured. */
+static int when_done;
+
+static void when(void)
+{
+    static const char month[12][4] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    time_t now;
+    struct tm *t;
+
+    if (when_done)
+        return;
+    when_done = 1;
+    now = time(NULL);
+    t = now == (time_t) -1 ? NULL : localtime(&now);
+
+    if (!t || t->tm_mon < 0 || t->tm_mon > 11) {
+        strcpy(date_text, "Jan  1 1970");
+        strcpy(time_text, "00:00:00");
+
+        return;
+    }
+    sprintf(date_text, "%s %2d %4d", month[t->tm_mon], t->tm_mday,
+            t->tm_year + 1900);
+    sprintf(time_text, "%02d:%02d:%02d", t->tm_hour, t->tm_min, t->tm_sec);
+}
+
+/* A name the compiler defines as what it stands for: the file being read,
+ * the line the token is on, when the compile happened, or the 1 that says
+ * this is a C compiler.
  *
  * The line is the one the name appears on, and inside a macro's expansion
  * that is the line the macro was used on, since an expansion does not move
- * the count. Out of line because it runs for two names in a program and
- * next() runs for every one. */
+ * the count. Out of line because it runs for a handful of names in a
+ * program and next() runs for every one. */
 __attribute__((noinline))
 static void predefined(void)
 {
-    if (tok == TK_LINE) {
+    if (tok == TK_LINE || tok == TK_STDC) {
+        tok_val = tok == TK_LINE ? line : 1;
         tok = TK_INT;
         tok_type = TY_INT;
-        tok_val = line;
         tok_val_hi = 0;
 
         return;
     }
 
+    if (tok != TK_FILE)
+        when();
+    tok_str = tok == TK_FILE ? (src_path ? src_path : "")
+            : tok == TK_DATE ? date_text : time_text;
     tok = TK_STRING;
-    tok_str = src_path ? src_path : "";
     tok_str_len = (int) strlen(tok_str);
 }
 
@@ -1589,15 +1707,19 @@ static int logical_line(void)
 
         /* A backslash last on the line, bar the carriage return a file
          * written on another machine leaves there, joins this line to the
-         * next. The two become one line with a space where the join was. */
+         * next.
+         *
+         * Both characters go, rather than becoming a space: C deletes them
+         * before anything is tokenised, so a name split over two lines is
+         * one name. `#define AB\<newline>CD 42` defines ABCD, and a space
+         * in the join would have defined AB and left CD after it. */
         if (*cursor == '\n') {
             int end = len;
 
             if (end && body[end - 1] == '\r')
                 end--;
             if (end && body[end - 1] == '\\') {
-                body[end - 1] = ' ';
-                len = end;
+                len = end - 1;
                 cursor++;
                 line++;
 
@@ -1725,6 +1847,52 @@ static const char *find_include(int how, const char *name, char *buf, int cap)
     return NULL;
 }
 
+/* The files a `#pragma once` has been seen in, by the path they were opened
+ * under.
+ *
+ * Not C, but every compiler has it and headers are written expecting it: a
+ * header with neither this nor a guard is read again on every include, and
+ * what that does to a program is redefine everything in it. The path is the
+ * one the include resolved to rather than whatever `#line` has since called
+ * the file, so that a generated header cannot rename itself out of the set.
+ *
+ * Two names for the same file are two entries, which is the answer every
+ * compiler that compares paths gives. A header found down two different -I
+ * directories is read twice, and a guard is what covers that; the two
+ * together are the usual belt and braces. */
+static char **once_seen;
+static int    nonce, once_cap;
+
+static int once_has(const char *path)
+{
+    int i;
+
+    for (i = 0; i < nonce; i++)
+        if (strcmp(once_seen[i], path) == 0)
+            return 1;
+
+    return 0;
+}
+
+static void once_add(const char *path)
+{
+    char *keep;
+
+    if (!path || once_has(path))
+        return;
+    if (nonce == once_cap) {
+        once_cap = once_cap ? once_cap * 2 : 8;
+        once_seen = realloc(once_seen, (size_t) once_cap * sizeof *once_seen);
+        if (!once_seen)
+            acc_error("out of memory for the files read once");
+    }
+    keep = malloc(strlen(path) + 1);
+    if (!keep)
+        acc_error("out of memory for the files read once");
+    strcpy(keep, path);
+    once_seen[nonce++] = keep;
+}
+
 static void do_include(void)
 {
     char name[128], buf[256];
@@ -1745,6 +1913,8 @@ static void do_include(void)
      * out, and what is left of the line has to be behind the cursor when it
      * comes back. */
     rest_of_line();
+    if (once_has(found))
+        return;                         /* it said `#pragma once` already */
     push_source(found);
 }
 
@@ -1883,6 +2053,42 @@ static const char *if_name(const char *at, int len, const char *after,
     NameRef name = name_intern(at, len);
     Macro  *m;
     int     i;
+
+    /* One of the names the compiler defines. They are keywords rather than
+     * macros, so the table below has never heard of them, and without this
+     * `#if __STDC__` would read as the zero an undefined name stands for.
+     * The two that are strings are put back as strings, which is not
+     * something an #if can do anything with -- and saying so where the
+     * expression is read is a better answer than a silent zero. */
+    if (predefined_name(name)) {
+        char num[24];
+
+        switch ((unsigned char) name_arena[name - 3]) {
+        case TK_LINE:
+            sprintf(num, "%d", line);
+            if_put(num, (int) strlen(num));
+            break;
+        case TK_STDC:
+            if_put("1", 1);
+            break;
+        case TK_DATE: when(); if_put("\"", 1);
+                      if_put(date_text, (int) strlen(date_text));
+                      if_put("\"", 1); break;
+        case TK_TIME: when(); if_put("\"", 1);
+                      if_put(time_text, (int) strlen(time_text));
+                      if_put("\"", 1); break;
+        default: {
+            const char *f = src_path ? src_path : "";
+
+            if_put("\"", 1);
+            if_put(f, (int) strlen(f));
+            if_put("\"", 1);
+            break;
+        }
+        }
+
+        return after;
+    }
 
     for (i = 0; i < if_depth; i++)
         if (if_active[i] == name) {
@@ -2076,6 +2282,14 @@ static int ep_op(const char *op)
     return 1;
 }
 
+/* How deep inside an operand C says is not evaluated: the right of a `&&`
+ * whose left was false, of a `||` whose left was true, and the branch of a
+ * `?:` that was not taken. The text still has to be read, because it has to
+ * be stepped over, but nothing in it may be complained about -- `#if 0 &&
+ * 1/0` is a well-formed condition that is false, and a program that guards
+ * a division that way is entitled to have it not diagnosed. */
+static int if_dead;
+
 static long long if_primary(void)
 {
     long long v;
@@ -2092,20 +2306,58 @@ static long long if_primary(void)
         return v;
     }
     if (*ep == '\'') {
-        /* A character constant, whose value is what the byte is. */
+        /* A character constant, whose value is what the byte is. The
+         * escapes are the ones the lexer proper takes, numbers and all:
+         * `#if '\\x41' == 'A'` is a condition a program may reasonably
+         * write, and one that reads only `\\0` cannot answer it. */
         ep++;
         if (*ep == '\\') {
             ep++;
             switch (*ep) {
-            case 'n':  v = '\n'; break;
-            case 't':  v = '\t'; break;
-            case 'r':  v = '\r'; break;
-            case '0':  v = '\0'; break;
-            case '\\': v = '\\'; break;
-            case '\'': v = '\''; break;
-            default:   v = (unsigned char) *ep; break;
+            case 'n':  v = '\n'; ep++; break;
+            case 't':  v = '\t'; ep++; break;
+            case 'r':  v = '\r'; ep++; break;
+            case 'a':  v = '\a'; ep++; break;
+            case 'b':  v = '\b'; ep++; break;
+            case 'f':  v = '\f'; ep++; break;
+            case 'v':  v = '\v'; ep++; break;
+            case 'e':  v = 27;   ep++; break;
+            case '\\': v = '\\'; ep++; break;
+            case '\'': v = '\''; ep++; break;
+            case '"':  v = '"';  ep++; break;
+            case '?':  v = '?';  ep++; break;
+            case 'x': {
+                int d;
+
+                ep++;
+                if (if_digit((unsigned char) *ep, 16) < 0)
+                    acc_error_at(line, "'\\x' in an #if needs a hex digit");
+                v = 0;
+                while ((d = if_digit((unsigned char) *ep, 16)) >= 0) {
+                    v = v * 16 + d;
+                    ep++;
+                }
+                v = (signed char) v;
+                break;
             }
-            ep++;
+            default:
+                if (if_digit((unsigned char) *ep, 8) >= 0) {
+                    int n = 0, d;
+
+                    v = 0;
+                    while (n < 3
+                           && (d = if_digit((unsigned char) *ep, 8)) >= 0) {
+                        v = v * 8 + d;
+                        ep++;
+                        n++;
+                    }
+                    v = (signed char) v;
+                } else {
+                    v = (unsigned char) *ep;
+                    ep++;
+                }
+                break;
+            }
         } else {
             v = (signed char) *ep++;
         }
@@ -2179,13 +2431,19 @@ static long long if_mul(void)
             v = v * if_unary();
         } else if (ep_op("/")) {
             r = if_unary();
-            if (!r)
-                acc_error_at(line, "a division by zero in an #if");
+            if (!r) {
+                if (!if_dead)
+                    acc_error_at(line, "a division by zero in an #if");
+                r = 1;
+            }
             v = v / r;
         } else if (ep_op("%")) {
             r = if_unary();
-            if (!r)
-                acc_error_at(line, "a division by zero in an #if");
+            if (!r) {
+                if (!if_dead)
+                    acc_error_at(line, "a division by zero in an #if");
+                r = 1;
+            }
             v = v % r;
         } else {
             return v;
@@ -2287,11 +2545,15 @@ static long long if_and(void)
 {
     long long v = if_bitor();
 
-    /* Both sides are read whether or not the first decided it: what is on
-     * the right is text that has to be stepped over either way. */
+    /* The right is read whether or not the left decided it -- it is text
+     * that has to be stepped over either way -- but it is not evaluated
+     * when the left settled the answer. See if_dead. */
     while (ep_op("&&")) {
-        long long r = if_bitor();
+        long long r;
 
+        if_dead += !v;
+        r = if_bitor();
+        if_dead -= !v;
         v = v && r;
     }
 
@@ -2303,8 +2565,11 @@ static long long if_or(void)
     long long v = if_and();
 
     while (ep_op("||")) {
-        long long r = if_and();
+        long long r;
 
+        if_dead += !!v;
+        r = if_and();
+        if_dead -= !!v;
         v = v || r;
     }
 
@@ -2318,12 +2583,16 @@ static long long if_ternary(void)
     if (!ep_op("?"))
         return v;
     {
-        long long yes = if_ternary();
-        long long no;
+        long long yes, no;
 
+        if_dead += !v;
+        yes = if_ternary();
+        if_dead -= !v;
         if (!ep_op(":"))
             acc_error_at(line, "the '?' in an #if needs a ':'");
+        if_dead += !!v;
         no = if_ternary();
+        if_dead -= !!v;
 
         return v ? yes : no;
     }
@@ -2699,10 +2968,16 @@ static void do_error(void)
     acc_error_at(line, "#error %.*s", (int) (cursor - start), start);
 }
 
-/* `#pragma`, all of which acc ignores. C says an unknown one is ignored,
- * and acc knows none. */
+/* `#pragma`. C says an unknown one is ignored, and `once` is the only one
+ * acc knows: it says this file is to be read once however many times it is
+ * included. */
 static void do_pragma(void)
 {
+    char what[32];
+
+    skip_blanks();
+    if (directive_name(what, (int) sizeof what) && !strcmp(what, "once"))
+        once_add(src_real);
     rest_of_line();
 }
 
@@ -2712,14 +2987,42 @@ static void do_pragma(void)
  *
  * The number is the line *after* this one, and the newline that ends this
  * directive is still to be counted, so what is stored is one less. */
+/* Blanks in whichever text a #line is being read out of. */
+static const char *line_blanks(const char *p)
+{
+    while (*p == ' ' || *p == '\t' || *p == '\r')
+        p++;
+
+    return p;
+}
+
 static void do_line(void)
 {
+    const char *p;
     long n = 0;
-    int digits = 0;
+    int digits = 0, expanded = 0;
 
     skip_blanks();
-    while (is_digit((unsigned char) *cursor)) {
-        n = n * 10 + (*cursor++ - '0');
+
+    /* A #line whose number is not written as one has its tokens put through
+     * the macros first, which is what makes `#define WHERE 500` and then
+     * `#line WHERE` mean line 500. The common form costs nothing for it:
+     * a digit here is read where it stands. */
+    if (!is_digit((unsigned char) *cursor)) {
+        int len = logical_line();
+
+        if_len = 0;
+        if_depth = 0;
+        if_expand(body ? body : "", len);
+        if_put("", 1);
+        p = line_blanks(if_text);
+        expanded = 1;
+    } else {
+        p = cursor;
+    }
+
+    while (is_digit((unsigned char) *p)) {
+        n = n * 10 + (*p++ - '0');
         digits = 1;
         if (n > 0xffffff)
             acc_error_at(line, "the line number in a #line is too large");
@@ -2727,24 +3030,24 @@ static void do_line(void)
     if (!digits)
         acc_error_at(line, "#line needs a line number");
 
-    skip_blanks();
-    if (*cursor == '"') {
+    p = line_blanks(p);
+    if (*p == '"') {
         const char *start;
         char *keep;
 
-        cursor++;
-        start = cursor;
-        while (*cursor && *cursor != '"' && *cursor != '\n')
-            cursor++;
-        if (*cursor != '"')
+        p++;
+        start = p;
+        while (*p && *p != '"' && *p != '\n')
+            p++;
+        if (*p != '"')
             acc_error_at(line, "the file name in a #line is not closed");
 
-        keep = malloc((size_t) (cursor - start) + 1);
+        keep = malloc((size_t) (p - start) + 1);
         if (!keep)
             acc_error("out of memory for a #line");
-        memcpy(keep, start, (size_t) (cursor - start));
-        keep[cursor - start] = '\0';
-        cursor++;
+        memcpy(keep, start, (size_t) (p - start));
+        keep[p - start] = '\0';
+        p++;
 
         /* The name belongs to this level now, and whatever it had before
          * goes -- which for a file is the copy push_source made. */
@@ -2754,12 +3057,15 @@ static void do_line(void)
         src_owned |= OWN_PATH;
     }
 
-    skip_blanks();
-    if (*cursor && *cursor != '\n')
+    p = line_blanks(p);
+    if (*p && *p != '\n')
         acc_error_at(line, "#line takes a number and a file name, and "
                            "nothing else");
 
-    rest_of_line();
+    if (!expanded) {
+        cursor = (char *) p;
+        rest_of_line();
+    }
     line = (int) n - 1;
 }
 
@@ -2794,6 +3100,16 @@ static void directive(void)
 
     cursor++;                           /* the '#' */
     skip_blanks();
+
+    /* `# 200 "file"`, which is a #line with the word left out. Nothing
+     * writes it by hand, but it is what a preprocessor puts in front of the
+     * text it produces, and acc reads such a file whenever one is handed to
+     * it. The digits are left where they are for do_line to read. */
+    if (is_digit((unsigned char) *cursor)) {
+        do_line();
+
+        return;
+    }
     if (!directive_name(name, (int) sizeof name)) {
         rest_of_line();                 /* a '#' alone, which C allows */
 
@@ -2967,6 +3283,9 @@ static void keywords_init(void)
      * table. */
     keyword("__FILE__", 8, TK_FILE);
     keyword("__LINE__", 8, TK_LINE);
+    keyword("__DATE__", 8, TK_DATE);
+    keyword("__TIME__", 8, TK_TIME);
+    keyword("__STDC__", 8, TK_STDC);
     keyword("union", 5, TK_KW_UNION);
     keyword("volatile", 8, TK_KW_VOLATILE);
     keyword("_Bool", 5, TK_KW_BOOL);
@@ -3393,7 +3712,9 @@ static int escape(void)
  * the literal was meant to finish on, and the end of the file it all. */
 static int literal_char(int quote)
 {
-    int c = (unsigned char) *cursor;
+    int c;
+
+    c = (unsigned char) *cursor;
 
     if (c == '\0' || c == '\n')
         acc_error_at(tok_line, "a %s is not closed on the line it starts on",
@@ -3618,9 +3939,9 @@ restart:
         if (tok_name < kw_limit) {
             tok = (unsigned char) name_arena[tok_name - 3];
 
-            /* __FILE__ and __LINE__, whose value is not the word: they are
-             * the last two codes in the enum, so this is one compare on the
-             * path every keyword in the program takes. */
+            /* The names the compiler defines, whose value is not the word:
+             * they are the last codes in the enum, so this is one compare
+             * on the path every keyword in the program takes. */
             if (tok >= TK_FILE)
                 predefined();
 

@@ -114,6 +114,7 @@ test: all unit agon
 	@test/include.sh
 	@test/macro.sh
 	@test/build.sh
+	@ACC=$(BIN)/acc-asan test/cpp89.sh
 	@ACC=$(BIN)/acc-asan test/reloc.sh
 	@ACC=$(BIN)/acc-asan test/object.sh
 	@ACC=$(BIN)/acc-asan test/bss.sh

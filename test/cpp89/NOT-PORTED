@@ -1,0 +1,43 @@
+Tests in Decus CPP's suite that are not here, and why.
+
+#if long suffix                                      checks the preprocessor output, which acc has no flag to show
+Self-referential macro does not recurse              checks the preprocessor output, which acc has no flag to show
+Mutually recursive macros                            checks the preprocessor output, which acc has no flag to show
+#line sets filename                                  checks the preprocessor output, which acc has no flag to show
+#error produces diagnostic                           checks the preprocessor output, which acc has no flag to show
+#pragma passes through (not an error)                checks the preprocessor output, which acc has no flag to show
+Other #pragma directives appear in output            checks the preprocessor output, which acc has no flag to show
+#pragma once is not passed to output                 checks the preprocessor output, which acc has no flag to show
+-D defines a macro                                   acc has no -D or -U
+-D without value defines as 1                        acc has no -D or -U
+-U undefines a preset                                acc has no -D or -U
+Multiple -D options                                  acc has no -D or -U
+/* */ comments are removed                           checks the preprocessor output, which acc has no flag to show
+-C flag preserves comments                           checks the preprocessor output, which acc has no flag to show
+// comment text does not appear in output            checks the preprocessor output, which acc has no flag to show
+-C flag preserves // comments                        checks the preprocessor output, which acc has no flag to show
+#error includes the token sequence                   checks the preprocessor output, which acc has no flag to show
+#error with macro name (not expanded)                checks the preprocessor output, which acc has no flag to show
+#line with macro-expanded filename                   checks the preprocessor output, which acc has no flag to show
+# collapses internal whitespace                      checks the preprocessor output, which acc has no flag to show
+# trims leading/trailing whitespace                  checks the preprocessor output, which acc has no flag to show
+Mutual recursion stops silently (no error)           checks the preprocessor output, which acc has no flag to show
+Function-like mutual recursion stops silently        checks the preprocessor output, which acc has no flag to show
+Trigraphs not processed by default                   checks the preprocessor output, which acc has no flag to show
+Trigraph ??= -> # with -T                            trigraphs, which acc does not process
+Trigraph ??( -> [ and ??) -> ] with -T               trigraphs, which acc does not process
+Trigraph ??/ -> backslash with -T                    trigraphs, which acc does not process
+Trigraph ??< -> { and ??> -> } with -T               trigraphs, which acc does not process
+Trigraph ??' -> ^ with -T                            trigraphs, which acc does not process
+Trigraph ??! -> | with -T                            trigraphs, which acc does not process
+Trigraph ??- -> ~ with -T                            trigraphs, which acc does not process
+Multiple trigraphs on one line with -T               trigraphs, which acc does not process
+XSTR with variadic macro                             the expansion calls STR with two arguments; gcc refuses it too
+__VA_OPT__ with non-empty variadic args              __VA_OPT__ is C23, and acc is a C99 compiler
+__VA_OPT__ with empty variadic args                  __VA_OPT__ is C23, and acc is a C99 compiler
+__VA_OPT__ with variadic-only macro                  __VA_OPT__ is C23, and acc is a C99 compiler
+__VA_OPT__ with literal content (no __VA_ARGS__)     __VA_OPT__ is C23, and acc is a C99 compiler
+__VA_OPT__ nested parens in content                  __VA_OPT__ is C23, and acc is a C99 compiler
+__VA_OPT__ solves trailing comma problem             __VA_OPT__ is C23, and acc is a C99 compiler
+__VA_OPT__ with prescan of variadic args             __VA_OPT__ is C23, and acc is a C99 compiler
+__VA_OPT__ stringify of variadic args                __VA_OPT__ is C23, and acc is a C99 compiler

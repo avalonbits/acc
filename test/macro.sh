@@ -105,6 +105,17 @@ same "blanks at the end of a definition" \
 'int main(void) { return 42; }
 '
 
+# A join in the middle of a token in the body. The name a #define is about
+# is read straight from the file, so that half has always worked; the body
+# is gathered first, and gathering it used to leave a space behind where
+# the join was -- which turned one name into two.
+same "a join in the middle of a definition" \
+'#define NAME ab\
+cd
+int main(void) { int abcd = 42; return NAME; }
+' 'int main(void) { int abcd = 42; return abcd; }
+'
+
 same "a definition ending in a comment" \
 '#define SIZE 42 /* how big */
 int main(void) { return SIZE; }
@@ -631,6 +642,27 @@ same "shifts, and the conditional operator" \
 int main(void) { return 42; }
 #endif
 ' 'int main(void) { return 42; }
+'
+
+# The sides C says are not evaluated: the right of a `&&` that is already
+# false, of a `||` that is already true, and the branch of a `?:` that is
+# not taken. A program is entitled to guard a division that way, and a
+# compiler that divides anyway refuses a condition that is well formed.
+same "a divide an #if never reaches" \
+'#if 0 && 1 / 0
+int broken_and;
+#endif
+#if 1 || 1 / 0
+#define FROM_OR 20
+#endif
+#if 1 ? 1 : 1 / 0
+#define FROM_YES 20
+#endif
+#if 0 ? 1 / 0 : 1
+#define FROM_NO 2
+#endif
+int main(void) { return FROM_OR + FROM_YES + FROM_NO; }
+' 'int main(void) { return 20 + 20 + 2; }
 '
 
 refuses "a division by zero in an #if" "division by zero" \

@@ -29,6 +29,11 @@ cap=$(sed -n 's/^#define SRC_CAP  *\([0-9]*\).*/\1/p' src/lex.c)
 
 # What goes after the padding: one of everything whose scan walks forward
 # over characters, so that each in turn is the thing the edge lands in.
+#
+# The backslash-joined name and string are here for the window in
+# particular. The join is taken out of the window as it is filled, which
+# moves everything after it down; sliding one across the edge is what says
+# the part still to be read moves with it.
 payload() {
     cat <<'EOF'
 /* a block comment
@@ -36,6 +41,10 @@ payload() {
  * a window's edge can fall inside
  */
 int a_long_identifier_to_straddle_the_edge = 7;
+int split\
+_over_two_lines = 11;
+char *joined = "half \
+and half";
 char *text_with_escapes = "a string \"with\" escapes and a \\ backslash";
 double number = 1234.56789e-12;
 long long wide_value = 1234567890123LL;
@@ -47,6 +56,7 @@ int main(void) {
     shifted = shifted == 3 ? 42 : 42;
 
     return number > 0.0 && wide_value > 0 && text_with_escapes[0] == 'a'
+           && split_over_two_lines == 11 && joined[5] == 'a'
            ? shifted : 0;
 }
 EOF
@@ -85,6 +95,12 @@ for pad in $(seq $((cap - 80)) $((cap + 80))); do
             while [ $i -lt "$rest" ]; do printf '\n'; i=$((i + 1)); done
         fi
         payload
+        # And a window's worth behind it. Without this the payload is the
+        # last thing in the file, the window that holds it ends where the
+        # file does, and the part of a refill that carries the unread tail
+        # forward is never reached -- which is the part a join has to move
+        # along with everything else.
+        for _ in $(seq $((cap / flen + 2))); do printf '%s\n' "$filler"; done
     } > "$tmp/pad.c"
 
     if ! "$ACC" "$tmp/pad.c" -o "$tmp/pad/out.bin" >"$tmp/err" 2>&1; then
