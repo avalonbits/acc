@@ -3010,28 +3010,23 @@ static int va_slot(Type type, int ext)
     return type_wide(type) ? 2 * ACC_INT_SIZE : ACC_INT_SIZE;
 }
 
-/* The address of the va_list variable a form names: a local, a parameter,
- * or a global, by its name. */
+/* The address of the va_list a form is given. C99 asks that va_arg and the
+ * rest be handed the va_list object itself, and a function that walks
+ * someone else's arguments is handed a pointer to it -- so `va_arg(*ap, T)`
+ * and `va_arg(aps[i], T)` are as ordinary as `va_arg(ap, T)`, and all three
+ * are the same question: where does the object live? That is what `&` asks
+ * of an operand, so it is asked here the same way, and what comes back is a
+ * pointer to the va_list -- a char ** -- which is what says it was one. */
 static void va_list_address(void)
 {
-    int sym;
-    const Sym *v;
+    int line = tok_line;
 
-    if (tok != TK_IDENT)
-        acc_error_at(tok_line, "expected the va_list's name, found %s",
+    if (tok != TK_IDENT && tok != TK_STAR && tok != TK_LPAREN)
+        acc_error_at(line, "expected the va_list, found %s",
                      tok_spelling(tok));
-    sym = sym_find(tok_name);
-    if (sym == SYM_NONE)
-        acc_error_at(tok_line, "'%s' is not declared", name_text(tok_name));
-    v = sym_at(sym);
-    if (v->type != type_ptr_to(TY_CHAR)
-        || (v->kind != SYM_LOCAL && v->kind != SYM_GLOBAL))
-        acc_error_at(tok_line, "'%s' is not a va_list", name_text(tok_name));
-    if (v->kind == SYM_LOCAL)
-        vaddr_local(v->val, v->type);
-    else
-        global_address(sym);
-    next();
+    address_of_operand();
+    if (vtype() != type_ptr_to(type_ptr_to(TY_CHAR)))
+        acc_error_at(line, "this has to be a va_list, and it is not");
 }
 
 /* What <stdarg.h> would give, as the language's own words. A va_list is a
