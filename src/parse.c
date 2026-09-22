@@ -737,6 +737,7 @@ static void readonly_address(int sym)
 __attribute__((noinline))
 static void address_of_literal(int line);
 static int  address_of_operand(void);
+static int  string_address(void);
 
 static void address_of(void)
 {
@@ -779,6 +780,28 @@ static int address_of_operand(void)
             vderef();
 
         return 0;
+    }
+
+    /* `&"x"[1]`, and `&"x"` itself. A string literal is an array with static
+     * storage, so it has an address like any other object. The bytes are
+     * written as the address of the first, so a subscript after it is walked
+     * for the element's address and stops short of reading it -- which is
+     * the one thing string_value() does that is not wanted here.
+     *
+     * With nothing after it the answer is the whole array: the same three
+     * bytes, typed as a pointer to all of them, exactly as a named array is
+     * below. */
+    if (tok == TK_STRING) {
+        int len = string_address();
+
+        if (tok_postfix()) {
+            postfix_chain(POST_VALUE);
+
+            return 0;
+        }
+        vset_type(type_ptr_to(TY_EXT), ext_array(TY_CHAR, 0, len + 1));
+
+        return 1;
     }
 
     if (tok != TK_IDENT)
@@ -873,16 +896,27 @@ static int string_gather(void)
     return len;
 }
 
-/* A string literal as an operand: an array of char, somewhere in the image,
- * which is the address of its first character -- a constant pointer, since
- * where it went is known the moment it is written. */
-__attribute__((noinline))
-static void string_value(void)
+/* A string literal's bytes in the image and their address on the stack, with
+ * whatever follows it left alone. Answers how many bytes were written, which
+ * is what the type of the whole array is made from. A constant pointer,
+ * since where the bytes went is known the moment they are written. */
+static int string_address(void)
 {
     int len = string_gather();
 
     vpush_const(gen_data(str_joined, len), type_ptr_to(TY_CHAR));
     vset_addr();
+
+    return len;
+}
+
+/* A string literal as an operand: an array of char, which is the address of
+ * its first character, and then the subscript that may follow it -- which
+ * ends in reading the byte, this being a value that is wanted. */
+__attribute__((noinline))
+static void string_value(void)
+{
+    string_address();
     if (tok_postfix())
         subscript_value();
 }
