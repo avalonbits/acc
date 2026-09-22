@@ -608,6 +608,86 @@ else
     ok "an assert that fails stops the program" "$?" 134
 fi
 
+# The exact half of <math.h>: nothing here is an approximation, so every
+# check is an equality on the bits and not a tolerance. Cross-checked once
+# against agondev's own library, which agrees with all of it but one --
+# libagon's modf(-4.0) gives +0.0 where C99 asks for -0.0.
+cat > "$tmp/math1.c" <<'MATH1'
+#include <math.h>
+
+static unsigned long ub(double x) { union { float f; unsigned long u; } v; v.f = (float) x; return v.u; }
+static int same(double a, double b) { return ub(a) == ub(b); }
+
+int main(void) {
+    int r = 0;
+    double ip;
+
+    /* trunc, floor, ceil, round: every combination of sign and fraction. */
+    if (same(trunc(2.7f), 2.0f) && same(trunc(-2.7f), -2.0f)
+        && same(trunc(0.5f), 0.0f) && same(trunc(-0.5f), -0.0f)) r++;
+    if (same(floor(2.7f), 2.0f) && same(floor(-2.7f), -3.0f)
+        && same(floor(-0.5f), -1.0f) && same(floor(3.0f), 3.0f)) r++;
+    if (same(ceil(2.1f), 3.0f) && same(ceil(-2.1f), -2.0f)
+        && same(ceil(0.5f), 1.0f) && same(ceil(-3.0f), -3.0f)) r++;
+    if (same(round(2.5f), 3.0f) && same(round(-2.5f), -3.0f)
+        && same(round(2.4f), 2.0f) && same(round(-0.5f), -1.0f)) r++;
+
+    /* rint breaks a tie to even, where round breaks it away from zero. */
+    if (same(rint(2.5f), 2.0f) && same(rint(3.5f), 4.0f)
+        && same(rint(-2.5f), -2.0f) && same(rint(2.4f), 2.0f)) r++;
+
+    /* Large values are whole already and come back untouched. */
+    if (same(trunc(1e20f), 1e20f) && same(floor(1e20f), 1e20f)
+        && same(round(1e20f), 1e20f) && same(rint(1e20f), 1e20f)) r++;
+
+    /* fabs and copysign, including the sign of zero. */
+    if (same(fabs(-3.5f), 3.5f) && same(fabs(3.5f), 3.5f)
+        && ub(fabs(-0.0f)) == ub(0.0f)) r++;
+    if (same(copysign(3.5f, -1.0f), -3.5f) && same(copysign(-3.5f, 1.0f), 3.5f)
+        && ub(copysign(1.0f, -0.0f)) == ub(-1.0f)) r++;
+
+    /* frexp and ldexp, which have to undo each other. */
+    {
+        int e = 99;
+        double m = frexp(24.0f, &e);
+
+        if (same(m, 0.75f) && e == 5 && same(ldexp(m, e), 24.0f)) r++;
+        m = frexp(-0.125f, &e);
+        if (same(m, -0.5f) && e == -2) r++;
+        m = frexp(0.0f, &e);
+        if (same(m, 0.0f) && e == 0) r++;
+    }
+    if (same(ldexp(1.0f, 10), 1024.0f) && same(ldexp(3.0f, -2), 0.75f)) r++;
+    if (same(scalbn(1.5f, 100), 1.5f * 1048576.0f * 1048576.0f * 1048576.0f
+                                    * 1048576.0f * 1048576.0f)) r++;
+
+    /* modf, whose fraction keeps the sign even when it is zero. */
+    if (same(modf(3.75f, &ip), 0.75f) && same(ip, 3.0f)) r++;
+    if (same(modf(-3.75f, &ip), -0.75f) && same(ip, -3.0f)) r++;
+    if (ub(modf(-4.0f, &ip)) == ub(-0.0f) && same(ip, -4.0f)) r++;
+
+    /* fmod: exact, and with the sign of the left. */
+    if (same(fmod(7.0f, 3.0f), 1.0f) && same(fmod(-7.0f, 3.0f), -1.0f)
+        && same(fmod(7.0f, -3.0f), 1.0f)) r++;
+    if (same(fmod(5.5f, 2.0f), 1.5f) && same(fmod(1.0f, 4.0f), 1.0f)
+        && same(fmod(9.0f, 3.0f), 0.0f)) r++;
+    if (same(fmod(1e10f, 3.0f), 1.0f)) r++;     /* 10^10 is exact, and 1 mod 3 */
+
+    /* fmax, fmin, fdim. */
+    if (same(fmax(1.0f, 2.0f), 2.0f) && same(fmin(1.0f, 2.0f), 1.0f)
+        && same(fdim(5.0f, 3.0f), 2.0f) && same(fdim(3.0f, 5.0f), 0.0f)) r++;
+
+    /* What a number is. */
+    if (fpclassify(1.0f) == FP_NORMAL && fpclassify(0.0f) == FP_ZERO
+        && fpclassify(-0.0f) == FP_ZERO) r++;
+    if (signbit(-1.0f) && !signbit(1.0f) && signbit(-0.0f)) r++;
+    if (isfinite(1.0f) && !isnan(1.0f) && !isinf(1.0f) && isnormal(1.0f)) r++;
+
+    return r + 19;              /* 23 checks */
+}
+MATH1
+runs_file "the exact half of <math.h>" "$tmp/math1.c"
+
 # A name no member defines is still a name nothing defines.
 printf 'int missing(void);\nint main(void) { return missing(); }\n' > "$tmp/gone.c"
 "$ACC" -c "$tmp/gone.c" -o "$tmp/gone.o" >/dev/null 2>&1
