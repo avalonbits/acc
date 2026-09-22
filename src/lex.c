@@ -2939,6 +2939,91 @@ static void do_error(void)
     acc_error_at(line, "#error %.*s", (int) (cursor - start), start);
 }
 
+/* The macros a compiler is expected to have defined before it reads a line.
+ *
+ * None of them is in C. What they are is the way a program written for a
+ * machine it has not been told about asks what that machine is: <stdint.h>
+ * is written in terms of them, and so is every test that wants an integer
+ * of a named width without a header to get it from. A compiler that does
+ * not have them is one such a program cannot be compiled by, and of the
+ * gcc torture tests acc turns down, more are turned down for the want of
+ * these than for anything else.
+ *
+ * The values are agondev's, read out of its clang with `-dM -E`, because
+ * they have to be: a program compiled by one and then the other has to be
+ * the same program, and these say how wide everything is. They are macros
+ * and not words of the language because what most of them stand for is two
+ * or three tokens, and because a program is allowed to take them back --
+ * gcc lets a file #undef them, and so does this.
+ */
+static const struct {
+    const char *name;
+    const char *text;
+} predefined_macros[] = {
+    /* What a type of a given width is called here. */
+    { "__SIZE_TYPE__",       "unsigned int" },
+    { "__PTRDIFF_TYPE__",    "int" },
+    { "__WCHAR_TYPE__",      "short" },
+    { "__WINT_TYPE__",       "int" },
+    { "__INTPTR_TYPE__",     "int" },
+    { "__UINTPTR_TYPE__",    "unsigned int" },
+    { "__INTMAX_TYPE__",     "long long int" },
+    { "__UINTMAX_TYPE__",    "long long unsigned int" },
+    { "__INT8_TYPE__",       "signed char" },
+    { "__UINT8_TYPE__",      "unsigned char" },
+    { "__INT16_TYPE__",      "short" },
+    { "__UINT16_TYPE__",     "unsigned short" },
+    { "__INT24_TYPE__",      "int" },
+    { "__UINT24_TYPE__",     "unsigned int" },
+    { "__INT32_TYPE__",      "long int" },
+    { "__UINT32_TYPE__",     "long unsigned int" },
+    { "__INT64_TYPE__",      "long long int" },
+    { "__UINT64_TYPE__",     "long long unsigned int" },
+
+    /* How wide each of them is, in bytes, and a char in bits. */
+    { "__CHAR_BIT__",        "8" },
+    { "__SIZEOF_SHORT__",    "2" },
+    { "__SIZEOF_INT__",      "3" },
+    { "__SIZEOF_LONG__",     "4" },
+    { "__SIZEOF_LONG_LONG__", "8" },
+    { "__SIZEOF_FLOAT__",    "4" },
+    { "__SIZEOF_DOUBLE__",   "4" },
+    { "__SIZEOF_LONG_DOUBLE__", "8" },
+    { "__SIZEOF_POINTER__",  "3" },
+    { "__SIZEOF_SIZE_T__",   "3" },
+    { "__SIZEOF_PTRDIFF_T__", "3" },
+    { "__SIZEOF_WCHAR_T__",  "2" },
+    { "__SIZEOF_WINT_T__",   "3" },
+
+    /* And the largest each will hold. */
+    { "__SCHAR_MAX__",       "127" },
+    { "__SHRT_MAX__",        "32767" },
+    { "__INT_MAX__",         "8388607" },
+    { "__LONG_MAX__",        "2147483647L" },
+    { "__LONG_LONG_MAX__",   "9223372036854775807LL" },
+
+    /* Which end the low byte is at. The three orders are named so that a
+     * program can compare against them without knowing the numbers. */
+    { "__ORDER_LITTLE_ENDIAN__", "1234" },
+    { "__ORDER_BIG_ENDIAN__",    "4321" },
+    { "__ORDER_PDP_ENDIAN__",    "3412" },
+    { "__BYTE_ORDER__",      "__ORDER_LITTLE_ENDIAN__" }
+};
+
+static void predefined_macros_init(void)
+{
+    int i;
+
+    for (i = 0; i < (int) (sizeof predefined_macros
+                           / sizeof *predefined_macros); i++) {
+        const char *name = predefined_macros[i].name;
+        const char *text = predefined_macros[i].text;
+
+        macro_define(name_intern(name, (int) strlen(name)),
+                     text, (int) strlen(text), NULL, -1, 0);
+    }
+}
+
 /* A macro given on the command line, as though the file had begun with the
  * directive that says it.
  *
@@ -4170,4 +4255,5 @@ void expect_failed(const char *what)
 void lex_init(void)
 {
     keywords_init();
+    predefined_macros_init();
 }
