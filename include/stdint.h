@@ -21,6 +21,29 @@ typedef unsigned long long uint64_t;
 typedef int                intptr_t;
 typedef unsigned int       uintptr_t;
 
+/* What each of them holds. An int here is twenty-four bits, so INT24_MAX is
+ * the odd one and the one that matters; the rest are the widths every C has.
+ */
+#define INT8_MIN     (-128)
+#define INT8_MAX     127
+#define UINT8_MAX    255
+#define INT16_MIN    (-32768)
+#define INT16_MAX    32767
+#define UINT16_MAX   65535
+#define INT24_MIN    (-8388608)
+#define INT24_MAX    8388607
+#define UINT24_MAX   16777215u
+#define INT32_MIN    (-2147483647L - 1L)
+#define INT32_MAX    2147483647L
+#define UINT32_MAX   4294967295UL
+#define INT64_MIN    (-9223372036854775807LL - 1LL)
+#define INT64_MAX    9223372036854775807LL
+#define UINT64_MAX   18446744073709551615ULL
+#define INTPTR_MIN   INT24_MIN
+#define INTPTR_MAX   INT24_MAX
+#define UINTPTR_MAX  UINT24_MAX
+#define SIZE_MAX     UINT24_MAX
+
 /* Here as well as in <stddef.h>, because that is where agondev's puts it and
  * programs written against those headers reach for it after including this
  * one. Guarded, so that including both says it once. */

@@ -4352,7 +4352,8 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
             if (to < 0)
                 continue;
             *keep = *scan;
-            keep++->at = to;
+            keep->at = to;
+            keep++;
         }
         nfixups = (int) (keep - fixups);
 
@@ -4363,7 +4364,8 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
             if (to < 0)
                 continue;
             *rkeep = *rscan;
-            rkeep++->at = to;
+            rkeep->at = to;
+            rkeep++;
         }
         nrt_fixups = (int) (rkeep - rt_fixups);
     }
@@ -6534,6 +6536,43 @@ int gen_cond_begin(int *slot)
  * stub that does not exist yet. What the answer's type is depends on the
  * third operand, which has not been parsed, so converting now would be
  * guessing. */
+/* That the two sides of a ?: agree about being a struct, which C asks for
+ * however the condition turned out. The folded path keeps one side and
+ * throws the other away, so without this `1 ? s : t` on two different
+ * structs was accepted for the one reason that nothing looked at t. */
+void gen_cond_same(Type middle, int middle_ext)
+{
+    const Value *top = vsp - 1;
+    int both = type_is_struct(middle);
+
+    if (type_is_struct(top->type) != both
+        || (both && top->ext != (middle_ext & 0xff)))
+        acc_error_at(tok_line, "the two sides of ?: have to be the same struct "
+                               "or union, or neither be one");
+}
+
+/* The same two, where both sides are void: `c ? f() : g()`, which C says is
+ * itself void. There is nothing to carry across the join, so there is no
+ * slot to park it in and no type to reconcile -- only the two paths, one of
+ * which runs. acc's own `expect` is written that way, and parking a value
+ * that does not exist is what stopped acc compiling its own parser. */
+int gen_cond_middle_void(void)
+{
+    vdrop();                            /* what the middle did, not a value */
+
+    return jump_op(JP_ANY);
+}
+
+void gen_cond_end_void(int to_stub)
+{
+    if (vtype() != TY_VOID)
+        acc_error_at(tok_line, "one side of ?: gives a value and the other "
+                               "is void, so there is no answer to give");
+    vdrop();
+    gen_label(to_stub);
+    vpush(VAL_VOID, TY_VOID, 0);
+}
+
 int gen_cond_middle(int *slot, Type *middle, int *middle_ext, int *middle_null)
 {
     Value *top = vsp - 1;

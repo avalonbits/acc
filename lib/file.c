@@ -227,3 +227,37 @@ int ferror(FILE *f)
 {
     return f ? f->error : 1;
 }
+
+/* Printing to a file, which is the formatter in lib/printf.c with this file
+ * as where the characters go. The pointing is done here so that printf does
+ * not name anything in this file: a program that prints and never opens a
+ * file should not carry any of this, and a library member is taken whole. */
+extern FILE  *acc_sink_file;
+extern int  (*acc_sink_putc)(int, FILE *);
+extern char  *acc_sink_buf;
+int acc_format(const char *fmt, va_list ap);
+
+int vfprintf(FILE *f, const char *fmt, va_list ap)
+{
+    int n;
+
+    acc_sink_buf = NULL;
+    acc_sink_file = f;
+    acc_sink_putc = fputc;
+    n = acc_format(fmt, ap);
+    acc_sink_file = NULL;
+
+    return n;
+}
+
+int fprintf(FILE *f, const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vfprintf(f, fmt, ap);
+    va_end(ap);
+
+    return n;
+}

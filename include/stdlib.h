@@ -16,5 +16,6 @@ int   abs(int n);
 long  labs(long n);
 int   atoi(const char *s);
 long  atol(const char *s);
+long  strtol(const char *s, char **end, int base);
 
 #endif

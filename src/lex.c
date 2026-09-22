@@ -1561,11 +1561,28 @@ static int logical_line(void)
 
     for (;;) {
         while (*cursor && *cursor != '\n') {
+            int comment = cursor[0] == '/'
+                          && (cursor[1] == '/' || cursor[1] == '*');
+
             if (len == body_cap) {
                 body_cap = body_cap ? body_cap * 2 : 256;
                 body = realloc(body, (size_t) body_cap);
                 if (!body)
                     acc_error("out of memory for a macro");
+            }
+
+            /* A comment is one space. C takes them out before it reads
+             * directives, so one that opens on a directive's line and closes
+             * on a later one is still part of that directive -- and what
+             * follows the close is still part of it too. Read as text, the
+             * body kept the comment's opening and the lines under it were
+             * compiled as though they were code, which is what a define with
+             * a comment laid out over two lines did to acc's own gen.c. */
+            if (comment) {
+                skip_comment();
+                body[len++] = ' ';
+
+                continue;
             }
             body[len++] = *cursor++;
         }

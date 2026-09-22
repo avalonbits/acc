@@ -57,9 +57,24 @@ static int current_fn = SYM_NONE;
 static void deref_rest(void);
 static void conditional_rest(void);
 static void static_assert_declaration(void);
-/* Which tokens are `+=` and its kin, filled in below: paren_deref_step asks
- * before that point, so the table is named here. */
-static const unsigned char compound_op[TK_COUNT];
+/* `x op= y` is `x = x op y` with x evaluated once -- which for a local is no
+ * restriction at all, and for `*p op= y` means the address is worked out
+ * once and used twice, to read and then to write.
+ *
+ * The right side is parsed whole and with no narrow destination: it is one
+ * operand of op, and truncating it to the width of x before op had seen it
+ * would give `c += 200 + 100` the wrong answer. The operator itself may still
+ * run at x's width, for the same reason `c = c + y` may -- the result goes
+ * straight into x and nothing wider ever sees it.
+ */
+static const unsigned char compound_op[TK_COUNT] = {
+    [TK_ADD_ASSIGN] = TK_PLUS,    [TK_SUB_ASSIGN] = TK_MINUS,
+    [TK_MUL_ASSIGN] = TK_STAR,    [TK_DIV_ASSIGN] = TK_SLASH,
+    [TK_MOD_ASSIGN] = TK_PERCENT,
+    [TK_AND_ASSIGN] = TK_AMP,     [TK_OR_ASSIGN]  = TK_PIPE,
+    [TK_XOR_ASSIGN] = TK_CARET,
+    [TK_SHL_ASSIGN] = TK_SHL,     [TK_SHR_ASSIGN] = TK_SHR
+};
 static void primary(void);
 static void binary_rest(int min_prec);
 
@@ -568,6 +583,17 @@ void symbol_value(int sym, NameRef name)
                        tok == TK_INC ? TK_PLUS : TK_MINUS);
         vset_quals(local->quals);
         next();
+
+        /* What `p++` leaves is a value, and a value can be gone on with:
+         * `f++->at` is the member of where f pointed, and the chain reads
+         * left to right. Stopping here made that `expected ';', found '->'`,
+         * which acc's own gen.c says twice.
+         *
+         * Through subscript_value, which is what every other value with a
+         * chain after it uses: the chain can end holding a place rather than
+         * what is in it, and then the place has to be read. Calling the
+         * chain alone assigned the address of the member instead. */
+        subscript_value();
 
         return;
     }
@@ -1126,7 +1152,52 @@ static void logical_rest(int op, int op_prec)
 {
     int settles = (op == TK_OROR);      /* the truth that decides it early */
     Type outer = narrow_dest;
-    int early;
+    int early, left, right;
+    Type left_type, right_type;
+
+    /* Both sides known while compiling, which C says is a constant
+     * expression and acc did not: `1 && 1` was refused as an initial value
+     * and as an array's size, and acc's own header asserts with one -- which
+     * is what stopped acc compiling itself.
+     *
+     * Folded here and not in the code generator because a short circuit is a
+     * branch, and a branch is not a constant. The left is taken off first so
+     * that the mark, and the rolling back of it, describe the stack without
+     * it. */
+    if (vconst_top(&left, &left_type) && !type_float(left_type)) {
+        GenMark mark;
+
+        vdrop();
+        gen_mark(&mark);
+        narrow_dest = 0;
+        primary();
+        binary_rest(op_prec + 1);
+        narrow_dest = outer;
+
+        if (vconst_top(&right, &right_type) && !type_float(right_type)) {
+            gen_rollback(&mark);        /* neither side wanted any code */
+            vpush_const(op == TK_OROR ? (left || right) : (left && right),
+                        TY_INT);
+
+            return;
+        }
+
+        /* The left settles it on its own, so the right is not evaluated and
+         * whatever working it out took goes away with it. */
+        if (settles ? left != 0 : left == 0) {
+            gen_rollback(&mark);
+            vpush_const(settles ? 1 : 0, TY_INT);
+
+            return;
+        }
+
+        /* It does not settle it, so the answer is the right as a one or a
+         * nought -- and there is no branch, because there is nothing left to
+         * skip over. */
+        vtruth(TK_NE);
+
+        return;
+    }
 
     early = gen_logic_left(settles);
 
@@ -1178,24 +1249,6 @@ static void binary(int min_prec)
 
 /* Assignment is right associative and its left side has to be a name, which
  * is the whole of what a milestone with no pointers can assign to. */
-/* `x op= y` is `x = x op y` with x evaluated once -- which for a local is no
- * restriction at all, and for `*p op= y` means the address is worked out
- * once and used twice, to read and then to write.
- *
- * The right side is parsed whole and with no narrow destination: it is one
- * operand of op, and truncating it to the width of x before op had seen it
- * would give `c += 200 + 100` the wrong answer. The operator itself may still
- * run at x's width, for the same reason `c = c + y` may -- the result goes
- * straight into x and nothing wider ever sees it.
- */
-static const unsigned char compound_op[TK_COUNT] = {
-    [TK_ADD_ASSIGN] = TK_PLUS,    [TK_SUB_ASSIGN] = TK_MINUS,
-    [TK_MUL_ASSIGN] = TK_STAR,    [TK_DIV_ASSIGN] = TK_SLASH,
-    [TK_MOD_ASSIGN] = TK_PERCENT,
-    [TK_AND_ASSIGN] = TK_AMP,     [TK_OR_ASSIGN]  = TK_PIPE,
-    [TK_XOR_ASSIGN] = TK_CARET,
-    [TK_SHL_ASSIGN] = TK_SHL,     [TK_SHR_ASSIGN] = TK_SHR
-};
 
 static Type compound_narrow(int op, Type dest)
 {
@@ -1528,6 +1581,51 @@ static void conditional_rest(void)
     Type outer = narrow_dest;
     Type middle;
     int slot, to_third, to_stub, middle_null, middle_ext;
+    int cond;
+    Type cond_type;
+
+    /* The condition is known while compiling, so one side is the answer and
+     * the other is not evaluated. C says that is a constant expression; acc
+     * used to generate both paths and a branch between them, which is not,
+     * and its own header asserts with `? 1 : -1`.
+     *
+     * Both sides are still parsed, because the tokens have to be read either
+     * way. Only one is kept: the other's code is rolled back, which is what
+     * makes it unevaluated rather than merely unused.
+     *
+     * The answer takes the type of the side that was kept and not the type
+     * the two sides have in common, which for `1 ? 2 : 3L` is long. The
+     * value is the same and what a constant expression is asked for is the
+     * value; a program that can tell the difference is asking sizeof about a
+     * conditional, which acc does not do. */
+    if (vconst_top(&cond, &cond_type) && !type_float(cond_type)) {
+        GenMark before_middle, after_middle;
+        Type kept;
+        int kept_ext;
+
+        next();
+        vdrop();
+        gen_mark(&before_middle);
+        narrow_dest = 0;
+        comma_expr();
+        expect(TK_COLON, "':'");
+        kept = vtype();                 /* noted before either is rolled back */
+        kept_ext = vext();
+
+        if (cond) {
+            gen_mark(&after_middle);
+            conditional();
+            gen_cond_same(kept, kept_ext);
+            gen_rollback(&after_middle);
+        } else {
+            gen_rollback(&before_middle);
+            conditional();
+            gen_cond_same(kept, kept_ext);
+        }
+        narrow_dest = outer;
+
+        return;
+    }
 
     next();
     to_third = gen_cond_begin(&slot);
@@ -1535,6 +1633,19 @@ static void conditional_rest(void)
     narrow_dest = 0;
     comma_expr();
     expect(TK_COLON, "':'");
+
+    /* Both sides void makes the whole of it void, and there is nothing to
+     * carry across the join. */
+    if (vtype() == TY_VOID) {
+        to_stub = gen_cond_middle_void();
+        gen_label(to_third);
+        conditional();
+        gen_cond_end_void(to_stub);
+        narrow_dest = outer;
+
+        return;
+    }
+
     to_stub = gen_cond_middle(&slot, &middle, &middle_ext, &middle_null);
 
     gen_label(to_third);
@@ -2273,7 +2384,8 @@ static int constant_int(const char *what, int line)
     Type outer = narrow_dest;
 
     narrow_dest = 0;
-    binary(PREC_LOWEST);
+    conditional();              /* `?:` too: it is a constant expression when
+                                 * its condition and the side it picks are */
     narrow_dest = outer;
 
     return constant_folded(what, line, before);
@@ -2334,7 +2446,8 @@ static int array_size(const char *what, int line, int *variable)
     *variable = 0;
     gen_mark(&mark);
     narrow_dest = 0;
-    binary(PREC_LOWEST);
+    conditional();              /* `?:` as well, which is how C99 asserts at
+                                 * build time: an array of `cond ? 1 : -1` */
     narrow_dest = outer;
 
     if (vconst_top(&val, &type) && out_here() == before

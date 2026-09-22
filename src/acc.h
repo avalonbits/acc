@@ -831,6 +831,9 @@ int  gen_cond_middle(int *slot, Type *middle, int *middle_ext, int *middle_null)
 void gen_cond_end(int to_stub, int slot, Type middle, int middle_ext,
                   int middle_null);
 void gen_label(int hole);             /* fill a hole in with here */
+void gen_cond_same(Type middle, int middle_ext);  /* the two sides agree */
+int  gen_cond_middle_void(void);      /* `c ? f() : g()`, both of them void */
+void gen_cond_end_void(int to_stub);
 void gen_return(int line);            /* `return`, at the line it is on */
 /* What a program has of the Agon's memory: the image, what it leaves at
  * zero, and then its heap and its stack. */
