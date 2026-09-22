@@ -124,6 +124,41 @@ else
         "input is left out" >&2
 fi
 
+# And acc's own, which is the other real program on this machine -- and the
+# one that decides whether it can build itself.
+#
+# It is here in the repository rather than in a checkout somewhere else, so
+# it is always there to take. Taken at a fixed commit all the same, and for
+# the same reason zap is: an input that moved every time the compiler did
+# would make every figure a comparison of two different things. Moving it on
+# is a deliberate act, the way bumping ZAP_REV is.
+#
+# What it brings that nothing else here does is the shapes a compiler is
+# written in: switches with a case a line, tables of pointers, functions that
+# take a struct apart a field at a time -- and the keywords the generated
+# inputs have no reason to use.
+ACC_REV=${ACC_REV:-a348474}
+ACC_UNIT=${ACC_UNIT:-sym.c}
+
+if [ -z "${ACC_BENCH_SRC:-}" ] && [ $# -eq 0 ] \
+   && git rev-parse -q --verify "$ACC_REV^{commit}" >/dev/null 2>&1; then
+    mkdir -p "$tmp/acc"
+    if git archive "$ACC_REV" src include | tar -x -C "$tmp/acc" 2>/dev/null \
+       && test/bench/amalgamate.py "$tmp/acc/src" "$ACC_UNIT" "$tmp/acc/include" \
+            > "$tmp/acc-$ACC_UNIT" 2>/dev/null; then
+        SRCS="$SRCS $tmp/acc-$ACC_UNIT"
+        UNITS="$UNITS $tmp/acc-$ACC_UNIT"
+    else
+        echo "note: $ACC_REV has no src/$ACC_UNIT -- acc's own source is" \
+             "left out" >&2
+    fi
+else
+    case " $UNITS " in
+      *acc-*) ;;
+      *) echo "note: no acc at $ACC_REV -- acc's own source is left out" >&2 ;;
+    esac
+fi
+
 # Searched with the comments stripped. Every input opens with one, so a bare
 # `*` or `/` matched the `/*` of a comment and every input looked to use both
 # -- and the word "long" in a sentence covered the keyword.
