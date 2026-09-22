@@ -50,6 +50,55 @@ same() {
     pass=$((pass + 1))
 }
 
+# same_opts <name> <source compiled with them> <hand-written> <acc option>...
+#
+# The options come last and one to an argument, so that one holding a space
+# -- which a macro body may -- stays one option.
+#
+# The options say what the source does not: `-DSIZE=42` against a file that
+# begins `#define SIZE 42`. Requiring one image from both is what says the
+# option made the same macro the directive would have, rather than
+# something that merely answers the same.
+same_opts() {
+    local what=$1
+
+    printf '%s' "$2" > "$tmp/m.c"
+    printf '%s' "$3" > "$tmp/p.c"
+    shift 3
+
+    if ! err=$("$ACC" "$@" "$tmp/m.c" -o "$tmp/with/x.bin" 2>&1); then
+        printf '  FAIL %-38s %s\n' "$what" "$(printf '%s' "$err" | head -1)"
+        fail=$((fail + 1)); return
+    fi
+    if ! err=$("$ACC" "$tmp/p.c" -o "$tmp/plain/x.bin" 2>&1); then
+        printf '  FAIL %-38s the hand-written one: %s\n' "$what" \
+            "$(printf '%s' "$err" | head -1)"
+        fail=$((fail + 1)); return
+    fi
+    if ! cmp -s "$tmp/with/x.bin" "$tmp/plain/x.bin"; then
+        printf '  FAIL %-38s the two images differ\n' "$what"
+        fail=$((fail + 1)); return
+    fi
+    pass=$((pass + 1))
+}
+
+# refuses_opts <name> <pattern> <source> <acc option>...
+refuses_opts() {
+    local what=$1 want=$2
+
+    printf '%s' "$3" > "$tmp/m.c"
+    shift 3
+    if err=$("$ACC" "$@" "$tmp/m.c" -o "$tmp/with/x.bin" 2>&1); then
+        printf '  FAIL %-38s it was accepted\n' "$what"
+        fail=$((fail + 1))
+    elif ! printf '%s' "$err" | grep -q -- "$want"; then
+        printf '  FAIL %-38s %s\n' "$what" "$(printf '%s' "$err" | head -1)"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+
 # refuses <name> <pattern> <source>
 refuses() {
     local what=$1 want=$2
@@ -710,6 +759,81 @@ refuses "#ifdef with no name" "needs a name" \
 '#ifdef
 int main(void) { return 0; }
 '
+
+# -D and -U: a macro made on the command line rather than in the file.
+# Written out as the directive would have read it and handed to the same
+# code, so what these check is that the option reaches it intact.
+same_opts "-D of a name and a value" \
+'int main(void) { return SIZE; }
+' '#define SIZE 42
+int main(void) { return SIZE; }
+' "-DSIZE=42"
+
+same_opts "-D of a name alone is 1" \
+'int main(void) { return 41 + ON; }
+' '#define ON 1
+int main(void) { return 41 + ON; }
+' "-DON"
+
+same_opts "-D with the name apart from it" \
+'int main(void) { return SIZE; }
+' '#define SIZE 42
+int main(void) { return SIZE; }
+' "-D" "SIZE=42"
+
+same_opts "-D of a macro with parameters" \
+'int main(void) { return ADD(40, 2); }
+' '#define ADD(a, b) ((a) + (b))
+int main(void) { return ADD(40, 2); }
+' "-DADD(a,b)=((a) + (b))"
+
+same_opts "-D of a body with a bracket" \
+'int main(void) { return P; }
+' '#define P (21 * 2)
+int main(void) { return P; }
+' "-DP=(21 * 2)"
+
+same_opts "-U takes one away again" \
+'int main(void) {
+#ifdef GONE
+    return 0;
+#else
+    return 42;
+#endif
+}
+' 'int main(void) { return 42; }
+' "-DGONE=1" "-UGONE"
+
+same_opts "-U of a name nothing defined" \
+'int main(void) { return 42; }
+' 'int main(void) { return 42; }
+' "-UNEVER"
+
+same_opts "-D after -U of the same name" \
+'int main(void) { return X; }
+' '#define X 42
+int main(void) { return X; }
+' "-UX" "-DX=42"
+
+same_opts "-D reaches an #if, not just the code" \
+'int main(void) {
+#if VAL == 7
+    return 42;
+#else
+    return 0;
+#endif
+}
+' 'int main(void) { return 42; }
+' "-DVAL=7"
+
+refuses_opts "-D of something that is not a name" "does not begin with one" 'int main(void) { return 42; }
+' "-D=1"
+
+refuses_opts "-U of something that is not a name" "does not begin with one" 'int main(void) { return 42; }
+' "-U9x"
+
+refuses_opts "-D of a name the compiler defines" "the compiler's to define" 'int main(void) { return 42; }
+' "-D__LINE__=1"
 
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

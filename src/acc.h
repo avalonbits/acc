@@ -414,6 +414,8 @@ extern int      tok_prev_line; /* where the token before it ended */
 void lex_init(void);
 void lex_open(const char *path);
 void lex_add_include(const char *dir);
+void lex_define(const char *arg);       /* -D, as a #define would read it */
+void lex_undefine(const char *arg);     /* -U, as a #undef would */
 
 /* Every file the compile read, and enough about each to tell whether it has
  * changed: see the note in src/lex.c. */

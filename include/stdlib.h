@@ -12,9 +12,11 @@ void  free(void *p);
 void  qsort(void *base, size_t nmemb, size_t size,
             int (*cmp)(const void *, const void *));
 
-/* exit does not return: acc emits the unwind at the call rather than
- * calling anything, which is why the library has no member for it. */
-void  exit(int status);
+/* Neither returns. exit is emitted at the call rather than called, which
+ * is why the library has no member for it; abort is a member, and is the
+ * one line that gives exit a status saying the program went wrong. */
+__attribute__((noreturn)) void exit(int status);
+__attribute__((noreturn)) void abort(void);
 
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1

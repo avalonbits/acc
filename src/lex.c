@@ -2939,6 +2939,62 @@ static void do_error(void)
     acc_error_at(line, "#error %.*s", (int) (cursor - start), start);
 }
 
+/* A macro given on the command line, as though the file had begun with the
+ * directive that says it.
+ *
+ * Written out as `#define` would have read it and handed to the same code,
+ * rather than built from the parts here: a name given on the command line
+ * is a macro like any other, down to taking parameters, and two ways of
+ * making one is one more than is needed. The text is pushed as a window of
+ * its own -- the lexer already reads a macro's expansion that way -- and
+ * popped when the directive has had it.
+ *
+ * `-DNAME` is `-DNAME=1`. `-D'NAME(a,b)=...'` is a macro with parameters,
+ * because the bracket follows the name with nothing between them, which is
+ * the same rule the directive has. */
+void lex_define(const char *arg)
+{
+    size_t n = strlen(arg);
+    const char *eq = strchr(arg, '=');
+    char *text = malloc(n + 4);
+
+    if (!is_alpha((unsigned char) arg[0]))
+        acc_error("-D needs a name, and '%s' does not begin with one", arg);
+    if (!text)
+        acc_error("out of memory for a -D");
+    if (eq) {
+        memcpy(text, arg, (size_t) (eq - arg));
+        text[eq - arg] = ' ';
+        strcpy(text + (eq - arg) + 1, eq + 1);
+    } else {
+        memcpy(text, arg, n);
+        strcpy(text + n, " 1");
+    }
+    strcat(text, "\n");
+
+    push_owned_text(NAME_NONE, text);
+    do_define();
+    pop_source();
+}
+
+/* And one taken away again, the same way. `-U` of a name nothing defined
+ * is allowed, as `#undef` of one is. */
+void lex_undefine(const char *arg)
+{
+    char *text = malloc(strlen(arg) + 2);
+
+    if (!is_alpha((unsigned char) arg[0]))
+        acc_error("-U needs a name, and '%s' does not begin with one", arg);
+    if (!text)
+        acc_error("out of memory for a -U");
+    strcpy(text, arg);
+    strcat(text, "\n");
+
+    push_owned_text(NAME_NONE, text);
+    do_undef();
+    pop_source();
+}
+
 /* `#pragma`. C says an unknown one is ignored, and `once` is the only one
  * acc knows: it says this file is to be read once however many times it is
  * included. */

@@ -402,6 +402,39 @@ padded=$(wc -c < "$tmp/two.bin")
 
 ok "an unused member costs nothing" "$padded" "$plain"
 
+# abort, which is the one function here that does not come back. It is a
+# member of its own: the rest of <stdlib.h> is the heap, and a program that
+# gives up should not be given an allocator for it. So two things are asked
+# -- that it stops the program with the status it says it does, from
+# wherever it is called, and that calling it costs nothing but itself.
+printf '#include <stdlib.h>\nstatic int deep(int n) { if (!n) abort(); return deep(n - 1); }\nint main(void) { deep(4); return 7; }\n' > "$tmp/ab.c"
+if "$ACC" -c "$tmp/ab.c" -o "$tmp/ab.o" -Iinclude >/dev/null 2>&1 \
+   && "$ACC" "$tmp/ab.o" "$LIB" -o "$tmp/ab.bin" -x >/dev/null 2>&1; then
+    if emu_available >/dev/null 2>&1; then
+        test/agon.sh "$tmp/ab.bin" >/dev/null 2>&1
+        ok "abort, from five frames down" "$?" 134
+    else
+        pass=$((pass + 1))
+    fi
+else
+    printf '  FAIL %-36s %s\n' "abort, from five frames down" "it did not build"
+    fail=$((fail + 1))
+fi
+
+# The same program with the abort taken out: what abort costs is abort, and
+# not the heap that shares a header with it.
+printf 'static int deep(int n) { if (!n) return 0; return deep(n - 1); }\nint main(void) { deep(4); return 7; }\n' > "$tmp/nab.c"
+"$ACC" -c "$tmp/nab.c" -o "$tmp/nab.o" >/dev/null 2>&1
+"$ACC" "$tmp/nab.o" "$LIB" -o "$tmp/nab.bin" -x >/dev/null 2>&1
+with=$(wc -c < "$tmp/ab.bin"); without=$(wc -c < "$tmp/nab.bin")
+if [ "$((with - without))" -lt 64 ]; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-36s abort costs %d bytes, so it brought the heap\n' \
+        "abort brings nothing with it" "$((with - without))"
+    fail=$((fail + 1))
+fi
+
 # A member that wants another member is pulled in too, and the link looks
 # again rather than once.
 printf 'int inner(int n) { return n + 20; }\n' > "$tmp/inner.c"

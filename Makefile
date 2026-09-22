@@ -27,6 +27,7 @@ BIN = bin
 # itself -- which is what makes it something the Agon can build for itself,
 # and what keeps it honest: every line of it is a line acc has to compile.
 LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c \
+         lib/abort.c \
          lib/file.c \
          lib/stdlib.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c \
          lib/time.c
@@ -112,7 +113,7 @@ test: all unit agon
 	@test/flags.sh || [ $$? -eq 77 ]
 	@test/buffer.sh
 	@test/include.sh
-	@test/macro.sh
+	@ACC=$(BIN)/acc-asan test/macro.sh
 	@test/build.sh
 	@ACC=$(BIN)/acc-asan test/cpp89.sh
 	@ACC=$(BIN)/acc-asan test/reloc.sh

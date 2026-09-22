@@ -6327,10 +6327,24 @@ static void translation_unit(void)
 
 /* ------------------------------------------------------------------ */
 
+/* What -D and -U were given, in order. They cannot be acted on as they are
+ * read, because the names table they go into is made after the options are.
+ * Sixty-four is more than any command line here has wanted. */
+#define CMDLINE_MAX 64
+
+static struct {
+    const char *arg;
+    int         undef;
+} cmdline[CMDLINE_MAX];
+
+static int ncmdline;
+
 static void usage(void)
 {
     fprintf(stderr,
         "usage: acc [-c] <source.c> -o <out> [-I <dir>]... [-b <addr>]\n"
+        "                                    [-D <name>[=<value>]]...\n"
+        "                                    [-U <name>]...\n"
         "                                    [-r <file>] [-x]\n"
         "       acc <file.o|lib.a>... -o <out.bin> [-x]\n"
         "       acc -a <lib.a> <file.o>...\n"
@@ -6342,6 +6356,9 @@ static void usage(void)
         "      linked with others later. An object also records what the\n"
         "      compile read, so that a build can tell whether it has to\n"
         "      be made again.\n"
+        "  -D  define a name before the file is read, as #define would:\n"
+        "      `-DN` is `-DN=1`, and `-D\'N(a,b)=...\'` takes parameters.\n"
+        "  -U  undefine one, as #undef would.\n"
         "  -I  a directory to look in for an #include, after the one the\n"
         "      including file is in.\n"
         "  -b  the address the image is loaded at, in hexadecimal. The\n"
@@ -6619,6 +6636,23 @@ int main(int argc, char **argv)
                 out = argv[i];
             else
                 usage();
+        } else if (argv[i][0] == '-'
+                   && (argv[i][1] == 'D' || argv[i][1] == 'U')) {
+            /* Kept as they were given, in the order they were given: -D of
+             * a name and then -U of it leaves it undefined, and the other
+             * way round leaves it defined. Acted on below, once lex_init
+             * has made a names table to put them in. */
+            int undef = argv[i][1] == 'U';
+            const char *arg = argv[i][2] ? argv[i] + 2
+                            : ++i < argc  ? argv[i] : NULL;
+
+            if (!arg)
+                usage();
+            if (ncmdline == CMDLINE_MAX)
+                acc_error("more than %d -D and -U options", CMDLINE_MAX);
+            cmdline[ncmdline].arg = arg;
+            cmdline[ncmdline].undef = undef;
+            ncmdline++;
         } else if (argv[i][0] == '-' && argv[i][1] == 'I') {
             if (argv[i][2])
                 lex_add_include(argv[i] + 2);
@@ -6686,6 +6720,14 @@ int main(int argc, char **argv)
     sym_init();
     gen_init();
 
+    /* The command line's macros, before a source line is read. */
+    for (i = 0; i < ncmdline; i++) {
+        if (cmdline[i].undef)
+            lex_undefine(cmdline[i].arg);
+        else
+            lex_define(cmdline[i].arg);
+    }
+
     if (to_archive) {
         /* Nothing is compiled and nothing is linked: the objects are put
          * together with a list of what each of them defines in front. */
@@ -6751,6 +6793,22 @@ int main(int argc, char **argv)
     cycles_report();
     stack_report();
     printf("Done in %u.%02u seconds\r\n", cs / 100, cs % 100);
+
+    /* The one thing this process gives back.
+     *
+     * acc does not free what it allocates: it runs once and exits, and the
+     * code to unwind a symbol table costs bytes on a machine where bytes
+     * are the scarce thing. That reasoning holds for everything whose size
+     * is fixed by the program being compiled -- and it is why every suite
+     * but one turns leak checking off.
+     *
+     * The one is macro.sh, which leaves it on because a preprocessor that
+     * leaks leaks once per expansion, and that grows without bound where a
+     * symbol table does not. This array was the only allocation standing
+     * between that check and meaning something: it made acc exit non-zero
+     * under the sanitizer, so every comparison in the file failed and the
+     * leak it was watching for could not have been seen. */
+    free(objs);
 
     return 0;
 }
