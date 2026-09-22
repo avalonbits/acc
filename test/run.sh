@@ -45,6 +45,27 @@ for src in ${CASES:-test/cases/*.c}; do
         fail=$((fail+1)); continue
     fi
 
+    # A case marked "acc only" has no reference answer, because agondev
+    # cannot compile it: computed goto is the one acc takes and its backend
+    # does not. Such a case is held to 42 and nothing else, which is weaker
+    # than the rest of this file and is why the marker has to be written out
+    # in the source rather than inferred from the reference build failing --
+    # a case that agondev stops taking by accident has to be a failure.
+    if grep -q 'acc only:' "$src"; then
+        test/agon.sh "$tmp/acc.bin" >/dev/null 2>&1; got=$?
+        [ $got -eq 77 ] && { printf '  skip %-18s no emulator\n' "$name"
+                             skip=$((skip+1)); continue; }
+        if [ "$got" -eq 42 ]; then
+            printf '  ok   %-18s %3d  (acc only)\n' "$name" "$got"
+            pass=$((pass+1))
+        else
+            printf '  FAIL %-18s acc says %d, and a case has to come out at 42\n' \
+                "$name" "$got"
+            fail=$((fail+1))
+        fi
+        continue
+    fi
+
     if ! err=$(test/oracle.sh "$src" "$tmp/ref.bin" 2>&1); then
         case $? in
           77) printf '  skip %-18s no agondev\n' "$name"; skip=$((skip+1)); continue ;;

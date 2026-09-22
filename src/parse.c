@@ -738,6 +738,7 @@ __attribute__((noinline))
 static void address_of_literal(int line);
 static int  address_of_operand(void);
 static int  string_address(void);
+static void label_address(void);
 
 static void address_of(void)
 {
@@ -1042,6 +1043,15 @@ static void primary(void)
 
     if (tok == TK_AMP) {
         address_of();
+
+        return;
+    }
+
+    /* `&&label`, which is not C: the address of a place inside a function.
+     * It is here rather than beside `&` because the lexer has already joined
+     * the two, and because what follows is a label and not an operand. */
+    if (tok == TK_ANDAND) {
+        label_address();
 
         return;
     }
@@ -4848,12 +4858,82 @@ static int label_find(NameRef name, int line)
     return nlabels++;
 }
 
+/* A jump or an address waiting for its label: three bytes in the image that
+ * the label will be written into. Both kinds wait in the same list, so a
+ * label named only by `&&` and never defined is caught the same way. */
+static void goto_pending(int hole, int label)
+{
+    if (ngotos == gotos_cap) {
+        gotos_cap = gotos_cap ? gotos_cap * 2 : 8;
+        goto_hole = realloc(goto_hole, (size_t) gotos_cap * sizeof *goto_hole);
+        goto_label = realloc(goto_label, (size_t) gotos_cap * sizeof *goto_label);
+        if (!goto_hole || !goto_label)
+            acc_error("out of memory for gotos");
+    }
+    goto_hole[ngotos] = hole;
+    goto_label[ngotos] = label;
+    ngotos++;
+}
+
+/* `&&label`: the address of a label, as a void *. Not C -- it is the half of
+ * gcc's computed goto that makes a value, and `goto *p` below is the other.
+ * A threaded interpreter is written with the pair of them: a table of label
+ * addresses, one per opcode, and a jump straight to the next one at the end
+ * of each, which is what saves the trip back round a switch.
+ *
+ * A label already reached has an address, so this is that constant, marked
+ * as pointing into the image so it is relocated like any other. One further
+ * down has none yet, so the address is loaded from a hole that waits with
+ * the forward gotos. Either way the address goes in the relocation table,
+ * which is what carries it along when the function's jumps are shortened
+ * afterwards and the label moves. */
+__attribute__((noinline))
+static void label_address(void)
+{
+    int line = tok_line, label;
+
+    next();
+    if (tok != TK_IDENT)
+        acc_error_at(tok_line, "'&&' takes the address of a label, and this "
+                               "is %s", tok_spelling(tok));
+    if (current_fn == SYM_NONE)
+        acc_error_at(line, "a label's address can only be taken inside a "
+                           "function");
+    label = label_find(tok_name, line);
+    next();
+
+    if (labels[label].at >= 0) {
+        vpush_const(labels[label].at, type_ptr_to(TY_VOID));
+        vset_addr();
+
+        return;
+    }
+    goto_pending(gen_label_ref(), label);
+}
+
 __attribute__((noinline))
 static void goto_statement(void)
 {
     int line = tok_line, label;
 
     next();
+
+    /* `goto *p`: gcc's computed goto, which jumps to an address rather than
+     * to a name. What it is given is what `&&label` made, or anything else
+     * that is a pointer -- the chip is told to jump and does. */
+    if (tok == TK_STAR) {
+        next();
+        expr();
+        if (!type_pointer(vtype()))
+            acc_error_at(line, "'goto *' needs an address, and this is %s",
+                         type_float(vtype()) ? "a floating-point value"
+                                             : "an integer");
+        gen_jump_indirect();
+        expect(TK_SEMI, "';'");
+
+        return;
+    }
+
     if (tok != TK_IDENT)
         acc_error_at(tok_line, "'goto' needs a label, and this is %s",
                      tok_spelling(tok));
@@ -4866,16 +4946,7 @@ static void goto_statement(void)
 
         return;
     }
-    if (ngotos == gotos_cap) {
-        gotos_cap = gotos_cap ? gotos_cap * 2 : 8;
-        goto_hole = realloc(goto_hole, (size_t) gotos_cap * sizeof *goto_hole);
-        goto_label = realloc(goto_label, (size_t) gotos_cap * sizeof *goto_label);
-        if (!goto_hole || !goto_label)
-            acc_error("out of memory for gotos");
-    }
-    goto_hole[ngotos] = gen_jump();
-    goto_label[ngotos] = label;
-    ngotos++;
+    goto_pending(gen_jump(), label);
 }
 
 /* `name: statement` -- the label is here, and every goto that was waiting for
