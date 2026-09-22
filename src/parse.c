@@ -734,16 +734,27 @@ static void readonly_address(int sym)
 /* `&name`, `&name[i]`: the address of a variable or an element. Out of line:
  * inlined, its locals gave primary() -- which every operand goes through -- a
  * larger frame. */
+/* What address_of_operand left on the stack: an object's address, a whole
+ * array's, or the value a cast made -- which is not an address at all, and
+ * is only of use to a member or a subscript written after it. */
+#define ADDR_OBJECT 0
+#define ADDR_ARRAY  1
+#define ADDR_VALUE  2
+
 __attribute__((noinline))
-static void address_of_literal(int line);
+static int  address_of_literal(int line);
 static int  address_of_operand(void);
 static int  string_address(void);
 static void label_address(void);
 
 static void address_of(void)
 {
+    int line = tok_line;
+
     next();
-    address_of_operand();
+    if (address_of_operand() == ADDR_VALUE)
+        acc_error_at(line, "'&' takes the address of a variable, and a cast "
+                           "has none");
 }
 
 /* What `&` is being applied to, with the `&` already read. Answers whether
@@ -760,11 +771,9 @@ static int address_of_operand(void)
      * `(`. Out of line, next to the rest of the literals: starts_decl has to
      * stay inlined into its callers, and a call to it from here is one more
      * of those on a path that is rare. */
-    if (tok == TK_LPAREN) {
-        address_of_literal(tok_line);
+    if (tok == TK_LPAREN)
+        return address_of_literal(tok_line);
 
-        return 0;
-    }
 
     /* `&*p`: the address of what a pointer leads to is the pointer, so the
      * two cancel and what is left is the pointer. The stars are counted the
@@ -780,7 +789,7 @@ static int address_of_operand(void)
         while (--stars != 0)
             vderef();
 
-        return 0;
+        return ADDR_OBJECT;
     }
 
     /* `&"x"[1]`, and `&"x"` itself. A string literal is an array with static
@@ -798,11 +807,11 @@ static int address_of_operand(void)
         if (tok_postfix()) {
             postfix_chain(POST_VALUE);
 
-            return 0;
+            return ADDR_OBJECT;
         }
         vset_type(type_ptr_to(TY_EXT), ext_array(TY_CHAR, 0, len + 1));
 
-        return 1;
+        return ADDR_ARRAY;
     }
 
     if (tok != TK_IDENT)
@@ -823,13 +832,13 @@ static int address_of_operand(void)
         vset_ext(local->ext);
         vset_quals(local->quals);
 
-        return 0;
+        return ADDR_OBJECT;
     }
     case NAME_OBJECT:
         if (vbits())
             acc_error_at(line, "a bit-field has no address to take");
 
-        return 0;               /* the address is what is wanted */
+        return ADDR_OBJECT;     /* the address is what is wanted */
     case NAME_CONST:
         acc_error_at(line, "'%s' is a constant, which has no address",
                      name_text(name));
@@ -837,9 +846,9 @@ static int address_of_operand(void)
         vdrop();
         readonly_address(sym);
 
-        return 0;
+        return ADDR_OBJECT;
     case NAME_FUNC:
-        return 0;               /* `&f` is f's address, as `f` is */
+        return ADDR_OBJECT;     /* `&f` is f's address, as `f` is */
     case NAME_RESULT:
         acc_error_at(line, "what a call comes to has no address to take");
     }
@@ -849,7 +858,7 @@ static int address_of_operand(void)
      * C gives the first -- a pointer to an array of n -- is not one acc has
      * a way of writing down. */
     if (sym_at(sym)->kind == SYM_LOCAL_VLA)
-        return 0;
+        return ADDR_OBJECT;
 
     /* A whole array: the same address as its first element, as a pointer to
      * the array, which steps over all of it at once. */
@@ -864,7 +873,7 @@ static int address_of_operand(void)
                   ext_array(array->type, array->ext, sym_count(sym)));
     }
 
-    return 1;
+    return ADDR_ARRAY;
 }
 
 /* Adjacent string literals, joined as C joins them: "ab" "cd" is "abcd".
@@ -2758,9 +2767,9 @@ static void compound_literal(Type type, int x, int count, Type elem,
 /* `&(type){ values }`: the object the literal makes, and its address. The
  * `&` is read, and the `(` is next. */
 __attribute__((noinline))
-static void address_of_literal(int line)
+static int address_of_literal(int line)
 {
-    int x, count, elem_x;
+    int x, count, elem_x, quals;
     Type elem, type;
 
     next();
@@ -2769,30 +2778,50 @@ static void address_of_literal(int line)
      * what the address is being taken of, which C allows and which says
      * nothing beyond where the operand ends. */
     if (!starts_decl()) {
-        int array = address_of_operand();
+        int kind = address_of_operand();
 
         expect(TK_RPAREN, "')'");
 
         /* `&(*p)[i]`, `&(*p).m`: the parenthesis ended the operand, and the
          * subscripts and members after it bind to what was inside. What is
          * on the stack is that object's address, which is where the chain
-         * starts from -- unless it was a whole array, whose address is its
-         * first element's already and is a value to add to rather than an
-         * object to read. */
+         * starts from -- unless it was a whole array or a cast, which are
+         * values to walk from rather than objects to read. */
         if (tok_postfix()) {
-            if (array)
+            if (kind == ADDR_ARRAY)
                 vset_type(type_ptr_to(ext_elem(vext())), ext_elem_x(vext()));
-            postfix_chain(array ? POST_VALUE : POST_OBJECT);
-        }
+            postfix_chain(kind == ADDR_OBJECT ? POST_OBJECT : POST_VALUE);
 
-        return;
+            return ADDR_OBJECT;
+        }
+        if (kind == ADDR_VALUE)
+            acc_error_at(line, "'&' takes the address of a variable, and a "
+                               "cast has none");
+
+        return kind;
     }
     type = type_name_elem(&x, &count, &elem, &elem_x);
+    quals = base_const ? VQ_CONST : 0;
     expect(TK_RPAREN, "')'");
-    if (tok != TK_LBRACE)
-        acc_error_at(line, "'&' takes the address of a variable, and a cast "
-                           "has none");
+
+    /* `&((struct s *) p)->m`, `&((char *) p)[i]`: a cast, and not a compound
+     * literal. The cast itself has no address -- it is a value, and C says
+     * so -- but the member or the element it leads to is an object like any
+     * other, and taking the address of one of those is what this is for.
+     * What follows the parenthesis is read by the caller, which is where the
+     * `)` that closes it is; this says only that a value was left. */
+    if (tok != TK_LBRACE) {
+        if (count < 0)
+            acc_error_at(line, "an array type here needs its size");
+        if (type_is_array(type))
+            acc_error_at(line, "a cast cannot make an array");
+        cast_operand(type, x, quals);
+
+        return ADDR_VALUE;
+    }
     compound_literal(type, x, count, elem, elem_x, line, 1, NULL);
+
+    return ADDR_OBJECT;
 }
 
 /* `(type) operand` and `(type){ values }`, from just past the parenthesis:
