@@ -29,6 +29,9 @@ BIN = bin
 LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c \
          lib/abort.c lib/assert.c lib/ctype.c \
          lib/math.c lib/mathround.c lib/mathscale.c lib/mathfmod.c \
+         lib/sqrt.c lib/cbrt.c lib/hypot.c \
+         lib/exp.c lib/log.c lib/pow.c \
+         lib/trig.c lib/atan.c lib/mathhyp.c \
          lib/file.c \
          lib/stdlib.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c \
          lib/time.c

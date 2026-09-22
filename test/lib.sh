@@ -688,6 +688,14 @@ int main(void) {
 MATH1
 runs_file "the exact half of <math.h>" "$tmp/math1.c"
 
+# The approximations in <math.h>, against values worked out to more digits
+# than a float holds and rounded to one. The tolerances are in ulp and come
+# from what these were measured to be worth -- one or two for most of them,
+# more where the function itself is losing digits. test/mathvalues.py is what
+# generated the tables. Run against agondev's own library instead, the same
+# test fails seventy-two of these comparisons.
+runs_file "the approximations in <math.h>" test/mathvalues.c
+
 # A name no member defines is still a name nothing defines.
 printf 'int missing(void);\nint main(void) { return missing(); }\n' > "$tmp/gone.c"
 "$ACC" -c "$tmp/gone.c" -o "$tmp/gone.o" >/dev/null 2>&1
