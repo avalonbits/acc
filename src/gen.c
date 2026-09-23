@@ -30,20 +30,35 @@
  * load, store, push and pop the compiler emitted. */
 static const unsigned char reg_code[NREGS] = { 0x20, 0x10, 0x00 };
 
+/* That a frame offset fits the signed byte of (ix+d). Tested inline, because
+ * it runs for every local touched and the call to test it opened a frame; as
+ * one unsigned compare rather than two signed ones, because a signed compare
+ * on this target is a call to repair the flags. */
+#define disp_fits(d)  ((unsigned) ((d) + 128) <= 255u)
+
+
 static void ld_rr_imm(int reg, int imm)    /* ld rr, nn */
 {
     out_opcode24(0x01 + reg_code[reg], imm);
 }
 
+static int far_base(int disp);
+
 static inline __attribute__((always_inline))
 void ld_rr_ix(int reg, int disp)           /* ld rr, (ix+d) */
 {
-    out_byte3(0xdd, 0x07 + reg_code[reg], disp);
+    if (disp_fits(disp))
+        out_byte3(0xdd, 0x07 + reg_code[reg], disp);
+    else
+        out_byte3(0xfd, 0x07 + reg_code[reg], far_base(disp));
 }
 
 static void ld_ix_rr(int disp, int reg)    /* ld (ix+d), rr */
 {
-    out_byte3(0xdd, 0x0f + reg_code[reg], disp);
+    if (disp_fits(disp))
+        out_byte3(0xdd, 0x0f + reg_code[reg], disp);
+    else
+        out_byte3(0xfd, 0x0f + reg_code[reg], far_base(disp));
 }
 
 static void push_rr(int reg) { out_byte(0xc5 + reg_code[reg]); }
@@ -87,26 +102,43 @@ static void mov_rr(int dst, int src)
     pop_rr(dst);
 }
 
-/* (ix+d) carries one signed byte of displacement. A frame that outgrows it
- * needs the address computed instead, which is a real cost on every access;
- * for now it is refused rather than paid for silently. */
-/* Blamed on the line being compiled, which is where the local that went too
- * far was declared or first touched -- the message used to carry no line at
- * all, and a program with several functions gave no hint which one it
- * meant. */
-__attribute__((noinline))
-static void disp_too_far(int d)
+/* IY pointed at a frame slot that (ix+d) cannot reach, and the displacement
+ * left over for the access itself.
+ *
+ * (ix+d) carries one signed byte, so the frame reaches 128 bytes either side
+ * of the frame pointer. Nearly everything is inside that: a function's
+ * locals stop at 96 bytes and the scratch a statement wants is four on
+ * average. What is outside it is a function with both many locals and a
+ * statement that spills hard -- a call to a variadic function with forty
+ * arguments, say -- and that used to be refused outright, which is a ceiling
+ * on how large a function may be rather than anything C says.
+ *
+ * IY is the backend's own scratch: nothing the register allocator holds ever
+ * lives there, and the two sequences that do use it -- a dereference and a
+ * narrowing conversion -- touch no frame slot in between. So pointing it at
+ * the slot needs no register saved and moves no value the allocator is
+ * holding. `lea iy, ix+d` reaches 128 and they chain, so two reach 256 and
+ * three 384, which is as deep as a frame can go before the arrays below it
+ * would have run the stack out anyway.
+ *
+ * The displacement that comes back is what is left after the hops, so a run
+ * of bytes in one slot -- which is what every eight-byte value is -- could
+ * pay for the pointer once. It does not yet: each access lays its own down,
+ * which is the simple thing and is only paid by the functions that were
+ * refused before. */
+static int far_base(int disp)
 {
-    acc_error_at(tok_line, "this function's frame is too large: a local at "
-                           "%d is out of reach of (ix+d), which spans -128 "
-                           "to 127", d);
-}
+    int step = disp < 0 ? -128 : 127;
 
-/* That a frame offset fits the signed byte of (ix+d). Tested inline, because
- * it runs for every local touched and the call to test it opened a frame;
- * as one unsigned compare rather than two signed ones, because a signed
- * compare on this target is a call to repair the flags. */
-#define need_disp(d)  do { if ((unsigned) ((d) + 128) > 255u) disp_too_far(d); } while (0)
+    out_byte3(0xed, 0x55, step);                /* lea iy, ix+step */
+    disp -= step;
+    while (!disp_fits(disp)) {
+        out_byte3(0xed, 0x33, step);            /* lea iy, iy+step */
+        disp -= step;
+    }
+
+    return disp;
+}
 
 static int  spill_slot(void);
 static int  force_reg(Value *val);
@@ -170,13 +202,23 @@ static void rt_call(int which);
  * emits, arrived at the same way -- there is not another one.
  */
 
-static void ld_a_ix(int disp)   { out_byte3(0xdd, 0x7e, disp); }
-static void ld_e_ix(int disp)   { out_byte3(0xdd, 0x5e, disp); }
-static void ld_l_ix(int disp)   { out_byte3(0xdd, 0x6e, disp); }
-static void ld_h_ix(int disp)   { out_byte3(0xdd, 0x66, disp); }
-static void ld_ix_a(int disp)   { out_byte3(0xdd, 0x77, disp); }
-static void ld_ix_l(int disp)   { out_byte3(0xdd, 0x75, disp); }
-static void ld_ix_h(int disp)   { out_byte3(0xdd, 0x74, disp); }
+/* The byte forms, each of which is the same instruction through IY when the
+ * slot is out of (ix+d)'s reach. */
+static void frame_byte(int op, int disp)
+{
+    if (disp_fits(disp))
+        out_byte3(0xdd, op, disp);
+    else
+        out_byte3(0xfd, op, far_base(disp));
+}
+
+static void ld_a_ix(int disp)   { frame_byte(0x7e, disp); }
+static void ld_e_ix(int disp)   { frame_byte(0x5e, disp); }
+static void ld_l_ix(int disp)   { frame_byte(0x6e, disp); }
+static void ld_h_ix(int disp)   { frame_byte(0x66, disp); }
+static void ld_ix_a(int disp)   { frame_byte(0x77, disp); }
+static void ld_ix_l(int disp)   { frame_byte(0x75, disp); }
+static void ld_ix_h(int disp)   { frame_byte(0x74, disp); }
 static void ld_l_a(void)        { out_byte(0x6f); }
 static void ld_h_a(void)        { out_byte(0x67); }
 static void ld_a_l(void)        { out_byte(0x7d); }
@@ -529,22 +571,6 @@ static int locals_size;          /* the declared locals */
 static int spill_used;           /* the scratch in use right now */
 static int spill_peak;           /* the most it ever held */
 static int spill_locked;         /* held by something not on the value stack */
-
-/* How far below the arguments the frame pointer is put.
- *
- * (ix+d) carries a signed byte, so it reaches 128 bytes either side of ix.
- * The frame pointer used to sit at the saved ix, which put the arguments in
- * the positive half and the whole of the frame in the negative one -- and a
- * function's arguments are a few bytes where its frame is everything else,
- * so nearly half of what the instruction can address went unused.
- *
- * So ix is put as far below the arguments as it can go while still reaching
- * the last of them, and the frame gets both halves: 128 bytes plus the bias,
- * which for a function of no arguments is 249. It costs one instruction in
- * the epilogue, where sp has to be put back above the saved ix rather than
- * at it, and nothing anywhere else -- every displacement is worked out from
- * this when the offset is made, not when it is emitted. */
-static int frame_bias;
 static int frame_patch;          /* where the prologue's frame size is written */
 
 /* Local arrays, which go below everything else in the frame.
@@ -716,8 +742,6 @@ void vconvert(Type to)
             return;
         }
         slot = long_scratch(to);
-        need_disp(slot);
-        need_disp(slot + type_wide_bytes(to) - 1);
         materialise_long(slot, to);
         vdrop();
         vpush(VAL_LOCAL, to, slot);
@@ -1082,7 +1106,6 @@ static void spill_one_other(int avoid)
         if (v->kind == VAL_REG && v->val != avoid) {
             int off = spill_slot();
 
-            need_disp(off);
             ld_ix_rr(off, v->val);
             v->kind = VAL_LOCAL;
             v->val = off;
@@ -1103,7 +1126,6 @@ static void save_regs_below(int n)
         if (v->kind == VAL_REG) {
             int off = spill_slot();
 
-            need_disp(off);
             ld_ix_rr(off, v->val);
             v->kind = VAL_LOCAL;
             v->val = off;
@@ -1208,7 +1230,6 @@ static int force_reg(Value *val)
     } else {
         if (val->kind == VAL_VOID)
             void_used();
-        need_disp(val->val);
         if (type_size(val->type) < ACC_INT_SIZE)
             load_narrow_into(reg, val->val, val->type);
         else
@@ -1254,7 +1275,6 @@ static void move_out(Value *entry)
     }
 
     to = spill_slot();
-    need_disp(to);
     ld_ix_rr(to, entry->val);
     entry->kind = VAL_LOCAL;
     entry->val = to;
@@ -1314,7 +1334,6 @@ static void force_into(Value *target, int want)
     } else {
         if (target->kind == VAL_VOID)
             void_used();
-        need_disp(target->val);
         if (type_size(target->type) < ACC_INT_SIZE)
             load_narrow_into(want, target->val, target->type);
         else
@@ -1663,8 +1682,6 @@ void vstore_local(int offset, Type type)
                                  * bytes, which the narrow store takes */
 
     if (type_wide(type)) {
-        need_disp(offset);
-        need_disp(offset + type_wide_bytes(type) - 1);
         materialise_long(offset, type);
         vdrop();
         vpush(VAL_LOCAL, type, offset);
@@ -1675,7 +1692,6 @@ void vstore_local(int offset, Type type)
     if ((vsp - 1)->kind == VAL_ACC && (vsp - 1)->type == type) {
         /* Already in A at its own width, which is where a byte store reads
          * from. Nothing to convert and nothing to move. */
-        need_disp(offset);
         ld_ix_a(offset);
 
         return;
@@ -1685,14 +1701,12 @@ void vstore_local(int offset, Type type)
         /* The narrow stores write out of HL, so the value goes there. */
         force_into(vsp - 1, R_HL);
         vconvert(type);
-        need_disp(offset);
         store_narrow(offset, type);
 
         return;
     }
 
     reg = force_reg(vsp - 1);
-    need_disp(offset);
     ld_ix_rr(offset, reg);
 }
 
@@ -1727,7 +1741,6 @@ void vneg(void)
         materialise_long(slot, top->type);
         vdrop();
 
-        need_disp(slot + ACC_LONG_SIZE - 1);
         ld_a_ix(slot + ACC_LONG_SIZE - 1);
         out_byte2(0xee, 0x80);          /* xor a, 0x80 */
         ld_ix_a(slot + ACC_LONG_SIZE - 1);
@@ -1867,7 +1880,7 @@ static void fixup_add(int fn, int at)
  */
 
 static void ld_a_imm(int value)  { out_byte2(0x3e, value & 0xff); }
-static void ld_a_ix_b(int disp)  { out_byte3(0xdd, 0x7e, disp); }
+static void ld_a_ix_b(int disp)  { frame_byte(0x7e, disp); }
 
 /* The A-with-memory and A-with-immediate forms, by token. */
 static int alu_ix_op(int op)
@@ -2185,7 +2198,10 @@ static void lea_rr_ix(int reg, int disp)
 {
     static const unsigned char lea_code[NREGS] = { 0x22, 0x12, 0x02 };
 
-    out_byte3(0xed, lea_code[reg], disp);
+    if (disp_fits(disp))
+        out_byte3(0xed, lea_code[reg], disp);
+    else
+        out_byte3(0xed, lea_code[reg] + 1, far_base(disp));  /* from iy */
 }
 
 /* Copy n bytes from one frame slot to another.
@@ -2200,6 +2216,15 @@ static void copy_long(int to, int from, int n)
 {
     int i;
 
+    if (!disp_fits(from) || !disp_fits(from + n - 1)
+        || !disp_fits(to) || !disp_fits(to + n - 1)) {
+        for (i = 0; i < n; i++) {               /* one of them is out of reach */
+            ld_a_ix(from + i);
+            ld_ix_a(to + i);
+        }
+
+        return;
+    }
     for (i = 0; i < n; i++) {
         out_byte3(0xdd, 0x7e, from + i);        /* ld a, (ix+d) */
         out_byte3(0xdd, 0x77, to + i);          /* ld (ix+d), a */
@@ -2210,7 +2235,6 @@ static void copy_long(int to, int from, int n)
  * value that is narrower than the slot. */
 static void fill_from_a(int disp, int from, int to)
 {
-    need_disp(disp + to - 1);
     for (; from < to; from++)
         ld_ix_a(disp + from);
 }
@@ -2219,7 +2243,6 @@ static void fill_from_a(int disp, int from, int to)
  * bytes and then the ones the sign or the zero extension calls for. */
 static void store_int_as_long(int disp, int is_unsigned, int n)
 {
-    need_disp(disp);
     ld_ix_rr(disp, R_HL);
     if (is_unsigned) {
         out_byte(0xaf);                 /* xor a, a */
@@ -2263,8 +2286,6 @@ static void convert_int_to_float(void)
         materialise_long(slot, top->type);
         vdrop();
 
-        need_disp(slot);
-        need_disp(slot + type_wide_bytes(top->type) - 1);
         lea_rr_ix(R_HL, slot);
         if (eight)
             rt_call(unsign ? RT_ULLTOF : RT_LLTOF);
@@ -2278,8 +2299,6 @@ static void convert_int_to_float(void)
     force_into(top, R_HL);
 
     slot = long_scratch(TY_FLOAT);
-    need_disp(slot);
-    need_disp(slot + ACC_LONG_SIZE - 1);
     lea_rr_ix(R_DE, slot);
     rt_call(unsign ? RT_UITOF : RT_ITOF);
     vdrop();
@@ -2300,8 +2319,6 @@ static void convert_float_to_int(Type to)
     materialise_long(slot, TY_FLOAT);
     vdrop();
 
-    need_disp(slot);
-    need_disp(slot + (type_wide(to) ? type_wide_bytes(to) : ACC_LONG_SIZE) - 1);
     lea_rr_ix(R_HL, slot);
 
     /* A long stays in the frame, where the routine rewrites it in place. */
@@ -2372,8 +2389,6 @@ static void materialise_long(int disp, Type type)
         int reg = force_reg(top);
         int i;
 
-        need_disp(disp);
-        need_disp(disp + n - 1);
         ld_ix_rr(disp, reg);
         for (i = ACC_INT_SIZE; i < n; i++) {
             ld_a_imm(0);
@@ -2449,8 +2464,6 @@ static void wide_bytes_at(int disp, uint64_t bits, int n)
 {
     int i;
 
-    need_disp(disp);
-    need_disp(disp + n - 1);
     for (i = 0; i < n; i++) {
         out_byte(0x3e);                         /* ld a, n */
         out_byte((int) (bits >> (i * 8)) & 0xff);
@@ -2498,10 +2511,10 @@ static int spill_start_of(const Value *v, int *size)
                                    : type_scalar_bytes(type_promote(v->type));
     int start;
 
-    if (v->kind != VAL_LOCAL || v->val >= frame_bias - locals_size)
+    if (v->kind != VAL_LOCAL || v->val >= -locals_size)
         return -1;                      /* a local of its own, not scratch */
 
-    start = frame_bias - v->val - locals_size - bytes;
+    start = -v->val - locals_size - bytes;
     if (start < 0 || start + bytes > spill_peak)
         return -1;                      /* not the scratch area at all */
     *size = bytes;
@@ -2578,7 +2591,7 @@ static int slot_at(int start, int size)
     if (start + size > spill_peak)
         spill_peak = start + size;
 
-    return frame_bias - (locals_size + start + size);
+    return -(locals_size + start + size);
 }
 
 /* Which routine applies an operator to two four-byte values. A float has its
@@ -2756,8 +2769,6 @@ static void vunary_long(int which, Type type)
     materialise_long(slot, type);
     vdrop();
 
-    need_disp(slot);
-    need_disp(slot + type_wide_bytes(type) - 1);
     lea_rr_ix(R_HL, slot);
     rt_call(which);
 
@@ -2838,8 +2849,6 @@ static void vbinop_long(int op, Type result)
     materialise_long(left, result);
     vdrop();
 
-    need_disp(left);
-    need_disp(right);
     lea_rr_ix(R_HL, left);
     lea_rr_ix(R_DE, right);
     rt_call(which);
@@ -2980,8 +2989,6 @@ static void vcmp_wide(int op, Type operand)
     materialise_long(left, operand);
     vdrop();
 
-    need_disp(left);
-    need_disp(right);
 
     /* A float comparison answers in four ways and not three, so it does not
      * go through the same tail as the integer ones. */
@@ -3278,10 +3285,8 @@ void gen_jump_if_true_to(int target)
  * top byte into A -- once, ahead of all the tests. */
 void gen_switch_load(int slot, Type type)
 {
-    need_disp(slot);
     ld_rr_ix(R_HL, slot);
     if (type_wide(type)) {
-        need_disp(slot + ACC_INT_SIZE);
         ld_a_ix(slot + ACC_INT_SIZE);
     }
 }
@@ -3304,7 +3309,6 @@ void gen_switch_case(long value, uint32_t high, Type type, int target,
     if (type_eight(type)) {
         int k;
 
-        need_disp(slot + 7);
         for (k = 7; k >= ACC_INT_SIZE; k--) {
             uint32_t half = k >= 4 ? high : (uint32_t) value;
 
@@ -4943,16 +4947,11 @@ void gen_startup(int by_exit, const char *program)
         }
 }
 
-int gen_frame_bias(void)
-{
-    return frame_bias;
-}
-
 int gen_local(int size)
 {
     locals_size += size;
 
-    return frame_bias - locals_size;
+    return -locals_size;
 }
 
 /* How many bytes of declared locals are kept where (ix+d) can reach them.
@@ -4980,7 +4979,7 @@ int gen_local(int size)
 
 int gen_local_fits(int size)
 {
-    return locals_size + size <= NEAR_LOCALS + frame_bias;
+    return locals_size + size <= NEAR_LOCALS;
 }
 
 int gen_local_far(int size)
@@ -5012,7 +5011,6 @@ void gen_stack_take(int slot)
     or_a_a();
     sbc_hl_rr(R_DE);                    /* hl = sp - bytes */
     out_byte(0xf9);                     /* ld sp, hl */
-    need_disp(slot);
     ld_ix_rr(slot, R_HL);               /* and that is where the array is */
 }
 
@@ -5021,14 +5019,12 @@ void gen_stack_mark(int slot)
     evict_reg(R_HL);
     ld_rr_imm(R_HL, 0);
     out_byte(0x39);                     /* add hl, sp */
-    need_disp(slot);
     ld_ix_rr(slot, R_HL);
 }
 
 void gen_stack_back(int slot)
 {
     evict_reg(R_HL);
-    need_disp(slot);
     ld_rr_ix(R_HL, slot);
     out_byte(0xf9);                     /* ld sp, hl */
 }
@@ -5193,7 +5189,7 @@ static int spill_slot_of(int size)
     if (spill_used > spill_peak)
         spill_peak = spill_used;
 
-    return frame_bias - (locals_size + spill_used);
+    return -(locals_size + spill_used);
 }
 
 static int spill_slot(void)
@@ -5201,7 +5197,7 @@ static int spill_slot(void)
     return spill_slot_of(ACC_INT_SIZE);
 }
 
-void gen_func_begin(int fn, int nparams, Type returns, int bias)
+void gen_func_begin(int fn, int nparams, Type returns)
 {
     return_type = returns;
     return_ext = sym_at(fn)->ext;
@@ -5217,7 +5213,6 @@ void gen_func_begin(int fn, int nparams, Type returns, int bias)
     spill_used = 0;
     spill_peak = 0;
     spill_locked = 0;
-    frame_bias = bias;
     arrays_size = 0;
     narrays = 0;
     narray_patches = 0;
@@ -5228,8 +5223,8 @@ void gen_func_begin(int fn, int nparams, Type returns, int bias)
      * link against yet. ix then points at the saved ix, so the first argument
      * is at ix+6: three bytes of saved ix and three of return address. */
     out_byte2(0xdd, 0xe5);              /* push ix */
-    out_byte2(0xdd, 0x21);              /* ld ix, -bias */
-    out_word24(-bias);
+    out_byte2(0xdd, 0x21);              /* ld ix, 0 */
+    out_word24(0);
     out_byte2(0xdd, 0x39);              /* add ix, sp */
 
     /* ld hl, -frame / add hl, sp / ld sp, hl. The size is not known until the
@@ -5240,24 +5235,13 @@ void gen_func_begin(int fn, int nparams, Type returns, int bias)
     out_byte2(0x39, 0xf9);                       /* add hl, sp; ld sp, hl */                              /* ld sp, hl */
 }
 
-/* The way out, which every return and the end of the body all take.
- *
- * Restoring sp from ix unconditionally costs two bytes in a function with no
- * locals and saves the epilogue having to know the frame size. Where ix was
- * put below the arguments, it comes back up first: what sp has to be put at
- * is the saved ix, and that is the bias above where ix is left. */
-static void epilogue(void)
-{
-    if (frame_bias)
-        out_byte3(0xed, 0x32, frame_bias);      /* lea ix, ix+bias */
-    out_byte2(0xdd, 0xf9);              /* ld sp, ix */
-    out_byte2(0xdd, 0xe1);              /* pop ix */
-    out_byte(0xc9);                     /* ret */
-}
-
 void gen_func_end(void)
 {
-    epilogue();
+    /* Restoring sp from ix unconditionally costs two bytes in a function with
+     * no locals and saves the epilogue having to know the frame size. */
+    out_byte2(0xdd, 0xf9);              /* ld sp, ix */
+    out_byte2(0xdd, 0xe1);              /* pop ix */
+    out_byte(0xc9);                              /* ret */
 
     out_patch24(frame_patch, -frame_size());
     in_function = 0;
@@ -5267,8 +5251,7 @@ void gen_func_end(void)
 
         for (i = 0; i < narray_patches; i++)
             out_patch24(array_patches[i].at,
-                        frame_bias
-                        - (above + array_end[array_patches[i].array]));
+                        -(above + array_end[array_patches[i].array]));
     }
 
     /* Last, so that everything written into the function is written before
@@ -5299,12 +5282,14 @@ void gen_return(int line)
                                "has to give it one of the same type");
         top->type = type_ptr_to(TY_CHAR);
         force_into(top, R_HL);
-        ld_rr_ix(R_DE, 2 * ACC_PTR_SIZE + frame_bias);
+        ld_rr_ix(R_DE, 2 * ACC_PTR_SIZE);
         ld_rr_imm(R_BC, ext_bytes(return_ext));
         out_byte2(0xed, 0xb0);          /* ldir */
-        ld_rr_ix(R_HL, 2 * ACC_PTR_SIZE + frame_bias);
+        ld_rr_ix(R_HL, 2 * ACC_PTR_SIZE);
         vdrop();
-        epilogue();
+        out_byte2(0xdd, 0xf9);          /* ld sp, ix */
+        out_byte2(0xdd, 0xe1);          /* pop ix */
+        out_byte(0xc9);                 /* ret */
 
         return;
     }
@@ -5326,19 +5311,18 @@ void gen_return(int line)
             vconvert(return_type);
             wide_needs_slot();
             at = (vsp - 1)->val;
-            need_disp(at);
             if (type_eight(return_type)) {
-                need_disp(at + 2 * ACC_INT_SIZE);
                 ld_rr_ix(R_HL, at);
                 ld_rr_ix(R_DE, at + ACC_INT_SIZE);
                 ld_rr_ix(R_BC, at + 2 * ACC_INT_SIZE);
             } else {
-                need_disp(at + ACC_LONG_SIZE - 1);
                 ld_rr_ix(R_HL, at);
                 ld_e_ix(at + ACC_INT_SIZE);
             }
             vdrop();
-            epilogue();
+            out_byte2(0xdd, 0xf9);      /* ld sp, ix */
+            out_byte2(0xdd, 0xe1);      /* pop ix */
+            out_byte(0xc9);                      /* ret */
 
             return;
         }
@@ -5355,7 +5339,9 @@ void gen_return(int line)
         if (RETURNS_IN_A(return_type))
             ld_a_l();
     }
-    epilogue();
+    out_byte2(0xdd, 0xf9);              /* ld sp, ix */
+    out_byte2(0xdd, 0xe1);              /* pop ix */
+    out_byte(0xc9);                              /* ret */
 }
 
 /* That a struct argument and its parameter are the same struct: a struct
@@ -5671,8 +5657,6 @@ static void call_to(const Callee *callee, int nargs, int params_first,
             wide_needs_slot();
             slot = (vsp - 1)->val;
 
-            need_disp(slot);
-            need_disp(slot + 2 * ACC_INT_SIZE);
             ld_rr_ix(R_HL, slot + 2 * ACC_INT_SIZE);
             push_rr(R_HL);
             ld_rr_ix(R_HL, slot + ACC_INT_SIZE);
@@ -5692,8 +5676,6 @@ static void call_to(const Callee *callee, int nargs, int params_first,
             wide_needs_slot();
             slot = (vsp - 1)->val;
 
-            need_disp(slot);
-            need_disp(slot + ACC_LONG_SIZE - 1);
             ld_rr_imm(R_HL, 0);
             ld_l_ix(slot + ACC_INT_SIZE);       /* not through E: DE may hold
                                                  * an argument still to go */
@@ -5745,8 +5727,6 @@ static void call_to(const Callee *callee, int nargs, int params_first,
 
         for (i = 0; i < argslots; i++)
             out_byte2(0xfd, 0xe1);              /* pop iy */
-        need_disp(slot);
-        need_disp(slot + 7);
         ld_ix_rr(slot, R_HL);
         ld_ix_rr(slot + ACC_INT_SIZE, R_DE);
         out_byte(0x79);                         /* ld a, c */
@@ -5766,8 +5746,6 @@ static void call_to(const Callee *callee, int nargs, int params_first,
         /* HL with the high byte in E; put it where every long lives. */
         int slot = spill_slot_of(ACC_LONG_SIZE);
 
-        need_disp(slot);
-        need_disp(slot + ACC_LONG_SIZE - 1);
         ld_ix_rr(slot, R_HL);
         out_byte(0x7b);                          /* ld a, e */
         ld_ix_a(slot + ACC_INT_SIZE);
@@ -5827,8 +5805,7 @@ static void call_through(void)
         else if (fp->kind == VAL_BSS)
             gen_bss_fixup(out_here());
         out_word24(fp->val);
-    } else if (fp->kind == VAL_LOCAL) {
-        need_disp(fp->val);
+    } else if (fp->kind == VAL_LOCAL && disp_fits(fp->val)) {
         out_byte3(0xdd, 0x31, fp->val);         /* ld iy, (ix+d) */
     } else {
         int reg = force_reg(fp);
@@ -6101,7 +6078,6 @@ void vaddr_local(int offset, Type type)
                      TY_PTR_MAX);
 
     reg = reg_alloc();
-    need_disp(offset);
     lea_rr_ix(reg, offset);
     vpush(VAL_REG, type_ptr_to(type), reg);
 }
@@ -6180,8 +6156,6 @@ void vderef(void)
         int slot = long_scratch(to);
         int i;
 
-        need_disp(slot);
-        need_disp(slot + n - 1);
         for (i = 0; i < n; i++) {
             ld_a_hl();
             ld_ix_a(slot + i);
@@ -6325,8 +6299,6 @@ void vstore_indirect(void)
         materialise_long(slot, to);
         vdrop();
         force_into(vsp - 1, R_HL);
-        need_disp(slot);
-        need_disp(slot + n - 1);
         for (i = 0; i < n; i++) {
             ld_a_ix(slot + i);
             ld_hl_a();
@@ -6387,7 +6359,6 @@ static void vpick(int depth)
 
         if (from->kind == VAL_ACC)
             force_reg(from);
-        need_disp(off);
         ld_ix_rr(off, from->val);
         from->kind = VAL_LOCAL;
         from->val = off;
@@ -6580,8 +6551,6 @@ static void vsnapshot(void)
         Type type = top->type;
         int slot = long_scratch(type);
 
-        need_disp(slot);
-        need_disp(slot + type_wide_bytes(type) - 1);
         materialise_long(slot, type);
         vdrop();
         vpush(VAL_LOCAL, type, slot);
@@ -6753,8 +6722,6 @@ int gen_cond_begin(int *slot, int *lock)
 {
     *lock = spill_locked;
     *slot = long_scratch(TY_LONG);
-    need_disp(*slot);
-    need_disp(*slot + ACC_LONG_SIZE - 1);
 
     /* Nothing else may build in the scratch below where the middle operand
      * is about to be parked, because the third operand is compiled over the

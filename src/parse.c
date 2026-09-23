@@ -153,6 +153,10 @@ static void call_variable(int sym, NameRef name)
     case SYM_LOCAL_CONST:
         vpush_local(v->val, v->type);
         break;
+    case SYM_LOCAL_FAR:
+        vaddr_array(v->val, v->type);
+        vderef();
+        break;
     case SYM_GLOBAL:
     case SYM_GLOBAL_CONST:
         global_address(sym);
@@ -3091,7 +3095,7 @@ static void va_form(void)
         sym = tok == TK_IDENT ? sym_find(tok_name) : SYM_NONE;
         last = sym == SYM_NONE ? NULL : sym_at(sym);
         if (!last || (last->kind != SYM_LOCAL && last->kind != SYM_LOCAL_CONST)
-            || last->val < 2 * ACC_PTR_SIZE + gen_frame_bias())
+            || last->val < 2 * ACC_PTR_SIZE)
             acc_error_at(tok_line, "va_start needs the function's last named "
                                    "parameter");
         vaddr_local(last->val + va_slot(last->type, last->ext), TY_CHAR);
@@ -5218,32 +5222,6 @@ typedef struct {
 static StructParam *struct_params;
 static int          nstruct_params, struct_params_cap;
 
-/* The frame pointer goes as far below the arguments as it can while still
- * reaching the last of them, so that the negative half of (ix+d) is not the
- * only half the frame gets -- see frame_bias in the code generator. The
- * arguments were laid out before their total was known, so their offsets are
- * moved up by the bias here, which is the only place that has to know.
- *
- * One byte short of the whole positive half, because a variadic function
- * takes the address of the byte just past its last named argument. */
-static int params_bias(int argoff)
-{
-    int bias = 127 - argoff, i;
-
-    if (bias < 0)
-        bias = 0;
-    for (i = sym_locals_from(); i < sym_locals_to(); i += (int) sizeof(Sym)) {
-        Sym *param = sym_at(i);
-
-        if (param->kind == SYM_LOCAL || param->kind == SYM_LOCAL_CONST)
-            param->val += bias;
-    }
-    for (i = 0; i < nstruct_params; i++)
-        struct_params[i].argoff += bias;
-
-    return bias;
-}
-
 /* A struct parameter is copied from its slots into the array area, where
  * every local struct lives, so that the body finds it as it finds any
  * other: the slots are above the frame, and past the reach of (ix+d) once
@@ -5469,7 +5447,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED | variadic
                       | (decl_static ? SYMF_STATIC : 0));
     current_fn = fn;
-    gen_func_begin(fn, nparams, ret_type, params_bias(argoff));
+    gen_func_begin(fn, nparams, ret_type);
 
     if (nstruct_params)
         struct_params_copy();
@@ -6315,7 +6293,7 @@ static int function_from_type(int x, NameRef name, int line)
                       | (ext_func_variadic(x) ? SYMF_VARIADIC : 0)
                       | (decl_static ? SYMF_STATIC : 0));
     current_fn = fn;
-    gen_func_begin(fn, count, ret, params_bias(argoff));
+    gen_func_begin(fn, count, ret);
     if (nstruct_params)
         struct_params_copy();
     in_body = 1;
