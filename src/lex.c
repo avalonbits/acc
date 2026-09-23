@@ -1690,9 +1690,9 @@ static void predefined(void)
  *
  * Out of line, since a name that is not a macro never reaches it and a name
  * that is pays a call either way. */
-__attribute__((noinline))
 static void wide_literal(void);
 
+__attribute__((noinline))
 static int expand(NameRef name)
 {
     Macro *m;
