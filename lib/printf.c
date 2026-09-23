@@ -6,10 +6,11 @@
  * What is here is the conversions a program on this machine actually writes:
  * signed and unsigned decimal, octal and hex, a character, a string, a
  * pointer, and `%%`. With the flags `-`, `0`, `+`, `#` and a space, a width
- * and a precision that can each be a `*`, and the lengths `h`, `hh`, `l`,
- * `ll` and `z`. Floating point is not here: this target has no arithmetic
- * for it, and a printf that carried the conversion would put it in every
- * program that printed a number.
+ * and a precision that can each be a `*`, the lengths `h`, `hh`, `l`, `ll`,
+ * `j`, `z` and `t`, and `%n`. The floating conversions are in
+ * printf_float.c, reached through a weak reference that only a program
+ * passing a float asks for, so that a program printing numbers does not
+ * carry them.
  *
  * Nothing is buffered. MOS writes a character at a time and the console is
  * the only destination there is, so a buffer would be bytes held back for no
@@ -170,7 +171,7 @@ int acc_format(const char *fmt, va_list ap)
 
     written = 0;
     while (*p) {
-        int flags = 0, width = 0, prec = -1, longs = 0, upper = 0;
+        int flags = 0, width = 0, prec = -1, longs = 0, shorts = 0, upper = 0;
         unsigned long long value;
         unsigned base = 10;
         char prefix[2];
@@ -217,13 +218,16 @@ int acc_format(const char *fmt, va_list ap)
             }
         }
 
-        /* `h` and `hh` say nothing here: everything narrower than an int
-         * arrives as an int, and the conversion truncates it. `z` is an
-         * unsigned int, which is what a plain conversion already reads. */
+        /* The lengths. `h` and `hh` read an int, which is what anything
+         * narrower arrives as, and cut the value down to a short or a char
+         * below. `j` is an intmax_t, a long long here; `z` and `t` are an
+         * unsigned int and an int, which a plain conversion already reads.
+         * `L` is a long double, which acc does not have. */
         for (;;) {
             if (*p == 'l')      { longs++; p++; }
-            else if (*p == 'h') { p++; }
-            else if (*p == 'z') { p++; }
+            else if (*p == 'h') { shorts++; p++; }
+            else if (*p == 'j') { longs = 2; p++; }
+            else if (*p == 'z' || *p == 't' || *p == 'L') { p++; }
             else                break;
         }
 
@@ -234,6 +238,11 @@ int acc_format(const char *fmt, va_list ap)
             long long signed_value = longs > 1 ? va_arg(ap, long long)
                                    : longs     ? (long long) va_arg(ap, long)
                                                : (long long) va_arg(ap, int);
+
+            if (shorts == 1)
+                signed_value = (short) signed_value;
+            else if (shorts > 1)
+                signed_value = (signed char) signed_value;
 
             negative = signed_value < 0;
             value = negative ? (unsigned long long) -signed_value
@@ -255,6 +264,10 @@ int acc_format(const char *fmt, va_list ap)
             value = longs > 1 ? va_arg(ap, unsigned long long)
                   : longs     ? (unsigned long long) va_arg(ap, unsigned long)
                               : (unsigned long long) va_arg(ap, unsigned int);
+            if (shorts == 1)
+                value = (unsigned short) value;
+            else if (shorts > 1)
+                value = (unsigned char) value;
             /* `#` on a hex that is not zero: the `0x` in front of it. The
              * octal's leading zero is a digit rather than a prefix -- C
              * counts it among them -- so it is put on below, where the
@@ -329,6 +342,24 @@ int acc_format(const char *fmt, va_list ap)
             emit_run(text, len);
             if (flags & FL_LEFT)
                 emit_fill(pad, ' ');
+
+            continue;
+        }
+        case 'n': {
+            /* How much has been written so far, into what the argument
+             * points at, as wide as the length says. */
+            void *to = va_arg(ap, void *);
+
+            if (longs > 1)
+                *(long long *) to = written;
+            else if (longs)
+                *(long *) to = written;
+            else if (shorts == 1)
+                *(short *) to = (short) written;
+            else if (shorts > 1)
+                *(signed char *) to = (signed char) written;
+            else
+                *(int *) to = written;
 
             continue;
         }

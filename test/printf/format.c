@@ -16,6 +16,7 @@
  * takes it, and the test strips the carriage returns MOS adds. */
 
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -142,6 +143,26 @@ int main(void)
     printf("vsprintf [%s] %d\n", buf, n);
     n = to_screen("vprintf [%c%c] [%lu]\n", 'o', 'k', 4000000000UL);
     printf("vprintf wrote %d\n", n);
+
+    /* The lengths that narrow: h and hh cut an int down to a short or a
+     * char before it is written; j, z and t are intmax_t, size_t and
+     * ptrdiff_t. And %n, at each width, counting what went before it. */
+    printf("[%hd] [%hhd] [%hu] [%hhu] [%hx] [%hhx] [%hho]\n", 70000, 300, 70000,
+           300, -1, -1, 511);
+    printf("[%hhd] [%hd] [%hhi]\n", 200, 40000, -129);
+    printf("[%jd] [%ju] [%jx] [%zu] [%zx] [%td] [%ti]\n", (intmax_t) -5000000000LL,
+           (uintmax_t) 5000000000ULL, (uintmax_t) 0xabcdef012ULL, (size_t) 12345,
+           (size_t) 255, (ptrdiff_t) -77, (ptrdiff_t) 99);
+    {
+        int ni = 0;
+        long nl = 0;
+        long long nll = 0;
+        short ns = 0;
+        signed char nc = 0;
+
+        printf("abc%nde%lnf%lln%hn%hhn|\n", &ni, &nl, &nll, &ns, &nc);
+        printf("n %d %ld %lld %d %d\n", ni, nl, nll, ns, nc);
+    }
 
     return 0;
 }
