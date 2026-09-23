@@ -66,8 +66,63 @@ after each piece of it. `gcc.c-torture/execute`, 1,698 files:
 | acc compiles now | **1,173** (90.0%) |
 | acc refuses | 130 |
 
-What moved it, measured one piece at a time rather than attributed after
-the fact:
+### Compiled is not run
+
+Everything above counts what acc compiles. What it runs was measured
+separately, the same 1,173 tests compiled, linked against `bin/libc.a`
+and run on the emulator, and the same tests built by agondev and run the
+same way -- so that a test which does not hold on this machine is not
+counted against acc. A test passes when it exits with 0; `abort` is 134.
+
+| | tests |
+|---|---|
+| acc compiles | 1,173 |
+| agondev runs and passes, so the test holds on this machine | **1,127** |
+| of those, acc runs and passes as they are | **784** |
+| does not link | 318 |
+| runs and gives the wrong answer, or hangs | 25 |
+
+The 46 agondev fails as well are the data model's -- a 24-bit `int`, a
+four-byte `double` -- or agondev's, and are not acc's to answer for.
+
+318 not linking is almost entirely a spelling. 230 of them stop at
+`__builtin_abort` and most of the rest at `__builtin_memset`,
+`__builtin_memcpy`, `__builtin_strcmp` and the like: the builtin name of a
+library function acc has. Mapping just those names to the functions --
+with `-D` on the command line, as a measuring device and not as a change
+to acc -- takes it to:
+
+| of the 1,127 that hold on this machine | tests |
+|---|---|
+| acc runs and passes | **1,044** (92.6%) |
+| runs and gives the wrong answer, or hangs | **40** |
+| still does not build | 43 |
+
+Of the 43, twelve want `sprintf` or `vprintf`, which are C99 and which the
+library has not got; the rest want GNU builtins -- `__builtin_alloca`, the
+overflow checks, `__builtin_expect`, `__builtin_bswap*` -- or `link_error`,
+which a gcc test uses to require that the optimiser deleted a call.
+
+**The 40 are the most important list in this document.** Each is a
+program acc compiles without complaint and then runs wrongly, where agondev
+runs it right. The two probed so far are plainly miscompilations:
+`pr37924` gets `((unsigned int) (a ^ -1)) >> 9` wrong for a `signed char`
+`a`, and `920710-1` converts the largest `unsigned long long` to a float
+wrongly. Four of the 40 are timeouts at 30 seconds, three of them loops
+over variable-length arrays, and may be slow rather than wrong. The list:
+
+    20010904-1 20010904-2 20020108-1 20020226-1 20020508-1 20020508-2
+    20020508-3 20030224-2 20040811-1 20050929-1 20090711-1 20120111-1
+    20230802-1 920710-1 970217-1 alias-access-path-1 arith-rand-ll
+    bitfld-1 cbrt doloop-1 multi-ix pr109778 pr110165-1 pr110166-1
+    pr110252-1 pr110666-1 pr111431-1 pr111469-1 pr118623 pr119291
+    pr122000 pr37924 pr40386 pr43220 pr58943 pr77767 pushpop_macro
+    shiftdi-2 signed1bitfield-1 vla-dealloc-1
+
+The other way round, acc passes 13 tests that agondev fails.
+
+What moved the compile count, measured one piece at a time rather than
+attributed after the fact:
 
 | what was built | tests it unblocked |
 |---|---|
@@ -427,9 +482,10 @@ done, and then what is next.
   a group is read by what its tests are made of, and the number is checked
   by building the thing and re-running the filter.
 - **Compiling is not passing.** 1,173 of 1,303 is how many acc *compiles*.
-  How many run and give the right answer is a different number and has not
-  been measured; the two that have been spot-checked by hand both passed,
-  which is not evidence. The scoreboard has to report both or it is
+  Measured, 784 of the 1,127 that hold on this machine run and pass as they
+  are, and 1,044 once the builtin spelling of library functions is mapped.
+  Forty compile and then run wrongly. A scoreboard that reported only the
+  first number would have hidden all forty. It has to report both or it is
   measuring the parser and calling it conformance.
 - **A scoreboard invites a number.** 1,173 of 1,303 is not "90% C99
   conformant"; it is how many of one suite's tests compile. The clause
