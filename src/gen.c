@@ -142,6 +142,7 @@ static int far_base(int disp)
 
 static int  spill_slot(void);
 static int  force_reg(Value *val);
+static int  reg_owner(int reg, const Value *except);
 
 /* The result of a void function, used as though it were a value. Found where
  * a value is loaded or converted -- the paths any use of it ends up on --
@@ -1203,9 +1204,20 @@ static int force_reg(Value *val)
     if (val->kind == VAL_ACC) {
         /* Widen out of A. This is the escape hatch that makes the byte path
          * safe: anything that does not understand VAL_ACC forces a register
-         * and gets the promoted value, which is what C says it should see. */
+         * and gets the promoted value, which is what C says it should see.
+         *
+         * Into HL when HL is free. When it is not, whatever lives there stays
+         * and the byte goes to another register: a comparison puts its left
+         * operand in HL and then asks for the right, and a left operand moved
+         * out of HL to make room was lost -- `--w > 0` subtracted w from
+         * itself. force_into does the widening without disturbing HL. */
+        if (reg_owner(R_HL, val)) {
+            reg = reg_alloc_other(R_HL);
+            force_into(val, reg);
+
+            return reg;
+        }
         reg = R_HL;
-        evict_reg(R_HL);
         if (type_unsigned(val->type))
             fill_hl_with_zero();
         else
@@ -1296,6 +1308,18 @@ static void evict_reg(int reg)
 /* Named by pointer rather than by depth from the top. Every caller says
  * `vsp - 1` or `vsp - 2`, which is a constant offset; a depth has to be
  * turned into an address, and scaling an index is a helper call here. */
+/* Whether a value other than `except` is living in a register. */
+static int reg_owner(int reg, const Value *except)
+{
+    const Value *entry;
+
+    for (entry = vstack; entry < vsp; entry++)
+        if (entry != except && entry->kind == VAL_REG && entry->val == reg)
+            return 1;
+
+    return 0;
+}
+
 static void force_into(Value *target, int want)
 {
     Value *entry;
@@ -1311,8 +1335,16 @@ static void force_into(Value *target, int want)
     }
 
     if (target->kind == VAL_ACC) {
-        if (want != R_HL)
-            evict_reg(R_HL);
+        /* A byte in A is widened through HL, whatever register it is going
+         * to. Whatever lives in HL is kept there rather than moved away: the
+         * callers put a left operand in HL and then place the right, and a
+         * left operand moved to DE behind their backs was lost -- in
+         * `x = 1 | x << 1` the OR was handed x << 1 twice, and in
+         * `--w > 0` the comparison subtracted w from itself. */
+        int keep = want != R_HL && reg_owner(R_HL, target);
+
+        if (keep)
+            push_rr(R_HL);
         if (type_unsigned(target->type))
             fill_hl_with_zero();
         else
@@ -1320,6 +1352,8 @@ static void force_into(Value *target, int want)
         ld_l_a();
         if (want != R_HL)
             mov_rr(want, R_HL);
+        if (keep)
+            pop_rr(R_HL);
     } else if (target->kind == VAL_REG) {
         if (target->val != want)
             mov_rr(want, target->val);
@@ -1660,6 +1694,7 @@ static void vbinop(int op)
     } else {
         right = force_reg(vsp - 1);
     }
+
 
     lhs_type = type_promote(lhs->type);
     result = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
