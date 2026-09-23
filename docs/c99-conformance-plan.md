@@ -43,20 +43,23 @@ against the compiler rather than remembered:
 What is still missing, probed one construct at a time rather than read off
 a test's first error:
 
-- **Language, required by C99 and not there yet:** wide character and
-  string literals (`L'x'`, `L"..."`, 6.4.4.4 and 6.4.5), digraphs (`<%`,
-  `%:` and the rest, 6.4.6), and universal character names in identifiers
-  (`\u00e9`, 6.4.3). All three are the lexer's.
+- **Language, required by C99:** everything a freestanding
+  implementation must accept has been probed and is there, apart from the
+  deviations below. The last to come in were digraphs (6.4.6), universal
+  character names (6.4.3), wide literals (6.4.4.4, 6.4.5), `_Pragma`
+  (6.10.9), and `__STDC_VERSION__` and `__STDC_HOSTED__` (6.10.8).
+  `__STDC_HOSTED__` is 0 until the library is complete.
 - **Language, out by decision:** old-style function definitions and `long
   double` -- see the decisions at the end. C99 still requires both, so
   while they are out acc is a compiler of C99 programs and not a conforming
   C99 implementation, and this document says so rather than rounding it up.
-  `_Complex` is refused too.
+  `_Complex` is refused too, and stays refused: clause 4 lets a
+  freestanding implementation leave complex types out.
 - **The headers a freestanding implementation must have** (clause 4):
   `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
-  `<stddef.h>`, `<stdint.h>`. All seven are there. `<float.h>` says what
-  is true of the machine, including that `double` falls short of
-  5.2.4.2.2; see the data model below.
+  `<stddef.h>`, `<stdint.h>`. All seven are there, `<stdint.h>` now the
+  whole of 7.18. `<float.h>` says what is true of the machine, including
+  that `double` falls short of 5.2.4.2.2; see the data model below.
 - **The hosted library:** fourteen of the twenty-four headers. Missing are
   `<errno.h>`, `<setjmp.h>`, `<signal.h>`, `<locale.h>`, `<inttypes.h>`,
   `<wchar.h>`, `<wctype.h>`, `<complex.h>`, `<fenv.h>` and `<tgmath.h>`.
@@ -465,13 +468,19 @@ done, and then what is next.
    that a program that only calls `printf` carries none of them. 11 of the
    12 tests that wanted them pass; the twelfth wants `%f`.
 
+10. **The rest of what freestanding C99 asks of the language**: digraphs,
+    universal character names, wide literals, `_Pragma`,
+    `__STDC_VERSION__` and `__STDC_HOSTED__`, and the whole of
+    `<stdint.h>`.
+
 **Next, in this order:**
 
-1. **The lexer's three**: wide literals, digraphs, universal character
-   names. Each is required C99 and each is refused today.
-2. **`%f`, `%e`, `%g` and `%a`** in the printf family, in a member that
-   only a program using one of them takes.
-3. **gcc.c-torture/execute, all of it that the filter takes.**
+1. **A link that takes functions, not files.** A library member is taken
+   whole today, which is why printf and sprintf had to be split into two
+   files; the link should take only the functions a program reaches.
+2. **`%f`, `%e`, `%g` and `%a`** in the printf family.
+3. **The missing hosted headers**, all but `<complex.h>`.
+4. **gcc.c-torture/execute, all of it that the filter takes.**
    - Build the importer, filter, census, manifest, runner and scoreboard
      around it. The filter and the compile pass already exist as a script;
      what is missing is everything that turns a count into a scoreboard.
@@ -481,14 +490,14 @@ done, and then what is next.
    - And how many run and give the right answer, which has so far been
      measured by scripts outside the repository: 1,077 of the 1,127 that
      hold on this machine. The runner is what makes that number stay true.
-4. **c-testsuite, all 220.**
+5. **c-testsuite, all 220.**
    - ISC and MIT, so it can be vendored with its notices.
-5. **The rest of `gcc.dg`, not just `c99-*`.**
+6. **The rest of `gcc.dg`, not just `c99-*`.**
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.
-6. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
-7. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
+7. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
+8. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
    `test/fuzz/reduce.py` as the reducer.
 
 **Not being done, and why:**
