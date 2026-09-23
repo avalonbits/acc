@@ -4064,6 +4064,8 @@ static int link_given(int sym)
         return bss_top;
     if (strcmp(name, "acc_heap_end") == 0)
         return out_base + ACC_RAM_BYTES - ACC_STACK_RESERVE;
+    if (strcmp(name, "acc_stack_top") == 0)
+        return out_base + ACC_RAM_BYTES;
 
     return 0;
 }
@@ -4900,12 +4902,15 @@ static const unsigned char startup_exit[] = {
     0xcd, 0x00, 0x00, 0x00,                     /* call the clearing */
     0xe1,                                       /* pop hl */
     0xcd, 0x00, 0x00, 0x00,                     /* call the arguments */
+    0xed, 0x73, 0x00, 0x00, 0x00,               /* ld (mos_sp), sp */
+    0x31, 0x00, 0x00, 0x00,                     /* ld sp, the top */
     0xe5, 0xd5,                                 /* push hl / push de */
     0xed, 0x73, 0x00, 0x00, 0x00,               /* ld (exit_sp), sp */
     0x21, 0x00, 0x00, 0x00,                     /* ld hl, after main */
     0x22, 0x00, 0x00, 0x00,                     /* ld (exit_pc), hl */
     0xcd, 0x00, 0x00, 0x00,                     /* call main */
     0xc1, 0xc1,                                 /* pop bc / pop bc */
+    0xed, 0x7b, 0x00, 0x00, 0x00,               /* ld sp, (mos_sp) */
     0x7d, 0xd3, 0x00,                           /* ld a, l / out (0), a */
     0xfd, 0xe1,                                 /* pop iy */
     0xc9
@@ -4917,12 +4922,15 @@ static const unsigned char startup_print[] = {
     0xcd, 0x00, 0x00, 0x00,                     /* call the clearing */
     0xe1,                                       /* pop hl */
     0xcd, 0x00, 0x00, 0x00,                     /* call the arguments */
+    0xed, 0x73, 0x00, 0x00, 0x00,               /* ld (mos_sp), sp */
+    0x31, 0x00, 0x00, 0x00,                     /* ld sp, the top */
     0xe5, 0xd5,                                 /* push hl / push de */
     0xed, 0x73, 0x00, 0x00, 0x00,               /* ld (exit_sp), sp */
     0x21, 0x00, 0x00, 0x00,                     /* ld hl, after main */
     0x22, 0x00, 0x00, 0x00,                     /* ld (exit_pc), hl */
     0xcd, 0x00, 0x00, 0x00,                     /* call main */
     0xc1, 0xc1,                                 /* pop bc / pop bc */
+    0xed, 0x7b, 0x00, 0x00, 0x00,               /* ld sp, (mos_sp) */
     0xe5,                                       /* push hl */
     0xfd, 0x21, 0x00, 0x00, 0x00, 0xfd, 0x39,   /* ld iy, 0 / add iy, sp */
     0xfd, 0x7e, 0x02, 0xcd, 0x00, 0x00, 0x00,   /* ld a, (iy+2) / hexbyte */
@@ -4947,18 +4955,25 @@ static const unsigned char startup_print[] = {
 /* Where exit comes back to, and where the stack was when main was called:
  * see gen_exit. The stub writes both before calling main, so that exit has
  * somewhere to go and a stack to go there on. */
-#define STUB_SP_AT     16
-#define STUB_PC_AT     20
-#define STUB_PCSTORE_AT 24
-#define STUB_MAIN_AT   28
-#define STUB_AFTER_MAIN 31
+#define STUB_SP_AT     25
+#define STUB_PC_AT     29
+#define STUB_PCSTORE_AT 33
+#define STUB_MAIN_AT   37
+#define STUB_AFTER_MAIN 40
+
+/* The stack main runs on, which is not MOS's: see src/rt/startup.s. The stub
+ * keeps MOS's stack pointer in a cell behind itself, moves to the top of the
+ * program's memory, and puts MOS's back before it returns. */
+#define STUB_MOS_SP_AT      14
+#define STUB_TOP_AT         18
+#define STUB_MOS_SP_BACK_AT 44
 
 /* Where the print stub calls within itself, as offsets from its first byte.
  * They are absolute calls, so they have to be filled in once the stub's
  * address is known. */
 static const struct { int at, to; } print_calls[] = {
-    { 0x2d, 0x4a }, { 0x34, 0x4a }, { 0x3b, 0x4a },   /* hexbyte */
-    { 0x50, 0x54 }                                    /* hexnib */
+    { 0x3b, 0x58 }, { 0x42, 0x58 }, { 0x49, 0x58 },   /* hexbyte */
+    { 0x5e, 0x62 }                                    /* hexnib */
 };
 
 /* The two cells the stub writes. See gen_startup and gen_exit.
@@ -5039,6 +5054,32 @@ void gen_startup(int by_exit, const char *program)
         out_byte(0);
     sym_at(exit_cell(0))->val = out_here() - 2 * ACC_INT_SIZE;
     sym_at(exit_cell(1))->val = out_here() - ACC_INT_SIZE;
+
+    /* And a third, for MOS's stack pointer while main runs on its own at the
+     * top of the program's memory -- which is where the heap already leaves
+     * room for it. This one only the stub reads, so it needs no name. */
+    {
+        int mos_sp = out_here();
+
+        for (i = 0; i < ACC_INT_SIZE; i++)
+            out_byte(0);
+        out_reloc(base + STUB_MOS_SP_AT);
+        out_patch24(base + STUB_MOS_SP_AT, mos_sp);
+        out_reloc(base + STUB_MOS_SP_BACK_AT);
+        out_patch24(base + STUB_MOS_SP_BACK_AT, mos_sp);
+        /* The top of memory moves with where the image is loaded, so it is
+         * relocated -- but not by the pass that shortens jumps, which moves
+         * every address in the image along with the code, and this one is
+         * past the image: written straight away it came out 71 bytes low,
+         * that being how far the jumps had shrunk. So it is a name the link
+         * answers, after everything is laid down, as the heap's end is. */
+        {
+            int sym = sym_push(name_intern("acc_stack_top", 13), SYM_GLOBAL, -1);
+
+            sym_set_flags(sym, SYMF_DECLARED | SYMF_EXTERN);
+            fixup_add(sym, base + STUB_TOP_AT);
+        }
+    }
     sym_set_flags(exit_cell(0), SYMF_DEFINED);
     sym_set_flags(exit_cell(1), SYMF_DEFINED);
     fixup_add(exit_cell(0), base + STUB_SP_AT);

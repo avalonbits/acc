@@ -52,6 +52,16 @@
 ; returned. That is why the arguments are pushed before the stack is saved --
 ; the two pops after the call take them off either way.
 ;
+; main runs on a stack of its own, at the top of the program's memory, and
+; not on the one MOS called in on. MOS's is in its own RAM, above the
+; program's, and its variables are below it: a program that went a few tens
+; of kilobytes deep wrote over them, and the next interrupt took the machine
+; down. The heap already stops short of the top of the program's memory for
+; the stack to come down into -- see ACC_STACK_RESERVE -- and agondev's
+; startup moves the stack there too. MOS's stack pointer is kept in a cell
+; behind this stub and put back before anything is returned to MOS; exit
+; unwinds to the tail that does it, as a return does.
+;
 ; iy is saved here and not left to main's prologue for the same reason: exit
 ; unwinds past every epilogue that would have put it back. ix is not, because
 ; MOS does not ask for it -- the program that returns normally gives it back
@@ -71,6 +81,8 @@ _acc_startup_exit:
 	call	0			; [hole] clear what starts at zero
 	pop	hl
 	call	0			; [hole] argc and argv
+	ld	(0), sp			; [hole] MOS's stack, given back at the end
+	ld	sp, 0			; [hole] the program's own: the top of its memory
 	push	hl			; argv
 	push	de			; argc, which main reads first
 	ld	(0), sp			; [hole] the stack main is called on
@@ -79,6 +91,7 @@ _acc_startup_exit:
 	call	0			; [hole] main
 	pop	bc			; the caller takes the arguments back
 	pop	bc
+	ld	sp, (0)			; [hole] MOS's stack again
 	ld	a, l
 	out	(0), a
 	pop	iy
@@ -90,6 +103,8 @@ _acc_startup_print:
 	call	0			; [hole] clear what starts at zero
 	pop	hl
 	call	0			; [hole] argc and argv
+	ld	(0), sp			; [hole] MOS's stack, given back at the end
+	ld	sp, 0			; [hole] the program's own: the top of its memory
 	push	hl
 	push	de
 	ld	(0), sp			; [hole] the stack main is called on
@@ -98,6 +113,7 @@ _acc_startup_print:
 	call	0			; [hole] main
 	pop	bc
 	pop	bc
+	ld	sp, (0)			; [hole] MOS's stack again
 	push	hl			; the result, so its bytes can be read
 	ld	iy, 0
 	add	iy, sp
