@@ -19,14 +19,24 @@ against the compiler rather than remembered:
   `#if`/`#ifdef`/`#elif`, `#line`, `#error`, `#pragma once`, `#` and `##`,
   and argument prescan. 139 of Decus CPP's C89 conformance tests pass; see
   `test/cpp89`.
-- **A library.** `printf`, `putchar`, `malloc`, `qsort`, `memcpy`,
-  `memset`, `strlen`, `strcmp`, `exit`, and files. Twelve members, linked
-  from `bin/libc.a` by acc's own linker, which takes only what is used.
-- **The language.** Structs, unions, enums, bit-fields, `typedef`,
-  `sizeof`, `switch`, `do`, `break`, `continue`, string and character
-  literals, `void` functions, designated initialisers, compound literals,
-  variable-length arrays, flexible array members, `long long`, `_Bool`,
-  `inline`, `restrict`, `__func__`. Of 36 C99 feature probes acc takes 34.
+- **A library.** Twelve headers -- `<assert.h>`, `<ctype.h>`, `<limits.h>`,
+  `<math.h>`, `<stdarg.h>`, `<stdbool.h>`, `<stddef.h>`, `<stdint.h>`,
+  `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<time.h>` -- over 28 members,
+  linked from `bin/libc.a` by acc's own linker, which takes only what is
+  used. `<math.h>` is the whole of 7.12 that one floating type can carry,
+  each function measured against the host's library rather than assumed:
+  exact for the square root, within an ulp or two for most of the rest.
+- **The language.** Structs, unions, enums, bit-fields (including of
+  `long long`, to 64 bits), `typedef`, `sizeof`, `switch`, `do`, `break`,
+  `continue`, string and character literals, `void` functions, designated
+  initialisers, compound literals, variable-length arrays, flexible array
+  members, `long long`, `_Bool`, `inline`, `restrict`, `__func__`, the
+  forty macros that say how wide everything is, and `-D`/`-U` on the
+  command line. Of 36 C99 feature probes acc takes 34.
+- **No ceiling on the size of a function.** (ix+d) reaches 128 bytes, and a
+  function that wanted more used to be refused. What it declares past the
+  window now lives where the arrays do, and the scratch past it is reached
+  through IY. Nothing in the torture suite is refused for its frame.
 
 What is still missing, and what each one costs, is the first thing the
 measurements below say.
@@ -42,45 +52,71 @@ Two things have not changed, and they still shape everything:
   but the exit byte is still the cheapest and most of the tests worth
   having use it.
 
-## What a dry run already says
+## What the dry run said, and where it stands
 
-The filter below was run over the largest candidate source before any of
-this was built, to size the work. `gcc.c-torture/execute`, 1,698 files:
+The filter this plan settles on below was run over the largest candidate
+source before any of this was built, to size the work, and has been re-run
+after each piece of it. `gcc.c-torture/execute`, 1,698 files:
 
 | | tests |
 |---|---|
 | in the directory | 1,698 |
 | strict C99 for this target, under agondev | **1,303** |
-| of those, acc compiles today | **1,049** (80.5%, in 1.2 s on the host) |
-| acc refuses | 254 |
+| acc compiled when this plan was first written | 1,049 (80.5%) |
+| acc compiles now | **1,173** (90.0%) |
+| acc refuses | 130 |
 
-What acc refuses, by the first error:
+What moved it, measured one piece at a time rather than attributed after
+the fact:
 
-| reason | tests | what it is |
-|---|---|---|
-| `expected a type, found a name` | 102 | old-style (K&R) function definitions |
-| `'x' is not declared` | 61 | mostly the same, through the parameter list |
-| `not supported: agondev's library has no ...` | 22 | `long double` |
-| `a bit-field of 'x' is not supported` | 12 | bit-fields wider than C99 requires |
-| the rest | 57 | `va_list` shapes, address-to-float casts, frame size |
-
-And what they need to *run*, which is a different question:
-
-| | tests |
+| what was built | tests it unblocked |
 |---|---|
-| call `abort()` | **891** |
-| call `exit()` | 523 |
-| `#include` a header | 154 |
-| call `printf()` | 8 |
+| `abort`, `-D`/`-U`, and the forty macros that say how wide everything is | +98 |
+| bit-fields of `long long`, to 64 bits | +8 |
+| `va_arg` and the rest through a `va_list *` | +4 |
+| `&` through a cast -- `&((struct R *) q)->a`, and offsetof's old spelling | +3 |
+| `<ctype.h>` and `<assert.h>` | +2 |
+| `<math.h>` | +2 |
+| the frame-size ceiling, taken off | +6 |
+| `&` of a string literal, and of a byte inside one | +1 |
 
-Two numbers decide the order of everything below. **`abort` is the single
-biggest unblocker in the suite** -- acc has `exit` and not `abort`, and 891
-of 1,303 tests end in one. **Old-style function definitions are the single
-biggest language gap**, at about 102 tests.
+What is left, by what it actually needs -- which is not the same as what
+its first error message says, and the difference is the subject of a risk
+below:
 
-And one worry the plan used to carry can be dropped: these files have a
-median size of 394 bytes and a largest of 12.8 KB. Nothing in this source
-comes near what acc can compile on the machine.
+| what it needs | tests |
+|---|---|
+| GNU extensions: keywords, attributes, builtins, `asm`, statement expressions | 36 |
+| old-style (K&R) function definitions | 27 |
+| `long double` | 26 |
+| wide literals -- `L"..."` and `L'x'` | 8 |
+| `setjmp.h` | 1 |
+| `_Complex` | 1 |
+| everything else, in ones and twos | 31 |
+
+Three of those are settled and will not move: GNU extensions are out of
+scope, K&R definitions are out by decision (nobody should be writing them
+for this machine, and supporting them would shape the parser around a form
+C99 calls obsolescent), and `long double` is out because agondev's library
+has no arithmetic for one -- so a program that asks for it does not link,
+whichever compiler built it. That is 89 of the 130, and the honest ceiling
+on this suite is therefore about 1,214 of 1,303 rather than all of them.
+
+The remaining 41 are worth reading one by one. The C99 gaps in them that
+have been identified so far:
+
+- **`[static n]` in an array parameter** -- `void f(int a[static 4])`,
+  which is 6.7.5.3p7 and not an extension. 2 tests.
+- **Wide literals.** 6.4.4.4 and 6.4.5. `wchar_t` is `short` here, to match
+  agondev. 8 tests.
+- **Constant expressions at the edges**: a global initialised with
+  `&"X"[0]`, an enum constant that needs a cast folded, an array size that
+  does too, and an address constant with a `+` in it. 4 tests, one each.
+- **`setjmp.h`**, which is a library gap and not a language one. 1 test.
+
+And four of the 41 are not acc gaps at all: `strlen-2`, `strlen-3`,
+`strlen-4` and `memchr-1` fail on `__builtin_printf`, and the `?:` with a
+void side that their error message names works correctly.
 
 ## What "compiles with C99" has to mean
 
@@ -117,7 +153,7 @@ which flags produced it is not reproducible.
 
 | source | size | how a test reports | license | fit |
 |---|---|---|---|---|
-| [gcc torture `execute`](https://github.com/gcc-mirror/gcc/tree/master/gcc/testsuite/gcc.c-torture/execute) | 1,698 files; **1,303 are C99 here**, acc compiles **1,049** | `abort()` on failure, `exit(0)` | GPL-3 (part of GCC) | **start here**: measured, and the only source large enough for a scoreboard to mean anything |
+| [gcc torture `execute`](https://github.com/gcc-mirror/gcc/tree/master/gcc/testsuite/gcc.c-torture/execute) | 1,698 files; **1,303 are C99 here**, acc compiles **1,173** | `abort()` on failure, `exit(0)` | GPL-3 (part of GCC) | **start here**: measured, and the only source large enough for a scoreboard to mean anything |
 | [gcc `gcc.dg`](https://gcc.gnu.org/onlinedocs/gccint/C-Tests.html) | 7,562 `.c`, of which 135 are named `c99-*` | DejaGnu: `dg-do run`, or `dg-do compile` with `dg-error` lines | GPL-3 | the `c99-*` ones name their clause; the other 7,427 go through the filter like everything else |
 | [c-testsuite](https://github.com/c-testsuite/c-testsuite) `single-exec` | 220 tests | `main` returns 0, plus a `.expected` stdout file | framework MIT; tests carry their own, per `.otags` | all 220 now: the cpp/libc split it used to be cut on has no meaning |
 | ↳ from [scc](https://www.simple-cc.org/) | 150 of the 220 | returns 0 | ISC | permissive, so it can be vendored |
@@ -160,8 +196,8 @@ run every time the suite does.
 A test acc cannot run is not nothing. It was written because some part of
 C99 was got wrong once, and what it covers is lost the moment it is struck
 off a list. Counting exclusions says how much was lost and never what, so
-the scoreboard would read 1,049 of 1,303 and not say which parts of the
-language the other 254 were the only cover for.
+the scoreboard would read 1,173 of 1,303 and not say which parts of the
+language the other 130 were the only cover for.
 
 So every test carries a **census** of what it is made of, taken at import
 whether or not it can run, and kept in the manifest beside it.
@@ -258,10 +294,10 @@ how any other program is built, and most of them then run as they are:
 
 - **Report by exit byte.** A test that returns 0 or calls `exit(0)` needs
   a status only, and that is what `-x` gives.
-- **`abort`.** The one thing in the library that 891 of these tests want
-  and acc has not got. It is `exit` with a non-zero status and no
-  `atexit` to run, so it is a few lines on top of what `exit` already
-  does, and it is the first thing to build.
+- **`abort`.** The one thing in the library that 891 of these tests want.
+  Built: `exit` with a status of 134, which is what a shell reports for a
+  program a SIGABRT ended, and its own library member so that a program
+  which never calls it carries neither it nor the printf under it.
 - **Output tests** (`printf` against an expected file) work now: acc
   prints, and the emulator harness already captures the console -- it is
   what `test/mos.sh` and `test/args.sh` read. They are still worth less
@@ -271,10 +307,9 @@ how any other program is built, and most of them then run as they are:
   rejected at line N" checks, in the shape `test/errors.sh` already uses.
   The line is checked and the wording is not, since acc's messages are its
   own.
-- **`-D` on the command line.** Several upstream harnesses pass one and
-  acc has no `-D` or `-U`. Either build them, or have the importer put the
-  definition at the top of the file and record that it did; the first is
-  smaller than it sounds and does not alter the test.
+- **`-D` on the command line.** Several upstream harnesses pass one.
+  Built, both of them, rather than having the importer edit the file: it
+  was smaller than it sounded and it does not alter what is being run.
 
 **The runner** is `test/conformance.sh`. It works from the manifest and
 reuses the emulator harness. Every test that can run goes on one SD card
@@ -296,44 +331,67 @@ It is strict both ways:
 
 The order the plan used to give was set by what acc could not do, and it
 put the machinery on the smallest source it could find. The measurements
-say to start on the largest instead: `gcc.c-torture/execute` is 1,303
-strict-C99 tests of which acc already compiles 1,049, and it is the only
-source big enough for a scoreboard to mean anything on the first day.
+said to start on the largest instead, and the first item on that list has
+since been built along with several others -- so what follows is what is
+done, and then what is next.
 
-1. **`abort`.**
-   - A few lines on `exit`, which already unwinds to the stub from any
-     depth. 891 of the 1,303 torture tests end in one.
-   - Nothing else is worth building first; without it most of the suite
-     can be compiled and not run.
-2. **gcc.c-torture/execute, all of it that the filter takes.**
+**Done, and measured:**
+
+1. **`abort`.** In the library, as its own member, so a program that never
+   calls it carries neither it nor the printf under it. 891 of the 1,303
+   torture tests end in one.
+2. **`-D` and `-U`**, which several upstream harnesses pass.
+3. **The macros that say how wide everything is.** `__SIZE_TYPE__` and 39
+   others. Not C, and no program that wants an integer of a named width
+   can do without them: this was the single largest unblocker measured, at
+   98 tests, and it had been hidden behind an error message that named
+   something else.
+4. **The language gaps the filter found**, each a few tests: `long long`
+   bit-fields, `va_list` through a pointer, `&` through a cast and of a
+   string literal, and the frame-size ceiling.
+5. **`<ctype.h>`, `<assert.h>`, `<math.h>`.**
+
+**Next, in this order:**
+
+1. **gcc.c-torture/execute, all of it that the filter takes.**
    - Build the importer, filter, census, manifest, runner and scoreboard
-     around it.
+     around it. The filter and the compile pass already exist as a script;
+     what is missing is everything that turns a count into a scoreboard.
    - Fetched and not vendored: it is GPL-3 and acc is LGPL-2.1.
-   - Expect roughly 1,049 compiling on the first run and the scoreboard to
-     say which clauses the other 254 were covering.
-   - The two named gaps -- old-style definitions and `long double` --
-     become rows that move when they are built.
-3. **Old-style function definitions.**
-   - About 102 tests, and the largest single gap between acc and C99 that
-     the dry run found. 6.9.1 and 6.11.7: obsolescent, conforming, and
-     common in every test suite written before 1999.
-4. **c-testsuite, all 220.**
-   - The plan used to take the 121 that need neither cpp nor libc. acc has
-     both, so the split has no meaning now.
+   - Expect 1,173 compiling on the first run, and the scoreboard to say
+     which clauses the other 130 were covering.
+   - It should also say what `abort` and `exit` alone cannot: how many of
+     the 1,173 *run* and give the right answer. Compiling is not passing,
+     and that number has never been measured.
+2. **c-testsuite, all 220.**
    - ISC and MIT, so it can be vendored with its notices.
-5. **The rest of `gcc.dg`, not just `c99-*`.**
-   - 7,562 files of which 135 are named for C99. The filter decides, and
-     the other 7,427 are not excluded by their names.
+3. **The rest of `gcc.dg`, not just `c99-*`.**
+   - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.
-6. **chibicc's tests.**
-   - MIT, about 40 files, denser than anything else here. The plan called
-     them the best single addition once structs and cpp existed; both do.
-7. **Random differential beyond `test/fuzz.sh`.**
-   - Csmith or YARPGen. They find what no fixed suite does, and
-     `test/fuzz/reduce.py` is already the reducer.
-8. **A commercial suite**, only if acc ever needs a claim of conformance
-   rather than confidence in it.
+4. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
+5. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
+   `test/fuzz/reduce.py` as the reducer.
+
+**Not being done, and why:**
+
+- **Old-style (K&R) function definitions.** 27 tests. Obsolescent in C99
+  6.11.7, and nobody should be writing them for this machine; supporting
+  them would shape the declarator parser around a form that is on its way
+  out. The plan used to call this the single biggest language gap at 102
+  tests, which was an artefact of counting by error message.
+- **GNU extensions.** 36 tests. Statement expressions, nested functions,
+  `__typeof__`, `__builtin_*` beyond what acc already has, attributes acc
+  does not take, `asm`.
+- **Computed goto.** `&&label` and `goto *p` were built and then taken back
+  out: agondev's backend cannot compile a label's address at all -- "unable
+  to legalize instruction: G_BLOCK_ADDR", at every optimisation level and
+  under `-std=gnu99` -- so a program using it cannot be built by both
+  compilers, and the case for it could only be held to coming out at 42 on
+  its own rather than to agreeing with the reference build. It comes back
+  if agondev ever takes it. The commit that removed it says how it was done.
+- **`long double`.** 26 tests. agondev's library has no arithmetic for one.
+- **A commercial suite.** Out of scope.
 
 ## Risks, and what to watch
 
@@ -357,21 +415,53 @@ source big enough for a scoreboard to mean anything on the first day.
 - **Clause mapping is judgement.** gcc's c99 tests name their clause.
   Everything else is assigned from its census, which only has to be good
   enough to point at the right chapter.
-- **A scoreboard invites a number.** 1,049 of 1,303 is not "80% C99
+- **An error message is not a cause, and counting by message lies.** This
+  plan's first table read the compiler's first error for each refused test
+  and grouped by it. `expected a type, found a name` came to 102 tests and
+  was written down as old-style function definitions, which made them the
+  largest gap and the third item on the build order. The real figure was
+  27. The same message came from `__inline__`, and from every test that
+  declared a variable of a type acc had not defined a macro for -- which
+  was 98 tests, the largest gap in the suite, and it was invisible because
+  it wore another gap's message. Nothing since has been counted that way:
+  a group is read by what its tests are made of, and the number is checked
+  by building the thing and re-running the filter.
+- **Compiling is not passing.** 1,173 of 1,303 is how many acc *compiles*.
+  How many run and give the right answer is a different number and has not
+  been measured; the two that have been spot-checked by hand both passed,
+  which is not evidence. The scoreboard has to report both or it is
+  measuring the parser and calling it conformance.
+- **A scoreboard invites a number.** 1,173 of 1,303 is not "90% C99
   conformant"; it is how many of one suite's tests compile. The clause
-  rows are the answer and the total is a headline.
+  rows are the answer and the total is a headline. And 89 of the 130 left
+  are settled as out of scope, so the ceiling on this suite is about 1,214
+  -- a scoreboard that reads 1,173 of 1,303 without saying so implies 130
+  tests of work that does not exist.
 
-## Decisions for you
+## Decisions, and what was decided
 
-1. **Whether `abort` goes in the library or the test prelude.** In the
-   library it is a C99 function acc ought to have anyway. In a prelude it
-   stays out of programs that never call it. The first is simpler and the
-   linker already takes only what is used.
-2. **Whether to build `-D` and `-U`.** Several harnesses pass them, and
-   the alternative is the importer editing the test.
-3. **Commercial.** Whether a paid suite is ever in scope.
+The three this plan opened with are settled:
 
-The old first decision -- whether to build the test prelude before the
-preprocessor -- is settled by both existing. acc's own licence was the
-third and is settled too: LGPL-2.1 or later, which is what decides the
-vendoring above.
+1. **`abort` goes in the library**, not in a test prelude -- a C99 function
+   acc ought to have anyway, and its own member so that a program which
+   never calls it carries neither it nor the printf under it.
+2. **`-D` and `-U` were built**, rather than having the importer edit the
+   tests. Smaller than it sounded, and it does not alter what is being run.
+3. **No commercial suite.** Out of scope.
+
+And three more have been made since, each of which takes tests off the
+board for good rather than putting them on it:
+
+4. **No old-style (K&R) function definitions.** 27 tests.
+5. **No `long double`.** 26 tests, and not really acc's decision: agondev's
+   library has no arithmetic for one.
+6. **No GNU extensions**, and computed goto was taken back out after being
+   built, because agondev cannot compile it and a test acc alone can run is
+   worth much less than one both compilers answer.
+
+What is still open is the same thing that was open at the start, and it is
+now the only thing between this plan and a scoreboard: **none of the
+machinery exists yet.** The filter, the compile pass and the count are a
+shell script and an awk line. The census, the manifest, the clause mapping,
+the runner and the scoreboard are all still to build, and until they are,
+what this document reports is a number and not a measurement of C99.
