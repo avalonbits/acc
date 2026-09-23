@@ -1395,6 +1395,25 @@ static void put_stringified(Buf *out, const char *text)
  * `#p` is the argument as it was written, quoted. `a ## b` joins what is on
  * either side of it with nothing between, and the result is read as tokens
  * like anything else, since the buffer this builds is lexed from. */
+/* '#' and '##', or their digraphs '%:' and '%:%:' (C99 6.4.6): how many
+ * characters the one at p is spelled with, or 0. `#%:` is not a '##' but
+ * two '#', as C tokenizes it. */
+static int hash_at(const char *p)
+{
+    if (*p == '#')
+        return 1;
+
+    return p[0] == '%' && p[1] == ':' ? 2 : 0;
+}
+
+static int hashhash_at(const char *p)
+{
+    if (p[0] == '#' && p[1] == '#')
+        return 2;
+
+    return p[0] == '%' && p[1] == ':' && p[2] == '%' && p[3] == ':' ? 4 : 0;
+}
+
 static char *build_expansion(Macro *m, char **argv, int argc)
 {
     const char *p = m->text;
@@ -1404,7 +1423,7 @@ static char *build_expansion(Macro *m, char **argv, int argc)
 
     while (*p) {
         const char *start;
-        int idx, paste_before = 0;
+        int idx, paste_before = 0, n;
 
         if (*p == '"' || *p == '\'') {          /* whole, names and all */
             int quote = *p;
@@ -1422,19 +1441,19 @@ static char *build_expansion(Macro *m, char **argv, int argc)
             continue;
         }
 
-        if (*p == '#' && p[1] == '#') {
+        if ((n = hashhash_at(p)) != 0) {
             /* Joined: whatever was put last stays, and the space before it
              * goes, so that the two sides end up next to each other. */
             while (out.len && out.text[out.len - 1] == ' ')
                 out.text[--out.len] = '\0';
-            p += 2;
+            p += n;
             while (*p == ' ' || *p == '\t')
                 p++;
             paste_before = 1;
         }
 
-        if (*p == '#' && !paste_before) {
-            const char *q = p + 1;
+        if (!paste_before && (n = hash_at(p)) != 0) {
+            const char *q = p + n;
 
             while (*q == ' ' || *q == '\t')
                 q++;
@@ -1475,7 +1494,7 @@ static char *build_expansion(Macro *m, char **argv, int argc)
 
             while (*q == ' ' || *q == '\t')
                 q++;
-            if (paste_before || (q[0] == '#' && q[1] == '#'))
+            if (paste_before || hashhash_at(q))
                 buf_put(&out, arg, (int) strlen(arg));
             else
                 put_expanded(&out, arg);
@@ -1614,8 +1633,14 @@ static void skip_blanks(void);
 static void rest_of_line(void);
 
 /* Whether `at` is the first thing on its line, blanks aside. Only asked of
- * a '#', so the walk is off every path but that one. */
-static int at_line_start(const char *at)
+ * a '#', so the walk is off every path but that one.
+ *
+ * Always inlined. next() asks it, and when lex_digraph came to ask it too
+ * clang made it a function of its own, and next() -- where it had been
+ * inlined -- was given different registers for the loop that reads a name:
+ * 1% of every compile, spent in a loop that does not call this at all. */
+static inline __attribute__((always_inline))
+int at_line_start(const char *at)
 {
     while (at > src && (at[-1] == ' ' || at[-1] == '\t' || at[-1] == '\r'))
         at--;
@@ -2660,8 +2685,8 @@ static int skip_group(void)
         /* At the start of a line. */
         if (!in_comment) {
             skip_blanks();
-            if (*cursor == '#') {
-                cursor++;
+            if (hash_at(cursor)) {
+                cursor += hash_at(cursor);
                 skip_blanks();
                 directive_name(name, (int) sizeof name);
 
@@ -3203,7 +3228,7 @@ static void directives(void)
 
         /* Another one only if it is first on its line too, which after a
          * directive means the line moved on. */
-        if (*cursor != '#' || line == started)
+        if (!hash_at(cursor) || line == started)
             return;
     }
 }
@@ -3214,7 +3239,7 @@ static void directive(void)
 {
     char name[32];
 
-    cursor++;                           /* the '#' */
+    cursor += hash_at(cursor);          /* the '#', or '%:' */
     skip_blanks();
 
     /* `# 200 "file"`, which is a #line with the word left out. Nothing
@@ -3433,11 +3458,11 @@ static const unsigned char punct[256] = {
     [';'] = TK_SEMI,   [','] = TK_COMMA,
     ['='] = TK_ASSIGN, ['!'] = TK_NOT,
     ['+'] = TK_PLUS,   ['-'] = TK_MINUS,
-    ['*'] = TK_STAR,   ['/'] = TK_SLASH,  ['%'] = TK_PERCENT,
+    ['*'] = TK_STAR,   ['/'] = TK_SLASH,
     ['&'] = TK_AMP,    ['|'] = TK_PIPE,   ['^'] = TK_CARET,
     ['~'] = TK_TILDE,
-    ['<'] = TK_LT,     ['>'] = TK_GT,
-    ['?'] = TK_QUESTION, [':'] = TK_COLON,
+    ['>'] = TK_GT,
+    ['?'] = TK_QUESTION,
     ['['] = TK_LBRACKET, [']'] = TK_RBRACKET,
     ['.'] = TK_DOT
 };
@@ -3851,10 +3876,29 @@ static int literal_char(int quote)
  * string, or a character that begins nothing. Out of line, where the
  * refusal of a stray character already was, so that punctuation pays
  * nothing for literals it is not. */
+static void lex_two(int c);
+static void lex_digraph(int c);
+
 __attribute__((noinline))
 static void lex_quoted(int c)
 {
     int n = 0;
+
+    /* '<', '%' and ':', which begin the digraphs as well as their own
+     * tokens and pairs. They come here, out of line, rather than through
+     * the table next() reads the others from. Testing for the digraphs in
+     * next() cost 0.7% of every compile -- not in the test, but in what it
+     * did to the registers of the loop that reads a name. Here they cost a
+     * call each, 0.26%, and next() compiles as it did. */
+    if (c == '<' || c == '%' || c == ':') {
+        tok = c == '<' ? TK_LT : c == '%' ? TK_PERCENT : TK_COLON;
+        if (*cursor == '=' || *cursor == c)
+            lex_two(c);
+        else if (*cursor == ':' || *cursor == '%' || *cursor == '>')
+            lex_digraph(c);
+
+        return;
+    }
 
     if (c == '\'') {
         int value;
@@ -3979,6 +4023,32 @@ static void lex_two(int c)
         break;
     }
 }
+
+/* The digraphs, C99 6.4.6: `<:` `:>` `<%` `%>` are the brackets and braces,
+ * and `%:` is '#'. The cursor is past c, on the character that may make it
+ * one. A %: first on its line is a directive, read here, and the token after
+ * it is read with a call back into next(), which is where this came from. */
+static void lex_digraph(int c)
+{
+    int second = *cursor;
+
+    if (c == '<' && second == ':') { cursor++; tok = TK_LBRACKET; return; }
+    if (c == '<' && second == '%') { cursor++; tok = TK_LBRACE;   return; }
+    if (c == ':' && second == '>') { cursor++; tok = TK_RBRACKET; return; }
+    if (c == '%' && second == '>') { cursor++; tok = TK_RBRACE;   return; }
+    if (c == '%' && second == ':') {
+        if (src_macro == NAME_NONE && cursor[1] != '%'
+            && at_line_start(cursor - 1)) {
+            cursor--;
+            directives();
+            next();
+
+            return;
+        }
+        acc_error_at(tok_line, "stray '%%:' in the source: it is '#', which "
+                               "is only a directive first on its line");
+    }
+}                                       /* `<>` `:%` and the like: two tokens */
 
 /* The parentheses after `__attribute__`, which the standard doubles: read
  * tokens and count depth until the pair that opened it closes. Recursing
