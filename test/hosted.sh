@@ -11,7 +11,8 @@
 # The programs print only what the two machines should agree on. A value
 # that depends on the width of a type -- LONG_MAX, what 24 bits wrap to --
 # is printed as a comparison against the macro that names it, so it reads
-# 1 on both.
+# 1 on both. The host runs in its C locale, which is the only one the Agon
+# has.
 #
 #   test/hosted.sh                  every program
 #   test/hosted.sh errno wchar      only these
@@ -47,7 +48,7 @@ for src in "${srcs[@]}"; do
         printf '  FAIL %-12s the host build failed\n' "$name"
         fail=$((fail + 1)); continue
     fi
-    "$tmp/host" > "$tmp/want" 2>&1
+    LC_ALL=C "$tmp/host" > "$tmp/want" 2>&1
 
     # And the same program on the Agon.
     if ! err=$("$ACC" -c "$src" -o "$tmp/p.o" -Iinclude 2>&1) \
