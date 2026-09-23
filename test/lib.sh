@@ -696,6 +696,56 @@ runs_file "the exact half of <math.h>" "$tmp/math1.c"
 # test fails seventy-two of these comparisons.
 runs_file "the approximations in <math.h>" test/mathvalues.c
 
+# <float.h>: each value checked against what the arithmetic does, not just
+# read back. The epsilon is the gap above 1, and half of it is lost; the
+# mantissa's width is the first integer a float cannot hold; FLT_ROUNDS is
+# to nearest with ties to even, which a sum exactly between two floats
+# shows; and the largest and smallest are the exact bit patterns.
+#
+# Built by agondev against its own <float.h>, the same program fails two
+# checks, and they are the two ties: 1 + 2^-24 and 1 + 3 * 2^-24 do not
+# come out at the even neighbour. agondev's header says FLT_ROUNDS is 1
+# all the same. acc's arithmetic does round a tie to even, so here the 1
+# is true -- which is also why this is a library check and not a case run
+# against agondev.
+cat > "$tmp/float.c" <<'FLOATH'
+#include <float.h>
+
+volatile float one = 1.0f, eps = FLT_EPSILON, big = FLT_MAX;
+volatile long wide = 16777216L;
+
+int main(void) {
+    int r = 0;
+    float half = eps / 2;
+
+    if (FLT_RADIX == 2 && FLT_MANT_DIG == 24 && DBL_MANT_DIG == 24) r++;
+    if (FLT_DIG == 6 && DBL_DIG == 6 && DECIMAL_DIG == 17) r++;
+    if (FLT_MIN_EXP == -125 && FLT_MAX_EXP == 128 && DBL_MIN_EXP == -125
+        && DBL_MAX_EXP == 128) r++;
+    if (FLT_MIN_10_EXP == -37 && FLT_MAX_10_EXP == 38
+        && DBL_MIN_10_EXP == -37 && DBL_MAX_10_EXP == 38) r++;
+    if (FLT_EVAL_METHOD == 0 && FLT_ROUNDS == 1) r++;
+    if (LDBL_MANT_DIG == 53 && LDBL_DIG == 15 && LDBL_MIN_EXP == -1021
+        && LDBL_MAX_EXP == 1024 && LDBL_MIN_10_EXP == -307
+        && LDBL_MAX_10_EXP == 308) r++;
+
+    /* The values, bit for bit, and double's are float's. */
+    if (FLT_MAX == 0x1.fffffep127f && FLT_MIN == 0x1p-126f
+        && FLT_EPSILON == 0x1p-23f) r++;
+    if (DBL_MAX == FLT_MAX && DBL_MIN == FLT_MIN && DBL_EPSILON == FLT_EPSILON
+        && sizeof (double) == sizeof (float)) r++;
+
+    /* What they say about the arithmetic. */
+    if (one + eps != one && one + half == one) r++;
+    if ((float) (wide + 1) == (float) wide) r++;        /* 2^24 + 1 */
+    if (one + 3 * half == one + 2 * eps) r++;           /* a tie, to even */
+    if (big * 2 > big) r++;                             /* past it is inf */
+
+    return r + 30;              /* 12 checks */
+}
+FLOATH
+runs_file "what is in <float.h>" "$tmp/float.c"
+
 # main running off its closing brace, which C99 5.1.2.2.3 says is a return
 # of 0. It returned whatever was last in HL: here that is the 126 the body
 # leaves behind, which reads as a failure from a program that did nothing
