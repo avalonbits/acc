@@ -38,7 +38,7 @@ LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c lib/printf_fl
 LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          include/stdbool.h include/stdlib.h include/time.h \
          include/ctype.h include/assert.h include/math.h \
-         include/errno.h include/limits.h include/fenv.h include/locale.h \
+         include/errno.h include/limits.h include/fenv.h include/locale.h include/setjmp.h \
          include/agon/mos.h include/agon/vdp.h include/agon/keyboard.h
 LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 

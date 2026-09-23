@@ -24,6 +24,12 @@ import subprocess
 import sys
 
 
+# The entries a program names itself, as C spells them, rather than calls
+# the code generator writes: functions of the C library that C has no way to
+# express, so that the library cannot have them as C.
+C_NAMES = {'_setjmp', '_longjmp'}
+
+
 def run(*args):
     return subprocess.run(args, capture_output=True, text=True, check=True).stdout
 
@@ -60,7 +66,9 @@ def main(asm, out, tools):
             continue                    # undefined or absolute; not an entry
         addr, kind, name = parts
         if kind == 'T' and name.startswith('_acc_rt_'):
-            entries.append((int(addr, 16), name[len('_acc_rt_'):]))
+            entries.append((int(addr, 16), name[1:]))
+        elif kind == 'T' and name in C_NAMES:
+            entries.append((int(addr, 16), name[1:]))
         if kind == 'T' and name in cuts:
             cuts[name] = int(addr, 16)
     entries.sort()
@@ -90,11 +98,11 @@ def main(asm, out, tools):
         f.write('/* Where each entry point sits within rt_code. */\n')
         f.write('enum {\n')
         for _, name in entries:
-            f.write('    RT_%s,\n' % name.upper())
+            f.write('    RT_%s,\n' % name.upper().replace('ACC_RT_', ''))
         f.write('    RT_COUNT\n};\n\n')
         f.write('static const short rt_entry[RT_COUNT] = {\n')
         for addr, name in entries:
-            f.write('    %d,   /* %s */\n' % (addr, name))
+            f.write('    %d,   /* %s */\n' % (addr, name.replace('acc_rt_', '')))
         f.write('};\n\n')
         f.write('/* What each one is called. An object that uses a helper and\n'
                 ' * does not carry the blob names it by this, and the link\n'
@@ -104,7 +112,7 @@ def main(asm, out, tools):
                 ' * not, so they are written here the way C spells them. */\n')
         f.write('static const char *const rt_name[RT_COUNT] = {\n')
         for _, name in entries:
-            f.write('    "acc_rt_%s",\n' % name)
+            f.write('    "%s",\n' % name)
         f.write('};\n\n')
         f.write('/* Calls from one routine to another: the address at `at` is the\n'
                 ' * blob\'s base plus `to`. */\n')

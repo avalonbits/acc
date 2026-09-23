@@ -259,6 +259,71 @@ _rt_bc_is_zero:
 	pop	hl
 	ret
 
+;---------------------------------------------------------------- setjmp
+; setjmp and longjmp, which C cannot write: they are the stack pointer and
+; the frame pointer, put back. Named as C names them rather than as acc_rt_
+; helpers, since a program calls them itself; see embed.py.
+;
+; A jmp_buf is three words: where setjmp was called from, IX -- the one
+; register a callee must give back, so the only one the caller can have
+; anything in across the call -- and the stack pointer as it was at the
+; call, pointing at the return address. Everything else a function holds
+; across a call it holds in its frame, and the frame is where IX says.
+;
+; longjmp puts IX and the stack back, drops the return address as `ret`
+; would have, and goes to it with the value -- or 1 for a 0, since C says
+; setjmp may not appear to return 0 twice.
+
+	.global _setjmp
+	.global _longjmp
+
+; int setjmp(jmp_buf env)
+_setjmp:
+	ld	iy, 0
+	add	iy, sp
+	ld	hl, (iy+3)		; env
+	ld	de, (iy+0)		; where to come back to
+	ld	(hl), de
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	(hl), ix
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	(hl), iy		; the stack, at the return address
+	ld	hl, 0			; and 0, the first time
+	ret
+
+; void longjmp(jmp_buf env, int val)
+_longjmp:
+	ld	iy, 0
+	add	iy, sp
+	ld	de, (iy+6)		; val
+	ld	hl, (iy+3)		; env
+	ld	bc, (hl)		; where setjmp was called from
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	ix, (hl)
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	hl, (hl)
+	ld	sp, hl
+	inc	sp			; past the return address, as ret leaves it
+	inc	sp
+	inc	sp
+	ex	de, hl
+	ld	de, 0
+	or	a, a
+	sbc	hl, de
+	jr	nz, _rt_jmp_go
+	inc	hl
+_rt_jmp_go:
+	push	bc
+	ret
+
 ; ================================================================ arithmetic
 	.global	acc_rt_ops
 acc_rt_ops:
