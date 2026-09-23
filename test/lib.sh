@@ -494,6 +494,46 @@ mkdir -p "$tmp/prlib" "$tmp/prcut"
 ok "printf takes no sprintf with it" \
     "$(wc -c < "$tmp/prlib/p.bin")" "$(wc -c < "$tmp/prcut/p.bin")"
 
+# The floating conversions are in a file printf reaches through a weak
+# reference. A program that prints only integers is the size it is
+# against a library without that file, so it does not carry them.
+# One that passes a float to printf, or to anything taking `...`, asks
+# for them and gets them. Against the library without them, the same
+# program still links -- a want is not a need -- and a conversion comes
+# out as a question mark.
+printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 4); return 42; }\n' > "$tmp/pi.c"
+printf '#include <stdio.h>\n#include <string.h>\nint main(void) { char b[16]; sprintf(b, "%%.2f", 2.5); return !strcmp(b, "2.50") ? 42 : !strcmp(b, "?") ? 43 : 1; }\n' > "$tmp/pf.c"
+"$ACC" -c "$tmp/pi.c" -o "$tmp/pi.o" -Iinclude >/dev/null 2>&1
+"$ACC" -c "$tmp/pf.c" -o "$tmp/pf.o" -Iinclude >/dev/null 2>&1
+mkdir -p "$tmp/fl1" "$tmp/fl0"
+"$ACC" -a "$tmp/fl0/nofloat.a" \
+    $(ls "$(dirname "$LIB")"/lib/*.o | grep -v '/printf_float\.o$') >/dev/null 2>&1
+"$ACC" "$tmp/pi.o" "$LIB" -o "$tmp/fl1/pi.bin" -x >/dev/null 2>&1
+"$ACC" "$tmp/pi.o" "$tmp/fl0/nofloat.a" -o "$tmp/fl0/pi.bin" -x >/dev/null 2>&1
+ok "printing integers takes no floats" \
+    "$(wc -c < "$tmp/fl1/pi.bin")" "$(wc -c < "$tmp/fl0/pi.bin")"
+if emu_available >/dev/null 2>&1; then
+    "$ACC" "$tmp/pf.o" "$LIB" -o "$tmp/fl1/pf.bin" -x >/dev/null 2>&1
+    test/agon.sh "$tmp/fl1/pf.bin" >/dev/null 2>&1
+    ok "passing a float brings them" "$?" 42
+    if "$ACC" "$tmp/pf.o" "$tmp/fl0/nofloat.a" -o "$tmp/fl0/pf.bin" -x >/dev/null 2>&1; then
+        test/agon.sh "$tmp/fl0/pf.bin" >/dev/null 2>&1
+        ok "and without them, a question mark" "$?" 43
+    else
+        ok "and without them, a question mark" "it did not link" 43
+    fi
+else
+    pass=$((pass + 2))
+fi
+
+# #pragma weak itself: a function nothing defines, reached through a
+# pointer, is a null one.
+runs "#pragma weak leaves a null pointer" \
+'#pragma weak nowhere
+int nowhere(void);
+static int (*p)(void) = nowhere;
+int main(void) { return p == 0 ? 42 : 1; }'
+
 # A link takes from a member only what the program reaches, not the whole
 # member. `small` calls a static helper that reads a static table, so all
 # three come with it; `big` is in the same file and nothing calls it, so it

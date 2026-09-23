@@ -238,8 +238,8 @@ void obj_write(const char *path)
     int nglobals = sym_nglobals(), step = (int) sizeof(Sym);
     int nsyms = 0, nrelocs = out_nrelocs(), ndeps = lex_ndeps();
     int nexterns = gen_nexterns(), nwalk = nglobals / step;
-    int *name_at, *index_of, *dep_at, *slot_of, *items;
-    int i, s, n, nitems = 0;
+    int *name_at, *index_of, *dep_at, *slot_of, *items, *want_at;
+    int i, s, n, nitems = 0, nwants;
 
     /* The names first, because the header says how long they come to, and
      * because what each symbol and each dependency points at is settled by
@@ -269,6 +269,15 @@ void obj_write(const char *path)
         dep_at[i] = string_add(lex_dep_path(i));
     nitems = items_settle(items, nitems);
 
+    /* And the names it wants and holds no address of, after every symbol a
+     * relocation can point at. */
+    nwants = gen_nwants();
+    want_at = malloc((size_t) (nwants + 1) * sizeof *want_at);
+    if (!want_at)
+        acc_error("out of memory for the object");
+    for (i = 0; i < nwants; i++)
+        want_at[i] = string_add(gen_want_name(i));
+
     /* And which symbol each call out of this file wants. A symbol is named
      * by its byte offset into the compiler's table, so its place in the walk
      * above is that offset divided by the width of one. */
@@ -287,7 +296,7 @@ void obj_write(const char *path)
     front_num(ACC_BUILD);
     front_num(out_len());
     front_num(gen_bss_len());
-    front_num(nsyms);
+    front_num(nsyms + nwants);
     front_num(nrelocs);
     front_num(ndeps);
     front_num(strings_len);
@@ -319,9 +328,18 @@ void obj_write(const char *path)
             value = defined ? sym->val : 0;
             kind = 0;
         }
+        /* One this file uses and does not define, that #pragma weak said
+         * is not to be looked for on its account. */
+        if (!defined && name_weak(sym->name))
+            kind |= OBJ_WEAK;
         front_num(name_at[n]);
         front_num(value);
         front_byte((defined ? OBJ_DEFINED : 0) | kind);
+    }
+    for (i = 0; i < nwants; i++) {
+        front_num(want_at[i]);
+        front_num(0);
+        front_byte(OBJ_WANT | OBJ_FUNC);
     }
 
     for (i = 0, n = 0; i < nrelocs; i++) {
@@ -359,6 +377,7 @@ void obj_write(const char *path)
     free(dep_at);
     free(slot_of);
     free(items);
+    free(want_at);
 }
 
 /* ------------------------------------------------------------------ */

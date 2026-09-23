@@ -20,6 +20,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 
 /* acc's own runtime, where the instruction that asks MOS for a character
  * lives. The same one putchar goes through. */
@@ -143,6 +144,21 @@ static int format_number(const char **pp)
 
     return n;
 }
+
+/* The floating conversions, which are nine kilobytes and in a file of
+ * their own: a program that prints no float should not carry them. printf
+ * holds their address through a weak reference, which a link does not go
+ * looking for on its own account; a file that passes a float or a double
+ * to a function taking `...` asks for them (see gen_want), and then the
+ * link takes them from the library and this is their address. Without
+ * that it is zero. Read through a variable, so that it is asked at run
+ * time and not assumed. */
+#pragma weak acc_format_float
+int acc_format_float(int c, int flags, int prec, double value,
+                     const char **text, int *zeros_at);
+
+static int (*float_hook)(int, int, int, double, const char **, int *)
+    = acc_format_float;
 
 /* The whole of the formatting, over a list someone else has started. Named
  * rather than static so that the file routines can use it without this file
@@ -281,6 +297,38 @@ int acc_format(const char *fmt, va_list ap)
             emit_run(s, len);
             if (flags & FL_LEFT)
                 emit_fill(blanks, ' ');
+
+            continue;
+        }
+        case 'f': case 'F': case 'e': case 'E':
+        case 'g': case 'G': case 'a': case 'A': {
+            double v = va_arg(ap, double);
+            const char *text;
+            int len, zeros_at, pad;
+
+            /* Not linked, so nothing in the program passed a float to a
+             * function that takes more than it names -- and so nothing
+             * could have come here with one. Said as a question mark
+             * rather than as nothing. */
+            if (!float_hook) {
+                emit('?');
+
+                continue;
+            }
+            len = float_hook(c, flags, prec, v, &text, &zeros_at);
+            pad = width > len ? width - len : 0;
+            if ((flags & FL_ZERO) && !(flags & FL_LEFT) && zeros_at >= 0) {
+                emit_run(text, zeros_at);
+                emit_fill(pad, '0');
+                emit_run(text + zeros_at, len - zeros_at);
+
+                continue;
+            }
+            if (!(flags & FL_LEFT))
+                emit_fill(pad, ' ');
+            emit_run(text, len);
+            if (flags & FL_LEFT)
+                emit_fill(pad, ' ');
 
             continue;
         }

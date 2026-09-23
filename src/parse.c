@@ -7017,7 +7017,36 @@ static int link_symbol(const char *text, int flags)
         sym_set_flags(sym, SYMF_DECLARED | SYMF_PARAMS);
     }
 
+    /* Weak while every reference to it is: see name_set_weak. A definition
+     * is not a reference, and nor is a want, which holds no address. */
+    if (flags & OBJ_WEAK)
+        name_set_weak(name, 1);
+    else if (!(flags & (OBJ_DEFINED | OBJ_WANT)))
+        name_set_weak(name, 0);
+
     return sym;
+}
+
+/* The names objects want in the program and hold no address of: see
+ * gen_want. A link looks for them in a library as it does for a call no
+ * one has answered, and says nothing if none has them. */
+static int *wanted;
+static int  nwanted, wanted_cap;
+
+static void link_want(const char *text)
+{
+    int sym = link_symbol(text, OBJ_FUNC | OBJ_WANT), i;
+
+    for (i = 0; i < nwanted; i++)
+        if (wanted[i] == sym)
+            return;
+    if (nwanted == wanted_cap) {
+        wanted_cap = wanted_cap ? wanted_cap * 2 : 8;
+        wanted = realloc(wanted, (size_t) wanted_cap * sizeof *wanted);
+        if (!wanted)
+            acc_error("out of memory for what the objects want");
+    }
+    wanted[nwanted++] = sym;
 }
 
 /* One object, placed where the image has got to. */
@@ -7040,6 +7069,8 @@ static void place_object(Object *op, const char *path)
         int flags = obj_sym_flags(&o, i);
         int sym;
 
+        if (flags & OBJ_WANT)
+            link_want(obj_sym_name(&o, i));
         if (!(flags & OBJ_DEFINED))
             continue;
         sym = link_symbol(obj_sym_name(&o, i), flags);
@@ -7144,7 +7175,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
     Object o = *op;
     char *want = calloc((size_t) o.nitems + 1, 1);
     int *queue = malloc(((size_t) o.nitems + 1) * sizeof *queue);
-    int nqueue = 0, i, r, base, want_bss = 0, new_bss = 0;
+    int nqueue = 0, i, r, base, want_bss = 0, new_bss = 0, want_now = 0;
 
     if (!want || !queue)
         acc_error("out of memory for '%s'", path);
@@ -7196,6 +7227,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
 
         if (!want[i])
             continue;
+        want_now = 1;                   /* the member's wants come with it */
         t->placed[i] = out_here();
         for (b = obj_item(&o, i); b < item_end(&o, i); b++)
             out_byte(o.text[b]);
@@ -7209,6 +7241,8 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
     for (i = 0; i < o.nsyms; i++) {
         int flags = obj_sym_flags(&o, i), value, item, sym;
 
+        if ((flags & OBJ_WANT) && want_now)
+            link_want(obj_sym_name(&o, i));
         if (!(flags & OBJ_DEFINED))
             continue;
         value = obj_sym_value(&o, i);
@@ -7289,14 +7323,16 @@ static void link_archive(const char *path)
         int i, n = gen_nfixups();
 
         again = 0;
-        for (i = 0; i < n; i++) {
-            int sym = gen_fixup_sym(i);
+        for (i = 0; i < n + nwanted; i++) {
+            int sym = i < n ? gen_fixup_sym(i) : wanted[i - n];
             const char *name;
             Object o;
 
             /* A variable whose room is in a bss has no address until the
-             * link ends, and is defined all the same. */
-            if (!gen_no_address(sym) || gen_bss_offset(sym) >= 0)
+             * link ends, and is defined all the same. A weak name is not
+             * looked for on its own account. */
+            if (!gen_no_address(sym) || gen_bss_offset(sym) >= 0
+                || (i < n && name_weak(sym_at(sym)->name)))
                 continue;
             name = name_text(sym_at(sym)->name);
             m = ar_find(&a, name);

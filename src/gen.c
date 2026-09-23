@@ -4844,6 +4844,16 @@ void gen_finish(void)
                 extern_add(fixups[i].at, fixups[i].fn);
                 continue;
             }
+        }
+
+        /* A weak reference nothing else wanted is at zero, and so is what
+         * reads it as a pointer: see do_pragma. */
+        if (no_address(fixups[i].fn) && name_weak(fn->name)) {
+            fn->val = 0;
+            if (fn->kind == SYM_FUNC)
+                sym_set_flags(fixups[i].fn, SYMF_DEFINED);
+        }
+        if (no_address(fixups[i].fn)) {
             if (fn->kind == SYM_FUNC)
                 acc_error("'%s' is called but never defined",
                           name_text(fn->name));
@@ -5792,6 +5802,37 @@ void gen_call_indirect(int nargs)
             ext_func_declared(x) ? ext_func_count(x) : 0);
 }
 
+/* Names an object wants in the program without holding an address of
+ * them. There is one: printf reaches its floating conversions through a
+ * weak reference, so that a program that only prints integers does not
+ * carry them, and a file that passes a float or a double to a function
+ * that takes more than it names asks for them here. The link takes them
+ * from the library if it has them, and says nothing if it has not -- a
+ * variadic function of the program's own is not printf. */
+static const char *wants_named[4];
+static int         nwants_named;
+
+static void gen_want(const char *name)
+{
+    int i;
+
+    for (i = 0; i < nwants_named; i++)
+        if (!strcmp(wants_named[i], name))
+            return;
+    if (nwants_named < (int) (sizeof wants_named / sizeof *wants_named))
+        wants_named[nwants_named++] = name;
+}
+
+int gen_nwants(void)
+{
+    return nwants_named;
+}
+
+const char *gen_want_name(int i)
+{
+    return wants_named[i];
+}
+
 static void call_to(const Callee *callee, int nargs, int params_first,
                     int nparams)
 {
@@ -5819,6 +5860,8 @@ static void call_to(const Callee *callee, int nargs, int params_first,
             argslots += push_struct();
             continue;
         }
+        if (which >= nparams && gen_objects && type_float((vsp - 1)->type))
+            gen_want("acc_format_float");
         if (which < nparams) {
             Type param = sym_param_type(params_first, which);
 

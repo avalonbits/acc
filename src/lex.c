@@ -854,6 +854,25 @@ static unsigned nmacro_slots, nmacros;
 #define name_is_macro(ref)  (name_arena[(ref) - 4])
 #define NAME_MACRO  1
 #define NAME_WIDE   2
+#define NAME_WEAK   4       /* #pragma weak, or a weak reference a link read */
+#define NAME_STRONG 8       /* and a reference that was not weak, which ends it */
+
+int name_weak(NameRef ref)
+{
+    return (name_is_macro(ref) & NAME_WEAK) != 0;
+}
+
+/* Weak is a name every reference to which is weak, whichever order the
+ * references come in: once one that is not has been seen, it never is
+ * again. `weak` 1 is a weak reference, 0 one that is not. */
+void name_set_weak(NameRef ref, int weak)
+{
+    if (!weak)
+        name_is_macro(ref) = (char) ((name_is_macro(ref) & ~NAME_WEAK)
+                                     | NAME_STRONG);
+    else if (!(name_is_macro(ref) & NAME_STRONG))
+        name_is_macro(ref) |= NAME_WEAK;
+}
 
 static void macros_grow(void);
 
@@ -3279,16 +3298,25 @@ void lex_undefine(const char *arg)
     pop_source();
 }
 
-/* `#pragma`. C says an unknown one is ignored, and `once` is the only one
- * acc knows: it says this file is to be read once however many times it is
- * included. */
+/* `#pragma`. C says an unknown one is ignored, and acc knows two. `once`
+ * says this file is to be read once however many times it is included.
+ * `weak NAME` says a reference to NAME is not a reason to link it: if
+ * nothing else wants it, it is not looked for, and without it the address
+ * is zero -- which is how printf reaches the floating conversions only in a
+ * program that has a float to print. */
 static void do_pragma(void)
 {
     char what[32];
 
     skip_blanks();
-    if (directive_name(what, (int) sizeof what) && !strcmp(what, "once"))
-        once_add(src_real);
+    if (directive_name(what, (int) sizeof what)) {
+        if (!strcmp(what, "once")) {
+            once_add(src_real);
+        } else if (!strcmp(what, "weak")) {
+            skip_blanks();
+            name_set_weak(directive_target("pragma weak"), 1);
+        }
+    }
     rest_of_line();
 }
 

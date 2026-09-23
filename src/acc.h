@@ -271,6 +271,8 @@ __attribute__((noreturn)) void acc_error_at(int line, const char *fmt, ...);
 
 NameRef     name_intern(const char *text, int len);
 const char *name_text(NameRef ref);
+int         name_weak(NameRef ref);             /* #pragma weak said so */
+void        name_set_weak(NameRef ref, int weak);
 void        name_init(void);
 
 extern char *name_arena;    /* for name_global, further down */
@@ -795,6 +797,8 @@ void gen_stmt_end(void);              /* the scratch area is free again */
 void gen_value_end(void);             /* all of it nothing still holds */
 
 void gen_call(int fn, int nargs, int params_first, int nparams);
+int         gen_nwants(void);       /* the names an object wants: gen_want */
+const char *gen_want_name(int i);
 void gen_call_indirect(int nargs);      /* through the pointer under them */
 void vpush_function(int fn);          /* a function's address */
 void vpush_global_addr(int sym);      /* a variable's, when it has none yet */
@@ -1090,10 +1094,16 @@ void out_patch24(int at, int v);
 enum {
     OBJ_DEFINED = 1,
     OBJ_FUNC    = 2,
-    OBJ_BSS     = 4             /* a variable with no room in the text: its
+    OBJ_BSS     = 4,            /* a variable with no room in the text: its
                                  * value is where in this object's bss it
                                  * starts, and what address that comes to is
                                  * the linker's to work out */
+    OBJ_WEAK    = 8,            /* wanted only if something else wants it:
+                                 * a link does not go looking for it, and
+                                 * left without one it is at zero */
+    OBJ_WANT    = 16            /* a name the object holds no address of,
+                                 * but wants in the program if a library
+                                 * has it: see gen_want */
 };
 
 /* An object read in: the file's bytes, and where each part of it starts.
