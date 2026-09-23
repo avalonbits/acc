@@ -18,9 +18,10 @@
 
 /* One block of characters holding every identifier in the program, each one
  * exactly once, NUL terminated. Identifiers are referred to by their offset
- * into it, so a name costs three bytes wherever it is mentioned. The three
- * bytes in front of each name's text hold the file-scope symbol it stands
- * for: see name_global.
+ * into it, so a name costs three bytes wherever it is mentioned. In front
+ * of each name's text are four bytes: the file-scope symbol it stands for,
+ * in the three next to the text (see name_global), and before those whether
+ * it is a macro (see name_is_macro).
  *
  * Nothing is ever freed. A compiler runs once and exits; a free list would be
  * bytes spent to give memory back to a process that is about to end.
@@ -274,10 +275,10 @@ NameRef name_intern(const char *text, int len)
         return name_intern(text, len);
     }
 
-    /* No file-scope symbol yet, then the text. */
-    names_grow(3 + len + 1);
-    name_arena[names_len] = name_arena[names_len + 1] = name_arena[names_len + 2] = 0;
-    ref = (NameRef) names_len + 3;
+    /* Not a macro and no file-scope symbol yet, then the text. */
+    names_grow(4 + len + 1);
+    memset(name_arena + names_len, 0, 4);
+    ref = (NameRef) names_len + 4;
     memcpy(name_arena + ref, text, len);
     name_arena[ref + len] = '\0';
     names_len = ref + len + 1;
@@ -732,13 +733,16 @@ static void buf_putc(Buf *b, int c)
 static Macro   *macros;
 static unsigned nmacro_slots, nmacros;
 
-/* Whether the program has defined anything at all, as a byte.
+/* Whether a name is a macro, kept in the byte four in front of its text.
  *
- * Every identifier in the program asks this, and it is the only thing most
- * programs ever ask of the preprocessor. `nmacros` would do, but it is an
- * unsigned and this target has no 24-bit test: a byte is one load and one
- * `or a`. */
-static unsigned char any_macros;
+ * Every identifier in the program asks this, and for nearly all of them the
+ * answer is no. It used to be asked of the macro table, whenever the program
+ * had defined anything at all: a hash, a probe and a frame for every
+ * identifier -- and the hash was a 24-bit AND and the probe an index into
+ * entries that are not a power of two wide, a runtime call each. That was 4%
+ * of compiling big.c, for names that were almost never macros. A byte in
+ * front of the name is one load. */
+#define name_is_macro(ref)  (name_arena[(ref) - 4])
 
 static void macros_grow(void);
 
@@ -812,7 +816,7 @@ static void macro_define(NameRef name, const char *text, int len,
     m->params = params;
     m->nparams = (short) nparams;
     m->variadic = (short) variadic;
-    any_macros = 1;
+    name_is_macro(name) = 1;
 }
 
 /* Forgotten, and the slot left usable. A tombstone is not needed: the run of
@@ -829,8 +833,8 @@ static void macro_undef(NameRef name)
     m->name = NAME_NONE;
     m->text = NULL;
     m->params = NULL;
-    if (!--nmacros)
-        any_macros = 0;
+    nmacros--;
+    name_is_macro(name) = 0;
 
     /* Whatever follows in this run may have probed past the hole. */
     i = (unsigned) (m - macros);
@@ -4075,13 +4079,13 @@ restart:
             return;
         }
 
-        /* A name that stands for something else. The byte in front of it is
-         * whether the program has defined anything at all, which for most
-         * programs is the only question the preprocessor ever costs them.
-         * Being a keyword is already ruled out above, which is one compare
-         * this used to make and no longer does. */
+        /* A name that stands for something else. The byte in front of it
+         * says whether it is a macro, which for most names is the only
+         * question the preprocessor ever costs them. Being a keyword is
+         * already ruled out above, which is one compare this used to make
+         * and no longer does. */
         tok = TK_IDENT;
-        if (any_macros && expand(tok_name))
+        if (name_is_macro(tok_name) && expand(tok_name))
             goto restart;
 
         return;
