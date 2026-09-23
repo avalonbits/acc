@@ -7,10 +7,20 @@
 # change can look like a 1.4x win here and a 3.2x win there, and host counts
 # have called the largest win of a set a regression.
 #
-# No -u. Unthrottled, the guest's clock() stops tracking the work it did and
-# the number means nothing. Wall clock from outside is no use either -- it
-# measures the emulator, not the Agon -- so what is read is the line acc prints
-# for itself.
+# No -u for a build that only reports seconds. Unthrottled, the guest's
+# clock() stops tracking the work it did and the number means nothing. Wall
+# clock from outside is no use either -- it measures the emulator, not the
+# Agon -- so what is read is the line acc prints for itself.
+#
+# A build made with CYCLES=1 counts cycles, and a count does not care how
+# fast the host runs the machine: the eZ80's timer and the emulator's own
+# counter are both stepped by the instructions it executes. So a counting
+# build runs with -u, many times faster. The emulator's count is exact and
+# is taken when there is one (fab-agon-emulator 2037657 on, which prints it
+# for a write to IO port 0x41 -- point ACC_EMU at a build of it); otherwise
+# the timer's, to 256 cycles. Throttled, a count comes out about 0.04% higher,
+# from the extra interrupts that land when the machine runs at its real
+# speed.
 #
 # acc's clock counts hundredths and one compile is a fifth of a second, so the
 # run is repeated and the reported times summed: the tick boundary falls
@@ -68,6 +78,10 @@ fi
 
 sd=$(emu_card); trap 'rm -rf "$sd"' EXIT
 cp "$ACC" "$sd/bin/acc.bin"
+
+# A counting build says so in its own bytes: the format it reports with.
+speed=
+grep -aq 'Cycles: ' "$ACC" && speed=-u
 
 # MOS runs autoexec and then sits at the prompt: the emulator has no way to
 # stop itself, so without this every measurement burned the whole timeout and
@@ -301,7 +315,7 @@ for SRC in $SRCS; do
     done
     printf 'stop\r\n' >> "$sd/autoexec.txt"
 
-    out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-600} emu_run "$sd" -z)
+    out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-600} emu_run "$sd" -z $speed)
 
     times=$(printf '%s' "$out" | sed -n 's/.*Done in \([0-9]*\)\.\([0-9][0-9]\) seconds.*/\1\2/p')
     n=$(printf '%s\n' "$times" | grep -c .)
@@ -319,7 +333,10 @@ for SRC in $SRCS; do
     # counted by the eZ80's own timer. Where it does, that is the figure: the
     # seconds come from a clock the emulator keeps on another thread and
     # wander by a few percent between sittings, and the count does not.
-    cycles=$(printf '%s' "$out" | sed -n 's/.*Cycles: \([0-9][0-9]*\).*/\1/p' | head -n "$RUNS")
+    cycles=$(printf '%s' "$out" \
+        | sed -n 's/.*Debug OUT(0x41): \([0-9][0-9]*\) CPU cycles.*/\1/p' | head -n "$RUNS")
+    [ "$(printf '%s\n' "$cycles" | grep -c .)" -eq "$RUNS" ] \
+        || cycles=$(printf '%s' "$out" | sed -n 's/.*Cycles: \([0-9][0-9]*\).*/\1/p' | head -n "$RUNS")
     if [ "$(printf '%s\n' "$cycles" | grep -c .)" -eq "$RUNS" ]; then
         csum=$(printf '%s\n' "$cycles" | awk '{t+=$1} END {printf "%d", t}')
         spread=$(printf '%s\n' "$cycles" | sort -n | sed -n '1p;$p' | paste -sd' ' | awk '{print $2 - $1}')
@@ -330,6 +347,12 @@ for SRC in $SRCS; do
             $((csum / RUNS)) "$spread" $((csum / (RUNS * bytes))) \
             $((csum * 10 / (RUNS * bytes) % 10))
         continue
+    fi
+
+    # Unthrottled, the seconds are the host's and not the Agon's.
+    if [ -n "$speed" ]; then
+        echo "$(basename "$SRC"): a counting build gave no count" >&2
+        status=1; continue
     fi
 
     # Cycles per byte of source, which is the figure to compare against zap's.

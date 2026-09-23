@@ -61,3 +61,29 @@ if [ "${count:-0}" -le 33554432 ]; then
     exit 1
 fi
 echo "  cycles: $count for long.c, past two passes of the timer"
+
+# And the emulator's own count, where it keeps one (2037657 on): the build
+# starts it with a write to port 0x40 and prints it with one to 0x41, and
+# bench.sh takes it over the timer's. It has to agree with the timer to
+# within the timer's two ticks and the few instructions between the reads.
+. test/emu.sh
+sd=$(emu_card)
+cp bin/acc-cycles.bin "$sd/bin/acc.bin"
+cp test/bench/names.c "$sd/in.c"
+echo 'int main(void) { return 0; }' > "$tmp/stop.c"
+bin/acc "$tmp/stop.c" -o "$sd/bin/stop.bin" -x >/dev/null || exit 1
+printf 'acc in.c -o out.bin\r\nstop\r\n' > "$sd/autoexec.txt"
+out=$(ACC_EMU_TIMEOUT=120 emu_run "$sd" -z -u 2>&1)
+rm -rf "$sd"
+emu=$(printf '%s\n' "$out" | sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
+timer=$(printf '%s\n' "$out" | sed -n 's/.*Cycles: \([0-9]*\).*/\1/p' | head -1)
+if [ -z "$emu" ]; then
+    echo "  [this emulator keeps no count: the port 0x41 check skipped]"
+    exit 0
+fi
+diff=$((emu > timer ? emu - timer : timer - emu))
+if [ -z "$timer" ] || [ "$diff" -gt 1024 ]; then
+    echo "  FAIL cycles: the emulator counted ${emu:-none} and the timer ${timer:-none}"
+    exit 1
+fi
+echo "  cycles: $emu for names.c by the emulator, $timer by the timer"

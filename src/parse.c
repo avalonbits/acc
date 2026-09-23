@@ -6744,6 +6744,12 @@ static void usage(void)
  * compile counts the same, give or take the interrupts that arrive while it
  * runs.
  *
+ * The emulator can count too, from 2037657 on: a write to IO port 0x40
+ * starts its count and one to 0x41 prints it on the host, exactly and with
+ * no pass to run out of. Both are written here, bench.sh takes the
+ * emulator's figure when there is one and the timer's when there is not,
+ * and an older emulator ignores the two ports.
+ *
  * One pass of the timer is 16.7 million cycles, about 0.9 s, and two of the
  * benchmark's inputs take longer: matrix.c crossed it by a hair and was
  * silently read from the seconds instead, 17% high. So the timer runs
@@ -6763,6 +6769,7 @@ static void cycles_start(void)
     cycles_wraps = 0;
     (void) IO(TMR1_CTL);        /* any flag from before, cleared */
     IO(TMR1_CTL) = 0x1f;        /* on, reloaded now, clock / 256, continuous */
+    IO(0x40) = 0;               /* and the emulator's count, from here */
 }
 
 static void cycles_poll(void)
@@ -6777,7 +6784,10 @@ static void cycles_poll(void)
  * new pass, and after it if the count is still low in the old one. */
 static void cycles_report(void)
 {
-    unsigned char before = IO(TMR1_CTL);
+    unsigned char before;
+
+    IO(0x41) = 0;               /* the emulator's count, to here */
+    before = IO(TMR1_CTL);
     unsigned lo = IO(TMR1_DR_L), hi = IO(TMR1_DR_H);
     unsigned char after = IO(TMR1_CTL);
     unsigned count = hi << 8 | lo;
