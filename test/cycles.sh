@@ -6,7 +6,8 @@
 # also used would still print a number -- one that means nothing and that
 # the benchmark would report to a decimal place. So: build it, compile one
 # program with it twice, and require a count above zero and the two within
-# two ticks of the timer, 512 cycles. Not exactly equal: an interrupt that
+# two ticks of the timer, 512 cycles, and a count for an input that takes
+# longer than one pass of the timer. Not exactly equal: an interrupt that
 # arrives during one compile and not the other -- MOS's vertical blank, which
 # the emulator paces by the host's clock -- adds its handler's cycles.
 #
@@ -28,3 +29,35 @@ if [ "${count:-0}" -le 0 ] || [ -z "$spread" ] || [ "$spread" -gt 512 ]; then
     exit 1
 fi
 echo "  cycles: $count for 010_return.c, within $spread of each other"
+
+# And past one pass of the timer, which is 16.7 million cycles. matrix.c
+# takes a little more than that; before the wraps were counted, it was read
+# from the seconds instead, 17% high, and nothing but a note said so.
+out=$(ACC_BIN=bin/acc-cycles.bin test/bench.sh 1 test/bench/matrix.c 2>/dev/null)
+line=$(printf '%s\n' "$out" | grep ' matrix.c ')
+count=$(printf '%s\n' "$line" | sed -n 's/.*runs  *\([0-9]*\) cycles each.*/\1/p')
+if [ "${count:-0}" -le 16777216 ]; then
+    echo "  FAIL cycles: expected matrix.c counted past one pass of the timer, got:"
+    printf '%s\n' "$out"
+    exit 1
+fi
+echo "  cycles: $count for matrix.c, past one pass of the timer"
+
+# And past two, which the flag alone cannot count: it says the timer came
+# round, not how often, so every pass but the last is counted by polling
+# between declarations. A thousand small functions, generated here.
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+awk 'BEGIN {
+    for (i = 0; i < 1000; i++)
+        printf "int step_%d(int a, int b) { return a * %d + b - %d; }\n", i, i % 7 + 1, i % 5;
+    print "int main(void) { return step_0(40, 2); }";
+}' > "$tmp/long.c"
+out=$(ACC_BIN=bin/acc-cycles.bin test/bench.sh 1 "$tmp/long.c" 2>/dev/null)
+line=$(printf '%s\n' "$out" | grep ' long.c ')
+count=$(printf '%s\n' "$line" | sed -n 's/.*runs  *\([0-9]*\) cycles each.*/\1/p')
+if [ "${count:-0}" -le 33554432 ]; then
+    echo "  FAIL cycles: expected long.c counted past two passes of the timer, got:"
+    printf '%s\n' "$out"
+    exit 1
+fi
+echo "  cycles: $count for long.c, past two passes of the timer"

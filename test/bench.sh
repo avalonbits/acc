@@ -337,9 +337,8 @@ for SRC in $SRCS; do
     #   cycles/byte = total/100/RUNS * CLOCK / bytes
     # and CLOCK/100 is exact, which keeps this in integers.
     #
-    # This is where an input lands when it takes longer than one pass of the
-    # timer, which is 16.7 million cycles: the count is not to be had and the
-    # seconds are what is left. They come from a clock the emulator keeps on
+    # This is where an input lands when the binary does not count cycles,
+    # or its count could not be read: the seconds are what is left. They come from a clock the emulator keeps on
     # another thread and wander by a few percent, so the aggregate says when
     # any of it was arrived at this way -- otherwise a number that is mostly
     # exact reads as if it were entirely so.

@@ -6672,11 +6672,19 @@ static void external_declaration(void)
     expect(TK_SEMI, "';'");
 }
 
+#if defined(AGONDEV) && defined(ACC_CYCLES)
+static void cycles_poll(void);
+#else
+#define cycles_poll()
+#endif
+
 static void translation_unit(void)
 {
     main_name = name_intern("main", 4);
-    while (tok != TK_EOF)
+    while (tok != TK_EOF) {
+        cycles_poll();
         external_declaration();
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -6734,27 +6742,57 @@ static void usage(void)
  * keeps, and wander by a few percent from one sitting to the next; the
  * timer is stepped by the instructions the emulator runs, so the same
  * compile counts the same, give or take the interrupts that arrive while it
- * runs. One pass of it is 16.7 million cycles, about 0.9 s, which is longer
- * than any benchmark compile; one that took longer says so. */
+ * runs.
+ *
+ * One pass of the timer is 16.7 million cycles, about 0.9 s, and two of the
+ * benchmark's inputs take longer: matrix.c crossed it by a hair and was
+ * silently read from the seconds instead, 17% high. So the timer runs
+ * continuously, and each time it comes round it raises a flag that reading
+ * the control register clears. cycles_poll counts those, once for every
+ * declaration at file scope -- often enough, since none takes a pass of the
+ * timer, and cheap: the build that is not counting has no call at all. */
+static unsigned long cycles_wraps;
+
+#define CYCLES_PASS (0xffffUL * 256)
+
 static void cycles_start(void)
 {
     IO(TMR1_CTL) = 0;
     IO(TMR1_RR_L) = 0xff;
     IO(TMR1_RR_H) = 0xff;
-    IO(TMR1_CTL) = 0x0f;        /* on, reloaded now, clock / 256, one pass */
+    cycles_wraps = 0;
+    (void) IO(TMR1_CTL);        /* any flag from before, cleared */
+    IO(TMR1_CTL) = 0x1f;        /* on, reloaded now, clock / 256, continuous */
 }
 
+static void cycles_poll(void)
+{
+    if (IO(TMR1_CTL) & 0x80)
+        cycles_wraps++;
+}
+
+/* The flag is read on both sides of the count. One that was up before it is
+ * a pass that finished before the count was taken. One that went up after
+ * the first read belongs before the count if the count is from the top of a
+ * new pass, and after it if the count is still low in the old one. */
 static void cycles_report(void)
 {
-    unsigned char ctl = IO(TMR1_CTL);
+    unsigned char before = IO(TMR1_CTL);
     unsigned lo = IO(TMR1_DR_L), hi = IO(TMR1_DR_H);
+    unsigned char after = IO(TMR1_CTL);
+    unsigned count = hi << 8 | lo;
 
-    if (!(ctl & 0x01) || (ctl & 0x80)) {
-        printf("Cycles: over 16777216\r\n");
+    if (!(before & 0x01)) {
+        printf("Cycles: the timer was stopped\r\n");
 
         return;
     }
-    printf("Cycles: %lu\r\n", (0xffffUL - (hi << 8 | lo)) * 256);
+    if (before & 0x80)
+        cycles_wraps++;
+    if ((after & 0x80) && count >= 0x8000)
+        cycles_wraps++;
+    printf("Cycles: %lu\r\n",
+           cycles_wraps * CYCLES_PASS + (0xffffUL - count) * 256);
 }
 #else
 #define cycles_start()
