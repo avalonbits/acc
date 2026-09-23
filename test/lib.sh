@@ -696,6 +696,32 @@ runs_file "the exact half of <math.h>" "$tmp/math1.c"
 # test fails seventy-two of these comparisons.
 runs_file "the approximations in <math.h>" test/mathvalues.c
 
+# main running off its closing brace, which C99 5.1.2.2.3 says is a return
+# of 0. It returned whatever was last in HL: here that is the 126 the body
+# leaves behind, which reads as a failure from a program that did nothing
+# wrong. Seven of gcc's torture tests end this way.
+cat > "$tmp/falloff.c" <<'FALLOFF'
+int value = 42;
+
+int main(void) {
+    int x = value;
+
+    x = x * 3;
+    value = x;
+}
+FALLOFF
+if ! err=$("$ACC" -c "$tmp/falloff.c" -o "$tmp/falloff.o" -Iinclude 2>&1) \
+   || ! err=$("$ACC" "$tmp/falloff.o" "$LIB" -o "$tmp/falloff.bin" -x 2>&1); then
+    printf '  FAIL %-36s %s\n' "main running off its end" \
+        "$(printf '%s' "$err" | head -1)"
+    fail=$((fail + 1))
+elif ! emu_available >/dev/null 2>&1; then
+    pass=$((pass + 1))
+else
+    test/agon.sh "$tmp/falloff.bin" >/dev/null 2>&1
+    ok "main running off its end returns 0" "$?" 0
+fi
+
 # A name no member defines is still a name nothing defines.
 printf 'int missing(void);\nint main(void) { return missing(); }\n' > "$tmp/gone.c"
 "$ACC" -c "$tmp/gone.c" -o "$tmp/gone.o" >/dev/null 2>&1

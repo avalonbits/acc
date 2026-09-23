@@ -5228,6 +5228,22 @@ typedef struct {
 static StructParam *struct_params;
 static int          nstruct_params, struct_params_cap;
 
+/* The end of a function's body, reached by running off it. For main that
+ * returns 0: C99 5.1.2.2.3 says reaching the } that ends main is a return
+ * of 0, and a program that relies on it is correct. Every other function
+ * that runs off its end leaves whatever was last in HL, which is only
+ * undefined if its caller uses it, and costs nothing to leave alone.
+ * Here main returned whatever HL held, so a program whose checks all
+ * passed reported a failure. */
+static void body_end(int fn)
+{
+    if (sym_at(fn)->type == TY_INT
+        && sym_at(fn)->name == name_intern("main", 4)) {
+        vpush_const(0, TY_INT);
+        gen_return(tok_line);
+    }
+}
+
 /* A struct parameter is copied from its slots into the array area, where
  * every local struct lives, so that the body finds it as it finds any
  * other: the slots are above the frame, and past the reach of (ix+d) once
@@ -5459,6 +5475,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
         struct_params_copy();
     in_body = 1;
     block();
+    body_end(fn);
     in_body = 0;
     labels_end();
     gen_func_end();
@@ -6304,6 +6321,7 @@ static int function_from_type(int x, NameRef name, int line)
         struct_params_copy();
     in_body = 1;
     block();
+    body_end(fn);
     in_body = 0;
     labels_end();
     gen_func_end();
