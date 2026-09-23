@@ -431,18 +431,61 @@ else
 fi
 
 # The same program with the abort taken out: what abort costs is abort, and
-# not the heap that shares a header with it.
+# not the heap that shares a header with it -- nor signal(), whose raise it
+# reaches only through a weak reference, so it comes to a few dozen bytes.
 printf 'static int deep(int n) { if (!n) return 0; return deep(n - 1); }\nint main(void) { deep(4); return 7; }\n' > "$tmp/nab.c"
 "$ACC" -c "$tmp/nab.c" -o "$tmp/nab.o" >/dev/null 2>&1
 "$ACC" "$tmp/nab.o" "$LIB" -o "$tmp/nab.bin" -x >/dev/null 2>&1
 with=$(wc -c < "$tmp/ab.bin"); without=$(wc -c < "$tmp/nab.bin")
-if [ "$((with - without))" -lt 64 ]; then
+if [ "$((with - without))" -lt 128 ]; then
     pass=$((pass + 1))
 else
     printf '  FAIL %-36s abort costs %d bytes, so it brought the heap\n' \
         "abort brings nothing with it" "$((with - without))"
     fail=$((fail + 1))
 fi
+
+# status_is <name> <want> <source>: the program ends with that status.
+status_is() {
+    printf '%s' "$3" > "$tmp/st.c"
+    if ! "$ACC" -c "$tmp/st.c" -o "$tmp/st.o" -Iinclude >/dev/null 2>&1 \
+       || ! "$ACC" "$tmp/st.o" "$LIB" -o "$tmp/st.bin" -x >/dev/null 2>&1; then
+        printf '  FAIL %-36s %s\n' "$1" "it did not build"
+        fail=$((fail + 1))
+    elif ! emu_available >/dev/null 2>&1; then
+        pass=$((pass + 1))
+    else
+        test/agon.sh "$tmp/st.bin" >/dev/null 2>&1
+        ok "$1" "$?" "$2"
+    fi
+}
+
+# What <signal.h> does with a signal nobody handles, which a program on
+# the host cannot show test/hosted.sh without dying of it: the program
+# ends, with 128 and the signal's number. And abort's SIGABRT, which
+# reaches a handler if there is one, and ends the program if it returns
+# or if the signal is ignored.
+status_is "raise with no handler" 143 \
+'#include <signal.h>
+int main(void) { raise(SIGTERM); return 1; }'
+status_is "raise with a handler put back" 130 \
+'#include <signal.h>
+int main(void) { signal(SIGINT, SIG_IGN); raise(SIGINT); signal(SIGINT, SIG_DFL); raise(SIGINT); return 1; }'
+status_is "abort calls the SIGABRT handler" 42 \
+'#include <signal.h>
+#include <stdlib.h>
+static void h(int sig) { exit(sig == SIGABRT ? 42 : 1); }
+int main(void) { signal(SIGABRT, h); abort(); return 1; }'
+status_is "and ends the program if it returns" 134 \
+'#include <signal.h>
+#include <stdlib.h>
+static int seen;
+static void h(int sig) { seen = sig; }
+int main(void) { signal(SIGABRT, h); abort(); return 1; }'
+status_is "or if SIGABRT is ignored" 134 \
+'#include <signal.h>
+#include <stdlib.h>
+int main(void) { signal(SIGABRT, SIG_IGN); abort(); return 1; }'
 
 # exit through a pointer. A call to exit by name is written out at the call
 # and never reaches the library, which is why exit had no member and a
