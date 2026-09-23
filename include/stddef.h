@@ -7,6 +7,10 @@
 typedef unsigned int size_t;
 typedef int          ptrdiff_t;
 
+/* A wide character, as agondev has it: sixteen bits, signed. What L'x' is,
+ * and what an L"..." string is an array of. */
+typedef short        wchar_t;
+
 #ifndef NULL
 #define NULL ((void *) 0)
 #endif

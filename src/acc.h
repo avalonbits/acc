@@ -373,6 +373,12 @@ enum {
      * every other keyword is one compare. */
     TK_FILE, TK_LINE, TK_DATE, TK_TIME, TK_STDC,
 
+    /* And L, which is a name like any other unless a quote follows it, when
+     * it begins a wide character constant or a wide string. Among these for
+     * the same reason: the lexer sees it only after it is interned, and a
+     * code here costs the names that are not it nothing. */
+    TK_WIDE,
+
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };
 
@@ -405,6 +411,7 @@ extern long     tok_val;    /* its value, when TK_INT */
 extern uint32_t tok_val_hi; /* and its high half, when a long long */
 extern const char *tok_str; /* its bytes, when TK_STRING, escapes undone */
 extern int      tok_str_len; /* and how many, without a terminator */
+extern int      tok_str_wide; /* whether they are wchar_t, two bytes each */
 extern Type     tok_type;   /* and its type, which C99 fixes by its size */
 extern float    tok_fval;   /* its value, when TK_FLOAT */
 extern NameRef  tok_name;   /* its name, when TK_IDENT */

@@ -757,6 +757,7 @@ __attribute__((noinline))
 static int  address_of_literal(int line);
 static int  address_of_operand(void);
 static int  string_address(void);
+static Type joined_elem(void);
 
 static void address_of(void)
 {
@@ -820,7 +821,7 @@ static int address_of_operand(void)
 
             return ADDR_OBJECT;
         }
-        vset_type(type_ptr_to(TY_EXT), ext_array(TY_CHAR, 0, len + 1));
+        vset_type(type_ptr_to(TY_EXT), ext_array(joined_elem(), 0, len + 1));
 
         return ADDR_ARRAY;
     }
@@ -892,43 +893,127 @@ static int address_of_operand(void)
  * gathered here. */
 static char *str_joined;
 static int   str_joined_cap;
+static int   str_joined_wide;   /* whether what was gathered is wchar_t */
+
+static void joined_room(int len)
+{
+    while (len >= str_joined_cap)
+        str_joined_cap = str_joined_cap ? str_joined_cap * 2 : 128;
+    str_joined = realloc(str_joined, (size_t) str_joined_cap);
+    if (!str_joined)
+        acc_error("out of memory for a string");
+}
+
+/* Narrow bytes made wide in place, as C99 6.4.5 has a narrow literal joined
+ * to a wide one read as though it were wide: its UTF-8 taken apart into
+ * characters, one wchar_t each -- two, the halves of a surrogate pair, past
+ * 0xffff. `len` bytes at `at`; answers how many bytes they became. */
+static int joined_widen(int at, int len)
+{
+    unsigned char *narrow = malloc((size_t) len + 1);
+    int i = 0, n = at;
+
+    if (!narrow)
+        acc_error("out of memory for a string");
+    memcpy(narrow, str_joined + at, (size_t) len);
+    joined_room(at + 4 * len + 4);
+    while (i < len) {
+        unsigned long v = narrow[i++];
+        int more = v >= 0xf0 ? 3 : v >= 0xe0 ? 2 : v >= 0xc0 ? 1 : 0;
+
+        if (more) {
+            v &= 0x3fUL >> more;
+            while (more-- && i < len)
+                v = v << 6 | (narrow[i++] & 0x3fUL);
+        }
+        if (v > 0xffff) {
+            unsigned long hi = 0xd800 + ((v - 0x10000) >> 10);
+            unsigned long lo = 0xdc00 + ((v - 0x10000) & 0x3ff);
+
+            str_joined[n++] = (char) (hi & 0xff);
+            str_joined[n++] = (char) (hi >> 8);
+            v = lo;
+        }
+        str_joined[n++] = (char) (v & 0xff);
+        str_joined[n++] = (char) (v >> 8);
+    }
+    free(narrow);
+
+    return n - at;
+}
 
 static int string_gather(void)
 {
     int len = 0;
 
+    str_joined_wide = 0;
     while (tok == TK_STRING) {
-        if (len + tok_str_len >= str_joined_cap) {
-            while (len + tok_str_len >= str_joined_cap)
-                str_joined_cap = str_joined_cap ? str_joined_cap * 2 : 128;
-            str_joined = realloc(str_joined, (size_t) str_joined_cap);
-            if (!str_joined)
-                acc_error("out of memory for a string");
-        }
+        int at = len;
+
+        if (len + tok_str_len >= str_joined_cap)
+            joined_room(len + tok_str_len);
         /* Asked, because `""` is a string of no bytes and the lexer has
          * nothing to point at for it -- and memcpy from a null pointer is
          * undefined even when it is told to copy nothing. */
         if (tok_str_len)
             memcpy(str_joined + len, tok_str, (size_t) tok_str_len);
         len += tok_str_len;
+
+        /* "a" L"b" is as wide as L"a" L"b", whichever side is wide. */
+        if (tok_str_wide && !str_joined_wide) {
+            len = joined_widen(0, at) + tok_str_len;
+            memcpy(str_joined + len - tok_str_len, tok_str,
+                   (size_t) tok_str_len);
+            str_joined_wide = 1;
+        } else if (!tok_str_wide && str_joined_wide) {
+            len = at + joined_widen(at, tok_str_len);
+        }
         next();
     }
 
     return len;
 }
 
+/* The type of one element of what was gathered, and how many elements its
+ * `len` bytes are. */
+static Type joined_elem(void)
+{
+    return str_joined_wide ? TY_SHORT : TY_CHAR;
+}
+
+static int joined_count(int len)
+{
+    return str_joined_wide ? len / 2 : len;
+}
+
+/* What was gathered, written into the image with its terminator: gen_data
+ * ends what it writes with one zero byte, and a wide string's terminator is
+ * a wchar_t, so it is given the other. Answers where. */
+static int joined_data(int len)
+{
+    if (!str_joined_wide)
+        return gen_data(str_joined, len);
+    if (len + 1 >= str_joined_cap)
+        joined_room(len + 1);
+    str_joined[len] = 0;
+
+    return gen_data(str_joined, len + 1);
+}
+
 /* A string literal's bytes in the image and their address on the stack, with
  * whatever follows it left alone. Answers how many bytes were written, which
  * is what the type of the whole array is made from. A constant pointer,
  * since where the bytes went is known the moment they are written. */
+static int joined_data(int len);
+
 static int string_address(void)
 {
     int len = string_gather();
 
-    vpush_const(gen_data(str_joined, len), type_ptr_to(TY_CHAR));
+    vpush_const(joined_data(len), type_ptr_to(joined_elem()));
     vset_addr();
 
-    return len;
+    return joined_count(len);
 }
 
 /* A string literal as an operand: an array of char, which is the address of
@@ -3083,7 +3168,7 @@ static int sizeof_unary(void)
         int len = string_gather();
 
         vpush_const(0, type_ptr_to(TY_EXT));
-        vset_ext(ext_array(TY_CHAR, 0, len + 1));
+        vset_ext(ext_array(joined_elem(), 0, joined_count(len) + 1));
 
         return sizeof_postfix(SIZEOF_OBJECT);
     }
@@ -3714,7 +3799,7 @@ static int init_pending;
 /* The bit-field the scalar being initialised is, 0 if it is not one. */
 static int init_bits;
 static void init_record(int x, int offset, InitPut put, int braced);
-static int  init_string(int count, int offset, InitPut put);
+static int  init_string(Type elem, int count, int offset, InitPut put);
 static int  init_index(Type elem, int elem_x, int count, int offset,
                        InitPut put);
 static int  init_member(int x, int offset, InitPut put);
@@ -3734,6 +3819,24 @@ static int init_designator_next;
  * initialise an array of. */
 #define type_is_char(ty)  (type_size(ty) == 1 && !type_pointer(ty) \
                            && !type_is_array(ty))
+
+/* What a wide string may initialise: an array of wchar_t, which is short
+ * here, or of the unsigned short compatible with it. */
+#define type_is_wchar(ty) ((ty) == TY_SHORT || (ty) == TY_USHORT)
+
+/* That the string just gathered is the kind the array's elements want: a
+ * narrow one for chars, a wide one for wchar_t. C99 6.7.8p14 and p15 allow
+ * no other pairing. */
+static void string_for(Type elem, int line)
+{
+    if (str_joined_wide && !type_is_wchar(elem))
+        acc_error_at(line, "a wide string initialises an array of wchar_t, "
+                           "and this is not one");
+    if (!str_joined_wide && !type_is_char(elem))
+        acc_error_at(line, "a string initialises an array of char, and this "
+                           "is not one; a wide string, L\"...\", is for "
+                           "wchar_t");
+}
 
 /* The elements of a braced list, the brace already read. Returns how many.
  * `count` is how many there may be, or -1 for no limit. `elem_x` is the
@@ -3885,8 +3988,9 @@ static void init_element(Type type, int x, int offset, InitPut put)
         return;
     }
     if (type_is_array(type)) {
-        if (tok == TK_STRING && !init_pending && type_is_char(ext_elem(x))) {
-            init_string(ext_count(x), offset, put);
+        if (tok == TK_STRING && !init_pending
+            && (type_is_char(ext_elem(x)) || type_is_wchar(ext_elem(x)))) {
+            init_string(ext_elem(x), ext_count(x), offset, put);
 
             return;
         }
@@ -3911,13 +4015,31 @@ static void init_element(Type type, int x, int offset, InitPut put)
  * terminator if there is room for it -- C lets a string exactly as long as
  * the array leave it out. Returns how many elements it filled; `count` is
  * how many there are, -1 when that is for the string to say. */
-static int init_string(int count, int offset, InitPut put)
+static int init_string(Type elem, int count, int offset, InitPut put)
 {
-    int len = string_gather(), i;
+    int line = tok_line, len = string_gather(), i;
 
-    if (count >= 0 && len > count)
-        acc_error_at(tok_line, "this string is longer than the array it "
+    string_for(elem, line);
+    if (str_joined_wide) {
+        int units = joined_count(len);
+
+        if (count >= 0 && units > count)
+            acc_error_at(line, "this string is longer than the array it "
                                "initialises");
+        for (i = 0; i < units; i++)
+            put(elem, offset + 2 * i,
+                (short) ((unsigned char) str_joined[2 * i]
+                         | (unsigned char) str_joined[2 * i + 1] << 8));
+        if (count < 0 || units < count) {
+            put(elem, offset + 2 * units, 0);
+            units++;
+        }
+
+        return units;
+    }
+    if (count >= 0 && len > count)
+        acc_error_at(line, "this string is longer than the array it "
+                           "initialises");
     for (i = 0; i < len; i++)
         put(TY_CHAR, offset + i, (unsigned char) str_joined[i]);
     if (count < 0 || len < count) {
@@ -4247,21 +4369,23 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
     /* A string for a char array: its bytes written into the image, where a
      * string constant goes, and copied into the array with ldir, the rest
      * zeroed after. */
-    if (init && tok == TK_STRING && type_is_char(elem)) {
-        int len = string_gather(), from, n;
+    if (init && tok == TK_STRING && (type_is_char(elem) || type_is_wchar(elem))) {
+        int len = string_gather(), units, from, n;
 
-        if (count >= 0 && len > count)
+        string_for(elem, line);
+        units = joined_count(len);
+        if (count >= 0 && units > count)
             acc_error_at(line, "this string is longer than the array it "
                                "initialises");
-        from = gen_data(str_joined, len);
-        n = (count < 0 || len < count) ? len + 1 : len;   /* the terminator */
+        from = joined_data(len);
+        n = (count < 0 || units < count) ? units + 1 : units; /* terminator */
         if (count < 0) {
             count = n;
-            gen_local_array_size(array, count);
+            gen_local_array_size(array, count * step);
         }
-        gen_copy_to_array(array, 0, from, n);
+        gen_copy_to_array(array, 0, from, n * step);
         if (n < count)
-            gen_zero_array(array, n, count - n);
+            gen_zero_array(array, n * step, (count - n) * step);
     } else if (init && !type_is_array(elem) && !type_is_struct(elem)) {
         /* One dimension: the values in order, each stored as it is read, and
          * the rest zeroed after them in one run, as before arrays of
@@ -6137,8 +6261,8 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
 
     init_bytes_len = 0;
 
-    if (init && tok == TK_STRING && type_is_char(elem)) {
-        int n = init_string(count, 0, global_put);
+    if (init && tok == TK_STRING && (type_is_char(elem) || type_is_wchar(elem))) {
+        int n = init_string(elem, count, 0, global_put);
 
         if (count < 0)
             count = n;

@@ -1638,9 +1638,16 @@ static const char time_text[] = __TIME__;
  * that is the line the macro was used on, since an expansion does not move
  * the count. Out of line because it runs for a handful of names in a
  * program and next() runs for every one. */
+static void wide_or_name(void);
+
 __attribute__((noinline))
 static void predefined(void)
 {
+    if (tok == TK_WIDE) {
+        wide_or_name();
+
+        return;
+    }
     if (tok == TK_LINE || tok == TK_STDC) {
         tok_val = tok == TK_LINE ? line : 1;
         tok = TK_INT;
@@ -1654,6 +1661,7 @@ static void predefined(void)
             : tok == TK_DATE ? date_text : time_text;
     tok = TK_STRING;
     tok_str_len = (int) strlen(tok_str);
+    tok_str_wide = 0;
 }
 
 /* A name put back as the text it stands for. Returns whether it was one:
@@ -1728,7 +1736,8 @@ static NameRef kw_limit;
 static int predefined_name(NameRef name)
 {
     return name < kw_limit
-           && (unsigned char) name_arena[name - 3] >= TK_FILE;
+           && (unsigned char) name_arena[name - 3] >= TK_FILE
+           && (unsigned char) name_arena[name - 3] != TK_WIDE;
 }
 static int  directive_name(char *buf, int cap);
 static NameRef directive_target(const char *what);
@@ -2317,6 +2326,7 @@ static void if_expand(const char *text, int len)
             continue;
         }
 
+
         start = p;
         while (p < end && is_alnum((unsigned char) *p))
             p++;
@@ -2408,12 +2418,18 @@ static long long if_primary(void)
 
         return v;
     }
-    if (*ep == '\'') {
+    if (*ep == '\'' || (ep[0] == 'L' && ep[1] == '\'')) {
         /* A character constant, whose value is what the byte is. The
          * escapes are the ones the lexer proper takes, numbers and all:
          * `#if '\\x41' == 'A'` is a condition a program may reasonably
-         * write, and one that reads only `\\0` cannot answer it. */
-        ep++;
+         * write, and one that reads only `\\0` cannot answer it.
+         *
+         * An L in front makes it wide, as in the program: a wchar_t, which
+         * is a short, an escape as wide as that, and a character of the
+         * source read as the UTF-8 it is. */
+        int wide = *ep == 'L';
+
+        ep += wide + 1;
         if (*ep == '\\') {
             ep++;
             switch (*ep) {
@@ -2440,7 +2456,7 @@ static long long if_primary(void)
                     v = v * 16 + d;
                     ep++;
                 }
-                v = (signed char) v;
+                v = wide ? (short) v : (signed char) v;
                 break;
             }
             default:
@@ -2454,15 +2470,26 @@ static long long if_primary(void)
                         ep++;
                         n++;
                     }
-                    v = (signed char) v;
+                    v = wide ? (short) v : (signed char) v;
                 } else {
                     v = (unsigned char) *ep;
                     ep++;
                 }
                 break;
             }
+        } else if (wide && (unsigned char) *ep >= 0xc0) {
+            int c = (unsigned char) *ep++;
+            int more = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : 1;
+
+            v = c & (0x3f >> more);
+            while (more-- && ((unsigned char) *ep & 0xc0) == 0x80)
+                v = v << 6 | (*ep++ & 0x3f);
+            if (v > 0xffff)
+                acc_error_at(line, "a wide character constant past 0xffff "
+                                   "does not fit in a wchar_t");
+            v = (short) v;
         } else {
-            v = (signed char) *ep++;
+            v = wide ? (unsigned char) *ep++ : (signed char) *ep++;
         }
         if (*ep != '\'')
             acc_error_at(line, "a character constant in an #if is not closed");
@@ -3530,6 +3557,7 @@ static void keywords_init(void)
     keyword("__DATE__", 8, TK_DATE);
     keyword("__TIME__", 8, TK_TIME);
     keyword("__STDC__", 8, TK_STDC);
+    keyword("L", 1, TK_WIDE);
     keyword("union", 5, TK_KW_UNION);
     keyword("volatile", 8, TK_KW_VOLATILE);
     keyword("_Bool", 5, TK_KW_BOOL);
@@ -3905,6 +3933,7 @@ static void punct_error(int c)
 
 const char *tok_str;
 int         tok_str_len;
+int         tok_str_wide;
 
 static char *str_buf;
 static int   str_cap;
@@ -3931,9 +3960,10 @@ static void ucn_refuse(const char *p)
 /* One character of a literal, the backslash of an escape read already: the
  * byte it stands for. Octal takes up to three digits and hex as many as
  * there are, which is what C says; a value past a byte is refused. */
-static int escape(void)
+static int escape(int wide)
 {
     int c = (unsigned char) *cursor++, value, digits;
+    int most = wide ? 0xffff : 0xff;
 
     switch (c) {
     case 'n':  return '\n';
@@ -3954,9 +3984,11 @@ static int escape(void)
 
             d = is_digit(d) ? d - '0' : (d | 0x20) - 'a' + 10;
             value = value * 16 + d;
-            if (value > 255)
-                acc_error_at(tok_line, "a '\\x' escape past 0xff does not "
-                                       "fit in a char");
+            if (value > most)
+                acc_error_at(tok_line, wide ? "a '\\x' escape past 0xffff "
+                                              "does not fit in a wchar_t"
+                                            : "a '\\x' escape past 0xff does "
+                                              "not fit in a char");
         }
 
         return value;
@@ -3965,7 +3997,7 @@ static int escape(void)
         value = c - '0';
         for (digits = 1; digits < 3 && *cursor >= '0' && *cursor <= '7'; digits++)
             value = value * 8 + (*cursor++ - '0');
-        if (value > 255)
+        if (value > most)
             acc_error_at(tok_line, "an octal escape past \\377 does not fit "
                                    "in a char");
 
@@ -3989,7 +4021,7 @@ static int literal_char(int quote)
                      quote == '"' ? "string" : "character constant");
     cursor++;
 
-    return c == '\\' ? escape() : c;
+    return c == '\\' ? escape(0) : c;
 }
 
 /* What next() does not recognise as punctuation, the quote or the stray
@@ -4061,6 +4093,114 @@ static void lex_quoted(int c)
     tok = TK_STRING;
     tok_str = str_buf;
     tok_str_len = n;
+    tok_str_wide = 0;
+}
+
+/* One character of a wide literal: an escape, which may be as wide as a
+ * wchar_t, or a character of the source -- UTF-8, which a universal
+ * character name has been made into already, taken apart into the
+ * character it spells. */
+static uint32_t wide_char(int quote)
+{
+    int c = (unsigned char) *cursor, n, i;
+    uint32_t v;
+
+    if (c == '\0' || c == '\n')
+        acc_error_at(tok_line, "a %s is not closed on the line it starts on",
+                     quote == '"' ? "string" : "character constant");
+    cursor++;
+    if (c == '\\')
+        return (uint32_t) escape(1);
+    if (c < 0x80)
+        return (uint32_t) c;
+
+    n = c >= 0xf0 && c < 0xf8 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : -1;
+    if (n < 0)
+        acc_error_at(tok_line, "a wide literal is read as UTF-8, and this "
+                               "byte cannot begin a character in it");
+    v = (uint32_t) (c & (0x3f >> n));
+    for (i = 0; i < n; i++) {
+        int d = (unsigned char) *cursor;
+
+        if ((d & 0xc0) != 0x80)
+            acc_error_at(tok_line, "a wide literal is read as UTF-8, and a "
+                                   "character in it stops short");
+        cursor++;
+        v = v << 6 | (uint32_t) (d & 0x3f);
+    }
+
+    return v;
+}
+
+static void wide_unit(int *n, uint32_t v)
+{
+    if (*n + 2 >= str_cap) {
+        str_cap = str_cap ? str_cap * 2 : 128;
+        str_buf = realloc(str_buf, (size_t) str_cap);
+        if (!str_buf)
+            acc_error("out of memory for a string");
+    }
+    str_buf[(*n)++] = (char) (v & 0xff);
+    str_buf[(*n)++] = (char) (v >> 8);
+}
+
+/* L, which the cursor is just past: a wide character constant or a wide
+ * string if a quote follows it (C99 6.4.4.4, 6.4.5), and otherwise a name
+ * like any other, a macro's included. A wchar_t is agondev's, a short, so
+ * a wide string is UTF-16 -- a character past 0xffff is the two halves of a
+ * surrogate pair, as agondev writes it -- and a wide character constant
+ * past it is refused, as agondev refuses it. The string's units go into the
+ * same buffer as a narrow string's bytes, two bytes each, low first. */
+static void wide_or_name(void)
+{
+    int quote = *cursor, n = 0;
+    uint32_t v;
+
+    if (quote != '"' && quote != '\'') {
+        tok = TK_IDENT;
+        if (name_is_macro(tok_name) && expand(tok_name))
+            next();
+
+        return;
+    }
+    cursor++;
+
+    if (quote == '\'') {
+        if (*cursor == '\'')
+            acc_error_at(tok_line, "a character constant needs a character");
+        v = wide_char(quote);
+        if (v > 0xffff)
+            acc_error_at(tok_line, "a wide character constant past 0xffff "
+                                   "does not fit in a wchar_t");
+        if (*cursor != '\'')
+            acc_error_at(tok_line, *cursor == '\n' || *cursor == '\0'
+                         ? "a character constant is not closed on the line it "
+                           "starts on"
+                         : "a character constant holds one character; for "
+                           "more, use a string");
+        cursor++;
+        tok = TK_INT;
+        tok_type = TY_SHORT;
+        tok_val = (short) v;
+        tok_val_hi = 0;
+
+        return;
+    }
+
+    while (*cursor != '"') {
+        v = wide_char(quote);
+        if (v > 0xffff) {
+            wide_unit(&n, 0xd800 + ((v - 0x10000) >> 10));
+            wide_unit(&n, 0xdc00 + ((v - 0x10000) & 0x3ff));
+        } else {
+            wide_unit(&n, v);
+        }
+    }
+    cursor++;
+    tok = TK_STRING;
+    tok_str = str_buf;
+    tok_str_len = n;
+    tok_str_wide = 1;
 }
 
 /* The second character of a two- or three-character operator, the first

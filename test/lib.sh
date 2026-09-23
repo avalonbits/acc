@@ -792,6 +792,39 @@ int main(void) {
 FLOATH
 runs_file "what is in <float.h>" "$tmp/float.c"
 
+# <stddef.h>'s wchar_t and the whole of <stdint.h>, C99 7.18, which a
+# freestanding implementation has to have: the least and fast types, which
+# are agondev's choices, the greatest-width ones, every limit, and the
+# macros that make a constant of a width. A type's size and signedness are
+# checked, and a limit against the type it is the limit of.
+runs "what is in <stdint.h> and wchar_t" \
+'#include <stddef.h>
+#include <stdint.h>
+
+int main(void) {
+    int r = 0;
+
+    if (sizeof (wchar_t) == 2 && (wchar_t) -1 < 0 && sizeof L"a" == 2 * sizeof (wchar_t)) r++;
+    if (sizeof (int_least8_t) == 1 && sizeof (int_least16_t) == 2
+        && sizeof (int_least32_t) == 4 && sizeof (int_least64_t) == 8) r++;
+    if (sizeof (uint_fast8_t) == 1 && sizeof (uint_fast16_t) == 2
+        && sizeof (uint_fast32_t) == 4 && sizeof (uint_fast64_t) == 8
+        && (uint_fast8_t) -1 > 0 && (int_fast16_t) -1 < 0) r++;
+    if (sizeof (intmax_t) == 8 && (uintmax_t) -1 == UINTMAX_MAX
+        && INTMAX_MAX == INT64_MAX && INTMAX_MIN < 0) r++;
+    if (INT_LEAST16_MAX == 32767 && UINT_FAST32_MAX == 4294967295UL
+        && INT_FAST64_MIN == INT64_MIN && UINT_LEAST8_MAX == 255) r++;
+    if (PTRDIFF_MAX == 8388607 && PTRDIFF_MIN == -PTRDIFF_MAX - 1
+        && SIG_ATOMIC_MAX == INT24_MAX && SIZE_MAX == 16777215u) r++;
+    if (WCHAR_MAX == 32767 && WCHAR_MIN == -32768 && (wchar_t) WCHAR_MAX > 0
+        && WINT_MAX == 8388607 && WINT_MIN == -8388608) r++;
+    if (sizeof INT32_C(1) == 4 && sizeof UINT64_C(1) == 8
+        && sizeof INTMAX_C(1) == 8 && UINT32_C(4000000000) > 0
+        && INT8_C(-5) == -5 && UINT16_C(65535) == 65535) r++;
+
+    return r + 34;              /* 8 checks */
+}'
+
 # <iso646.h>: each word is its operator, and each check is one its
 # lookalike would get wrong -- 2 bitand 1 is 0 where 2 and 1 is 1, and
 # and and or have to stop at their left operand, which & and | do not.
