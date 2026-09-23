@@ -7,7 +7,7 @@
 # the benchmark would report to a decimal place. So: build it, compile one
 # program with it twice, and require a count above zero and the two within
 # two ticks of the timer, 512 cycles, and a count for an input that takes
-# longer than one pass of the timer. Not exactly equal: an interrupt that
+# longer than two passes of the timer. Not exactly equal: an interrupt that
 # arrives during one compile and not the other -- MOS's vertical blank, which
 # the emulator paces by the host's clock -- adds its handler's cycles.
 #
@@ -30,22 +30,12 @@ if [ "${count:-0}" -le 0 ] || [ -z "$spread" ] || [ "$spread" -gt 512 ]; then
 fi
 echo "  cycles: $count for 010_return.c, within $spread of each other"
 
-# And past one pass of the timer, which is 16.7 million cycles. matrix.c
-# takes a little more than that; before the wraps were counted, it was read
-# from the seconds instead, 17% high, and nothing but a note said so.
-out=$(ACC_BIN=bin/acc-cycles.bin test/bench.sh 1 test/bench/matrix.c 2>/dev/null)
-line=$(printf '%s\n' "$out" | grep ' matrix.c ')
-count=$(printf '%s\n' "$line" | sed -n 's/.*runs  *\([0-9]*\) cycles each.*/\1/p')
-if [ "${count:-0}" -le 16777216 ]; then
-    echo "  FAIL cycles: expected matrix.c counted past one pass of the timer, got:"
-    printf '%s\n' "$out"
-    exit 1
-fi
-echo "  cycles: $count for matrix.c, past one pass of the timer"
-
-# And past two, which the flag alone cannot count: it says the timer came
-# round, not how often, so every pass but the last is counted by polling
-# between declarations. A thousand small functions, generated here.
+# And past more than one pass of the timer, which is 16.7 million cycles --
+# past two, which the flag alone cannot count: it says the timer came round,
+# not how often, so every pass but the last is counted by polling between
+# declarations. A thousand small functions, generated here rather than taken
+# from the benchmark, whose inputs get faster: matrix.c was past one pass
+# when this was written and under it a week later.
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 awk 'BEGIN {
     for (i = 0; i < 1000; i++)
@@ -72,7 +62,9 @@ cp bin/acc-cycles.bin "$sd/bin/acc.bin"
 cp test/bench/names.c "$sd/in.c"
 echo 'int main(void) { return 0; }' > "$tmp/stop.c"
 bin/acc "$tmp/stop.c" -o "$sd/bin/stop.bin" -x >/dev/null || exit 1
-printf 'acc in.c -o out.bin\r\nstop\r\n' > "$sd/autoexec.txt"
+# Twice, and the first of each read: stopping the machine drops the console
+# line still in flight, which is the last one, as bench.sh says.
+printf 'acc in.c -o out.bin\r\nacc in.c -o out.bin\r\nstop\r\n' > "$sd/autoexec.txt"
 out=$(ACC_EMU_TIMEOUT=120 emu_run "$sd" -z -u 2>&1)
 rm -rf "$sd"
 emu=$(printf '%s\n' "$out" | sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
