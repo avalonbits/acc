@@ -1374,8 +1374,42 @@ static int trunc_int(int value)
     return value;
 }
 
-static int const_fold(int op, int left, int right, int *out)
+/* An int's bits as the unsigned value they are: the stack holds every int
+ * sign-extended, which is the signed reading, and 0xffffffU is -1 there. */
+#define as_unsigned(v)  ((unsigned long) (v) & 0xffffffUL)
+
+static int const_fold(int op, int left, int right, int *out, int is_unsigned)
 {
+    /* Where signed and unsigned disagree -- the ordering, a right shift, a
+     * division -- an unsigned operand is read as the unsigned value its bits
+     * are. Folded on the sign-extended value, 0x800000U / 2U was -0x400000,
+     * and -1U >> 9 was -1: the arithmetic shift a signed value gets. */
+    if (is_unsigned) {
+        unsigned long l = as_unsigned(left), r = as_unsigned(right);
+
+        switch (op) {
+        case TK_LT:    *out = l <  r; return 1;
+        case TK_GT:    *out = l >  r; return 1;
+        case TK_LE:    *out = l <= r; return 1;
+        case TK_GE:    *out = l >= r; return 1;
+        case TK_SHR:
+            if (right < 0 || right >= ACC_INT_SIZE * 8)
+                return 0;
+            *out = trunc_int((int) (l >> right));
+            return 1;
+        case TK_SLASH:
+            if (r == 0)
+                return 0;
+            *out = trunc_int((int) (l / r));
+            return 1;
+        case TK_PERCENT:
+            if (r == 0)
+                return 0;
+            *out = trunc_int((int) (l % r));
+            return 1;
+        }
+    }
+
     switch (op) {
     case TK_PLUS:  *out = trunc_int(left + right); return 1;
     case TK_MINUS: *out = trunc_int(left - right); return 1;
@@ -1522,7 +1556,8 @@ static void vbinop(int op)
 
     /* Both sides known: the answer is known, and nothing is emitted. */
     if (val_const(lhs->kind) && val_const(rhs->kind)
-        && const_fold(op, lhs->val, rhs->val, &folded)) {
+        && const_fold(op, lhs->val, rhs->val, &folded,
+                      either_unsigned(lhs, rhs))) {
         Type folded_type = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
         /* The kinds are in hand from the test above, and neither is waiting
          * on anything in almost every fold a program does, so the question
@@ -1714,6 +1749,7 @@ void vneg(void)
 {
     Value *top = vsp - 1;
     int right;
+    Type result;
 
     /* A wide constant is negated here: a float by its sign bit, which is
      * exact for zero as well, and an integer by two's complement at its own
@@ -1768,13 +1804,19 @@ void vneg(void)
     if (!(top->kind == VAL_REG && top->val != R_HL))
         force_into(top, reg_alloc_other(R_HL));
     right = top->val;
+    result = type_promote(top->type);
     evict_reg(R_HL);
 
     ld_rr_imm(R_HL, 0);
     or_a_a();
     sbc_hl_rr(right);
     vdrop();
+
+    /* -x has the promoted type of x (C99 6.5.3.3), so the negation of an
+     * unsigned is unsigned: pushed as a plain int, `-u >> 9` shifted in the
+     * sign and came out as all ones. */
     vpush_reg(R_HL);
+    (vsp - 1)->type = result;
 }
 
 void vnot(void)
@@ -2125,7 +2167,7 @@ static void vcmp(int op)
     if (val_const(lhs->kind) && val_const(rhs->kind)
         && foldable(op, lhs, rhs)
         && (!is_unsigned || (lhs->val >= 0 && rhs->val >= 0))
-        && const_fold(op, lhs->val, rhs->val, &folded)) {
+        && const_fold(op, lhs->val, rhs->val, &folded, is_unsigned)) {
         vdrop();
         vdrop();
         vpush_const(folded, TY_INT);    /* a comparison is an int either way */

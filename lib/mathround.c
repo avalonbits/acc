@@ -59,7 +59,11 @@ double trunc(double x)
     if (e < 0)
         return from_bits(u & SIGN_BIT); /* less than one: the zero it keeps */
 
-    return from_bits(u & ~(FRAC_MASK >> e));
+    /* The mask is widened before it is complemented. FRAC_MASK is an unsigned
+     * int, which is 24 bits here, and its complement widened afterwards is
+     * zero-extended: the top byte of the mask would be clear, and with it
+     * the sign and the exponent this is meant to keep. */
+    return from_bits(u & ~((uint32_t) FRAC_MASK >> e));
 }
 
 double floor(double x)
