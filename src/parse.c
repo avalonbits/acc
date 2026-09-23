@@ -2500,29 +2500,33 @@ static void vla_block_open(void)
     nvla_blocks++;
 }
 
-static int vla_block_serial(void)
+/* The room a goto back to a label gives up: the room taken, since the label
+ * was reached, by the blocks the goto is leaving. `then` is the chain of
+ * blocks open at the label, with their marks as they were.
+ *
+ * The two chains share their outer blocks and part at the innermost one
+ * they have in common. That block's room counts only if its mark was taken
+ * after the label; every block inside it on the goto's side opened after
+ * the label, so all of theirs counts. What goes back is everything from the
+ * outermost of those, whose mark is the highest the stack was. Answers that
+ * mark, or NO_VLA_MARK for nothing. gcc's vla-dealloc-1 jumps to a label in
+ * an `if (0)` block that closed before the array was declared -- the goto
+ * is not leaving the label's block, but it is leaving the array's scope. */
+static int vla_back_to(const VlaBlock *then, int nthen)
 {
-    return nvla_blocks ? vla_blocks[nvla_blocks - 1].serial : 0;
-}
+    int common = -1, i;
 
-/* The room a goto back to a label gives up: that of the outermost block,
- * from the label's own inwards, that has taken room since the label -- the
- * label's own block only if its mark came after the label. Answers the
- * slot to put the stack back from, or NO_VLA_MARK for none. A label in a
- * block that is no longer open is jumped into, not out of; that is left as
- * it was, the function's return giving the room back. */
-static int vla_back_to(int serial, int mark_then)
-{
-    int i;
-
-    for (i = 0; i < nvla_blocks; i++)
-        if (vla_blocks[i].serial == serial)
+    for (i = 0; i < nvla_blocks && i < nthen; i++) {
+        if (vla_blocks[i].serial != then[i].serial)
             break;
-    if (i == nvla_blocks)
+        common = i;
+    }
+    if (common < 0)
         return NO_VLA_MARK;
-    if (mark_then == NO_VLA_MARK && vla_blocks[i].mark != NO_VLA_MARK)
-        return vla_blocks[i].mark;
-    for (i++; i < nvla_blocks; i++)
+    if (then[common].mark == NO_VLA_MARK
+        && vla_blocks[common].mark != NO_VLA_MARK)
+        return vla_blocks[common].mark;
+    for (i = common + 1; i < nvla_blocks; i++)
         if (vla_blocks[i].mark != NO_VLA_MARK)
             return vla_blocks[i].mark;
 
@@ -5019,8 +5023,8 @@ static void switch_statement(void)
 typedef struct {
     NameRef name;
     int     at;             /* its address, or -1 until it is reached */
-    int     block;          /* the block it is in, as vla_block_serial */
-    int     vla_mark;       /* that block's mark when it was reached */
+    VlaBlock *blocks;       /* the blocks open when it was reached, and */
+    int       nblocks;      /* their marks then: see vla_back_to */
     int     line;           /* where it was first named */
 } Label;
 
@@ -5048,6 +5052,8 @@ static int label_find(NameRef name, int line)
     labels[nlabels].name = name;
     labels[nlabels].at = -1;
     labels[nlabels].line = line;
+    labels[nlabels].blocks = NULL;
+    labels[nlabels].nblocks = 0;
 
     return nlabels++;
 }
@@ -5070,7 +5076,7 @@ static void goto_statement(void)
      * room it took has to go back, or a loop made of a goto takes it again
      * on every turn. gcc's 20040811-1 is a million turns of that. */
     if (labels[label].at >= 0) {
-        int back = vla_back_to(labels[label].block, labels[label].vla_mark);
+        int back = vla_back_to(labels[label].blocks, labels[label].nblocks);
 
         if (back != NO_VLA_MARK)
             gen_stack_back(back);
@@ -5103,8 +5109,11 @@ static void label_statement(void)
     next();
     expect(TK_COLON, "':'");
     labels[label].at = gen_here();
-    labels[label].block = vla_block_serial();
-    labels[label].vla_mark = vla_mark;
+    labels[label].blocks = malloc((size_t) (nvla_blocks + 1) * sizeof (VlaBlock));
+    if (!labels[label].blocks)
+        acc_error("out of memory for labels");
+    memcpy(labels[label].blocks, vla_blocks, (size_t) nvla_blocks * sizeof (VlaBlock));
+    labels[label].nblocks = nvla_blocks;
 
     for (i = 0; i < ngotos; i++) {
         if (goto_label[i] == label) {
@@ -5126,6 +5135,12 @@ static void labels_end(void)
     if (ngotos)
         acc_error_at(labels[goto_label[0]].line, "the label '%s' is used but "
                      "never defined", name_text(labels[goto_label[0]].name));
+    {
+        int i;
+
+        for (i = 0; i < nlabels; i++)
+            free(labels[i].blocks);
+    }
     nlabels = 0;
 }
 

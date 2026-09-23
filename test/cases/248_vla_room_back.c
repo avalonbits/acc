@@ -10,8 +10,9 @@
  * the heap.
  *
  * A goto back to a label above the declaration leaves its scope too, and
- * was not handled even in intent. It gives the room back now as well.
- * gcc's pr43220 and 20040811-1 are a million turns each of those two.
+ * was not handled even in intent -- including a label in a block that has
+ * already closed. It gives the room back now as well.
+ * gcc's pr43220, 20040811-1 and vla-dealloc-1 are a million turns each.
  *
  * Checked two ways: equal-sized arrays on different turns have to land in
  * the same place, and one loop takes more in total than the machine has.
@@ -68,6 +69,28 @@ again:
     return a == b;
 }
 
+/* The label is in a block that has closed by the time the goto runs --
+ * gcc's vla-dealloc-1. The goto does not leave the label's block, but it
+ * does leave the array's scope, which began after that block ended. */
+static int into_closed_block(void) {
+    int n = 0;
+    char *a = 0, *b = 0;
+
+    if (0) {
+    inside:;
+    }
+    int x[n % 10 + 1];
+
+    x[0] = n;
+    if (n == 9) a = (char *) x;
+    if (n == 49) b = (char *) x;
+    n++;
+    if (n < 50)
+        goto inside;
+
+    return a == b;
+}
+
 static int break_and_continue(void) {
     int n, kept = 0;
     char *a = 0, *b = 0;
@@ -110,8 +133,9 @@ int main(void) {
     if (loop_body()) r++;
     if (goto_above()) r++;
     if (goto_out_of_inner()) r++;
+    if (into_closed_block()) r++;
     if (break_and_continue()) r++;
     if (big()) r++;
 
-    return r + 37;              /* 5 checks */
+    return r + 36;              /* 6 checks */
 }
