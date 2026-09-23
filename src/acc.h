@@ -372,12 +372,14 @@ enum {
      * enum, and so the highest codes there are, so that telling them from
      * every other keyword is one compare. */
     TK_FILE, TK_LINE, TK_DATE, TK_TIME, TK_STDC,
+    TK_STDC_VERSION, TK_STDC_HOSTED,
 
-    /* And L, which is a name like any other unless a quote follows it, when
-     * it begins a wide character constant or a wide string. Among these for
-     * the same reason: the lexer sees it only after it is interned, and a
-     * code here costs the names that are not it nothing. */
-    TK_WIDE,
+    /* And two that are not macros but are recognised the same way, since
+     * the lexer sees them only after they are interned and a code here
+     * costs the names that are not them nothing: L, which is a name like
+     * any other unless a quote follows it, when it begins a wide literal;
+     * and _Pragma, the operator form of #pragma. */
+    TK_WIDE, TK_PRAGMA_OP,
 
     TK_COUNT                     /* how many there are, for tables keyed on one */
 };

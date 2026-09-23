@@ -300,5 +300,27 @@ else
     bad "split across files is the same image" "the two differ"
 fi
 
+# _Pragma("once"), C99's operator form of the directive, in a header whose
+# one definition would be a second one if it were read twice -- and from
+# a macro, which is what the operator is for: a directive cannot come out
+# of one.
+cat > "$tmp/src/op_once.h" <<'EOF'
+_Pragma("once")
+int only_once = 20;
+EOF
+cat > "$tmp/src/op_macro.h" <<'EOF'
+#define ONCE _Pragma("once")
+ONCE
+int only_once_too = 22;
+EOF
+cat > "$tmp/src/op_main.c" <<'EOF'
+#include "op_once.h"
+#include "op_once.h"
+#include "op_macro.h"
+#include "op_macro.h"
+int main(void) { return only_once + only_once_too; }
+EOF
+compiles "_Pragma(\"once\") read once" "$tmp/src/op_main.c"
+
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

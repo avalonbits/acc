@@ -825,6 +825,17 @@ int main(void) {
     return r + 34;              /* 8 checks */
 }'
 
+# C99 6.10.8's predefined names, which the reference build cannot check:
+# it runs agondev at its own default standard, where __STDC_VERSION__ is
+# not 199901L. __STDC_HOSTED__ is 0 until the library has every header, and
+# _Pragma is an operator, not a macro, so defined() does not know it.
+runs "__STDC_VERSION__, __STDC_HOSTED__ and _Pragma" \
+'#if __STDC_VERSION__ == 199901L && defined(__STDC_HOSTED__) && __STDC_HOSTED__ == 0 && !defined(_Pragma) && __STDC__ == 1
+int main(void) { return sizeof __STDC_VERSION__ == sizeof (long) && __STDC_HOSTED__ == 0 ? 42 : 1; }
+#else
+int main(void) { return 2; }
+#endif'
+
 # <iso646.h>: each word is its operator, and each check is one its
 # lookalike would get wrong -- 2 bitand 1 is 0 where 2 and 1 is 1, and
 # and and or have to stop at their left operand, which & and | do not.

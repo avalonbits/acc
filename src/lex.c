@@ -1639,6 +1639,7 @@ static const char time_text[] = __TIME__;
  * the count. Out of line because it runs for a handful of names in a
  * program and next() runs for every one. */
 static void wide_or_name(void);
+static void pragma_operator(void);
 
 __attribute__((noinline))
 static void predefined(void)
@@ -1648,8 +1649,25 @@ static void predefined(void)
 
         return;
     }
-    if (tok == TK_LINE || tok == TK_STDC) {
-        tok_val = tok == TK_LINE ? line : 1;
+    if (tok == TK_PRAGMA_OP) {
+        pragma_operator();
+
+        return;
+    }
+
+    /* C99 6.10.8. __STDC_HOSTED__ is 0: a hosted implementation is one with
+     * all of the library, and until acc's has every header it is not one.
+     * agondev says 1. */
+    if (tok == TK_STDC_VERSION) {
+        tok_val = 199901L;
+        tok = TK_INT;
+        tok_type = TY_LONG;
+        tok_val_hi = 0;
+
+        return;
+    }
+    if (tok == TK_LINE || tok == TK_STDC || tok == TK_STDC_HOSTED) {
+        tok_val = tok == TK_LINE ? line : tok == TK_STDC ? 1 : 0;
         tok = TK_INT;
         tok_type = TY_INT;
         tok_val_hi = 0;
@@ -1737,7 +1755,7 @@ static int predefined_name(NameRef name)
 {
     return name < kw_limit
            && (unsigned char) name_arena[name - 3] >= TK_FILE
-           && (unsigned char) name_arena[name - 3] != TK_WIDE;
+           && (unsigned char) name_arena[name - 3] <= TK_STDC_HOSTED;
 }
 static int  directive_name(char *buf, int cap);
 static NameRef directive_target(const char *what);
@@ -2182,6 +2200,12 @@ static const char *if_name(const char *at, int len, const char *after,
             break;
         case TK_STDC:
             if_put("1", 1);
+            break;
+        case TK_STDC_VERSION:
+            if_put("199901L", 7);
+            break;
+        case TK_STDC_HOSTED:
+            if_put("0", 1);
             break;
         case TK_DATE: if_put("\"", 1);
                       if_put(date_text, (int) strlen(date_text));
@@ -3557,7 +3581,10 @@ static void keywords_init(void)
     keyword("__DATE__", 8, TK_DATE);
     keyword("__TIME__", 8, TK_TIME);
     keyword("__STDC__", 8, TK_STDC);
+    keyword("__STDC_VERSION__", 16, TK_STDC_VERSION);
+    keyword("__STDC_HOSTED__", 15, TK_STDC_HOSTED);
     keyword("L", 1, TK_WIDE);
+    keyword("_Pragma", 7, TK_PRAGMA_OP);
     keyword("union", 5, TK_KW_UNION);
     keyword("volatile", 8, TK_KW_VOLATILE);
     keyword("_Bool", 5, TK_KW_BOOL);
@@ -4094,6 +4121,32 @@ static void lex_quoted(int c)
     tok_str = str_buf;
     tok_str_len = n;
     tok_str_wide = 0;
+}
+
+/* _Pragma ( string-literal ), C99 6.10.9: the string with its quotes and
+ * escapes taken off, done as a #pragma would do it -- which here means
+ * `once` is acted on and anything else is ignored, as C says an unknown
+ * pragma is. It is a unary operator that leaves nothing behind, so the
+ * token after it is read to take its place. */
+static void pragma_operator(void)
+{
+    int once;
+
+    next();
+    if (tok != TK_LPAREN)
+        acc_error_at(tok_line, "_Pragma needs a string in parentheses");
+    next();
+    if (tok != TK_STRING || tok_str_wide)
+        acc_error_at(tok_line, "_Pragma needs a string in parentheses");
+    once = tok_str_len >= 4 && !strncmp(tok_str, "once", 4);
+    while (once && tok_str_len > 4 && is_space(tok_str[tok_str_len - 1]))
+        tok_str_len--;
+    if (once && tok_str_len == 4)
+        once_add(src_real);
+    next();
+    if (tok != TK_RPAREN)
+        acc_error_at(tok_line, "_Pragma needs a string in parentheses");
+    next();
 }
 
 /* One character of a wide literal: an escape, which may be as wide as a
