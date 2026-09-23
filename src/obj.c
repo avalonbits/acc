@@ -88,46 +88,51 @@
 
 static int exported(const Sym *s);
 
-static int int_order(const void *a, const void *b)
-{
-    int x = *(const int *) a, y = *(const int *) b;
-
-    return (x > y) - (x < y);
-}
-
 /* Where each item begins: zero, and every function and every variable with
- * room in the text, whether or not its name leaves the file. Sorted, and
- * each once. Answers how many; *items is the caller's to free. */
-static int items_of(int **items)
+ * room in the text, whether or not its name leaves the file -- gathered by
+ * obj_write's own walk of the symbols into `at`, n of them, and here put in
+ * order and made each once. Answers how many are left. */
+static int items_settle(int *at, int n)
 {
-    int nglobals = sym_nglobals(), step = (int) sizeof(Sym);
-    int *at = malloc((size_t) (nglobals / step + 2) * sizeof *at);
-    int n = 0, i, kept = 0, s;
+    int i, kept = 0;
 
-    if (!at)
-        acc_error("out of memory for the object");
     at[n++] = 0;
-    for (s = 0; s < nglobals; s += step) {
-        const Sym *sym = sym_at(s);
 
-        if (sym->kind == SYM_FUNC) {
-            /* A static one nothing called has been taken out of the text,
-             * and is at -1: it begins nothing. */
-            if ((sym_flags(s) & SYMF_DEFINED) && sym->val >= 0)
-                at[n++] = sym->val;
-        } else if (exported(sym) && gen_bss_offset(s) < 0 && sym->val >= 0) {
-            at[n++] = sym->val;
+    /* Sorted by insertion: they come nearly in order already, a function's
+     * start being where the one before it ended, so this is close to one
+     * pass -- where qsort called a comparison for every step. */
+    for (i = 1; i < n; i++) {
+        int v = at[i], j = i;
+
+        while (j > 0 && at[j - 1] > v) {
+            at[j] = at[j - 1];
+            j--;
         }
+        at[j] = v;
     }
-    qsort(at, (size_t) n, sizeof *at, int_order);
     for (i = 0; i < n; i++)
         if ((i == 0 || at[i] != at[kept - 1]) && at[i] < out_len())
             at[kept++] = at[i];
     if (!kept)
         at[kept++] = 0;                 /* an object with no text at all */
-    *items = at;
 
     return kept;
+}
+
+/* Whether the symbol at s begins an item: a function with a body still in
+ * the text -- a static one nothing called has been taken out, and is at -1
+ * -- or a variable with room in it rather than in the bss. Asked in the walk
+ * obj_write makes of the symbols anyway: a second walk of its own was 0.3%
+ * of compiling the benchmark's two units, a file's symbols being everything
+ * its headers declare as well as what it defines. */
+static int starts_item(int s, const Sym *sym)
+{
+    if (sym->val < 0)
+        return 0;
+    if (sym->kind == SYM_FUNC)
+        return (sym_flags(s) & SYMF_DEFINED) != 0;
+
+    return exported(sym) && gen_bss_offset(s) < 0;
 }
 
 /* The names, end to end. Built as the symbols and the dependencies are
@@ -202,6 +207,31 @@ static void put_num(FILE *f, int value)
         acc_error("short write on the object");
 }
 
+/* The front of an object -- the header and every table -- gathered here
+ * and written in one call. A call per number was one each for thousands of
+ * them, and on the Agon each goes through the whole of the file layer: that
+ * and not the tables was what a compile to an object spent writing them. */
+static unsigned char *front;
+static int            front_len, front_cap;
+
+static void front_byte(int c)
+{
+    if (front_len == front_cap) {
+        front_cap = front_cap ? front_cap * 2 : 1024;
+        front = realloc(front, (size_t) front_cap);
+        if (!front)
+            acc_error("out of memory for the object");
+    }
+    front[front_len++] = (unsigned char) c;
+}
+
+static void front_num(int value)
+{
+    front_byte(value & 0xff);
+    front_byte((value >> 8) & 0xff);
+    front_byte((value >> 16) & 0xff);
+}
+
 void obj_write(const char *path)
 {
     FILE *f;
@@ -209,7 +239,7 @@ void obj_write(const char *path)
     int nsyms = 0, nrelocs = out_nrelocs(), ndeps = lex_ndeps();
     int nexterns = gen_nexterns(), nwalk = nglobals / step;
     int *name_at, *index_of, *dep_at, *slot_of, *items;
-    int i, s, n, nitems = items_of(&items);
+    int i, s, n, nitems = 0;
 
     /* The names first, because the header says how long they come to, and
      * because what each symbol and each dependency points at is settled by
@@ -219,11 +249,14 @@ void obj_write(const char *path)
     index_of = malloc((size_t) (nwalk + 1) * sizeof *index_of);
     dep_at = malloc((size_t) (ndeps + 1) * sizeof *dep_at);
     slot_of = malloc((size_t) (nexterns + 1) * sizeof *slot_of);
-    if (!name_at || !index_of || !dep_at || !slot_of)
+    items = malloc((size_t) (nwalk + 2) * sizeof *items);
+    if (!name_at || !index_of || !dep_at || !slot_of || !items)
         acc_error("out of memory for the object");
 
     for (s = 0, n = 0; s < nglobals; s += step, n++) {
         index_of[n] = -1;
+        if (starts_item(s, sym_at(s)))
+            items[nitems++] = sym_at(s)->val;
         /* What `static` said is this file's alone stays in it: two files may
          * each have one of that name, and a `static inline` in a header gives
          * every file that includes it a copy. */
@@ -234,6 +267,7 @@ void obj_write(const char *path)
     }
     for (i = 0; i < ndeps; i++)
         dep_at[i] = string_add(lex_dep_path(i));
+    nitems = items_settle(items, nitems);
 
     /* And which symbol each call out of this file wants. A symbol is named
      * by its byte offset into the compiler's table, so its place in the walk
@@ -245,18 +279,19 @@ void obj_write(const char *path)
     if (!f)
         acc_error("cannot write '%s'", path);
 
-    fputc('A', f);
-    fputc('C', f);
-    fputc('C', f);
-    fputc(OBJ_VERSION, f);
-    put_num(f, ACC_BUILD);
-    put_num(f, out_len());
-    put_num(f, gen_bss_len());
-    put_num(f, nsyms);
-    put_num(f, nrelocs);
-    put_num(f, ndeps);
-    put_num(f, strings_len);
-    put_num(f, nitems);
+    front_len = 0;
+    front_byte('A');
+    front_byte('C');
+    front_byte('C');
+    front_byte(OBJ_VERSION);
+    front_num(ACC_BUILD);
+    front_num(out_len());
+    front_num(gen_bss_len());
+    front_num(nsyms);
+    front_num(nrelocs);
+    front_num(ndeps);
+    front_num(strings_len);
+    front_num(nitems);
 
     for (s = 0, n = 0; s < nglobals; s += step, n++) {
         const Sym *sym = sym_at(s);
@@ -284,31 +319,33 @@ void obj_write(const char *path)
             value = defined ? sym->val : 0;
             kind = 0;
         }
-        put_num(f, name_at[n]);
-        put_num(f, value);
-        fputc((defined ? OBJ_DEFINED : 0) | kind, f);
+        front_num(name_at[n]);
+        front_num(value);
+        front_byte((defined ? OBJ_DEFINED : 0) | kind);
     }
 
     for (i = 0, n = 0; i < nrelocs; i++) {
         int at = out_reloc_at(i);
 
-        put_num(f, at);
-        put_num(f, reloc_wants(at, slot_of, nexterns, &n));
+        front_num(at);
+        front_num(reloc_wants(at, slot_of, nexterns, &n));
     }
 
     for (i = 0; i < ndeps; i++) {
         unsigned size, sum, weighted;
 
         lex_dep_marks(i, &size, &sum, &weighted);
-        put_num(f, dep_at[i]);
-        put_num(f, (int) size);
-        put_num(f, (int) sum);
-        put_num(f, (int) weighted);
+        front_num(dep_at[i]);
+        front_num((int) size);
+        front_num((int) sum);
+        front_num((int) weighted);
     }
 
     for (i = 0; i < nitems; i++)
-        put_num(f, items[i]);
+        front_num(items[i]);
 
+    if ((int) fwrite(front, 1, (size_t) front_len, f) != front_len)
+        acc_error("short write on '%s'", path);
     if (strings_len
         && (int) fwrite(strings, 1, (size_t) strings_len, f) != strings_len)
         acc_error("short write on '%s'", path);
