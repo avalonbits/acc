@@ -59,8 +59,10 @@ a test's first error:
   5.2.4.2.2; see the data model below.
 - **The hosted library:** fourteen of the twenty-four headers. Missing are
   `<errno.h>`, `<setjmp.h>`, `<signal.h>`, `<locale.h>`, `<inttypes.h>`,
-  `<wchar.h>`, `<wctype.h>`, `<complex.h>`, `<fenv.h>` and `<tgmath.h>`,
-  and `<stdio.h>` has `snprintf` but not `sprintf` or `vsprintf`.
+  `<wchar.h>`, `<wctype.h>`, `<complex.h>`, `<fenv.h>` and `<tgmath.h>`.
+  And the printf family has no floating conversions -- `%f`, `%e`, `%g`,
+  `%a` -- which 7.19.6.1 requires; it was left out so that a program
+  printing an integer would not carry them.
 
 Two things have not changed, and they still shape everything:
 
@@ -155,12 +157,13 @@ The 45 that do not build, read one by one:
 | what it needs | tests |
 |---|---|
 | GNU builtins, attributes, `mempcpy` and gcc's `link_error` idiom | 29 |
-| `sprintf` or `vprintf`, which the library has not got | 12 |
+| `sprintf` or `vprintf`, which the library had not got: 11 pass now, and the twelfth wants `%f` | 12 |
 | refused on purpose: a parameter's array size with a side effect | 2 |
 | the measuring device's own `-D`, which renames a `static strcmp` | 1 |
 | a bug, since fixed: `exit` had no library member, so a pointer to it did not link (`terminate_me = exit`, pr54937) | 1 |
 
-With that fixed, acc passes 1,078 of the 1,127.
+With that fixed and `sprintf`, `vsprintf` and `vprintf` added, acc passes
+**1,089 of the 1,127**.
 
 The other way round, acc passes 13 tests that agondev fails.
 
@@ -458,11 +461,16 @@ done, and then what is next.
    call, so the library had no `exit` for a pointer to reach. It has one
    now, which a program that only calls it never takes.
 
+9. **`sprintf`, `vsprintf` and `vprintf`**, in a member of their own so
+   that a program that only calls `printf` carries none of them. 11 of the
+   12 tests that wanted them pass; the twelfth wants `%f`.
+
 **Next, in this order:**
 
-1. **`sprintf` and `vsprintf`.** 12 tests.
-2. **The lexer's three**: wide literals, digraphs, universal character
+1. **The lexer's three**: wide literals, digraphs, universal character
    names. Each is required C99 and each is refused today.
+2. **`%f`, `%e`, `%g` and `%a`** in the printf family, in a member that
+   only a program using one of them takes.
 3. **gcc.c-torture/execute, all of it that the filter takes.**
    - Build the importer, filter, census, manifest, runner and scoreboard
      around it. The filter and the compile pass already exist as a script;

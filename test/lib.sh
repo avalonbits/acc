@@ -477,6 +477,19 @@ mkdir -p "$tmp/exlib" "$tmp/exnone"
 ok "a call to exit takes no member" \
     "$(wc -c < "$tmp/exlib/ex.bin")" "$(wc -c < "$tmp/exnone/ex.bin")"
 
+# sprintf, vsprintf and vprintf are a member of their own, so that the
+# printf in nearly every program does not bring them: a program that only
+# prints is the same size linked against the library as against the same
+# library with that member taken out. What they write is test/printf.sh's.
+printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 42); return 42; }\n' > "$tmp/pr.c"
+"$ACC" -c "$tmp/pr.c" -o "$tmp/pr.o" -Iinclude >/dev/null 2>&1
+mkdir -p "$tmp/prlib" "$tmp/prless"
+"$ACC" -a "$tmp/prless/less.a" $(ls "$(dirname "$LIB")"/lib/*.o | grep -v '/sprintf\.o$') >/dev/null 2>&1
+"$ACC" "$tmp/pr.o" "$LIB" -o "$tmp/prlib/pr.bin" -x >/dev/null 2>&1
+"$ACC" "$tmp/pr.o" "$tmp/prless/less.a" -o "$tmp/prless/pr.bin" -x >/dev/null 2>&1
+ok "printf takes no sprintf with it" \
+    "$(wc -c < "$tmp/prlib/pr.bin")" "$(wc -c < "$tmp/prless/pr.bin")"
+
 # A member that wants another member is pulled in too, and the link looks
 # again rather than once.
 printf 'int inner(int n) { return n + 20; }\n' > "$tmp/inner.c"

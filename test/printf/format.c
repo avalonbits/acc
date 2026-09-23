@@ -15,11 +15,38 @@
  * Only `\n` ends a line: the host writes one byte for it and MOS's console
  * takes it, and the test strips the carriage returns MOS adds. */
 
+#include <stdarg.h>
 #include <stdio.h>
+
+/* The v forms are reached through a va_list, so through one of these. */
+static int to_buffer(char *to, const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vsprintf(to, fmt, ap);
+    va_end(ap);
+
+    return n;
+}
+
+static int to_screen(const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vprintf(fmt, ap);
+    va_end(ap);
+
+    return n;
+}
 
 int main(void)
 {
     int n = 0;
+    char buf[64];
 
     printf("plain\n");
     printf("[%d] [%d] [%d]\n", 0, 42, -42);
@@ -52,6 +79,20 @@ int main(void)
     printf("\nwrote %d\n", n);
     n = printf("%ld", -1234567L);
     printf("\nwrote %d\n", n);
+
+    /* sprintf and vsprintf: what lands in the buffer, its terminator, and
+     * the count, which does not include the terminator. The byte past it is
+     * set first, so that a terminator written one place late shows. */
+    buf[6] = 'x';
+    buf[7] = 'y';
+    n = sprintf(buf, "%d|%s", -42, "ab");
+    printf("sprintf [%s] %d %d %c\n", buf, n, buf[6], buf[7]);
+    n = sprintf(buf, "");
+    printf("sprintf [%s] %d\n", buf, n);
+    n = to_buffer(buf, "[%5.2s] [%-4x] [%+05d]", "abcdef", 255u, 7);
+    printf("vsprintf [%s] %d\n", buf, n);
+    n = to_screen("vprintf [%c%c] [%lu]\n", 'o', 'k', 4000000000UL);
+    printf("vprintf wrote %d\n", n);
 
     return 0;
 }
