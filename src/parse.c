@@ -2449,7 +2449,16 @@ static int constant_int(const char *what, int line)
 static int vla_length;
 
 /* Where the stack was when the block being compiled started taking room for
- * arrays whose lengths it works out, or -1 when it has taken none.
+ * arrays whose lengths it works out -- the frame slot it was saved in -- or
+ * NO_VLA_MARK when it has taken none.
+ *
+ * "None" was -1, and asked about as `>= 0`. But a frame slot is below the
+ * frame pointer, so every mark ever taken was negative and read as none:
+ * the room was never given back, at the end of a block or at a break or a
+ * continue, and a loop whose body declared one took it again on every
+ * turn until the stack ran into the heap. None is 1 now, which no local's
+ * slot can be -- the bytes above the frame pointer are the saved ix, the
+ * return address and the arguments.
  *
  * The room goes back at the end of the block, so that a loop whose body
  * declares one does not take it again on every turn, and before a break or
@@ -2463,14 +2472,71 @@ static int vla_length;
  *
  * One mark a block, taken before the first of its arrays: everything after
  * it goes back at once. */
-static int vla_mark = -1;
+#define NO_VLA_MARK 1
+
+static int vla_mark = NO_VLA_MARK;
+
+/* The marks of the blocks the one being compiled is inside, outermost first,
+ * each with a serial number that says which block it is: what a goto back
+ * to a label reads to find out how much room it is leaving. vla_mark is
+ * the last of them. A block is known by its serial because two blocks one
+ * after the other can start with the same symbols in scope. */
+typedef struct { int serial, mark; } VlaBlock;
+
+static VlaBlock *vla_blocks;
+static int       nvla_blocks, vla_blocks_cap, vla_serial;
+
+static void vla_block_open(void)
+{
+    if (nvla_blocks == vla_blocks_cap) {
+        vla_blocks_cap = vla_blocks_cap ? vla_blocks_cap * 2 : 16;
+        vla_blocks = realloc(vla_blocks,
+                             (size_t) vla_blocks_cap * sizeof *vla_blocks);
+        if (!vla_blocks)
+            acc_error("out of memory for blocks");
+    }
+    vla_blocks[nvla_blocks].serial = ++vla_serial;
+    vla_blocks[nvla_blocks].mark = NO_VLA_MARK;
+    nvla_blocks++;
+}
+
+static int vla_block_serial(void)
+{
+    return nvla_blocks ? vla_blocks[nvla_blocks - 1].serial : 0;
+}
+
+/* The room a goto back to a label gives up: that of the outermost block,
+ * from the label's own inwards, that has taken room since the label -- the
+ * label's own block only if its mark came after the label. Answers the
+ * slot to put the stack back from, or NO_VLA_MARK for none. A label in a
+ * block that is no longer open is jumped into, not out of; that is left as
+ * it was, the function's return giving the room back. */
+static int vla_back_to(int serial, int mark_then)
+{
+    int i;
+
+    for (i = 0; i < nvla_blocks; i++)
+        if (vla_blocks[i].serial == serial)
+            break;
+    if (i == nvla_blocks)
+        return NO_VLA_MARK;
+    if (mark_then == NO_VLA_MARK && vla_blocks[i].mark != NO_VLA_MARK)
+        return vla_blocks[i].mark;
+    for (i++; i < nvla_blocks; i++)
+        if (vla_blocks[i].mark != NO_VLA_MARK)
+            return vla_blocks[i].mark;
+
+    return NO_VLA_MARK;
+}
 
 /* The block's mark, made if this is the first array in it to need one. */
 static void block_vla_mark(void)
 {
-    if (vla_mark >= 0)
+    if (vla_mark != NO_VLA_MARK)
         return;
     vla_mark = gen_local(ACC_PTR_SIZE);
+    if (nvla_blocks)
+        vla_blocks[nvla_blocks - 1].mark = vla_mark;
     gen_stack_mark(vla_mark);
 }
 
@@ -4710,7 +4776,7 @@ static void break_statement(void)
     expect(TK_SEMI, "';'");
     if (jumps.break_mark < 0)
         acc_error_at(line, "'break' is not inside a loop or a switch");
-    if (vla_mark >= 0)
+    if (vla_mark != NO_VLA_MARK)
         gen_stack_back(vla_mark);
     hole_push(&breaks, gen_jump());
 }
@@ -4724,7 +4790,7 @@ static void continue_statement(void)
     expect(TK_SEMI, "';'");
     if (jumps.continue_mark < 0)
         acc_error_at(line, "'continue' is not inside a loop");
-    if (vla_mark >= 0)
+    if (vla_mark != NO_VLA_MARK)
         gen_stack_back(vla_mark);
     if (jumps.continue_to >= 0)
         gen_jump_to(jumps.continue_to);
@@ -4953,6 +5019,8 @@ static void switch_statement(void)
 typedef struct {
     NameRef name;
     int     at;             /* its address, or -1 until it is reached */
+    int     block;          /* the block it is in, as vla_block_serial */
+    int     vla_mark;       /* that block's mark when it was reached */
     int     line;           /* where it was first named */
 } Label;
 
@@ -4997,7 +5065,15 @@ static void goto_statement(void)
     next();
     expect(TK_SEMI, "';'");
 
+    /* Back to a label: an array whose length is worked out, declared since
+     * the label, is left behind -- C99 ends its lifetime there -- and the
+     * room it took has to go back, or a loop made of a goto takes it again
+     * on every turn. gcc's 20040811-1 is a million turns of that. */
     if (labels[label].at >= 0) {
+        int back = vla_back_to(labels[label].block, labels[label].vla_mark);
+
+        if (back != NO_VLA_MARK)
+            gen_stack_back(back);
         gen_jump_to(labels[label].at);
 
         return;
@@ -5027,6 +5103,8 @@ static void label_statement(void)
     next();
     expect(TK_COLON, "':'");
     labels[label].at = gen_here();
+    labels[label].block = vla_block_serial();
+    labels[label].vla_mark = vla_mark;
 
     for (i = 0; i < ngotos; i++) {
         if (goto_label[i] == label) {
@@ -5137,7 +5215,8 @@ static void block(void)
     int outer_vla = vla_mark;
 
     scope_mark = mark;
-    vla_mark = -1;
+    vla_mark = NO_VLA_MARK;
+    vla_block_open();
     while (tok != TK_RBRACE && tok != TK_EOF) {
         if (starts_decl())
             declaration();
@@ -5145,8 +5224,9 @@ static void block(void)
             statement();
     }
     expect(TK_RBRACE, "'}'");
-    if (vla_mark >= 0)
+    if (vla_mark != NO_VLA_MARK)
         gen_stack_back(vla_mark);       /* the room those arrays took */
+    nvla_blocks--;
     vla_mark = outer_vla;
     sym_scope_end(mark);
     scope_mark = outer;
