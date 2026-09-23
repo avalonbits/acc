@@ -47,6 +47,7 @@ int    fputc(int c, FILE *f);
 int    fputs(const char *s, FILE *f);
 int    fgetc(FILE *f);
 int    ferror(FILE *f);
+void   perror(const char *s);
 
 int putchar(int c);
 int puts(const char *s);

@@ -33,11 +33,12 @@ LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c lib/printf_fl
          lib/exp.c lib/log.c lib/pow.c \
          lib/trig.c lib/atan.c lib/mathhyp.c \
          lib/file.c \
-         lib/stdlib.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c \
+         lib/stdlib.c lib/strtol.c lib/errno.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c \
          lib/time.c
 LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          include/stdbool.h include/stdlib.h include/time.h \
          include/ctype.h include/assert.h include/math.h \
+         include/errno.h include/limits.h \
          include/agon/mos.h include/agon/vdp.h include/agon/keyboard.h
 LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 
@@ -132,6 +133,7 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/args.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/lib.sh
 	@ACC=$(BIN)/acc-asan test/printf.sh || [ $$? -eq 77 ]
+	@ACC=$(BIN)/acc-asan test/hosted.sh || [ $$? -eq 77 ]
 	@test/heap.sh || [ $$? -eq 77 ]
 	@test/cycles.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh

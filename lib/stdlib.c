@@ -174,6 +174,44 @@ long labs(long n)
     return n < 0 ? -n : n;
 }
 
+long long llabs(long long n)
+{
+    return n < 0 ? -n : n;
+}
+
+/* The quotient and the remainder of one division. C99's division truncates
+ * toward zero, which is what the helpers do, so this is the two operators
+ * and nothing more. */
+div_t div(int a, int b)
+{
+    div_t r;
+
+    r.quot = a / b;
+    r.rem = a % b;
+
+    return r;
+}
+
+ldiv_t ldiv(long a, long b)
+{
+    ldiv_t r;
+
+    r.quot = a / b;
+    r.rem = a % b;
+
+    return r;
+}
+
+lldiv_t lldiv(long long a, long long b)
+{
+    lldiv_t r;
+
+    r.quot = a / b;
+    r.rem = a % b;
+
+    return r;
+}
+
 /* Leading spaces, a sign, then digits: what C says atoi reads, and no more.
  * What follows the digits is not this function's business and there is no
  * way for it to say so. */
@@ -197,60 +235,17 @@ int atoi(const char *s)
     return (int) atol(s);
 }
 
-/* A number at the front of a string, in whatever base it is written.
- *
- * Base 0 reads the prefix the way C writes one: 0x is sixteen, a leading 0
- * is eight, anything else is ten. The 0x is taken in base sixteen as well,
- * which C asks for and which is how a program reads an address off a command
- * line. `end`, when it is wanted, is left on the first character that was
- * not part of the number -- and on the whole string when none of it was.
- */
-long strtol(const char *s, char **end, int base)
+long long atoll(const char *s)
 {
-    const char *start = s, *digits_at;
-    unsigned long value = 0;
+    long long value = 0;
     int negative = 0;
 
-    while (*s == ' ' || (*s >= 9 && *s <= 13))
+    while (*s == 32 || (*s >= 9 && *s <= 13))
         s++;
-    if (*s == '+' || *s == '-')
+    if (*s == '-' || *s == '+')
         negative = *s++ == '-';
+    while (*s >= '0' && *s <= '9')
+        value = value * 10 + (*s++ - '0');
 
-    if ((base == 0 || base == 16) && s[0] == '0'
-        && (s[1] == 'x' || s[1] == 'X')) {
-        s += 2;
-        base = 16;
-    } else if (base == 0) {
-        base = *s == '0' ? 8 : 10;
-    }
-    if (base < 2 || base > 36) {
-        if (end)
-            *end = (char *) start;
-
-        return 0;
-    }
-
-    digits_at = s;
-    for (;;) {
-        int d;
-
-        if (*s >= '0' && *s <= '9')
-            d = *s - '0';
-        else if (*s >= 'a' && *s <= 'z')
-            d = *s - 'a' + 10;
-        else if (*s >= 'A' && *s <= 'Z')
-            d = *s - 'A' + 10;
-        else
-            break;
-        if (d >= base)
-            break;
-        value = value * (unsigned long) base + (unsigned long) d;
-        s++;
-    }
-
-    /* Nothing was read, so the whole string is what is left. */
-    if (end)
-        *end = (char *) (s == digits_at ? start : s);
-
-    return negative ? -(long) value : (long) value;
+    return negative ? -value : value;
 }

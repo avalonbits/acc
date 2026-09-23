@@ -21,10 +21,25 @@ __attribute__((noreturn)) void abort(void);
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
 
-int   abs(int n);
-long  labs(long n);
-int   atoi(const char *s);
-long  atol(const char *s);
-long  strtol(const char *s, char **end, int base);
+typedef struct { int quot, rem; } div_t;
+typedef struct { long quot, rem; } ldiv_t;
+typedef struct { long long quot, rem; } lldiv_t;
+
+int       abs(int n);
+long      labs(long n);
+long long llabs(long long n);
+div_t     div(int a, int b);
+ldiv_t    ldiv(long a, long b);
+lldiv_t   lldiv(long long a, long long b);
+
+int       atoi(const char *s);
+long      atol(const char *s);
+long long atoll(const char *s);
+
+/* Past the type's range, these answer its limit and put ERANGE in errno. */
+long               strtol(const char *s, char **end, int base);
+unsigned long      strtoul(const char *s, char **end, int base);
+long long          strtoll(const char *s, char **end, int base);
+unsigned long long strtoull(const char *s, char **end, int base);
 
 #endif

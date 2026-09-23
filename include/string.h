@@ -21,6 +21,8 @@ char  *strncpy(char *to, const char *from, size_t n);
 char  *strrchr(const char *s, int c);
 char  *strstr(const char *hay, const char *needle);
 
+char  *strerror(int n);
+
 /* Not C89's, but every C library has it and a compiler that keeps the text
  * it has read wants it. */
 char  *strdup(const char *s);

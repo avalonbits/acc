@@ -60,15 +60,36 @@ emu_card() {
 # emu_run <card> [emulator flags...]
 emu_run() {
     local sd=$1; shift
-    local fifo cap hold rc
+    local fifo cap hold emu rc
 
     fifo=$(mktemp -u); cap=$(mktemp)
     mkfifo "$fifo"
     tail -f /dev/null > "$fifo" & hold=$!
 
-    (cd "$EMU" && timeout "${ACC_EMU_TIMEOUT:-300}" ./agon-cli-emulator \
-        --sdcard "$sd" "$@" < "$fifo" > "$cap" 2>&1)
-    rc=$?
+    (cd "$EMU" && exec timeout "${ACC_EMU_TIMEOUT:-300}" ./agon-cli-emulator \
+        --sdcard "$sd" "$@" < "$fifo" > "$cap" 2>&1) & emu=$!
+
+    # With ACC_EMU_PROMPT set, stopped as soon as MOS prints its prompt,
+    # which is when autoexec.txt has run: a program that prints its answer
+    # cannot also stop the emulator through port 0, since what it printed
+    # is still on its way to the VDP when the emulator goes. Without this
+    # such a program runs out the whole timeout.
+    if [ -n "${ACC_EMU_PROMPT:-}" ]; then
+        while kill -0 "$emu" 2>/dev/null; do
+            if grep -q '^/ \*' "$cap"; then
+                kill "$emu" 2>/dev/null
+                wait "$emu" 2>/dev/null
+                emu=
+                break
+            fi
+            sleep 0.1
+        done
+    fi
+    if [ -n "$emu" ]; then
+        wait "$emu"; rc=$?
+    else
+        rc=0
+    fi
 
     kill "$hold" 2>/dev/null; wait "$hold" 2>/dev/null
     rm -f "$fifo"
