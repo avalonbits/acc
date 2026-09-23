@@ -24,21 +24,38 @@
  * read and write in one move. Names are a blob of NUL-terminated strings
  * that everything else points into by offset.
  *
- *   0   4   'A', 'C', 'C', 4        what it is, and the version of this
- *   4   3   build                   which acc made it: see src/build_id.sh
+ * Version 6 was agreed with zap, which writes it too, for assembly that C
+ * calls: see docs/object-format-vs-elf.md, and below.
+ *
+ *   0   4   'A', 'C', 'C', 6        what it is, and the version of this
+ *   4   3   build                   which acc made it (see src/build_id.sh);
+ *                                   0 for one acc did not make
  *   7   3   text_len
- *   10  3   bss_len                 room it wants past the image, at zero
+ *   10  3   bss                     room it wants past the image, at zero:
+ *                                   the low 20 bits its length, the top 4
+ *                                   the log2 of its alignment
  *   13  3   nsyms
  *   16  3   nrelocs
  *   19  3   ndeps
  *   22  3   strings_len
  *   25  3   nitems
- *   28      symbols   nsyms   * 7   name, value, flags
- *           relocs    nrelocs * 6   at, sym
- *           deps      ndeps   * 12  path, size, sum, weighted
- *           items     nitems  * 3   where each starts in the text
+ *   28  3   nrelocs_a
+ *   31      symbols   nsyms     * 7   name, value, flags
+ *           relocs    nrelocs   * 6   at, target and kind
+ *           relocs_a  nrelocs_a * 9   at, target and kind, addend
+ *           deps      ndeps     * 12  path, size, sum, weighted
+ *           items     nitems    * 3   where each starts in the text, and
+ *                                     in the top 4 bits the log2 of its
+ *                                     alignment
  *           strings   strings_len
  *           text      text_len
+ *
+ * A name that C can use is spelled as agondev spells it, with an underscore
+ * in front: the function `f` is `_f`, main is `_main`, and the runtime's
+ * helpers are the `_acc_rt_...` their labels in src/rt/helpers.s already
+ * are. A name without one is an assembly object's own, which C cannot name.
+ * Inside acc the underscore is taken off, and a name that had none is given
+ * an @ in front instead, which no C name can have: see obj_c_name. 
  *
  * The text is what the compiler emitted with the image based at zero, so
  * every address in it is an offset from its own first byte. Placing it is
@@ -48,15 +65,34 @@
  * object's bss it starts, and the address it ends up with is not known until
  * every object has been placed and the bss laid out after them all.
  *
- * A relocation's `sym` says what the slot wants added to what is in it:
+ * A relocation's target, the low 20 bits of its second number, says what
+ * the slot wants the address of:
  *
  *   0   the start of this object's text, which is nearly all of them, and
  *       what is there is an address inside that text.
  *   1   the start of this object's bss, and what is there is an offset into
  *       it -- which is how a variable that starts at zero is reached, and
  *       the only way a block's `static` can be, having no name to give.
- *   2+  the address of symbol (sym - 2), with what is there as the amount
- *       to add to it.
+ *   2+  the address of symbol (target - 2), with what is there as the
+ *       amount to add to it.
+ *
+ * The top 4 bits are the kind: how much of that address the slot is, and
+ * how it is made (T the target's address, A the amount added to it, P the
+ * slot's own address):
+ *
+ *   0 ABS24   three bytes, T + A
+ *   1 LOW8    one byte, (T + A) & 0xff
+ *   2 HIGH8   one byte, ((T + A) >> 8) & 0xff
+ *   3 UPPER8  one byte, ((T + A) >> 16) & 0xff
+ *   4 PCREL8  one byte, T + A - (P + 1): a jr's or a djnz's, refused past
+ *             the -128 to 127 it can say
+ *   5 ABS16   two bytes, (T + A) & 0xffff
+ *
+ * For one in relocs, A is what is already in the slot, as wide as the slot
+ * and signed only for PCREL8. One in relocs_a carries A itself and its slot
+ * holds zero: HIGH8 and UPPER8 are always there, since the carry out of the
+ * bytes below them needs the whole of A, and anything else may be. Both
+ * tables are in order of where their slots are, and no slot is in both.
  *
  * Two reserved values rather than a byte saying which kind, because there is
  * one of these for every address the compiler wrote and a byte each is more
@@ -75,13 +111,45 @@
  * they answer -- "does this object have to be made again?" -- is about the
  * object. An answer kept in a file of its own is one that can be lost, or go
  * stale, on its own. */
-#define OBJ_VERSION  5
-#define OBJ_HEADER   28
+#define OBJ_VERSION  6
+#define OBJ_HEADER   31
 #define OBJ_SYM      7
 #define OBJ_RELOC    6
 #define OBJ_DEP      12
 
 #define OBJ_ITEM     3
+#define OBJ_RELOC_A  9
+#define LOW20        0xfffff
+
+/* An object's spelling of a name, and acc's: see the note on the format. */
+static char *spelled;
+static int   spelled_cap;
+
+static const char *spell(const char *prefix, const char *name)
+{
+    int n = (int) strlen(prefix) + (int) strlen(name) + 1;
+
+    if (n > spelled_cap) {
+        spelled_cap = n * 2;
+        spelled = realloc(spelled, (size_t) spelled_cap);
+        if (!spelled)
+            acc_error("out of memory for a name");
+    }
+    strcpy(spelled, prefix);
+    strcat(spelled, name);
+
+    return spelled;
+}
+
+const char *obj_c_name(const char *in_object)
+{
+    return in_object[0] == '_' ? in_object + 1 : spell("@", in_object);
+}
+
+const char *obj_object_name(const char *in_acc)
+{
+    return in_acc[0] == '@' ? in_acc + 1 : spell("_", in_acc);
+}
 
 /* ------------------------------------------------------------------ */
 /* writing                                                             */
@@ -288,7 +356,7 @@ void obj_write(const char *path)
         if (!used[n] && !defined_here(s, sym_at(s)))
             continue;
         index_of[n] = nsyms++;
-        name_at[n] = string_add(name_text(sym_at(s)->name));
+        name_at[n] = string_add(obj_object_name(name_text(sym_at(s)->name)));
     }
     for (i = 0; i < ndeps; i++)
         dep_at[i] = string_add(lex_dep_path(i));
@@ -301,7 +369,7 @@ void obj_write(const char *path)
     if (!want_at)
         acc_error("out of memory for the object");
     for (i = 0; i < nwants; i++)
-        want_at[i] = string_add(gen_want_name(i));
+        want_at[i] = string_add(obj_object_name(gen_want_name(i)));
 
     /* And which symbol each call out of this file wants. A symbol is named
      * by its byte offset into the compiler's table, so its place in the walk
@@ -326,6 +394,7 @@ void obj_write(const char *path)
     front_num(ndeps);
     front_num(strings_len);
     front_num(nitems);
+    front_num(0);                       /* nrelocs_a: acc needs none */
 
     for (s = 0, n = 0; s < nglobals; s += step, n++) {
         const Sym *sym = sym_at(s);
@@ -446,18 +515,22 @@ static int take_object(unsigned char *all, long size, const char *path,
     o->path = path;
     o->build = get24(all + 4);
     o->text_len = get24(all + 7);
-    o->bss_len = get24(all + 10);
+    o->bss_len = get24(all + 10) & LOW20;
+    o->bss_align = get24(all + 10) >> 20;
     o->nsyms = get24(all + 13);
     o->nrelocs = get24(all + 16);
     o->ndeps = get24(all + 19);
     o->strings_len = get24(all + 22);
     o->nitems = get24(all + 25);
+    o->nrelocs_a = get24(all + 28);
 
     at = OBJ_HEADER;
     o->syms = all + at;
     at += o->nsyms * OBJ_SYM;
     o->relocs = all + at;
     at += o->nrelocs * OBJ_RELOC;
+    o->relocs_a = all + at;
+    at += o->nrelocs_a * OBJ_RELOC_A;
     o->deps = all + at;
     at += o->ndeps * OBJ_DEP;
     o->items = all + at;
@@ -471,6 +544,55 @@ static int take_object(unsigned char *all, long size, const char *path,
      * holds more than it does would otherwise be read past its end. */
     if (at != (int) size || at < OBJ_HEADER)
         REFUSE("'%s' says it holds %d bytes and holds %ld", path, at, size);
+
+    /* And what the format promises, checked here so that the linker can
+     * take it on trust: an assembler writes these too. */
+    {
+        int i, a = 0, b = 0, last = -1;
+
+        for (i = 0; i < o->nitems; i++) {
+            int item = obj_item(o, i);
+
+            if ((i == 0 && item != 0) || (i > 0 && item <= obj_item(o, i - 1))
+                || item >= o->text_len)
+                REFUSE("'%s' has its items out of order", path);
+        }
+        if (o->text_len && !o->nitems)
+            REFUSE("'%s' has text and no item that holds it", path);
+        for (i = 0; i < obj_nrelocs(o); i++) {
+            int kind = obj_reloc_kind(o, i), at_ = obj_reloc_at(o, i);
+
+            if (kind >= REL_KINDS)
+                REFUSE("'%s' has a relocation of kind %d, which acc does "
+                       "not know", path, kind);
+            if ((kind == REL_HIGH8 || kind == REL_UPPER8) && i < o->nrelocs)
+                REFUSE("'%s' has a HIGH8 or UPPER8 relocation with no "
+                       "addend of its own", path);
+            if (at_ < 0 || at_ + obj_reloc_width(kind) > o->text_len)
+                REFUSE("'%s' has a relocation at %06x, outside its %d bytes",
+                       path, at_, o->text_len);
+            if (obj_reloc_sym(o, i) >= o->nsyms + 2)
+                REFUSE("'%s' has a relocation for a symbol it has not got",
+                       path);
+            if (i == o->nrelocs)
+                last = -1;
+            if (at_ <= last)
+                REFUSE("'%s' has its relocations out of order", path);
+            last = at_;
+        }
+
+        /* No slot in both tables: a walk of the two in step. */
+        while (a < o->nrelocs && b < o->nrelocs_a) {
+            int x = obj_reloc_at(o, a), y = obj_reloc_at(o, o->nrelocs + b);
+
+            if (x == y)
+                REFUSE("'%s' has two relocations at %06x", path, x);
+            if (x < y)
+                a++;
+            else
+                b++;
+        }
+    }
 
     return 1;
 #undef REFUSE
@@ -530,7 +652,55 @@ void obj_free(Object *o)
 
 int obj_item(const Object *o, int i)
 {
-    return get24(o->items + i * OBJ_ITEM);
+    return get24(o->items + i * OBJ_ITEM) & LOW20;
+}
+
+int obj_item_align(const Object *o, int i)
+{
+    return get24(o->items + i * OBJ_ITEM) >> 20;
+}
+
+/* The relocations, both tables as one: relocs first, then relocs_a. */
+int obj_nrelocs(const Object *o)
+{
+    return o->nrelocs + o->nrelocs_a;
+}
+
+static const unsigned char *reloc_entry(const Object *o, int i)
+{
+    return i < o->nrelocs ? o->relocs + i * OBJ_RELOC
+                          : o->relocs_a + (i - o->nrelocs) * OBJ_RELOC_A;
+}
+
+int obj_reloc_width(int kind)
+{
+    return kind == REL_ABS24 ? 3 : kind == REL_ABS16 ? 2 : 1;
+}
+
+int obj_reloc_kind(const Object *o, int i)
+{
+    return get24(reloc_entry(o, i) + 3) >> 20;
+}
+
+/* What is added to the target: the relocation's own when it is in relocs_a,
+ * and otherwise what is in its slot -- as wide as the slot, and signed for a
+ * PCREL8's one byte. */
+long obj_reloc_addend(const Object *o, int i)
+{
+    const unsigned char *slot;
+
+    if (i >= o->nrelocs) {
+        long a = get24(reloc_entry(o, i) + 6);
+
+        return a & 0x800000L ? a - 0x1000000L : a;
+    }
+    slot = o->text + obj_reloc_at(o, i);
+    switch (obj_reloc_kind(o, i)) {
+    case REL_ABS24:  return get24(slot);
+    case REL_ABS16:  return slot[0] | slot[1] << 8;
+    case REL_PCREL8: return (signed char) slot[0];
+    default:         return slot[0];
+    }
 }
 
 const char *obj_sym_name(const Object *o, int i)
@@ -550,12 +720,12 @@ int obj_sym_flags(const Object *o, int i)
 
 int obj_reloc_at(const Object *o, int i)
 {
-    return get24(o->relocs + i * OBJ_RELOC);
+    return get24(reloc_entry(o, i));
 }
 
 int obj_reloc_sym(const Object *o, int i)
 {
-    return get24(o->relocs + i * OBJ_RELOC + 3);
+    return get24(reloc_entry(o, i) + 3) & LOW20;
 }
 
 const char *obj_dep_path(const Object *o, int i)

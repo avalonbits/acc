@@ -111,8 +111,10 @@ then, and added here unchanged apart from this section.
 1. ACC stays.
 2. Dropping unused externs: taken on in acc; see the commit that follows
    this one for the measurement.
-3. v6: a layout was proposed from acc and agreed in shape by zap, and waits
-   on the user's go before either side implements it. As agreed so far:
+3. v6: proposed from acc, agreed with zap, and built. src/obj.c's note on
+   the format is the specification both sides work from, and
+   test/objv6.py writes it independently of acc's writer, for test/v6.sh
+   and as a cross-check of zap's output. As built:
    - the relocation kind in the top 4 bits of the 24-bit target field:
      ABS24, LOW8, HIGH8, UPPER8, PCREL8 and ABS16;
    - a second relocation table of 9-byte entries, `relocs_a`, for an addend
@@ -122,6 +124,7 @@ then, and added here unchanged apart from this section.
    - alignment per item, in the top 4 bits of an item's offset, since a link
      takes items out of their object and packs them; and the bss's, in the
      top 4 bits of bss_len;
-   - OBJ_VERSION 6 and one more header field, nrelocs_a.
-   The spelling of C names in objects -- agondev's `_foo` or acc's `foo` --
-   was raised alongside it and is part of the same decision.
+   - OBJ_VERSION 6 and one more header field, nrelocs_a;
+   - C names spelled as agondev spells them, with a leading underscore:
+     `_foo`, `_main`, `_acc_rt_fmul`. A name without one is an assembly
+     object's own, which C cannot name.

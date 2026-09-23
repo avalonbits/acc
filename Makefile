@@ -123,6 +123,7 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/cpp89.sh
 	@ACC=$(BIN)/acc-asan test/reloc.sh
 	@ACC=$(BIN)/acc-asan test/object.sh
+	@ACC=$(BIN)/acc-asan test/v6.sh
 	@ACC=$(BIN)/acc-asan test/bss.sh
 	@ACC=$(BIN)/acc-asan test/dead.sh
 	@ACC=$(BIN)/acc-asan test/branch.sh

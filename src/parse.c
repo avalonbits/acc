@@ -7004,7 +7004,8 @@ static int ends_in(const char *path, char what)
  * functions arrive all at once. */
 static int link_symbol(const char *text, int flags)
 {
-    NameRef name = name_intern(text, (int) strlen(text));
+    const char *c_name = obj_c_name(text);
+    NameRef name = name_intern(c_name, (int) strlen(c_name));
     int sym = name_global(name);
 
     if (sym == SYM_NONE) {
@@ -7049,76 +7050,7 @@ static void link_want(const char *text)
     wanted[nwanted++] = sym;
 }
 
-/* One object, placed where the image has got to. */
-static void place_object(Object *op, const char *path)
-{
-    Object o = *op;
-    int base, bss, i;
-
-    base = out_here();
-    for (i = 0; i < o.text_len; i++)
-        out_byte(o.text[i]);
-
-    /* And room past the image for what it wants at zero. Which address that
-     * comes to is not known until every object has been placed, so this is
-     * only its place in the queue. */
-    bss = gen_bss_reserve(o.bss_len);
-
-    /* What it has, at the address it now has it. */
-    for (i = 0; i < o.nsyms; i++) {
-        int flags = obj_sym_flags(&o, i);
-        int sym;
-
-        if (flags & OBJ_WANT)
-            link_want(obj_sym_name(&o, i));
-        if (!(flags & OBJ_DEFINED))
-            continue;
-        sym = link_symbol(obj_sym_name(&o, i), flags);
-        if ((sym_flags(sym) & SYMF_DEFINED) || gen_bss_offset(sym) >= 0)
-            acc_error("'%s' is defined in more than one object, and '%s' is "
-                      "one of them", obj_sym_name(&o, i), path);
-        if (flags & OBJ_BSS) {
-            gen_bss_symbol(sym, bss + obj_sym_value(&o, i));
-
-            continue;           /* its address comes with the rest of them */
-        }
-        sym_at(sym)->val = base + obj_sym_value(&o, i);
-        sym_set_flags(sym, SYMF_DECLARED | SYMF_DEFINED | SYMF_PARAMS);
-    }
-
-    /* And the slots in it that hold an address. One inside the object moves
-     * with it; one that wants a name from somewhere else becomes a fixup,
-     * which gen_finish settles when every object has been read. */
-    for (i = 0; i < o.nrelocs; i++) {
-        int at = obj_reloc_at(&o, i), which = obj_reloc_sym(&o, i);
-
-        if (at < 0 || at + 3 > o.text_len)
-            acc_error("'%s' has a relocation at %06x, outside its %d bytes",
-                      path, at, o.text_len);
-        if (!which) {
-            out_patch24(base + at, get24(o.text + at) + base);
-
-            continue;
-        }
-
-        /* An offset into this object's bss, which is that far along the
-         * queue of them -- and then the start of the whole bss, once every
-         * object has been placed and there is one to add. */
-        if (which == 1) {
-            out_patch24(base + at, get24(o.text + at) + bss);
-            gen_bss_fixup(base + at);
-
-            continue;
-        }
-
-        /* Whatever the slot holds is the amount to add to the symbol's
-         * address, and it is already in the image: gen_finish reads it back
-         * when it fills the slot in. */
-        gen_data_fixup(link_symbol(obj_sym_name(&o, which - 2),
-                                   obj_sym_flags(&o, which - 2)), base + at);
-    }
-    obj_free(&o);
-}
+static void place_object(Object *op, const char *path);
 
 static void link_object(const char *path)
 {
@@ -7159,29 +7091,36 @@ static int item_end(const Object *o, int i)
     return i + 1 < o->nitems ? obj_item(o, i + 1) : o->text_len;
 }
 
-/* Part of a member: the item `name` is in, and every item that one holds an
- * address in, and theirs, and so on -- which is everything it can reach,
- * since every address the compiler writes is a relocation. What was taken
- * before stays where it went, and what is new goes where the image has got
- * to, in the order it was in, so that items next to each other in the
- * member are next to each other in the image.
+/* Part of an object: the item `name` is in, and every item that one holds
+ * an address in, and theirs, and so on -- which is everything it can reach,
+ * since every address the compiler writes is a relocation. A null `name`
+ * is all of it, which is an object placed whole. What was taken before
+ * stays where it went, and what is new goes where the image has got to, in
+ * the order it was in, so that items next to each other in the object are
+ * next to each other in the image -- each padded to where its alignment
+ * says it may start.
  *
- * A symbol whose item is taken is defined here; one whose item is not is
- * left for another member, or another look at this one. The bss is taken
- * whole, the first time anything taken wants it: it costs the machine room
- * past the image and none in the image itself. */
+ * `name` is spelled as the object spells it. A symbol whose item is taken is
+ * defined here; one whose item is not is left for another member, or
+ * another look at this one. The bss is taken whole, the first time
+ * anything taken wants it: it costs the machine room past the image and
+ * none in the image itself. */
 static void take_items(Object *op, Taken *t, const char *name, const char *path)
 {
     Object o = *op;
     char *want = calloc((size_t) o.nitems + 1, 1);
     int *queue = malloc(((size_t) o.nitems + 1) * sizeof *queue);
-    int nqueue = 0, i, r, base, want_bss = 0, new_bss = 0, want_now = 0;
+    int nqueue = 0, i, r, want_bss = !name, new_bss = 0, want_now = 0;
+    int nrel = obj_nrelocs(&o);
 
     if (!want || !queue)
         acc_error("out of memory for '%s'", path);
 
-    /* The item the wanted name is in -- or its bss, if that is where it is. */
-    for (i = 0; i < o.nsyms; i++) {
+    /* The item the wanted name is in -- or its bss, if that is where it is.
+     * Or every item, for an object placed whole. */
+    for (i = 0; !name && i < o.nitems; i++)
+        want[i] = 1;
+    for (i = 0; name && i < o.nsyms; i++) {
         int flags = obj_sym_flags(&o, i);
 
         if (!(flags & OBJ_DEFINED) || strcmp(obj_sym_name(&o, i), name))
@@ -7198,13 +7137,12 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         }
     }
 
-    /* And everything that reaches, a relocation at a time. They are in
-     * order of where they are, as the items are. */
+    /* And everything that reaches, a relocation at a time. */
     while (nqueue) {
         int item = queue[--nqueue], from = obj_item(&o, item);
         int to = item_end(&o, item);
 
-        for (r = 0; r < o.nrelocs; r++) {
+        for (r = 0; r < nrel; r++) {
             int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), next;
 
             if (at < from || at >= to)
@@ -7213,7 +7151,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
                 want_bss = 1;
             if (which != 0)
                 continue;
-            next = item_of(&o, get24(o.text + at));
+            next = item_of(&o, (int) obj_reloc_addend(&o, r));
             if (t->placed[next] < 0 && !want[next]) {
                 want[next] = 1;
                 queue[nqueue++] = next;
@@ -7221,25 +7159,26 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         }
     }
 
-    base = out_here();
     for (i = 0; i < o.nitems; i++) {
-        int b;
+        int b, step = 1 << obj_item_align(&o, i);
 
-        if (!want[i])
+        if (!want[i] || t->placed[i] >= 0)
             continue;
-        want_now = 1;                   /* the member's wants come with it */
+        want_now = 1;                   /* the object's wants come with it */
+        while (out_here() & (step - 1))
+            out_byte(0);
         t->placed[i] = out_here();
         for (b = obj_item(&o, i); b < item_end(&o, i); b++)
             out_byte(o.text[b]);
     }
     if (want_bss && t->bss < 0) {
-        t->bss = gen_bss_reserve(o.bss_len);
+        t->bss = gen_bss_reserve_aligned(o.bss_len, o.bss_align);
         new_bss = 1;
     }
 
     /* What is new, at the address it now has. */
     for (i = 0; i < o.nsyms; i++) {
-        int flags = obj_sym_flags(&o, i), value, item, sym;
+        int flags = obj_sym_flags(&o, i), value, item = 0, sym;
 
         if ((flags & OBJ_WANT) && want_now)
             link_want(obj_sym_name(&o, i));
@@ -7257,7 +7196,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         sym = link_symbol(obj_sym_name(&o, i), flags);
         if ((sym_flags(sym) & SYMF_DEFINED) || gen_bss_offset(sym) >= 0)
             acc_error("'%s' is defined in more than one object, and '%s' is "
-                      "one of them", obj_sym_name(&o, i), path);
+                      "one of them", obj_c_name(obj_sym_name(&o, i)), path);
         if (flags & OBJ_BSS) {
             gen_bss_symbol(sym, t->bss + value);
 
@@ -7267,34 +7206,75 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         sym_set_flags(sym, SYMF_DECLARED | SYMF_DEFINED | SYMF_PARAMS);
     }
 
-    /* The slots in what is new that hold an address, as place_object does
-     * them, with each address inside the member taken to where its item
-     * went -- now, or on an earlier look. */
-    for (r = 0; r < o.nrelocs; r++) {
+    /* The slots in what is new that hold an address, each made the kind it
+     * is: see the note on the format in src/obj.c. An address inside the
+     * object is taken to where its item went, now or on an earlier look;
+     * the bss's and a symbol's are filled when the link ends, since neither
+     * is known before. */
+    for (r = 0; r < nrel; r++) {
         int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), item, dest;
+        int kind = obj_reloc_kind(&o, r);
+        long a = obj_reloc_addend(&o, r);
 
-        if (at < 0 || at + 3 > o.text_len)
-            acc_error("'%s' has a relocation at %06x, outside its %d bytes",
-                      path, at, o.text_len);
         item = item_of(&o, at);
         if (!want[item])
             continue;
         dest = t->placed[item] + at - obj_item(&o, item);
         if (which == 0) {
-            int v = get24(o.text + at), target = item_of(&o, v);
+            int target = item_of(&o, (int) a);
 
-            out_patch24(dest, t->placed[target] + v - obj_item(&o, target));
-        } else if (which == 1) {
-            out_patch24(dest, get24(o.text + at) + t->bss);
+            gen_slot(dest, kind, t->placed[target] + a - obj_item(&o, target));
+        } else if (which == 1 && kind == REL_ABS24) {
+            out_patch24(dest, (int) a + t->bss);
             gen_bss_fixup(dest);
-        } else {
+        } else if (which == 1) {
+            gen_late_fixup(-1, dest, kind, t->bss + a);
+        } else if (kind == REL_ABS24) {
+            /* gen_finish adds the symbol to what is in the slot. */
+            out_patch24(dest, (int) a);
             gen_data_fixup(link_symbol(obj_sym_name(&o, which - 2),
                                        obj_sym_flags(&o, which - 2)), dest);
+        } else {
+            gen_late_fixup(link_symbol(obj_sym_name(&o, which - 2),
+                                       obj_sym_flags(&o, which - 2)),
+                           dest, kind, a);
         }
     }
-    (void) base;
     free(want);
     free(queue);
+}
+
+/* One object, placed where the image has got to: all of its items, from a
+ * start rounded up to the largest alignment any of them asks for, which
+ * leaves every one of them aligned if its offset is a multiple of its own --
+ * and the object is refused if one is not. */
+static void place_object(Object *op, const char *path)
+{
+    Taken t;
+    int i, most = 0;
+
+    for (i = 0; i < op->nitems; i++) {
+        int align = obj_item_align(op, i);
+
+        if (obj_item(op, i) & ((1 << align) - 1))
+            acc_error("'%s' has an item at %06x that is to be aligned to %d "
+                      "bytes, and cannot be where it is", path,
+                      obj_item(op, i), 1 << align);
+        if (align > most)
+            most = align;
+    }
+    while (out_here() & ((1 << most) - 1))
+        out_byte(0);
+
+    t.placed = malloc(((size_t) op->nitems + 1) * sizeof *t.placed);
+    if (!t.placed)
+        acc_error("out of memory for '%s'", path);
+    for (i = 0; i < op->nitems; i++)
+        t.placed[i] = -1;
+    t.bss = -1;
+    take_items(op, &t, NULL, path);
+    free(t.placed);
+    obj_free(op);
 }
 
 /* A library, which is asked only for what the link is short of.
@@ -7322,19 +7302,25 @@ static void link_archive(const char *path)
     while (again) {
         int i, n = gen_nfixups();
 
+        /* What calls and addresses wait on, then the slots of the kinds an
+         * assembly object has (gen_late_fixup), then what objects want. */
+        int nl = gen_nlate();
+
         again = 0;
-        for (i = 0; i < n + nwanted; i++) {
-            int sym = i < n ? gen_fixup_sym(i) : wanted[i - n];
+        for (i = 0; i < n + nl + nwanted; i++) {
+            int sym = i < n ? gen_fixup_sym(i)
+                    : i < n + nl ? gen_late_sym(i - n) : wanted[i - n - nl];
             const char *name;
             Object o;
 
             /* A variable whose room is in a bss has no address until the
              * link ends, and is defined all the same. A weak name is not
-             * looked for on its own account. */
-            if (!gen_no_address(sym) || gen_bss_offset(sym) >= 0
-                || (i < n && name_weak(sym_at(sym)->name)))
+             * looked for on its own account. A slot that wants the bss is
+             * not waiting on a name at all. */
+            if (sym < 0 || !gen_no_address(sym) || gen_bss_offset(sym) >= 0
+                || (i < n + nl && name_weak(sym_at(sym)->name)))
                 continue;
-            name = name_text(sym_at(sym)->name);
+            name = obj_object_name(name_text(sym_at(sym)->name));
             m = ar_find(&a, name);
             if (m < 0)
                 continue;
@@ -7350,11 +7336,12 @@ static void link_archive(const char *path)
                     taken[m].placed[k] = -1;
                 taken[m].bss = -1;
             }
-            take_items(&o, &taken[m], name, ar_member_name(&a, m));
+            take_items(&o, &taken[m], obj_object_name(name_text(sym_at(sym)->name)),
+                       ar_member_name(&a, m));
             obj_free(&o);
             if (gen_no_address(sym) && gen_bss_offset(sym) < 0)
                 acc_error("'%s' says it defines '%s', and its member does "
-                          "not", path, name);
+                          "not", path, name_text(sym_at(sym)->name));
             again = 1;
         }
     }

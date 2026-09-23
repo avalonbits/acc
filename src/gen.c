@@ -3787,6 +3787,23 @@ int gen_bss_fixup_at(int i)
 
 /* Room in the bss, and where in it. The linker asks for a whole object's
  * worth at once and hands out the pieces itself. */
+/* The largest alignment anything in the bss asked for, as a log2: where
+ * the bss starts is rounded up to it. An assembly object may ask for a
+ * page-aligned buffer; nothing acc compiles does. */
+static int bss_align;
+static int bss_start;                   /* where bss_emit put it */
+
+int gen_bss_reserve_aligned(int bytes, int align)
+{
+    int step = 1 << align;
+
+    if (align > bss_align)
+        bss_align = align;
+    bss_len = (bss_len + step - 1) & ~(step - 1);
+
+    return gen_bss_reserve(bytes);
+}
+
 int gen_bss_reserve(int bytes)
 {
     int at = bss_len;
@@ -3895,7 +3912,11 @@ static void bss_emit(void)
         out_byte(0xc9);                 /* ret */
         base = out_here();
     } else {
+        /* It starts past the routine that clears it, rounded up to the most
+         * any of it asked to be aligned to. The bytes between are outside
+         * the image: the bss is room, and nothing is written into it. */
         base = out_here() + (bss_len == 1 ? BSS_INIT_ONE : BSS_INIT_LEN);
+        base = (base + (1 << bss_align) - 1) & ~((1 << bss_align) - 1);
         out_byte(0x21);                         /* ld hl, base */
         out_reloc(out_here());
         out_word24(base);
@@ -3930,6 +3951,7 @@ static void bss_emit(void)
         out_patch24(bss_fixups[i], out_read24(bss_fixups[i]) + base);
 
     bss_top = base + bss_len + bss_extra;
+    bss_start = base;
 }
 
 /* argc and argv, out of what MOS passed.
@@ -4083,6 +4105,86 @@ static int link_given(int sym)
  * and not of the address, because an object puts its first function at
  * offset zero. A variable has one once room has been reserved for it, which
  * a declaration that only says extern does not do: that leaves -1 behind. */
+/* A slot of any kind, filled with a value that is known: see the note on
+ * relocation kinds in src/obj.c. A PCREL8's value is where it jumps to. */
+void gen_slot(int at, int kind, long value)
+{
+    long d;
+
+    switch (kind) {
+    case REL_ABS24:  out_patch24(at, (int) value);                  break;
+    case REL_LOW8:   out_patch8(at, (int) (value & 0xff));          break;
+    case REL_HIGH8:  out_patch8(at, (int) ((value >> 8) & 0xff));   break;
+    case REL_UPPER8: out_patch8(at, (int) ((value >> 16) & 0xff));  break;
+    case REL_ABS16:  out_patch16(at, (int) (value & 0xffff));       break;
+    default:
+        d = value - (at + 1);
+        if (d < -128 || d > 127)
+            acc_error("a relative jump at %06x reaches %ld bytes, and one "
+                      "can reach 127 forward and 128 back", at, d);
+        out_patch8(at, (int) (d & 0xff));
+        break;
+    }
+}
+
+/* Slots that want a symbol's address, or the bss's, and are not the three
+ * bytes gen_data_fixup fills: the kinds an assembly object has. Filled once
+ * everything has an address, at the end of gen_finish. */
+typedef struct {
+    int  sym, at, kind;
+    long addend;
+} LateFixup;
+
+static LateFixup *late;
+static int        nlate, late_cap;
+
+void gen_late_fixup(int sym, int at, int kind, long addend)
+{
+    if (nlate == late_cap) {
+        late_cap = late_cap ? late_cap * 2 : 16;
+        late = realloc(late, (size_t) late_cap * sizeof *late);
+        if (!late)
+            acc_error("out of memory for the link's slots");
+    }
+    late[nlate].sym = sym;
+    late[nlate].at = at;
+    late[nlate].kind = kind;
+    late[nlate].addend = addend;
+    nlate++;
+}
+
+int gen_nlate(void)
+{
+    return nlate;
+}
+
+int gen_late_sym(int i)
+{
+    return late[i].sym;
+}
+
+static int no_address(int sym);
+
+static void late_fill(int bss_base)
+{
+    int i;
+
+    for (i = 0; i < nlate; i++) {
+        long target;
+
+        if (late[i].sym < 0) {
+            target = bss_base;
+        } else {
+            Sym *s = sym_at(late[i].sym);
+
+            if (no_address(late[i].sym) && !name_weak(s->name))
+                acc_error("'%s' is used but never defined", name_text(s->name));
+            target = no_address(late[i].sym) ? 0 : s->val;
+        }
+        gen_slot(late[i].at, late[i].kind, target + late[i].addend);
+    }
+}
+
 static int no_address(int sym)
 {
     return sym_at(sym)->kind == SYM_FUNC
@@ -4891,6 +4993,7 @@ void gen_finish(void)
                          name_text(fn->name));
         out_patch24(fixups[i].at, fn->val + out_read24(fixups[i].at));
     }
+    late_fill(bss_start);
 }
 
 

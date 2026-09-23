@@ -872,6 +872,11 @@ void gen_return(int line);            /* `return`, at the line it is on */
 
 /* Variables that start at zero and so take no room in the file. */
 int  gen_bss_reserve(int bytes);      /* room in it; returns where */
+int  gen_bss_reserve_aligned(int bytes, int align);  /* 2^align apart */
+void gen_late_fixup(int sym, int at, int kind, long addend);  /* sym -1: bss */
+int  gen_nlate(void);                  /* and the symbols they wait on */
+int  gen_late_sym(int i);
+void gen_slot(int at, int kind, long value);    /* a slot of a kind, filled */
 void gen_bss_symbol(int sym, int at); /* and which symbol is there */
 int  gen_bss_offset(int sym);         /* where one is, or -1 */
 int  gen_bss_used(int at, int bytes); /* whether anything reaches into it */
@@ -1085,6 +1090,8 @@ void out_seek(int here);            /* back to it, keeping what came after */
 void out_copy(int at, unsigned char *to, int len);  /* bytes already written */
 int  out_read24(int at);            /* and read one back */
 void out_patch24(int at, int v);
+void out_patch8(int at, int v);
+void out_patch16(int at, int v);
 
 /* ------------------------------------------------------------------ */
 /* objects                                                             */
@@ -1111,12 +1118,20 @@ enum {
 typedef struct {
     unsigned char *all;
     const char    *path;
-    unsigned char *syms, *relocs, *deps, *items, *text;
+    unsigned char *syms, *relocs, *relocs_a, *deps, *items, *text;
     char          *strings;
     int            build;    /* the acc that made it: see src/build_id.sh */
-    int            text_len, bss_len, nsyms, nrelocs, ndeps, nitems;
-    int            strings_len;
+    int            text_len, bss_len, bss_align, nsyms, nrelocs, nrelocs_a;
+    int            ndeps, nitems, strings_len;
 } Object;
+
+/* What a relocation's slot is made of: see the note on the format in
+ * src/obj.c. acc writes ABS24 alone; the rest are for objects an
+ * assembler writes. */
+enum {
+    REL_ABS24, REL_LOW8, REL_HIGH8, REL_UPPER8, REL_PCREL8, REL_ABS16,
+    REL_KINDS
+};
 
 /* A library: objects end to end, with a list of what each defines in front
  * of them. Only that list is read when one is opened; a member is read when
@@ -1138,6 +1153,13 @@ const char *ar_member_name(const Archive *a, int i);
 
 void obj_write(const char *path);
 int  obj_item(const Object *o, int i);  /* where item i starts in the text */
+int  obj_item_align(const Object *o, int i); /* log2 of its alignment */
+int  obj_nrelocs(const Object *o);      /* both tables of them together */
+int  obj_reloc_kind(const Object *o, int i);
+long obj_reloc_addend(const Object *o, int i);
+int  obj_reloc_width(int kind);         /* how many bytes its slot is */
+const char *obj_c_name(const char *in_object);  /* _f is f; g is @g */
+const char *obj_object_name(const char *in_acc);  /* and back */
 void obj_take(unsigned char *all, int len, const char *path, Object *o);
 int  obj_current(const char *path, const char *source);
 void obj_read(const char *path, Object *o);
