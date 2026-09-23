@@ -945,6 +945,13 @@ static uint64_t const_as(const Value *v, Type to)
 
     if (v->kind == VAL_WIDE) {
         bits = wide_value(v);
+
+        /* A long is kept as its four bytes, so one on its way to eight takes
+         * its sign with it -- or `long long x = -1405039608` is 2889927688,
+         * the literal being a long because it does not fit in an int. */
+        if (type_wide_bytes(v->type) == 4 && !type_float(v->type)
+            && !type_unsigned(v->type))
+            bits = (uint64_t) (int64_t) (int32_t) (uint32_t) bits;
     } else if (type_unsigned(v->type)) {
         /* The stack holds a narrow constant the way the machine would, with
          * its top bit run up through the host's word: 0x800000u is kept as
