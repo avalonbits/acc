@@ -53,6 +53,60 @@ void acc_error_at(int line, const char *fmt, ...)
 #define TRIPLES 40000    /* 120 KB of three-byte writes alone */
 #define QUADS 40000      /* and 160 KB of four-byte ones */
 
+/* The relocation table, grown while a function's jumps are merged into it.
+ *
+ * out_reloc_merge makes room first and merges after, and it once took its
+ * pointer into the table before making room: when growing moved the table
+ * to a lower address, the stale pointer was above all of it, the merge took
+ * nothing from the table, and the jumps went on top, out of order. Whether
+ * a growth moves a block, and which way, is the allocator's business, so
+ * this test takes it over: linked with --wrap=realloc, the table's first
+ * block is the upper half of one array and its second the lower half, which
+ * is below it by definition. */
+void *__real_realloc(void *p, size_t n);
+
+static int in_scenario;
+static int halves[2][4096];
+
+void *__wrap_realloc(void *p, size_t n)
+{
+    if (!in_scenario)
+        return __real_realloc(p, n);
+    if (!p)
+        return halves[1];
+    memcpy(halves[0], p,
+           (size_t) (out_reloc_limit - out_relocs) * sizeof *out_relocs);
+
+    return halves[0];
+}
+
+static void merge_across_growth(void)
+{
+    int add[20], i, first, sorted = 1, n;
+
+    in_scenario = 1;
+    out_relocs = out_reloc_put = out_reloc_limit = NULL;
+
+    for (i = 0; i < 10; i++)                    /* before the function */
+        out_reloc(out_base + 0x100 + i * 3);
+    first = out_nrelocs();
+    for (i = 0; i < 240; i++)                   /* the function's own slots */
+        out_reloc(out_base + 0x1000 + i * 6);
+    for (i = 0; i < 20; i++)                    /* its jumps, among them */
+        add[i] = 0x1003 + i * 60;
+
+    out_reloc_merge(add, 20, first);            /* 5 slots of room: it grows */
+    in_scenario = 0;
+
+    n = out_nrelocs();
+    for (i = 1; i < n; i++)
+        if (out_reloc_at(i) <= out_reloc_at(i - 1))
+            sorted = 0;
+    is("the table moved down while merging", out_relocs == halves[0], 1);
+    is("merged in order across a growth", sorted, 1);
+    is("and nothing lost", n, 270);
+}
+
 int main(void)
 {
     const char *path = "bin/.test_out.bin";
@@ -175,6 +229,8 @@ int main(void)
     is("every byte written is in the file", wrong, 0);
 
     free(got); free(want);
+
+    merge_across_growth();
 
     if (failures)
         fprintf(stderr, "  %d failed\n", failures);

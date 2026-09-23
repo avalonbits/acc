@@ -252,12 +252,22 @@ void out_cut_sum(const Cut *cuts, int n)
 void out_reloc_merge(const int *add, int n, int first)
 {
     const int *a;
-    int *lo = out_relocs + 1 + first, *src, *put;
+    int *lo, *src, *put;
 
     if (n <= 0)
         return;
     while (out_reloc_limit - out_reloc_put < n)
         out_reloc_grow();
+
+    /* Only now, past the growing: out_reloc_grow may move the table, and a
+     * `lo` taken before it pointed into the one it left. Compared against
+     * the new one it was below all of it, the merge took nothing from the
+     * table, and the function's jumps went on top of its other slots. The
+     * table was out of order from there, in a file big enough for a
+     * function's jumps not to fit the room left -- gcc's strlen-5 was one,
+     * and the order of an object's relocations is a promise its format
+     * makes. */
+    lo = out_relocs + 1 + first;
 
     src = out_reloc_put - 1;
     a = add + n - 1;
@@ -521,6 +531,22 @@ int out_read24(int at)
         acc_error("internal: a read at %06x is outside the image", at);
 
     return get24(out_img + off);
+}
+
+/* One byte and two, for what an assembler's objects ask of a slot. */
+void out_patch8(int at, int value)
+{
+    int off = at - out_base;
+
+    if (off < 0 || off + 1 > OUT_LEN)
+        acc_error("internal: patch at %06x is outside the image", at);
+    out_img[off] = (unsigned char) value;
+}
+
+void out_patch16(int at, int value)
+{
+    out_patch8(at, value & 0xff);
+    out_patch8(at + 1, (value >> 8) & 0xff);
 }
 
 void out_patch24(int at, int value)

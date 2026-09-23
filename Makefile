@@ -161,7 +161,7 @@ unit: | $(BIN)
 	@$(BIN)/test_hash
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_ctype test/test_ctype.c
 	@$(BIN)/test_ctype
-	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_out test/test_out.c src/out.c
+	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_out test/test_out.c src/out.c -Wl,--wrap=realloc
 	@$(BIN)/test_out
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -DACC_HASH_STATS -o $(BIN)/test_sym test/test_sym.c src/sym.c src/lex.c src/float.c
 	@$(BIN)/test_sym
