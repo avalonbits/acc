@@ -232,6 +232,20 @@ static void front_num(int value)
     front_byte((value >> 16) & 0xff);
 }
 
+/* Whether this object has the thing the symbol at s names, rather than
+ * wanting it from elsewhere. A function has when its body has been read; a
+ * variable has room here, in the text or in the bss -- a declaration that
+ * only said extern reserves neither and leaves -1 behind. */
+static int defined_here(int s, const Sym *sym)
+{
+    if (gen_bss_offset(s) >= 0)
+        return 1;
+    if (sym->kind == SYM_FUNC)
+        return (sym_flags(s) & SYMF_DEFINED) != 0;
+
+    return sym->val >= 0;
+}
+
 void obj_write(const char *path)
 {
     FILE *f;
@@ -239,6 +253,7 @@ void obj_write(const char *path)
     int nsyms = 0, nrelocs = out_nrelocs(), ndeps = lex_ndeps();
     int nexterns = gen_nexterns(), nwalk = nglobals / step;
     int *name_at, *index_of, *dep_at, *slot_of, *items, *want_at;
+    char *used;
     int i, s, n, nitems = 0, nwants;
 
     /* The names first, because the header says how long they come to, and
@@ -250,8 +265,16 @@ void obj_write(const char *path)
     dep_at = malloc((size_t) (ndeps + 1) * sizeof *dep_at);
     slot_of = malloc((size_t) (nexterns + 1) * sizeof *slot_of);
     items = malloc((size_t) (nwalk + 2) * sizeof *items);
-    if (!name_at || !index_of || !dep_at || !slot_of || !items)
+    used = calloc((size_t) nwalk + 1, 1);
+    if (!name_at || !index_of || !dep_at || !slot_of || !items || !used)
         acc_error("out of memory for the object");
+
+    /* Which of the names this file does not define a relocation uses. The
+     * rest are what its headers declared and nothing called, and a link has
+     * nothing to do with them: 1,289 of the 1,692 symbols in the library
+     * were those, sixteen percent of its bytes. */
+    for (i = 0; i < nexterns; i++)
+        used[gen_extern_sym(i) / step] = 1;
 
     for (s = 0, n = 0; s < nglobals; s += step, n++) {
         index_of[n] = -1;
@@ -261,6 +284,8 @@ void obj_write(const char *path)
          * each have one of that name, and a `static inline` in a header gives
          * every file that includes it a copy. */
         if (!exported(sym_at(s)) || (sym_flags(s) & SYMF_STATIC))
+            continue;
+        if (!used[n] && !defined_here(s, sym_at(s)))
             continue;
         index_of[n] = nsyms++;
         name_at[n] = string_add(name_text(sym_at(s)->name));
@@ -378,6 +403,7 @@ void obj_write(const char *path)
     free(slot_of);
     free(items);
     free(want_at);
+    free(used);
 }
 
 /* ------------------------------------------------------------------ */

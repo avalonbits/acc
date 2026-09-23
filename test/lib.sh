@@ -534,6 +534,19 @@ int nowhere(void);
 static int (*p)(void) = nowhere;
 int main(void) { return p == 0 ? 42 : 1; }'
 
+# An object names what it defines and what its relocations use, and not
+# everything its headers declared: the same file with twenty declarations
+# it never uses makes an object of the same size. (The two files' names
+# are the same length, since an object records the path it was made from.)
+printf 'int used(int);\nint main(void) { return used(1); }\n' > "$tmp/xa.c"
+{ printf 'int used(int);\n'
+  for i in 1 2 3 4 5 6 7 8 9 10; do printf 'int unused_fn%d(int);\nextern int unused_var%d;\n' $i $i; done
+  printf 'int main(void) { return used(1); }\n'; } > "$tmp/xb.c"
+"$ACC" -c "$tmp/xa.c" -o "$tmp/xa.o" >/dev/null 2>&1
+"$ACC" -c "$tmp/xb.c" -o "$tmp/xb.o" >/dev/null 2>&1
+ok "an object leaves out what it only declared" \
+    "$(wc -c < "$tmp/xb.o")" "$(wc -c < "$tmp/xa.o")"
+
 # A link takes from a member only what the program reaches, not the whole
 # member. `small` calls a static helper that reads a static table, so all
 # three come with it; `big` is in the same file and nothing calls it, so it
