@@ -5346,6 +5346,24 @@ static int spill_slot(void)
     return spill_slot_of(ACC_INT_SIZE);
 }
 
+/* What gen_stmt_end frees, but only as far as nothing still wants it: the
+ * end of a value inside an expression rather than of a statement. An
+ * initialiser's elements end this way, and a compound literal's initialiser
+ * is inside whatever expression it appears in -- the third operand of a `?:`,
+ * say, whose middle is parked in a slot nothing on the stack points at.
+ * Freeing all of it there let the rest of that operand build over the slot,
+ * and `n > 1 ? f8() : (int){ n } ? ...` answered with what it had built. */
+void gen_value_end(void)
+{
+    const Value *v;
+
+    spill_used = spill_free_from();
+    nwide_consts = 0;
+    for (v = vstack; v < vsp; v++)
+        if (v->kind == VAL_WIDE && v->val >= nwide_consts)
+            nwide_consts = v->val + 1;
+}
+
 void gen_func_begin(int fn, int nparams, Type returns)
 {
     return_type = returns;

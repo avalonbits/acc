@@ -782,6 +782,7 @@ void vnot(void);
 int  vpop_reg(void);                  /* force the top into a register */
 void vdrop(void);
 void gen_stmt_end(void);              /* the scratch area is free again */
+void gen_value_end(void);             /* all of it nothing still holds */
 
 void gen_call(int fn, int nargs, int params_first, int nparams);
 void gen_call_indirect(int nargs);      /* through the pointer under them */

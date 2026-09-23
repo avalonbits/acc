@@ -2838,7 +2838,7 @@ static void compound_literal(Type type, int x, int count, Type elem,
         narrow_dest = outer;
         vstore_local(off, type);
         vdrop();
-        gen_stmt_end();
+        gen_value_end();
         accept(TK_COMMA);
         expect(TK_RBRACE, "'}'");
         if (address)
@@ -4063,7 +4063,7 @@ static void local_put(Type scalar, int offset, int value)
     }
     vstore_indirect();
     vdrop();
-    gen_stmt_end();
+    gen_value_end();
     init_mark(offset, init_bits ? bitfield_at(init_bits)->bytes
                                 : type_scalar_bytes(scalar));
 }
@@ -4145,7 +4145,7 @@ static int local_struct_object_in(int x, int line, int braced)
             expr();
             vstore_indirect();
             vdrop();
-            gen_stmt_end();
+            gen_value_end();
         }
     }
 
@@ -4188,7 +4188,7 @@ static int local_struct_value(int x, int offset)
     vswap();
     vstore_indirect();
     vdrop();
-    gen_stmt_end();
+    gen_value_end();
     init_mark(offset, ext_bytes(x));
 
     return 1;
