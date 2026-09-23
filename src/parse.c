@@ -5418,11 +5418,16 @@ static int          nstruct_params, struct_params_cap;
  * that runs off its end leaves whatever was last in HL, which is only
  * undefined if its caller uses it, and costs nothing to leave alone.
  * Here main returned whatever HL held, so a program whose checks all
- * passed reported a failure. */
+ * passed reported a failure.
+ *
+ * The name is looked up once per file, not once per function: interning it
+ * hashes it and compares it against its bucket every time, and done for
+ * every function body that was 1% of compiling names.c. */
+static NameRef main_name;       /* interned once, in translation_unit */
+
 static void body_end(int fn)
 {
-    if (sym_at(fn)->type == TY_INT
-        && sym_at(fn)->name == name_intern("main", 4)) {
+    if (sym_at(fn)->type == TY_INT && sym_at(fn)->name == main_name) {
         vpush_const(0, TY_INT);
         gen_return(tok_line);
     }
@@ -6652,6 +6657,7 @@ static void external_declaration(void)
 
 static void translation_unit(void)
 {
+    main_name = name_intern("main", 4);
     while (tok != TK_EOF)
         external_declaration();
 }
