@@ -17,10 +17,12 @@
 
 static int failures = 0;
 
-/* What the code said before the table did. */
+/* What the code said before the table did -- and, since universal
+ * character names, that every byte from 0x80 up is a letter too: UTF-8's,
+ * which is how such a name reaches the lexer. */
 static int ref_space(int c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 static int ref_digit(int c) { return c >= '0' && c <= '9'; }
-static int ref_alpha(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
+static int ref_alpha(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 0x80; }
 static int ref_alnum(int c) { return ref_alpha(c) || ref_digit(c); }
 
 static void check(const char *what, int c, int got, int want)
@@ -44,11 +46,12 @@ int main(void)
 
     /* char is signed on the eZ80 and on the host build, so the lexer hands
      * these in as `(unsigned char) *p`. If the cast inside the macro were
-     * dropped, a byte above 127 would index before the table. */
+     * dropped, a byte above 127 would index before the table rather than
+     * finding the letter it is. */
     for (c = 128; c < 256; c++) {
         char signed_c = (char) c;
 
-        check("is_alnum, high byte", c, is_alnum(signed_c), 0);
+        check("is_alnum, high byte", c, is_alnum(signed_c), 1);
         check("is_space, high byte", c, is_space(signed_c), 0);
     }
 

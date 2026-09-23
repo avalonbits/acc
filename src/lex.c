@@ -565,47 +565,150 @@ int      tok_prev_line;
  *
  * Out of line and off the hot path: it runs once per 16 KB of source, where
  * skip_space runs once per token. */
-__attribute__((noinline))
-/* Backslash-newline, out of the window, before anything reads it.
+/* Backslash-newline and universal character names, out of the window
+ * before anything reads it.
  *
- * C deletes the two characters in the second of its translation phases --
+ * C deletes a backslash-newline in the second of its translation phases --
  * before the file is a sequence of tokens at all -- which is what makes a
  * name split over two lines one name, a string that runs over two lines one
  * string, and a join between two tokens leave nothing behind.
  *
+ * A universal character name, \u and four hex digits or \U and eight
+ * (C99 6.4.3), is a character. It is written here as the UTF-8 for it, in
+ * place, so that every scanner after this sees one spelling for it: \u00e9,
+ * \U000000e9 and an e-acute typed as its UTF-8 are the same name, since bytes from 0x80
+ * up are identifier characters (6.4.2.1 leaves those to the implementation),
+ * and a string holds the UTF-8, as agondev's does. A `\\` is stepped over
+ * whole, so that "\\u00e9" stays a backslash followed by text -- unless the
+ * second backslash ends its line, which makes it a join, whatever is in
+ * front of it.
+ *
  * Doing it here rather than in each scanner is what keeps it free. A test
  * for a backslash in the loop that walks a name and in the one that walks
  * white space cost eleven percent of a compile between them, for something
- * almost no file has; a window with no join in it pays one search instead,
+ * almost no file has; a window with neither in it pays one search instead,
  * which is the instruction the chip has for exactly that.
  *
  * The newlines taken out are put back at the end of the logical line rather
  * than dropped, so that the count of lines is what it was and a diagnostic
  * still names the line the token was written on. There is always room: each
- * join frees two characters and gives back one.
+ * join frees two characters and gives back one, and UTF-8 is shorter than
+ * the name it stands for.
  *
  * `end` is one past the last newline in the window, so a join is never
  * split across a refill -- its newline is what a window ends after. */
+static int splice_at(const char *r)
+{
+    return r[0] == '\\' && (r[1] == '\n' || (r[1] == '\r' && r[2] == '\n'));
+}
+
+/* How long the universal character name at r is, or 0 when there is none. */
+static int ucn_at(const char *r)
+{
+    int n, i;
+
+    if (r[0] != '\\' || (r[1] != 'u' && r[1] != 'U'))
+        return 0;
+    n = r[1] == 'u' ? 4 : 8;
+    for (i = 0; i < n; i++)
+        if (!is_digit(r[2 + i]) && (unsigned) ((r[2 + i] | 0x20) - 'a') >= 6u)
+            return 0;                   /* escape() says what is wrong */
+
+    return 2 + n;
+}
+
+/* The character the universal character name at r names, which ucn_at has
+ * measured as len long -- or -1 when it is one 6.4.3p2 forbids: a character
+ * the basic set already has a spelling for, bar the three it has none for,
+ * or half of a surrogate pair. */
+static long ucn_value(const char *r, int len)
+{
+    uint32_t v = 0;
+    int i;
+
+    for (i = 2; i < len; i++) {
+        int d = (unsigned char) r[i];
+
+        v = v * 16 + (uint32_t) (is_digit(d) ? d - '0' : (d | 0x20) - 'a' + 10);
+    }
+    if ((v < 0xa0 && v != 0x24 && v != 0x40 && v != 0x60)
+        || (v >= 0xd800 && v <= 0xdfff) || v > 0x10ffff)
+        return -1;
+
+    return (long) v;
+}
+
+/* The UTF-8 for v into w, answering how many bytes that was. */
+static int utf8_put(char *w, uint32_t v)
+{
+    if (v < 0x80) {
+        w[0] = (char) v;
+
+        return 1;
+    }
+    if (v < 0x800) {
+        w[0] = (char) (0xc0 | (v >> 6));
+        w[1] = (char) (0x80 | (v & 0x3f));
+
+        return 2;
+    }
+    if (v < 0x10000) {
+        w[0] = (char) (0xe0 | (v >> 12));
+        w[1] = (char) (0x80 | ((v >> 6) & 0x3f));
+        w[2] = (char) (0x80 | (v & 0x3f));
+
+        return 3;
+    }
+    w[0] = (char) (0xf0 | (v >> 18));
+    w[1] = (char) (0x80 | ((v >> 12) & 0x3f));
+    w[2] = (char) (0x80 | ((v >> 6) & 0x3f));
+    w[3] = (char) (0x80 | (v & 0x3f));
+
+    return 4;
+}
+
+__attribute__((noinline))
+/* A universal character name that may be written as UTF-8 here: one that
+ * names a character C allows. One that does not is left as it is written,
+ * since it may be in a comment, where it is nothing; read in a token it is
+ * refused there, on the line it is on. */
+static int ucn_ok_at(const char *r)
+{
+    int n = ucn_at(r);
+
+    return n && ucn_value(r, n) >= 0 ? n : 0;
+}
+
 static void unsplice(char **end)
 {
     char *r, *w, *stop = *end;
-    int extra = 0;
+    int extra = 0, n;
 
     for (r = src;;) {
         r = memchr(r, '\\', (size_t) (stop - r));
         if (!r)
             return;                     /* nothing to take out */
-        if (r[1] == '\n' || (r[1] == '\r' && r[2] == '\n'))
+        if (splice_at(r) || ucn_ok_at(r))
             break;
-        r++;
+        r += r[1] == '\\' && !splice_at(r + 1) ? 2 : 1;
     }
 
     for (w = r; r < stop;) {
-        if (r[0] == '\\' && (r[1] == '\n' || (r[1] == '\r' && r[2] == '\n'))) {
-            r += r[1] == '\r' ? 3 : 2;
-            extra++;
+        if (r[0] == '\\') {
+            if (splice_at(r)) {
+                r += r[1] == '\r' ? 3 : 2;
+                extra++;
 
-            continue;
+                continue;
+            }
+            if ((n = ucn_ok_at(r)) != 0) {
+                w += utf8_put(w, (uint32_t) ucn_value(r, n));
+                r += n;
+
+                continue;
+            }
+            if (r[1] == '\\' && !splice_at(r + 1))
+                *w++ = *r++;            /* and the one it escapes, below */
         }
         *w++ = *r++;
         if (w[-1] != '\n')
@@ -3808,6 +3911,23 @@ static int   str_cap;
 
 #define is_hexdigit(c) (is_digit(c) || ((unsigned) (((c) | 0x20) - 'a') < 6u))
 
+/* A universal character name that reached a token still written as one,
+ * at p: every one that names a character C allows was made UTF-8 when its
+ * window was read, so this one either is short of digits or names one of
+ * the characters 6.4.3p2 forbids. */
+__attribute__((noinline, noreturn))
+static void ucn_refuse(const char *p)
+{
+    int n = ucn_at(p);
+
+    if (!n)
+        acc_error_at(tok_line, "'\\%c' is a universal character name, and "
+                               "needs %d hex digits after it", p[1],
+                     p[1] == 'u' ? 4 : 8);
+    acc_error_at(tok_line, "\\%c%.*s is not a character a universal "
+                           "character name may name", p[1], n - 2, p + 2);
+}
+
 /* One character of a literal, the backslash of an escape read already: the
  * byte it stands for. Octal takes up to three digits and hex as many as
  * there are, which is what C says; a value past a byte is refused. */
@@ -3851,6 +3971,8 @@ static int escape(void)
 
         return value;
     }
+    if (c == 'u' || c == 'U')
+        ucn_refuse(cursor - 2);
     acc_error_at(tok_line, "'\\%c' is not an escape C has", c);
 }
 
@@ -3890,6 +4012,8 @@ static void lex_quoted(int c)
      * next() cost 0.7% of every compile -- not in the test, but in what it
      * did to the registers of the loop that reads a name. Here they cost a
      * call each, 0.26%, and next() compiles as it did. */
+    if (c == '\\' && (*cursor == 'u' || *cursor == 'U'))
+        ucn_refuse(cursor - 1);
     if (c == '<' || c == '%' || c == ':') {
         tok = c == '<' ? TK_LT : c == '%' ? TK_PERCENT : TK_COLON;
         if (*cursor == '=' || *cursor == c)
