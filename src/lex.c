@@ -844,8 +844,16 @@ static unsigned nmacro_slots, nmacros;
  * identifier -- and the hash was a 24-bit AND and the probe an index into
  * entries that are not a power of two wide, a runtime call each. That was 4%
  * of compiling big.c, for names that were almost never macros. A byte in
- * front of the name is one load. */
+ * front of the name is one load.
+ *
+ * The byte is two bits. NAME_MACRO is whether the name is a macro;
+ * NAME_WIDE is on L alone, and says to look at what follows it, since L
+ * and a quote are a wide literal and not a name at all. Either sends the
+ * name to expand(), out of line, which is where the question is answered;
+ * the lexer's own path is the one load either way. */
 #define name_is_macro(ref)  (name_arena[(ref) - 4])
+#define NAME_MACRO  1
+#define NAME_WIDE   2
 
 static void macros_grow(void);
 
@@ -919,7 +927,7 @@ static void macro_define(NameRef name, const char *text, int len,
     m->params = params;
     m->nparams = (short) nparams;
     m->variadic = (short) variadic;
-    name_is_macro(name) = 1;
+    name_is_macro(name) |= NAME_MACRO;
 }
 
 /* Forgotten, and the slot left usable. A tombstone is not needed: the run of
@@ -937,7 +945,7 @@ static void macro_undef(NameRef name)
     m->text = NULL;
     m->params = NULL;
     nmacros--;
-    name_is_macro(name) = 0;
+    name_is_macro(name) &= ~NAME_MACRO;
 
     /* Whatever follows in this run may have probed past the hole. */
     i = (unsigned) (m - macros);
@@ -1638,17 +1646,11 @@ static const char time_text[] = __TIME__;
  * that is the line the macro was used on, since an expansion does not move
  * the count. Out of line because it runs for a handful of names in a
  * program and next() runs for every one. */
-static void wide_or_name(void);
 static void pragma_operator(void);
 
 __attribute__((noinline))
 static void predefined(void)
 {
-    if (tok == TK_WIDE) {
-        wide_or_name();
-
-        return;
-    }
     if (tok == TK_PRAGMA_OP) {
         pragma_operator();
 
@@ -1689,9 +1691,23 @@ static void predefined(void)
  * Out of line, since a name that is not a macro never reaches it and a name
  * that is pays a call either way. */
 __attribute__((noinline))
+static void wide_literal(void);
+
 static int expand(NameRef name)
 {
-    Macro *m = macro_find(name);
+    Macro *m;
+
+    /* L, and a quote after it: the literal is the token, and the answer is
+     * that nothing was expanded -- next() has set tok to a name already,
+     * and returns what this leaves there instead. Before the macro is
+     * looked for, as L"x" is a string even where L is a macro. */
+    if ((name_is_macro(name) & NAME_WIDE)
+        && (*cursor == '"' || *cursor == '\'')) {
+        wide_literal();
+
+        return 0;
+    }
+    m = macro_find(name);
 
     if (!m || expanding(name))
         return 0;
@@ -3583,7 +3599,6 @@ static void keywords_init(void)
     keyword("__STDC__", 8, TK_STDC);
     keyword("__STDC_VERSION__", 16, TK_STDC_VERSION);
     keyword("__STDC_HOSTED__", 15, TK_STDC_HOSTED);
-    keyword("L", 1, TK_WIDE);
     keyword("_Pragma", 7, TK_PRAGMA_OP);
     keyword("union", 5, TK_KW_UNION);
     keyword("volatile", 8, TK_KW_VOLATILE);
@@ -4197,25 +4212,18 @@ static void wide_unit(int *n, uint32_t v)
     str_buf[(*n)++] = (char) (v >> 8);
 }
 
-/* L, which the cursor is just past: a wide character constant or a wide
- * string if a quote follows it (C99 6.4.4.4, 6.4.5), and otherwise a name
- * like any other, a macro's included. A wchar_t is agondev's, a short, so
- * a wide string is UTF-16 -- a character past 0xffff is the two halves of a
- * surrogate pair, as agondev writes it -- and a wide character constant
- * past it is refused, as agondev refuses it. The string's units go into the
- * same buffer as a narrow string's bytes, two bytes each, low first. */
-static void wide_or_name(void)
+/* A wide character constant or a wide string, the L read and the cursor on
+ * the quote after it (C99 6.4.4.4, 6.4.5). A wchar_t is agondev's, a short,
+ * so a wide string is UTF-16 -- a character past 0xffff is the two halves
+ * of a surrogate pair, as agondev writes it -- and a wide character
+ * constant past it is refused, as agondev refuses it. The string's units go
+ * into the same buffer as a narrow string's bytes, two bytes each, low
+ * first. */
+static void wide_literal(void)
 {
     int quote = *cursor, n = 0;
     uint32_t v;
 
-    if (quote != '"' && quote != '\'') {
-        tok = TK_IDENT;
-        if (name_is_macro(tok_name) && expand(tok_name))
-            next();
-
-        return;
-    }
     cursor++;
 
     if (quote == '\'') {
@@ -4651,5 +4659,6 @@ void expect_failed(const char *what)
 void lex_init(void)
 {
     keywords_init();
+    name_is_macro(name_intern("L", 1)) |= NAME_WIDE;
     predefined_macros_init();
 }
