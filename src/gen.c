@@ -529,6 +529,22 @@ static int locals_size;          /* the declared locals */
 static int spill_used;           /* the scratch in use right now */
 static int spill_peak;           /* the most it ever held */
 static int spill_locked;         /* held by something not on the value stack */
+
+/* How far below the arguments the frame pointer is put.
+ *
+ * (ix+d) carries a signed byte, so it reaches 128 bytes either side of ix.
+ * The frame pointer used to sit at the saved ix, which put the arguments in
+ * the positive half and the whole of the frame in the negative one -- and a
+ * function's arguments are a few bytes where its frame is everything else,
+ * so nearly half of what the instruction can address went unused.
+ *
+ * So ix is put as far below the arguments as it can go while still reaching
+ * the last of them, and the frame gets both halves: 128 bytes plus the bias,
+ * which for a function of no arguments is 249. It costs one instruction in
+ * the epilogue, where sp has to be put back above the saved ix rather than
+ * at it, and nothing anywhere else -- every displacement is worked out from
+ * this when the offset is made, not when it is emitted. */
+static int frame_bias;
 static int frame_patch;          /* where the prologue's frame size is written */
 
 /* Local arrays, which go below everything else in the frame.
@@ -2482,10 +2498,10 @@ static int spill_start_of(const Value *v, int *size)
                                    : type_scalar_bytes(type_promote(v->type));
     int start;
 
-    if (v->kind != VAL_LOCAL || v->val >= -locals_size)
+    if (v->kind != VAL_LOCAL || v->val >= frame_bias - locals_size)
         return -1;                      /* a local of its own, not scratch */
 
-    start = -v->val - locals_size - bytes;
+    start = frame_bias - v->val - locals_size - bytes;
     if (start < 0 || start + bytes > spill_peak)
         return -1;                      /* not the scratch area at all */
     *size = bytes;
@@ -2562,7 +2578,7 @@ static int slot_at(int start, int size)
     if (start + size > spill_peak)
         spill_peak = start + size;
 
-    return -(locals_size + start + size);
+    return frame_bias - (locals_size + start + size);
 }
 
 /* Which routine applies an operator to two four-byte values. A float has its
@@ -4927,11 +4943,16 @@ void gen_startup(int by_exit, const char *program)
         }
 }
 
+int gen_frame_bias(void)
+{
+    return frame_bias;
+}
+
 int gen_local(int size)
 {
     locals_size += size;
 
-    return -locals_size;
+    return frame_bias - locals_size;
 }
 
 /* How many bytes of declared locals are kept where (ix+d) can reach them.
@@ -4959,7 +4980,7 @@ int gen_local(int size)
 
 int gen_local_fits(int size)
 {
-    return locals_size + size <= NEAR_LOCALS;
+    return locals_size + size <= NEAR_LOCALS + frame_bias;
 }
 
 int gen_local_far(int size)
@@ -5172,7 +5193,7 @@ static int spill_slot_of(int size)
     if (spill_used > spill_peak)
         spill_peak = spill_used;
 
-    return -(locals_size + spill_used);
+    return frame_bias - (locals_size + spill_used);
 }
 
 static int spill_slot(void)
@@ -5180,7 +5201,7 @@ static int spill_slot(void)
     return spill_slot_of(ACC_INT_SIZE);
 }
 
-void gen_func_begin(int fn, int nparams, Type returns)
+void gen_func_begin(int fn, int nparams, Type returns, int bias)
 {
     return_type = returns;
     return_ext = sym_at(fn)->ext;
@@ -5196,6 +5217,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
     spill_used = 0;
     spill_peak = 0;
     spill_locked = 0;
+    frame_bias = bias;
     arrays_size = 0;
     narrays = 0;
     narray_patches = 0;
@@ -5206,8 +5228,8 @@ void gen_func_begin(int fn, int nparams, Type returns)
      * link against yet. ix then points at the saved ix, so the first argument
      * is at ix+6: three bytes of saved ix and three of return address. */
     out_byte2(0xdd, 0xe5);              /* push ix */
-    out_byte2(0xdd, 0x21);              /* ld ix, 0 */
-    out_word24(0);
+    out_byte2(0xdd, 0x21);              /* ld ix, -bias */
+    out_word24(-bias);
     out_byte2(0xdd, 0x39);              /* add ix, sp */
 
     /* ld hl, -frame / add hl, sp / ld sp, hl. The size is not known until the
@@ -5218,13 +5240,24 @@ void gen_func_begin(int fn, int nparams, Type returns)
     out_byte2(0x39, 0xf9);                       /* add hl, sp; ld sp, hl */                              /* ld sp, hl */
 }
 
-void gen_func_end(void)
+/* The way out, which every return and the end of the body all take.
+ *
+ * Restoring sp from ix unconditionally costs two bytes in a function with no
+ * locals and saves the epilogue having to know the frame size. Where ix was
+ * put below the arguments, it comes back up first: what sp has to be put at
+ * is the saved ix, and that is the bias above where ix is left. */
+static void epilogue(void)
 {
-    /* Restoring sp from ix unconditionally costs two bytes in a function with
-     * no locals and saves the epilogue having to know the frame size. */
+    if (frame_bias)
+        out_byte3(0xed, 0x32, frame_bias);      /* lea ix, ix+bias */
     out_byte2(0xdd, 0xf9);              /* ld sp, ix */
     out_byte2(0xdd, 0xe1);              /* pop ix */
-    out_byte(0xc9);                              /* ret */
+    out_byte(0xc9);                     /* ret */
+}
+
+void gen_func_end(void)
+{
+    epilogue();
 
     out_patch24(frame_patch, -frame_size());
     in_function = 0;
@@ -5234,7 +5267,8 @@ void gen_func_end(void)
 
         for (i = 0; i < narray_patches; i++)
             out_patch24(array_patches[i].at,
-                        -(above + array_end[array_patches[i].array]));
+                        frame_bias
+                        - (above + array_end[array_patches[i].array]));
     }
 
     /* Last, so that everything written into the function is written before
@@ -5265,14 +5299,12 @@ void gen_return(int line)
                                "has to give it one of the same type");
         top->type = type_ptr_to(TY_CHAR);
         force_into(top, R_HL);
-        ld_rr_ix(R_DE, 2 * ACC_PTR_SIZE);
+        ld_rr_ix(R_DE, 2 * ACC_PTR_SIZE + frame_bias);
         ld_rr_imm(R_BC, ext_bytes(return_ext));
         out_byte2(0xed, 0xb0);          /* ldir */
-        ld_rr_ix(R_HL, 2 * ACC_PTR_SIZE);
+        ld_rr_ix(R_HL, 2 * ACC_PTR_SIZE + frame_bias);
         vdrop();
-        out_byte2(0xdd, 0xf9);          /* ld sp, ix */
-        out_byte2(0xdd, 0xe1);          /* pop ix */
-        out_byte(0xc9);                 /* ret */
+        epilogue();
 
         return;
     }
@@ -5306,9 +5338,7 @@ void gen_return(int line)
                 ld_e_ix(at + ACC_INT_SIZE);
             }
             vdrop();
-            out_byte2(0xdd, 0xf9);      /* ld sp, ix */
-            out_byte2(0xdd, 0xe1);      /* pop ix */
-            out_byte(0xc9);                      /* ret */
+            epilogue();
 
             return;
         }
@@ -5325,9 +5355,7 @@ void gen_return(int line)
         if (RETURNS_IN_A(return_type))
             ld_a_l();
     }
-    out_byte2(0xdd, 0xf9);              /* ld sp, ix */
-    out_byte2(0xdd, 0xe1);              /* pop ix */
-    out_byte(0xc9);                              /* ret */
+    epilogue();
 }
 
 /* That a struct argument and its parameter are the same struct: a struct

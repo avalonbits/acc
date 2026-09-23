@@ -622,6 +622,8 @@ void sym_drop_locals(void);              /* at the end of a function */
 /* A scope inside a function, which so far only a `for` has: the locals it
  * declares are dropped at its end, and their frame bytes are not reused. */
 int  sym_scope_begin(void);
+int  sym_locals_from(void);    /* the function's own symbols, as byte */
+int  sym_locals_to(void);      /* offsets: [from, to) a Sym at a time */
 void sym_scope_end(int mark);
 int  sym_declared_in(int sym, int mark);  /* in the scope from mark on; -1 is file scope */
 
@@ -712,8 +714,9 @@ enum {
 enum { R_HL = 0, R_DE, R_BC, NREGS };
 
 void gen_init(void);
-void gen_func_begin(int fn, int nparams, Type returns);
+void gen_func_begin(int fn, int nparams, Type returns, int bias);
 void gen_func_end(void);
+int  gen_frame_bias(void);            /* how far below the arguments ix is */
 int  gen_local(int size);
 int  gen_local_fits(int size);        /* whether (ix+d) still reaches */
 int  gen_local_far(int size);         /* one it does not: its array number */

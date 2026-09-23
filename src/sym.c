@@ -352,6 +352,20 @@ int sym_scope_begin(void)
     return nsyms - nglobals;
 }
 
+/* The symbols of the function being compiled, as byte offsets into the
+ * table: from the first to just past the last, a Sym at a time. What the
+ * parameters are is what this is for -- their offsets are settled only once
+ * the last of them has been read. */
+int sym_locals_from(void)
+{
+    return nglobals;
+}
+
+int sym_locals_to(void)
+{
+    return nsyms;
+}
+
 void sym_scope_end(int mark)
 {
     nsyms = nglobals + mark;

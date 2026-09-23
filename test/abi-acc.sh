@@ -35,14 +35,26 @@ check() {
     fi
 }
 
-# The displacement of the first `ld hl, (ix+d)` with a positive d, which for
-# these probes is where the function reads its last parameter.
+# Where the function reads its last parameter, as an offset above the saved
+# ix -- which is not the displacement the instruction carries. acc puts the
+# frame pointer as far below the arguments as it can reach, so every
+# displacement is that much larger; the prologue says by how much, and the
+# arguments are what is left above it. A local is below it and comes out
+# negative, which is what tells the two apart.
 param_at() {
     python3 - "$tmp/p.bin" <<'PY'
 import re, sys
 data = open(sys.argv[1], 'rb').read()
+
+# push ix / ld ix, -bias / add ix, sp
+m = re.search(rb'\xdd\xe5\xdd\x21(...)\xdd\x39', data, re.S)
+bias = 0
+if m:
+    v = int.from_bytes(m.group(1), 'little')
+    bias = -(v - (1 << 24) if v >= (1 << 23) else v)
+
 for m in re.finditer(rb'\xdd\x27(.)', data):
-    d = m.group(1)[0]
+    d = m.group(1)[0] - bias
     if 0 < d < 64:
         print(d)
         break
@@ -65,7 +77,7 @@ compile "char f(int n) { return n; }"
 got=$(python3 - "$tmp/p.bin" <<'PY'
 import re, sys
 data = open(sys.argv[1], 'rb').read()
-print("A" if re.search(rb'\x7d\xdd\xf9\xdd\xe1\xc9', data) else "not A")
+print("A" if re.search(rb'\x7d(?:\xed\x32.)?\xdd\xf9\xdd\xe1\xc9', data) else "not A")
 PY
 )
 check "a 1-byte result" "$got" "A"
@@ -75,7 +87,7 @@ compile "long f(void) { return 305419896; }"
 got=$(python3 - "$tmp/p.bin" <<'PY'
 import re, sys
 data = open(sys.argv[1], 'rb').read()
-m = re.search(rb'\xdd\x27(.)\xdd\x5e(.)\xdd\xf9\xdd\xe1\xc9', data, re.S)
+m = re.search(rb'\xdd\x27(.)\xdd\x5e(.)(?:\xed\x32.)?\xdd\xf9\xdd\xe1\xc9', data, re.S)
 if not m:
     print("not HL:E")
 else:
@@ -90,7 +102,7 @@ compile "long long f(void) { return 0x1122334455667788LL; }"
 got=$(python3 - "$tmp/p.bin" <<'PY'
 import re, sys
 data = open(sys.argv[1], 'rb').read()
-m = re.search(rb'\xdd\x27(.)\xdd\x17(.)\xdd\x07(.)\xdd\xf9\xdd\xe1\xc9', data, re.S)
+m = re.search(rb'\xdd\x27(.)\xdd\x17(.)\xdd\x07(.)(?:\xed\x32.)?\xdd\xf9\xdd\xe1\xc9', data, re.S)
 if not m:
     print("not HL:DE:BC")
 else:
@@ -106,7 +118,7 @@ for type in short int "unsigned int"; do
     got=$(python3 - "$tmp/p.bin" <<'PY'
 import re, sys
 data = open(sys.argv[1], 'rb').read()
-print("A" if re.search(rb'\x7d\xdd\xf9\xdd\xe1\xc9', data) else "HL")
+print("A" if re.search(rb'\x7d(?:\xed\x32.)?\xdd\xf9\xdd\xe1\xc9', data) else "HL")
 PY
 )
     check "a result of $type" "$got" "HL"
