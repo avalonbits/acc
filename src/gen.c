@@ -971,12 +971,15 @@ static uint64_t const_as(const Value *v, Type to)
     if (to_float && !from_float) {
         int negative = !type_unsigned(v->type)
                        && wide_signed(bits, type_wide_bytes(v->type)) < 0;
+        /* Taken away from zero as bits, which is also right for the most
+         * negative long long -- negating it as a signed number is not. */
         uint64_t magnitude = negative
-                             ? (uint64_t) -wide_signed(bits,
-                                                       type_wide_bytes(v->type))
+                             ? (uint64_t) 0
+                               - (uint64_t) wide_signed(bits,
+                                                        type_wide_bytes(v->type))
                              : bits;
 
-        return float_from_int((uint32_t) magnitude, negative);
+        return float_from_int(magnitude, negative);
     }
     if (from_float && !to_float)
         return (uint64_t) float_to_int((uint32_t) bits);

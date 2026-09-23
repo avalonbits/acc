@@ -278,7 +278,7 @@ extern char *name_arena;    /* for name_global, further down */
 /* The floating literal at s, as the bits of the nearest float; returns where
  * it ends, which is s if it has no digits. In float.c. */
 const char *float_literal(const char *s, uint32_t *bits);
-uint32_t    float_from_int(uint32_t magnitude, int negative);
+uint32_t    float_from_int(uint64_t magnitude, int negative);
 
 /* Folding a constant expression, in integers rather than in the float of
  * whichever compiler built this one: see the head of the arithmetic in

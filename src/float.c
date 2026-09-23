@@ -276,22 +276,27 @@ static uint32_t float_pack(uint32_t q, int e, int sticky)
 
 /* The float nearest an integer, given as a magnitude and a sign: what a
  * global's initial value is when an integer constant initialises a float.
- * Exact for anything under 2^24, and rounded like a literal above it. */
-uint32_t float_from_int(uint32_t magnitude, int negative)
+ * Exact for anything under 2^24, and rounded like a literal above it.
+ *
+ * Sixty-four bits of magnitude, because a long long is an integer too. It
+ * was thirty-two, and the unsigned long long 2^64 - 1 arrived with its top
+ * half gone. */
+uint32_t float_from_int(uint64_t magnitude, int negative)
 {
     int bl = bits64(magnitude), sticky = 0;
-    uint32_t q = magnitude;
+    uint64_t q = magnitude;
 
     if (magnitude == 0)
         return negative ? 0x80000000 : 0;
     if (bl < 26) {
         q <<= 26 - bl;
     } else {
-        sticky = (q & (((uint32_t) 1 << (bl - 26)) - 1)) != 0;
+        sticky = (q & (((uint64_t) 1 << (bl - 26)) - 1)) != 0;
         q >>= bl - 26;
     }
 
-    return float_pack(q, bl - 1, sticky) | (negative ? 0x80000000 : 0);
+    return float_pack((uint32_t) q, bl - 1, sticky)
+           | (negative ? 0x80000000 : 0);
 }
 
 /* The literal at s: its bits as a float, and where it ends. It ends at s if
