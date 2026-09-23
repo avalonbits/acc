@@ -444,6 +444,39 @@ else
     fail=$((fail + 1))
 fi
 
+# exit through a pointer. A call to exit by name is written out at the call
+# and never reaches the library, which is why exit had no member and a
+# pointer to it -- gcc's pr54937 keeps one -- did not link. Every way a
+# program can come to hold one: assigned to a global, to a local, and as
+# a static initialiser, which is a relocation rather than an instruction.
+runs "exit, called through a pointer" \
+'#include <stdlib.h>
+
+void (*held)(int);
+static void (*given)(int) = exit;
+
+int main(void) {
+    void (*local)(int) = exit;
+
+    held = exit;
+    if (held != local || given != local)
+        return 1;
+    local(42);
+
+    return 2;
+}'
+
+# And a program that calls exit by name takes nothing from the library for
+# it: linked against the library it is the size it is linked against
+# nothing at all.
+printf '#include <stdlib.h>\nint main(void) { exit(42); }\n' > "$tmp/ex.c"
+"$ACC" -c "$tmp/ex.c" -o "$tmp/ex.o" -Iinclude >/dev/null 2>&1
+mkdir -p "$tmp/exlib" "$tmp/exnone"
+"$ACC" "$tmp/ex.o" "$LIB" -o "$tmp/exlib/ex.bin" -x >/dev/null 2>&1
+"$ACC" "$tmp/ex.o" -o "$tmp/exnone/ex.bin" -x >/dev/null 2>&1
+ok "a call to exit takes no member" \
+    "$(wc -c < "$tmp/exlib/ex.bin")" "$(wc -c < "$tmp/exnone/ex.bin")"
+
 # A member that wants another member is pulled in too, and the link looks
 # again rather than once.
 printf 'int inner(int n) { return n + 20; }\n' > "$tmp/inner.c"

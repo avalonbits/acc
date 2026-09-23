@@ -158,7 +158,9 @@ The 45 that do not build, read one by one:
 | `sprintf` or `vprintf`, which the library has not got | 12 |
 | refused on purpose: a parameter's array size with a side effect | 2 |
 | the measuring device's own `-D`, which renames a `static strcmp` | 1 |
-| **a bug**: a library function whose address is taken and that is never called is not linked (`terminate_me = exit`, pr54937) | 1 |
+| a bug, since fixed: `exit` had no library member, so a pointer to it did not link (`terminate_me = exit`, pr54937) | 1 |
+
+With that fixed, acc passes 1,078 of the 1,127.
 
 The other way round, acc passes 13 tests that agondev fails.
 
@@ -452,13 +454,16 @@ done, and then what is next.
    that agondev's float addition does not round a tie to even although its
    `<float.h>` says `FLT_ROUNDS` is 1. acc's does.
 
+8. **`exit` through a pointer.** A call to `exit` is written out at the
+   call, so the library had no `exit` for a pointer to reach. It has one
+   now, which a program that only calls it never takes.
+
 **Next, in this order:**
 
-1. **A library function reached only by its address** has to be linked.
-2. **`sprintf` and `vsprintf`.** 12 tests.
-3. **The lexer's three**: wide literals, digraphs, universal character
+1. **`sprintf` and `vsprintf`.** 12 tests.
+2. **The lexer's three**: wide literals, digraphs, universal character
    names. Each is required C99 and each is refused today.
-4. **gcc.c-torture/execute, all of it that the filter takes.**
+3. **gcc.c-torture/execute, all of it that the filter takes.**
    - Build the importer, filter, census, manifest, runner and scoreboard
      around it. The filter and the compile pass already exist as a script;
      what is missing is everything that turns a count into a scoreboard.
@@ -468,14 +473,14 @@ done, and then what is next.
    - And how many run and give the right answer, which has so far been
      measured by scripts outside the repository: 1,077 of the 1,127 that
      hold on this machine. The runner is what makes that number stay true.
-5. **c-testsuite, all 220.**
+4. **c-testsuite, all 220.**
    - ISC and MIT, so it can be vendored with its notices.
-6. **The rest of `gcc.dg`, not just `c99-*`.**
+5. **The rest of `gcc.dg`, not just `c99-*`.**
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.
-7. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
-8. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
+6. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
+7. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
    `test/fuzz/reduce.py` as the reducer.
 
 **Not being done, and why:**
