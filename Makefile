@@ -26,7 +26,7 @@ BIN = bin
 # The library acc links programs against, written in C and built by acc
 # itself -- which is what makes it something the Agon can build for itself,
 # and what keeps it honest: every line of it is a line acc has to compile.
-LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c lib/sprintf.c \
+LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c \
          lib/abort.c lib/exit.c lib/assert.c lib/ctype.c \
          lib/math.c lib/mathround.c lib/mathscale.c lib/mathfmod.c \
          lib/sqrt.c lib/cbrt.c lib/hypot.c \

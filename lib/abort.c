@@ -4,10 +4,10 @@
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
  * SPDX-License-Identifier: LGPL-2.1-or-later
  *
- * On its own and not beside the rest of <stdlib.h>, for the reason strdup
- * is on its own: a library member is taken or left whole, and the rest of
- * that file is the heap. A program that calls abort and never allocates
- * should not be given an allocator.
+ * In a file of its own, for the reason strdup is: while a link took a
+ * library member whole, the rest of <stdlib.h>'s file was the heap, and a
+ * program that calls abort and never allocates should not be given an
+ * allocator. A link takes functions now, and that no longer depends on it.
  *
  * C says abort ends the program by an implementation-defined form of
  * unsuccessful termination, and that it does not return. What it does here

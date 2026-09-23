@@ -4,10 +4,10 @@
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
  * SPDX-License-Identifier: LGPL-2.1-or-later
  *
- * On its own and not beside the rest of <string.h>, because it is the only
- * one of them that wants the heap. A library member is taken or left whole,
- * so putting it with strlen would give the heap to every program that
- * measures a string -- which is nearly all of them, and none of which asked.
+ * In a file of its own, because it is the only one of <string.h> that wants
+ * the heap. That was what kept the heap out of every program that measures
+ * a string, while a link took a library member whole. A link takes the
+ * functions a program reaches now, so where it lives no longer matters.
  */
 #include <stdlib.h>
 #include <string.h>

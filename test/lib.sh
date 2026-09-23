@@ -477,18 +477,22 @@ mkdir -p "$tmp/exlib" "$tmp/exnone"
 ok "a call to exit takes no member" \
     "$(wc -c < "$tmp/exlib/ex.bin")" "$(wc -c < "$tmp/exnone/ex.bin")"
 
-# sprintf, vsprintf and vprintf are a member of their own, so that the
-# printf in nearly every program does not bring them: a program that only
-# prints is the same size linked against the library as against the same
-# library with that member taken out. What they write is test/printf.sh's.
+# sprintf, vsprintf and vprintf are in printf's file, and a program that
+# only prints does not carry them: linked against the library, it is the
+# size it is against a library whose printf was built with the three cut
+# off the end of the file. That depends on the link taking functions and
+# not files. What they write is test/printf.sh's.
 printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 42); return 42; }\n' > "$tmp/pr.c"
+sed '/^\/\* sprintf is snprintf told/,$d' lib/printf.c > "$tmp/printf_cut.c"
 "$ACC" -c "$tmp/pr.c" -o "$tmp/pr.o" -Iinclude >/dev/null 2>&1
-mkdir -p "$tmp/prlib" "$tmp/prless"
-"$ACC" -a "$tmp/prless/less.a" $(ls "$(dirname "$LIB")"/lib/*.o | grep -v '/sprintf\.o$') >/dev/null 2>&1
-"$ACC" "$tmp/pr.o" "$LIB" -o "$tmp/prlib/pr.bin" -x >/dev/null 2>&1
-"$ACC" "$tmp/pr.o" "$tmp/prless/less.a" -o "$tmp/prless/pr.bin" -x >/dev/null 2>&1
+"$ACC" -c "$tmp/printf_cut.c" -o "$tmp/printf.o" -Iinclude >/dev/null 2>&1
+mkdir -p "$tmp/prlib" "$tmp/prcut"
+"$ACC" -a "$tmp/prcut/cut.a" "$tmp/printf.o" \
+    $(ls "$(dirname "$LIB")"/lib/*.o | grep -v '/printf\.o$') >/dev/null 2>&1
+"$ACC" "$tmp/pr.o" "$LIB" -o "$tmp/prlib/p.bin" -x >/dev/null 2>&1
+"$ACC" "$tmp/pr.o" "$tmp/prcut/cut.a" -o "$tmp/prcut/p.bin" -x >/dev/null 2>&1
 ok "printf takes no sprintf with it" \
-    "$(wc -c < "$tmp/prlib/pr.bin")" "$(wc -c < "$tmp/prless/pr.bin")"
+    "$(wc -c < "$tmp/prlib/p.bin")" "$(wc -c < "$tmp/prcut/p.bin")"
 
 # A link takes from a member only what the program reaches, not the whole
 # member. `small` calls a static helper that reads a static table, so all

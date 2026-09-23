@@ -231,7 +231,8 @@ int ferror(FILE *f)
 /* Printing to a file, which is the formatter in lib/printf.c with this file
  * as where the characters go. The pointing is done here so that printf does
  * not name anything in this file: a program that prints and never opens a
- * file should not carry any of this, and a library member is taken whole. */
+ * file should not carry any of this, and a link takes whatever what it
+ * takes names. */
 extern FILE  *acc_sink_file;
 extern int  (*acc_sink_putc)(int, FILE *);
 extern char  *acc_sink_buf;

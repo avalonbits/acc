@@ -30,8 +30,9 @@
 #include <stdint.h>
 
 /* The bits of a float, and a float from bits. Each of these files has its
- * own pair: a library member is taken or left whole, so a shared one would
- * be a member every program taking a sine had to link. */
+ * own pair. They were copied while a link took a library member whole, when
+ * a shared pair would have brought a file with it; a link takes functions
+ * now, and they are a few instructions each, so the copies stay. */
 static uint32_t bits(double x)
 {
     union { float f; uint32_t u; } v;

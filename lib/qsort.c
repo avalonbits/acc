@@ -1,6 +1,6 @@
 /*
- * qsort, in its own object so that a program that does not sort carries none
- * of it.
+ * qsort. A program that does not sort carries none of it, as with anything
+ * in the library a program does not call.
  *
  * A shell sort, and not the quicksort the name promises. Three reasons, all
  * of them about this machine. It needs no stack beyond its own frame, where

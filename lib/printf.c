@@ -1,6 +1,7 @@
 /*
- * printf, in its own object so that a program that does not call it carries
- * none of it.
+ * printf and its family -- snprintf, sprintf and the v forms of each --
+ * which are one formatter pointed at the screen, a buffer or a file. A
+ * link takes only the ones a program calls.
  *
  * What is here is the conversions a program on this machine actually writes:
  * signed and unsigned decimal, octal and hex, a character, a string, a
@@ -359,4 +360,32 @@ int snprintf(char *to, size_t n, const char *fmt, ...)
     va_end(ap);
 
     return wanted;
+}
+
+/* sprintf is snprintf told the buffer has no end. C99 asks the caller to
+ * have made it big enough, and there is no size to check against -- which
+ * is why snprintf is the one to use, and why sprintf is still C99. */
+int vsprintf(char *to, const char *fmt, va_list ap)
+{
+    return vsnprintf(to, (size_t) -1, fmt, ap);
+}
+
+int sprintf(char *to, const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vsnprintf(to, (size_t) -1, fmt, ap);
+    va_end(ap);
+
+    return n;
+}
+
+int vprintf(const char *fmt, va_list ap)
+{
+    acc_sink_file = NULL;
+    acc_sink_buf = NULL;
+
+    return acc_format(fmt, ap);
 }

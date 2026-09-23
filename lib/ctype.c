@@ -13,8 +13,8 @@
  * Written as comparisons rather than as a table of 257 flags. The table is
  * the faster answer on a machine with an index register and a cheap add,
  * and this one has neither: a lookup is a 16-bit add and a load, where
- * `c - '0' <= 9` on an unsigned byte is two instructions. It is also 257
- * bytes, in a library where every member is taken whole.
+ * `c - '0' <= 9` on an unsigned byte is two instructions. It would also be
+ * 257 bytes in every program that asked any one of these.
  *
  * Each takes an int because C99 says so -- EOF has to be tellable from every
  * byte -- and each is written so that a negative one falls through every
