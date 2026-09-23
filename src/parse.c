@@ -3026,6 +3026,12 @@ static int sizeof_unary(void)
                 acc_error_at(line, "a cast cannot make an array");
             cast_operand(type, x, base_const ? VQ_CONST : 0);
 
+            /* A cast's result has the type it names, and that type's size is
+             * the answer. What cast_operand leaves is promoted to int for
+             * the arithmetic that usually comes next, which sizeof does not
+             * do: `sizeof ((char) v)` was three. */
+            vset_type(type, x);
+
             return SIZEOF_VALUE;
         }
 

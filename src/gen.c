@@ -1429,7 +1429,9 @@ static int const_fold(int op, int left, int right, int *out, int is_unsigned)
     case TK_SHL:
         if (right < 0 || right >= ACC_INT_SIZE * 8)
             return 0;
-        *out = trunc_int(left << right);
+        /* On the bits: shifting a negative value left is undefined in the C
+         * that compiles acc, whatever it would come to on the Agon. */
+        *out = trunc_int((int) ((unsigned) left << right));
         return 1;
 
     case TK_SHR:
@@ -1464,6 +1466,17 @@ static int const_fold(int op, int left, int right, int *out, int is_unsigned)
 static int either_unsigned(const Value *lhs, const Value *rhs)
 {
     return type_unsigned(lhs->type) || type_unsigned(rhs->type);
+}
+
+/* Whether an operator's operands are read as unsigned: either of them for
+ * arithmetic, and only the left for a shift, whose count's type C99 6.5.7
+ * says nothing about the result's. */
+static int fold_unsigned(int op, const Value *lhs, const Value *rhs)
+{
+    if (tok_pair(op, TK_SHL))
+        return type_unsigned(type_promote(lhs->type)) != 0;
+
+    return either_unsigned(lhs, rhs);
 }
 
 static void no_addr_arithmetic(void)
@@ -1554,11 +1567,13 @@ static void vbinop(int op)
     if ((unsigned) vtop < 2)
         acc_error("internal: binary operator with nothing to work on");
 
-    /* Both sides known: the answer is known, and nothing is emitted. */
+    /* Both sides known: the answer is known, and nothing is emitted. A
+     * shift takes its type from the left operand alone, as the code below
+     * does when it is not folded: `-64 >> 3U` is a signed -8. */
     if (val_const(lhs->kind) && val_const(rhs->kind)
         && const_fold(op, lhs->val, rhs->val, &folded,
-                      either_unsigned(lhs, rhs))) {
-        Type folded_type = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
+                      fold_unsigned(op, lhs, rhs))) {
+        Type folded_type = fold_unsigned(op, lhs, rhs) ? TY_UINT : TY_INT;
         /* The kinds are in hand from the test above, and neither is waiting
          * on anything in almost every fold a program does, so the question
          * is asked here and the answer worked out elsewhere. */
