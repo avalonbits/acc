@@ -3896,6 +3896,45 @@ static int            init_array;
 static unsigned char *init_given;
 static int            init_given_cap;
 
+/* Everything about the local initialiser being read, which a compound
+ * literal inside it would otherwise overwrite: the literal is an object of
+ * its own, initialised as any local is, and it takes these over to do it.
+ * The outer one then stored its remaining members into the literal, and at
+ * its end zeroed the ones it had already given, the map of what it had
+ * given having been cleared for the literal's use. The map is handed over
+ * rather than copied: the literal starts with none and grows its own. */
+typedef struct {
+    int            array, pending, bits, designator_next;
+    unsigned char *given;
+    int            given_cap;
+} InitState;
+
+static void init_save(InitState *s)
+{
+    s->array = init_array;
+    s->pending = init_pending;
+    s->bits = init_bits;
+    s->designator_next = init_designator_next;
+    s->given = init_given;
+    s->given_cap = init_given_cap;
+    init_given = NULL;
+    init_given_cap = 0;
+    init_pending = 0;
+    init_bits = 0;
+    init_designator_next = 0;
+}
+
+static void init_restore(const InitState *s)
+{
+    free(init_given);
+    init_array = s->array;
+    init_pending = s->pending;
+    init_bits = s->bits;
+    init_designator_next = s->designator_next;
+    init_given = s->given;
+    init_given_cap = s->given_cap;
+}
+
 /* That the bytes from offset for size were given by the initialiser, so
  * the zeroing after it leaves them. */
 static void init_mark(int offset, int size)
@@ -3983,8 +4022,26 @@ static void bits_zeroed(int array, int x, int bytes)
  * and a compound literal leaves it unnamed. `braced` says the initialiser
  * follows straight away, as a compound literal's does, rather than after an
  * `=`. Returns which array area it is in. */
+static int local_struct_object_in(int x, int line, int braced);
+
+/* A compound literal -- `braced` -- can be inside another initialiser, and
+ * saves that one's state round its own: see InitState. */
 __attribute__((noinline))
 static int local_struct_object(int x, int line, int braced)
+{
+    InitState outer;
+    int array;
+
+    if (!braced)
+        return local_struct_object_in(x, line, 0);
+    init_save(&outer);
+    array = local_struct_object_in(x, line, 1);
+    init_restore(&outer);
+
+    return array;
+}
+
+static int local_struct_object_in(int x, int line, int braced)
 {
     int array = gen_local_array();
 
@@ -4066,9 +4123,29 @@ static int local_struct_value(int x, int offset)
  * which is only known once the brace closes; its size is given then, the
  * elements having been stored against an address that is only filled in
  * when the function ends. */
+static int local_array_object_in(Type elem, int elem_x, int *countp,
+                                 int line, int braced);
+
+/* As local_struct_object: a compound literal saves the state of the
+ * initialiser it may be inside. */
 __attribute__((noinline))
 static int local_array_object(Type elem, int elem_x, int *countp, int line,
                               int braced)
+{
+    InitState outer;
+    int array;
+
+    if (!braced)
+        return local_array_object_in(elem, elem_x, countp, line, 0);
+    init_save(&outer);
+    array = local_array_object_in(elem, elem_x, countp, line, 1);
+    init_restore(&outer);
+
+    return array;
+}
+
+static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
+                                 int braced)
 {
     int array = gen_local_array();
     int step = type_bytes(elem, elem_x);
@@ -5624,8 +5701,10 @@ static inline __attribute__((always_inline)) void init_room(int end)
  * It grew from a fixed sixteen when that second kind arrived. Sixteen was
  * generous for functions not yet defined; it is not for addresses, which is
  * every entry of `char *names[] = { "a", "b", ... }`. */
-static struct { int fn, offset; } *walk_fns;
-static int nwalk_fns, walk_fns_cap;
+typedef struct { int fn, offset; } WalkFn;
+
+static WalkFn *walk_fns;
+static int     nwalk_fns, walk_fns_cap;
 
 static void walk_fn_add(int fn, int offset)
 {
@@ -5723,9 +5802,49 @@ static void global_put(Type scalar, int offset, int value)
 /* The static half of a compound literal: at file scope its bytes are built
  * the way a global's are, in the initialiser's buffer, and left in the
  * image. See compound_literal, which is where the rest of it is. */
+static void literal_bytes_in(Type type, int x, int count, Type elem,
+                             int elem_x, int line, int address, int *countp);
+
+/* A literal inside a global's initialiser -- `&(struct B) { &(struct A)
+ * { 1, 2 } }` -- is built while that one is still being built, and they
+ * shared the buffer and the list of addresses in it. The literal started
+ * the buffer again from nothing, so whatever the outer one had written was
+ * lost, and put down the outer one's addresses at its own place in the
+ * image. So the literal gets a buffer and a list of its own, and the outer
+ * one's are put back after, as a local literal does with InitState. */
 __attribute__((noinline))
 static void literal_bytes(Type type, int x, int count, Type elem, int elem_x,
                           int line, int address, int *countp)
+{
+    unsigned char *bytes = init_bytes;
+    int bytes_cap = init_bytes_cap, bytes_len = init_bytes_len;
+    WalkFn *walks = walk_fns;
+    int walks_n = nwalk_fns, walks_cap = walk_fns_cap;
+    InitState outer;
+
+    init_save(&outer);
+    init_bytes = NULL;
+    init_bytes_cap = 0;
+    init_bytes_len = 0;
+    walk_fns = NULL;
+    nwalk_fns = 0;
+    walk_fns_cap = 0;
+
+    literal_bytes_in(type, x, count, elem, elem_x, line, address, countp);
+
+    free(init_bytes);
+    free(walk_fns);
+    init_bytes = bytes;
+    init_bytes_cap = bytes_cap;
+    init_bytes_len = bytes_len;
+    walk_fns = walks;
+    nwalk_fns = walks_n;
+    walk_fns_cap = walks_cap;
+    init_restore(&outer);
+}
+
+static void literal_bytes_in(Type type, int x, int count, Type elem,
+                             int elem_x, int line, int address, int *countp)
 {
 
         int at, total, i;
