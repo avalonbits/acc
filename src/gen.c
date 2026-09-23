@@ -4055,17 +4055,25 @@ static void args_emit(void)
  * down from above it, so the top is kept clear of where the stack will be.
  *
  * A program that never asks for them costs nothing for their being here:
- * they are only ever looked for among the names nothing has defined. */
+ * they are only ever looked for among the names nothing has defined.
+ *
+ * The stub asks for a third, the top of the program's memory, where main's
+ * stack starts. That one is known by its symbol rather than its name. */
+static int stack_top_sym = -1;   /* made by gen_finish, for the stub */
+static int stack_top_at;         /* where in the stub it goes */
+
 static int link_given(int sym)
 {
-    const char *name = name_text(sym_at(sym)->name);
+    const char *name;
+
+    if (sym == stack_top_sym)
+        return out_base + ACC_RAM_BYTES;
+    name = name_text(sym_at(sym)->name);
 
     if (strcmp(name, "acc_heap_start") == 0)
         return bss_top;
     if (strcmp(name, "acc_heap_end") == 0)
         return out_base + ACC_RAM_BYTES - ACC_STACK_RESERVE;
-    if (strcmp(name, "acc_stack_top") == 0)
-        return out_base + ACC_RAM_BYTES;
 
     return 0;
 }
@@ -4803,7 +4811,18 @@ void gen_finish(void)
         args_emit();
         bss_emit();
 
-        /* And the two the link itself answers for, now that there is an
+        /* The stub's stack top, a name made here rather than with the
+         * stub: made there, it was interned ahead of every name in the
+         * source and moved all of them, and the macro table hashes by
+         * where a name is -- which cost text.c 13,000 cycles in collisions
+         * for nothing. Made after the helpers are claimed, it is not
+         * compared against every helper's name either. */
+        stack_top_sym = sym_push(name_intern("acc_stack_top", 13),
+                                 SYM_GLOBAL, -1);
+        sym_set_flags(stack_top_sym, SYMF_DECLARED | SYMF_EXTERN);
+        fixup_add(stack_top_sym, stack_top_at);
+
+        /* And the ones the link itself answers for, now that there is an
          * answer: everything else has been laid down. */
         for (i = 0; i < nfixups; i++) {
             int sym = fixups[i].fn, at;
@@ -5073,12 +5092,7 @@ void gen_startup(int by_exit, const char *program)
          * past the image: written straight away it came out 71 bytes low,
          * that being how far the jumps had shrunk. So it is a name the link
          * answers, after everything is laid down, as the heap's end is. */
-        {
-            int sym = sym_push(name_intern("acc_stack_top", 13), SYM_GLOBAL, -1);
-
-            sym_set_flags(sym, SYMF_DECLARED | SYMF_EXTERN);
-            fixup_add(sym, base + STUB_TOP_AT);
-        }
+        stack_top_at = base + STUB_TOP_AT;     /* see gen_finish */
     }
     sym_set_flags(exit_cell(0), SYMF_DEFINED);
     sym_set_flags(exit_cell(1), SYMF_DEFINED);

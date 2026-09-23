@@ -2483,7 +2483,12 @@ static int vla_mark = NO_VLA_MARK;
  * after the other can start with the same symbols in scope. */
 typedef struct { int serial, mark; } VlaBlock;
 
-static VlaBlock *vla_blocks;
+/* vla_top is one past the innermost open block, and is what every block
+ * touches: an entry is six bytes, and `vla_blocks[nvla_blocks]` scales
+ * the count by six, which on this target is a call into the runtime --
+ * at the opening of every block in the program. The pointer is stepped
+ * instead, and the count kept beside it for the rarer goto. */
+static VlaBlock *vla_blocks, *vla_top;
 static int       nvla_blocks, vla_blocks_cap, vla_serial;
 
 static void vla_block_open(void)
@@ -2494,9 +2499,11 @@ static void vla_block_open(void)
                              (size_t) vla_blocks_cap * sizeof *vla_blocks);
         if (!vla_blocks)
             acc_error("out of memory for blocks");
+        vla_top = vla_blocks + nvla_blocks;
     }
-    vla_blocks[nvla_blocks].serial = ++vla_serial;
-    vla_blocks[nvla_blocks].mark = NO_VLA_MARK;
+    vla_top->serial = ++vla_serial;
+    vla_top->mark = NO_VLA_MARK;
+    vla_top++;
     nvla_blocks++;
 }
 
@@ -2540,7 +2547,7 @@ static void block_vla_mark(void)
         return;
     vla_mark = gen_local(ACC_PTR_SIZE);
     if (nvla_blocks)
-        vla_blocks[nvla_blocks - 1].mark = vla_mark;
+        vla_top[-1].mark = vla_mark;
     gen_stack_mark(vla_mark);
 }
 
@@ -5120,12 +5127,19 @@ static void label_statement(void)
                      name_text(tok_name));
     next();
     expect(TK_COLON, "':'");
-    labels[label].at = gen_here();
-    labels[label].blocks = malloc((size_t) (nvla_blocks + 1) * sizeof (VlaBlock));
-    if (!labels[label].blocks)
-        acc_error("out of memory for labels");
-    memcpy(labels[label].blocks, vla_blocks, (size_t) nvla_blocks * sizeof (VlaBlock));
-    labels[label].nblocks = nvla_blocks;
+    {
+        /* The blocks open here, as bytes rather than a count of entries,
+         * which would be a multiply by six at every label. */
+        Label *l = labels + label;
+        size_t bytes = (size_t) ((char *) vla_top - (char *) vla_blocks);
+
+        l->at = gen_here();
+        l->blocks = malloc(bytes + 1);
+        if (!l->blocks)
+            acc_error("out of memory for labels");
+        memcpy(l->blocks, vla_blocks, bytes);
+        l->nblocks = nvla_blocks;
+    }
 
     for (i = 0; i < ngotos; i++) {
         if (goto_label[i] == label) {
@@ -5148,10 +5162,10 @@ static void labels_end(void)
         acc_error_at(labels[goto_label[0]].line, "the label '%s' is used but "
                      "never defined", name_text(labels[goto_label[0]].name));
     {
-        int i;
+        Label *l, *end = labels + nlabels;
 
-        for (i = 0; i < nlabels; i++)
-            free(labels[i].blocks);
+        for (l = labels; l < end; l++)          /* walked: see vla_top */
+            free(l->blocks);
     }
     nlabels = 0;
 }
@@ -5254,6 +5268,7 @@ static void block(void)
     if (vla_mark != NO_VLA_MARK)
         gen_stack_back(vla_mark);       /* the room those arrays took */
     nvla_blocks--;
+    vla_top--;
     vla_mark = outer_vla;
     sym_scope_end(mark);
     scope_mark = outer;
@@ -5427,7 +5442,9 @@ static NameRef main_name;       /* interned once, in translation_unit */
 
 static void body_end(int fn)
 {
-    if (sym_at(fn)->type == TY_INT && sym_at(fn)->name == main_name) {
+    const Sym *s = sym_at(fn);
+
+    if (s->name == main_name && s->type == TY_INT) {
         vpush_const(0, TY_INT);
         gen_return(tok_line);
     }
