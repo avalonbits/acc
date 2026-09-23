@@ -27,7 +27,19 @@
 # on comparable input through this same harness before building any theory. If
 # that hangs too, the harness or the environment is the problem.
 
-EMU=${ACC_EMU:-$HOME/fab-agon-emulator-1.2.4}
+# Which build. ACC_EMU names one; otherwise the one that counts cycles if it
+# is there, and the 1.2.4 release if it is not. The counting build is the
+# release directory with an agon-cli-emulator built from fab-agon-emulator
+# 2037657, which reports the cycles between a write to IO port 0x40 and one
+# to 0x41: test/bench.sh takes its count from that when there is one, and it
+# runs programs no slower than the release does.
+if [ -n "${ACC_EMU:-}" ]; then
+    EMU=$ACC_EMU
+elif [ -x "$HOME/fab-agon-emulator-2037657/agon-cli-emulator" ]; then
+    EMU=$HOME/fab-agon-emulator-2037657
+else
+    EMU=$HOME/fab-agon-emulator-1.2.4
+fi
 EMU_BIN=$EMU/agon-cli-emulator
 
 emu_available() {
