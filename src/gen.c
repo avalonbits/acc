@@ -1763,8 +1763,14 @@ static void vbinop(int op)
 /* Assignment in C has a value, so the stored value stays on the stack. The
  * caller drops it when it is a statement and keeps it when it is not, which
  * is what makes `a = b = 0` work without a special case. */
+/* How many side effects have been compiled: stores, steps and calls. The
+ * parser reads it before and after an expression it is about to throw away,
+ * to know whether throwing it away loses anything. */
+int gen_effects;
+
 void vstore_local(int offset, Type type)
 {
+    gen_effects++;
     int reg;
 
     /* An assignment converts the value to the type of the object, and
@@ -5598,6 +5604,7 @@ static int mem_builtin(const Sym *f, int nargs)
 
 void gen_call(int fn, int nargs, int params_first, int nparams)
 {
+    gen_effects++;
     Callee callee;
     const Sym *f = sym_at(fn);
 
@@ -5694,6 +5701,7 @@ void gen_data_fixup(int fn, int at)
 /* A call through the pointer to a function under the arguments. */
 void gen_call_indirect(int nargs)
 {
+    gen_effects++;
     Value *fp = vsp - 1 - nargs;
     Callee callee;
     int x = fp->ext;
@@ -6358,6 +6366,7 @@ static void vcopy_struct(void)
  * what was assigned. */
 void vstore_indirect(void)
 {
+    gen_effects++;
     Type to;
     int addr;
 
@@ -6675,6 +6684,7 @@ static void vstep(int op, Type type)
 /* ++x and --x on a local: x changed, and the answer is its new value. */
 void vprefix_local(int offset, Type type, int ext, int op)
 {
+    gen_effects++;
     vpush_local(offset, type);
     vset_ext(ext);
     vstep(op, type);
@@ -6712,6 +6722,7 @@ static int postfix_steps_back(Type type)
 /* x++ and x-- on a local: x changed, and the answer is its old value. */
 void vpostfix_local(int offset, Type type, int ext, int op)
 {
+    gen_effects++;
     if (postfix_steps_back(type)) {
         vpush_local(offset, type);
         vset_ext(ext);
@@ -6738,6 +6749,7 @@ void vpostfix_local(int offset, Type type, int ext, int op)
  * and parsing it twice would change it twice. */
 void vprefix_indirect(int op)
 {
+    gen_effects++;
     Type target = type_deref(vtype());
 
     vdup();
@@ -6748,6 +6760,7 @@ void vprefix_indirect(int op)
 
 void vpostfix_indirect(int op)
 {
+    gen_effects++;
     Type target = type_deref(vtype());
     Value held;
 

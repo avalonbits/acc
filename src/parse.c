@@ -2560,13 +2560,14 @@ static int in_params;
 static int array_size(const char *what, int line, int *variable)
 {
     GenMark mark;
-    int before = out_here();
+    int before = out_here(), effects;
     Type outer = narrow_dest;
     int val;
     Type type;
 
     *variable = 0;
     gen_mark(&mark);
+    effects = gen_effects;
     narrow_dest = 0;
     conditional();              /* `?:` as well, which is how C99 asserts at
                                  * build time: an array of `cond ? 1 : -1` */
@@ -2580,6 +2581,17 @@ static int array_size(const char *what, int line, int *variable)
     }
     if (!in_body || in_params) {
         gen_rollback(&mark);
+
+        /* C99 6.9.1 evaluates a parameter's array size on entry to the
+         * function, which only shows when it does something -- `int
+         * a[n++]` increments n. acc reads the size before there is a
+         * function to evaluate it in, and throws it away; that is only
+         * right when there was nothing in it to lose, so an expression
+         * that did something is refused rather than quietly dropped. */
+        if (in_params && gen_effects != effects)
+            acc_error_at(line, "a parameter's array size is evaluated when "
+                               "the function is entered, and acc cannot do "
+                               "that for one with a side effect");
         if (in_params)
             return -1;                  /* `int a[n]` is `int *a` */
         acc_error_at(line, "%s has to be a constant integer", what);

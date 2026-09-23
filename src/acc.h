@@ -714,6 +714,7 @@ enum { R_HL = 0, R_DE, R_BC, NREGS };
 void gen_init(void);
 void gen_func_begin(int fn, int nparams, Type returns);
 void gen_func_end(void);
+extern int gen_effects;               /* side effects compiled so far */
 int  gen_local(int size);
 int  gen_local_fits(int size);        /* whether (ix+d) still reaches */
 int  gen_local_far(int size);         /* one it does not: its array number */
