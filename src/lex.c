@@ -3589,8 +3589,11 @@ static void lex_number(void)
             int digit = *cursor;
 
             /* A suffix, which the loop used to read as a digit and refuse:
-             * 0xffu and 0x10L were errors. No hex digit is u or l. */
-            if ((digit | 0x20) == 'u' || (digit | 0x20) == 'l')
+             * 0xffu and 0x10L were errors. No hex digit is u or l. Nor is
+             * p, which is a hex float's exponent: C99 lets one go without
+             * a point, as 0x1p-126 does, and the loop refused that too. */
+            if ((digit | 0x20) == 'u' || (digit | 0x20) == 'l'
+                || (digit | 0x20) == 'p')
                 break;
             if (is_digit(digit))                     digit -= '0';
             else if (digit >= 'a' && digit <= 'f')   digit -= 'a' - 10;
@@ -3663,9 +3666,11 @@ static void lex_number(void)
      * one goes int, long int, long long int; a hex or octal one may also
      * be unsigned at each step, which is the only place the two forms
      * differ. acc has no long long, so past the end of long it refuses. */
-    /* The character the digits stopped at decides which kind it was. */
+    /* The character the digits stopped at decides which kind it was. A
+     * hex constant's digits take in e and f, so only a hex one stops at p. */
     if (*cursor == '.' || *cursor == 'e' || *cursor == 'E'
-        || *cursor == 'f' || *cursor == 'F') {
+        || *cursor == 'f' || *cursor == 'F'
+        || ((*cursor | 0x20) == 'p' && (start[1] | 0x20) == 'x')) {
         cursor = start;
         lex_floating();
 
