@@ -746,6 +746,31 @@ int main(void) {
 FLOATH
 runs_file "what is in <float.h>" "$tmp/float.c"
 
+# <iso646.h>: each word is its operator, and each check is one its
+# lookalike would get wrong -- 2 bitand 1 is 0 where 2 and 1 is 1, and
+# and and or have to stop at their left operand, which & and | do not.
+runs "what is in <iso646.h>" \
+'#include <iso646.h>
+
+static int calls;
+static int touch(int v) { calls++; return v; }
+
+int main(void) {
+    int r = 0, x = 12;
+
+    if ((2 and 1) == 1 and (2 bitand 1) == 0) r++;
+    if ((2 or 0) == 1 and (2 bitor 1) == 3) r++;
+    if ((6 xor 3) == 5 and (compl 0) == -1 and (not 5) == 0) r++;
+    if (3 not_eq 4 and not (3 not_eq 3)) r++;
+    x and_eq 10;                        /* 8 */
+    x or_eq 1;                          /* 9 */
+    x xor_eq 3;                         /* 10 */
+    if (x == 10) r++;
+    if (not (0 and touch(1)) and (1 or touch(1)) and calls == 0) r++;
+
+    return r + 36;              /* 6 checks */
+}'
+
 # main running off its closing brace, which C99 5.1.2.2.3 says is a return
 # of 0. It returned whatever was last in HL: here that is the 126 the body
 # leaves behind, which reads as a failure from a program that did nothing

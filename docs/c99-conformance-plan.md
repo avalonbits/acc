@@ -19,9 +19,10 @@ against the compiler rather than remembered:
   `#if`/`#ifdef`/`#elif`, `#line`, `#error`, `#pragma once`, `#` and `##`,
   and argument prescan. 139 of Decus CPP's C89 conformance tests pass; see
   `test/cpp89`.
-- **A library.** Twelve headers -- `<assert.h>`, `<ctype.h>`, `<limits.h>`,
-  `<math.h>`, `<stdarg.h>`, `<stdbool.h>`, `<stddef.h>`, `<stdint.h>`,
-  `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<time.h>` -- over 28 members,
+- **A library.** Fourteen headers -- `<assert.h>`, `<ctype.h>`,
+  `<float.h>`, `<iso646.h>`, `<limits.h>`, `<math.h>`, `<stdarg.h>`,
+  `<stdbool.h>`, `<stddef.h>`, `<stdint.h>`, `<stdio.h>`, `<stdlib.h>`,
+  `<string.h>`, `<time.h>` -- over 28 members,
   linked from `bin/libc.a` by acc's own linker, which takes only what is
   used. `<math.h>` is the whole of 7.12 that one floating type can carry,
   each function measured against the host's library rather than assumed:
@@ -53,9 +54,10 @@ a test's first error:
   `_Complex` is refused too.
 - **The headers a freestanding implementation must have** (clause 4):
   `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
-  `<stddef.h>`, `<stdint.h>`. `<float.h>` and `<iso646.h>` are the two
-  missing.
-- **The hosted library:** twelve of the twenty-four headers. Missing are
+  `<stddef.h>`, `<stdint.h>`. All seven are there. `<float.h>` says what
+  is true of the machine, including that `double` falls short of
+  5.2.4.2.2; see the data model below.
+- **The hosted library:** fourteen of the twenty-four headers. Missing are
   `<errno.h>`, `<setjmp.h>`, `<signal.h>`, `<locale.h>`, `<inttypes.h>`,
   `<wchar.h>`, `<wctype.h>`, `<complex.h>`, `<fenv.h>` and `<tgmath.h>`,
   and `<stdio.h>` has `snprintf` but not `sprintf` or `vsprintf`.
@@ -444,17 +446,19 @@ done, and then what is next.
 5. **`<ctype.h>`, `<assert.h>`, `<math.h>`.**
 6. **The 40 that compiled and ran wrongly**, down to five GNU-extension
    and unspecified-order tests; see above.
+7. **`<float.h>` and `<iso646.h>`**, the last two headers a freestanding
+   implementation must have. Writing the `<float.h>` check turned up a
+   lexer gap -- a hex float with no point, `0x1p-126`, was refused -- and
+   that agondev's float addition does not round a tie to even although its
+   `<float.h>` says `FLT_ROUNDS` is 1. acc's does.
 
 **Next, in this order:**
 
-1. **The two missing freestanding headers**, `<float.h>` and `<iso646.h>`.
-   `<float.h>` says what the machine's float is, including that `double`
-   falls short of 5.2.4.2.2.
-2. **A library function reached only by its address** has to be linked.
-3. **`sprintf` and `vsprintf`.** 12 tests.
-4. **The lexer's three**: wide literals, digraphs, universal character
+1. **A library function reached only by its address** has to be linked.
+2. **`sprintf` and `vsprintf`.** 12 tests.
+3. **The lexer's three**: wide literals, digraphs, universal character
    names. Each is required C99 and each is refused today.
-5. **gcc.c-torture/execute, all of it that the filter takes.**
+4. **gcc.c-torture/execute, all of it that the filter takes.**
    - Build the importer, filter, census, manifest, runner and scoreboard
      around it. The filter and the compile pass already exist as a script;
      what is missing is everything that turns a count into a scoreboard.
@@ -464,14 +468,14 @@ done, and then what is next.
    - And how many run and give the right answer, which has so far been
      measured by scripts outside the repository: 1,077 of the 1,127 that
      hold on this machine. The runner is what makes that number stay true.
-6. **c-testsuite, all 220.**
+5. **c-testsuite, all 220.**
    - ISC and MIT, so it can be vendored with its notices.
-7. **The rest of `gcc.dg`, not just `c99-*`.**
+6. **The rest of `gcc.dg`, not just `c99-*`.**
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.
-8. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
-9. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
+7. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
+8. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
    `test/fuzz/reduce.py` as the reducer.
 
 **Not being done, and why:**
