@@ -490,6 +490,53 @@ mkdir -p "$tmp/prlib" "$tmp/prless"
 ok "printf takes no sprintf with it" \
     "$(wc -c < "$tmp/prlib/pr.bin")" "$(wc -c < "$tmp/prless/pr.bin")"
 
+# A link takes from a member only what the program reaches, not the whole
+# member. `small` calls a static helper that reads a static table, so all
+# three come with it; `big` is in the same file and nothing calls it, so it
+# does not. The same program linked against a member with `big` deleted
+# from its source comes out the same size.
+cat > "$tmp/items1.c" <<'ITEMS'
+static const char table[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+static int helper(int x) { return table[x & 7]; }
+int small(int x) { return helper(x) + 36; }
+int big(int x) {
+    int i, s = 0;
+    for (i = 0; i < x; i++) s += i * i + (s >> 3) - (i ^ s) + i % 7 + i / 5;
+    for (i = 0; i < x; i++) s -= (s & i) + (s | 3) * 2 - i * 5 + i % 3;
+    return s;
+}
+ITEMS
+sed '/^int big/,$d' "$tmp/items1.c" > "$tmp/items1s.c"
+printf 'int big(int x);\nint uses_big(int x) { return big(x) + 1; }\n' > "$tmp/items2.c"
+printf 'int small(int x);\nint main(void) { return small(5); }\n' > "$tmp/items_a.c"
+printf 'int small(int x);\nint uses_big(int x);\nint main(void) { return small(5) + uses_big(0) - 1; }\n' > "$tmp/items_b.c"
+for f in items1 items1s items2 items_a items_b; do
+    "$ACC" -c "$tmp/$f.c" -o "$tmp/$f.o" >/dev/null 2>&1
+done
+mkdir -p "$tmp/itall" "$tmp/itsmall"
+"$ACC" -a "$tmp/itall/lib.a" "$tmp/items1.o" "$tmp/items2.o" >/dev/null 2>&1
+"$ACC" -a "$tmp/itsmall/lib.a" "$tmp/items1s.o" "$tmp/items2.o" >/dev/null 2>&1
+"$ACC" "$tmp/items_a.o" "$tmp/itall/lib.a" -o "$tmp/itall/a.bin" -x >/dev/null 2>&1
+"$ACC" "$tmp/items_a.o" "$tmp/itsmall/lib.a" -o "$tmp/itsmall/a.bin" -x >/dev/null 2>&1
+ok "a member gives only what is reached" \
+    "$(wc -c < "$tmp/itall/a.bin")" "$(wc -c < "$tmp/itsmall/a.bin")"
+if emu_available >/dev/null 2>&1; then
+    test/agon.sh "$tmp/itall/a.bin" >/dev/null 2>&1
+    ok "and what is reached runs" "$?" 42
+
+    # And a second look at a member, for what another member wants of it:
+    # uses_big is found after small's part of the first member is placed,
+    # and big is in that same member.
+    if "$ACC" "$tmp/items_b.o" "$tmp/itall/lib.a" -o "$tmp/itall/b.bin" -x >/dev/null 2>&1; then
+        test/agon.sh "$tmp/itall/b.bin" >/dev/null 2>&1
+        ok "a member looked at twice" "$?" 42
+    else
+        ok "a member looked at twice" "it did not link" 42
+    fi
+else
+    pass=$((pass + 2))
+fi
+
 # A member that wants another member is pulled in too, and the link looks
 # again rather than once.
 printf 'int inner(int n) { return n + 20; }\n' > "$tmp/inner.c"

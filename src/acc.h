@@ -1101,10 +1101,11 @@ enum {
 typedef struct {
     unsigned char *all;
     const char    *path;
-    unsigned char *syms, *relocs, *deps, *text;
+    unsigned char *syms, *relocs, *deps, *items, *text;
     char          *strings;
     int            build;    /* the acc that made it: see src/build_id.sh */
-    int            text_len, bss_len, nsyms, nrelocs, ndeps, strings_len;
+    int            text_len, bss_len, nsyms, nrelocs, ndeps, nitems;
+    int            strings_len;
 } Object;
 
 /* A library: objects end to end, with a list of what each defines in front
@@ -1126,6 +1127,7 @@ void        ar_member(const Archive *a, int i, Object *o);
 const char *ar_member_name(const Archive *a, int i);
 
 void obj_write(const char *path);
+int  obj_item(const Object *o, int i);  /* where item i starts in the text */
 void obj_take(unsigned char *all, int len, const char *path, Object *o);
 int  obj_current(const char *path, const char *source);
 void obj_read(const char *path, Object *o);

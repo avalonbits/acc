@@ -7097,23 +7097,192 @@ static void link_object(const char *path)
     place_object(&o, path);
 }
 
+/* What a link has taken from one member of a library so far: where each of
+ * its items went, or -1 for one still left behind, and where its bss went,
+ * or -1 while nothing that was taken wants it. */
+typedef struct {
+    int *placed;
+    int  bss;
+} Taken;
+
+/* Which item the text offset `at` is in: the last one to start at or
+ * before it. */
+static int item_of(const Object *o, int at)
+{
+    int low = 0, high = o->nitems - 1;
+
+    while (low < high) {
+        int mid = (low + high + 1) / 2;
+
+        if (obj_item(o, mid) <= at)
+            low = mid;
+        else
+            high = mid - 1;
+    }
+
+    return low;
+}
+
+static int item_end(const Object *o, int i)
+{
+    return i + 1 < o->nitems ? obj_item(o, i + 1) : o->text_len;
+}
+
+/* Part of a member: the item `name` is in, and every item that one holds an
+ * address in, and theirs, and so on -- which is everything it can reach,
+ * since every address the compiler writes is a relocation. What was taken
+ * before stays where it went, and what is new goes where the image has got
+ * to, in the order it was in, so that items next to each other in the
+ * member are next to each other in the image.
+ *
+ * A symbol whose item is taken is defined here; one whose item is not is
+ * left for another member, or another look at this one. The bss is taken
+ * whole, the first time anything taken wants it: it costs the machine room
+ * past the image and none in the image itself. */
+static void take_items(Object *op, Taken *t, const char *name, const char *path)
+{
+    Object o = *op;
+    char *want = calloc((size_t) o.nitems + 1, 1);
+    int *queue = malloc(((size_t) o.nitems + 1) * sizeof *queue);
+    int nqueue = 0, i, r, base, want_bss = 0, new_bss = 0;
+
+    if (!want || !queue)
+        acc_error("out of memory for '%s'", path);
+
+    /* The item the wanted name is in -- or its bss, if that is where it is. */
+    for (i = 0; i < o.nsyms; i++) {
+        int flags = obj_sym_flags(&o, i);
+
+        if (!(flags & OBJ_DEFINED) || strcmp(obj_sym_name(&o, i), name))
+            continue;
+        if (flags & OBJ_BSS) {
+            want_bss = 1;
+        } else {
+            int item = item_of(&o, obj_sym_value(&o, i));
+
+            if (t->placed[item] < 0 && !want[item]) {
+                want[item] = 1;
+                queue[nqueue++] = item;
+            }
+        }
+    }
+
+    /* And everything that reaches, a relocation at a time. They are in
+     * order of where they are, as the items are. */
+    while (nqueue) {
+        int item = queue[--nqueue], from = obj_item(&o, item);
+        int to = item_end(&o, item);
+
+        for (r = 0; r < o.nrelocs; r++) {
+            int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), next;
+
+            if (at < from || at >= to)
+                continue;
+            if (which == 1)
+                want_bss = 1;
+            if (which != 0)
+                continue;
+            next = item_of(&o, get24(o.text + at));
+            if (t->placed[next] < 0 && !want[next]) {
+                want[next] = 1;
+                queue[nqueue++] = next;
+            }
+        }
+    }
+
+    base = out_here();
+    for (i = 0; i < o.nitems; i++) {
+        int b;
+
+        if (!want[i])
+            continue;
+        t->placed[i] = out_here();
+        for (b = obj_item(&o, i); b < item_end(&o, i); b++)
+            out_byte(o.text[b]);
+    }
+    if (want_bss && t->bss < 0) {
+        t->bss = gen_bss_reserve(o.bss_len);
+        new_bss = 1;
+    }
+
+    /* What is new, at the address it now has. */
+    for (i = 0; i < o.nsyms; i++) {
+        int flags = obj_sym_flags(&o, i), value, item, sym;
+
+        if (!(flags & OBJ_DEFINED))
+            continue;
+        value = obj_sym_value(&o, i);
+        if (flags & OBJ_BSS) {
+            if (!new_bss)
+                continue;
+        } else {
+            item = item_of(&o, value);
+            if (!want[item])
+                continue;
+        }
+        sym = link_symbol(obj_sym_name(&o, i), flags);
+        if ((sym_flags(sym) & SYMF_DEFINED) || gen_bss_offset(sym) >= 0)
+            acc_error("'%s' is defined in more than one object, and '%s' is "
+                      "one of them", obj_sym_name(&o, i), path);
+        if (flags & OBJ_BSS) {
+            gen_bss_symbol(sym, t->bss + value);
+
+            continue;
+        }
+        sym_at(sym)->val = t->placed[item] + value - obj_item(&o, item);
+        sym_set_flags(sym, SYMF_DECLARED | SYMF_DEFINED | SYMF_PARAMS);
+    }
+
+    /* The slots in what is new that hold an address, as place_object does
+     * them, with each address inside the member taken to where its item
+     * went -- now, or on an earlier look. */
+    for (r = 0; r < o.nrelocs; r++) {
+        int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), item, dest;
+
+        if (at < 0 || at + 3 > o.text_len)
+            acc_error("'%s' has a relocation at %06x, outside its %d bytes",
+                      path, at, o.text_len);
+        item = item_of(&o, at);
+        if (!want[item])
+            continue;
+        dest = t->placed[item] + at - obj_item(&o, item);
+        if (which == 0) {
+            int v = get24(o.text + at), target = item_of(&o, v);
+
+            out_patch24(dest, t->placed[target] + v - obj_item(&o, target));
+        } else if (which == 1) {
+            out_patch24(dest, get24(o.text + at) + t->bss);
+            gen_bss_fixup(dest);
+        } else {
+            gen_data_fixup(link_symbol(obj_sym_name(&o, which - 2),
+                                       obj_sym_flags(&o, which - 2)), dest);
+        }
+    }
+    (void) base;
+    free(want);
+    free(queue);
+}
+
 /* A library, which is asked only for what the link is short of.
  *
- * Round and round until it has nothing more to offer: a member pulled in may
+ * Round and round until it has nothing more to offer: what is taken may
  * call something that nothing has called yet, and that something may be in
- * this same library. Which is why a link takes more than one look at a
- * library and only one at an object.
+ * this same library -- or in a part of a member that has been looked at
+ * already, which is looked at again. Which is why a link takes more than one
+ * look at a library and only one at an object.
  *
- * A member is placed exactly as an object is, because it is one. */
+ * What is taken from a member is only what the program reaches: see
+ * take_items. An object named on the command line is placed whole, as a
+ * program's own code is. */
 static void link_archive(const char *path)
 {
     Archive a;
-    char *pulled;
-    int again = 1;
+    Taken *taken;
+    int again = 1, m;
 
     ar_open(path, &a);
-    pulled = calloc((size_t) a.nmembers + 1, 1);
-    if (!pulled)
+    taken = calloc((size_t) a.nmembers + 1, sizeof *taken);
+    if (!taken)
         acc_error("out of memory for '%s'", path);
 
     while (again) {
@@ -7122,21 +7291,40 @@ static void link_archive(const char *path)
         again = 0;
         for (i = 0; i < n; i++) {
             int sym = gen_fixup_sym(i);
+            const char *name;
             Object o;
-            int m;
 
-            if (!gen_no_address(sym))
+            /* A variable whose room is in a bss has no address until the
+             * link ends, and is defined all the same. */
+            if (!gen_no_address(sym) || gen_bss_offset(sym) >= 0)
                 continue;
-            m = ar_find(&a, name_text(sym_at(sym)->name));
-            if (m < 0 || pulled[m])
+            name = name_text(sym_at(sym)->name);
+            m = ar_find(&a, name);
+            if (m < 0)
                 continue;
-            pulled[m] = 1;
             ar_member(&a, m, &o);
-            place_object(&o, ar_member_name(&a, m));
+            if (!taken[m].placed) {
+                int k;
+
+                taken[m].placed = malloc(((size_t) o.nitems + 1)
+                                         * sizeof *taken[m].placed);
+                if (!taken[m].placed)
+                    acc_error("out of memory for '%s'", path);
+                for (k = 0; k < o.nitems; k++)
+                    taken[m].placed[k] = -1;
+                taken[m].bss = -1;
+            }
+            take_items(&o, &taken[m], name, ar_member_name(&a, m));
+            obj_free(&o);
+            if (gen_no_address(sym) && gen_bss_offset(sym) < 0)
+                acc_error("'%s' says it defines '%s', and its member does "
+                          "not", path, name);
             again = 1;
         }
     }
-    free(pulled);
+    for (m = 0; m < a.nmembers; m++)
+        free(taken[m].placed);
+    free(taken);
     ar_close(&a);
 }
 

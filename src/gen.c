@@ -4560,6 +4560,8 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
         to = out_cut_moved(sym->val);
         if (to >= 0)
             sym->val = to;
+        else if (sym->kind == SYM_FUNC)
+            sym->val = -1;      /* one of the ones taken out: it is nowhere */
     }
 }
 

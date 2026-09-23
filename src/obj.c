@@ -32,9 +32,11 @@
  *   16  3   nrelocs
  *   19  3   ndeps
  *   22  3   strings_len
- *   25      symbols   nsyms   * 7   name, value, flags
+ *   25  3   nitems
+ *   28      symbols   nsyms   * 7   name, value, flags
  *           relocs    nrelocs * 6   at, sym
  *           deps      ndeps   * 12  path, size, sum, weighted
+ *           items     nitems  * 3   where each starts in the text
  *           strings   strings_len
  *           text      text_len
  *
@@ -60,19 +62,73 @@
  * one of these for every address the compiler wrote and a byte each is more
  * than the whole of the rest of the table.
  *
+ * The items are the text cut where each function and each variable in it
+ * begins, this file's own `static` ones included, and at zero: each runs to
+ * where the next begins, in order. They are what lets a link take part of an
+ * object rather than all of it. Taking an item means taking every item its
+ * relocations point into, since that is every address it holds, and an item
+ * that no one wants stays behind -- so a library is not made of files cut
+ * to one function each for a program to carry only what it calls.
+ *
  * The dependencies are every file the compile read. They are not needed to
  * link, and they are here rather than anywhere else because the question
  * they answer -- "does this object have to be made again?" -- is about the
  * object. An answer kept in a file of its own is one that can be lost, or go
  * stale, on its own. */
-#define OBJ_VERSION  4
-#define OBJ_HEADER   25
+#define OBJ_VERSION  5
+#define OBJ_HEADER   28
 #define OBJ_SYM      7
 #define OBJ_RELOC    6
 #define OBJ_DEP      12
 
+#define OBJ_ITEM     3
+
 /* ------------------------------------------------------------------ */
 /* writing                                                             */
+
+static int exported(const Sym *s);
+
+static int int_order(const void *a, const void *b)
+{
+    int x = *(const int *) a, y = *(const int *) b;
+
+    return (x > y) - (x < y);
+}
+
+/* Where each item begins: zero, and every function and every variable with
+ * room in the text, whether or not its name leaves the file. Sorted, and
+ * each once. Answers how many; *items is the caller's to free. */
+static int items_of(int **items)
+{
+    int nglobals = sym_nglobals(), step = (int) sizeof(Sym);
+    int *at = malloc((size_t) (nglobals / step + 2) * sizeof *at);
+    int n = 0, i, kept = 0, s;
+
+    if (!at)
+        acc_error("out of memory for the object");
+    at[n++] = 0;
+    for (s = 0; s < nglobals; s += step) {
+        const Sym *sym = sym_at(s);
+
+        if (sym->kind == SYM_FUNC) {
+            /* A static one nothing called has been taken out of the text,
+             * and is at -1: it begins nothing. */
+            if ((sym_flags(s) & SYMF_DEFINED) && sym->val >= 0)
+                at[n++] = sym->val;
+        } else if (exported(sym) && gen_bss_offset(s) < 0 && sym->val >= 0) {
+            at[n++] = sym->val;
+        }
+    }
+    qsort(at, (size_t) n, sizeof *at, int_order);
+    for (i = 0; i < n; i++)
+        if ((i == 0 || at[i] != at[kept - 1]) && at[i] < out_len())
+            at[kept++] = at[i];
+    if (!kept)
+        at[kept++] = 0;                 /* an object with no text at all */
+    *items = at;
+
+    return kept;
+}
 
 /* The names, end to end. Built as the symbols and the dependencies are
  * walked, and written out whole. */
@@ -152,8 +208,8 @@ void obj_write(const char *path)
     int nglobals = sym_nglobals(), step = (int) sizeof(Sym);
     int nsyms = 0, nrelocs = out_nrelocs(), ndeps = lex_ndeps();
     int nexterns = gen_nexterns(), nwalk = nglobals / step;
-    int *name_at, *index_of, *dep_at, *slot_of;
-    int i, s, n;
+    int *name_at, *index_of, *dep_at, *slot_of, *items;
+    int i, s, n, nitems = items_of(&items);
 
     /* The names first, because the header says how long they come to, and
      * because what each symbol and each dependency points at is settled by
@@ -200,6 +256,7 @@ void obj_write(const char *path)
     put_num(f, nrelocs);
     put_num(f, ndeps);
     put_num(f, strings_len);
+    put_num(f, nitems);
 
     for (s = 0, n = 0; s < nglobals; s += step, n++) {
         const Sym *sym = sym_at(s);
@@ -249,6 +306,9 @@ void obj_write(const char *path)
         put_num(f, (int) weighted);
     }
 
+    for (i = 0; i < nitems; i++)
+        put_num(f, items[i]);
+
     if (strings_len
         && (int) fwrite(strings, 1, (size_t) strings_len, f) != strings_len)
         acc_error("short write on '%s'", path);
@@ -261,6 +321,7 @@ void obj_write(const char *path)
     free(index_of);
     free(dep_at);
     free(slot_of);
+    free(items);
 }
 
 /* ------------------------------------------------------------------ */
@@ -308,6 +369,7 @@ static int take_object(unsigned char *all, long size, const char *path,
     o->nrelocs = get24(all + 16);
     o->ndeps = get24(all + 19);
     o->strings_len = get24(all + 22);
+    o->nitems = get24(all + 25);
 
     at = OBJ_HEADER;
     o->syms = all + at;
@@ -316,6 +378,8 @@ static int take_object(unsigned char *all, long size, const char *path,
     at += o->nrelocs * OBJ_RELOC;
     o->deps = all + at;
     at += o->ndeps * OBJ_DEP;
+    o->items = all + at;
+    at += o->nitems * OBJ_ITEM;
     o->strings = (char *) all + at;
     at += o->strings_len;
     o->text = all + at;
@@ -380,6 +444,11 @@ void obj_free(Object *o)
 {
     free(o->all);
     o->all = NULL;
+}
+
+int obj_item(const Object *o, int i)
+{
+    return get24(o->items + i * OBJ_ITEM);
 }
 
 const char *obj_sym_name(const Object *o, int i)
