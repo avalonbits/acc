@@ -39,10 +39,24 @@ int main(void)
     y = (x)++ + 1;              /* the old value, then the step */
     if (y == 16 && x == 16) r++;
 
+    /* A chain after the `)` belongs to what is inside, and what it ends
+     * at may be assigned to: `(p)[i] = v`, 991201-1's `(c.d->pal)[k++] =`. */
+    {
+        struct { int a[3]; } t = { { 0, 0, 0 } }, *pt = &t;
+        int *q = t.a;
+
+        (q)[0] = 4;
+        (t.a)[1] = 5;
+        (pt->a)[2] = 6;
+        (t).a[0] += 1;
+        (pt)->a[1] *= 2;
+        if (t.a[0] == 5 && t.a[1] == 10 && t.a[2] == 6) r++;
+    }
+
     /* And a parenthesis that is only a value binds as it always did. */
     if (2 * (x) + 1 == 33 && (x + 1) * 2 == 34) r++;
     if ((c = x) != 0 && c == 16) r++;
     if ((p)->n == 4 && (s)[1] == 'b' && (node).n == 4) r++;
 
-    return r + 32;              /* 10 checks */
+    return r + 31;              /* 11 checks */
 }

@@ -1690,6 +1690,21 @@ static void paren_rest(void)
  * assignment follows the `)` -- the one thing a caller has to do itself. A
  * `++`, a `--` or a subscript after it is done here, and then, as for
  * anything else the parenthesis held, 0 with the value on the stack. */
+/* After the `)` and any chain after it: 1, the object left for the caller,
+ * when an assignment follows; otherwise its value -- stepped first, for a
+ * `++` or a `--` -- and 0. `object` says whether there is an object at all
+ * rather than a value, which there is not after `(f)(x)`. */
+static int paren_object_rest(int object)
+{
+    if (!object)
+        return 0;
+    if (tok == TK_ASSIGN || compound_op[tok])
+        return 1;
+    object_value();
+
+    return 0;
+}
+
 __attribute__((noinline))
 static int paren_name(void)
 {
@@ -1700,8 +1715,13 @@ static int paren_name(void)
     if (tok == TK_RPAREN) {             /* `(x)`: the name is all of it */
         next();
         sym = sym_find_value(name);
+
+        /* `(p)[i] = v`, `(s).m += 2`: the chain after the `)` is the
+         * name's, and what it ends at may be assigned to. */
+        if (tok_postfix())
+            return paren_object_rest(name_operand(sym, name) == NAME_OBJECT);
         if (tok != TK_ASSIGN && !compound_op[tok]) {
-            symbol_value(sym, name);    /* a `++` or a chain after it too */
+            symbol_value(sym, name);    /* a `++` after it too */
 
             return 0;
         }
@@ -1725,12 +1745,10 @@ static int paren_name(void)
         what = name_operand(sym_find_value(name), name);
         if (what == NAME_OBJECT && tok == TK_RPAREN) {
             next();
-            if (tok == TK_ASSIGN || compound_op[tok])
-                return 1;
-            if (!tok_postfix() || postfix_chain(POST_OBJECT) == POST_OBJECT)
-                object_value();         /* a `++` or `--` after it too */
 
-            return 0;
+            return paren_object_rest(!tok_postfix()
+                                     || postfix_chain(POST_OBJECT)
+                                        == POST_OBJECT);
         }
         object_rest(what, name);
     } else {
