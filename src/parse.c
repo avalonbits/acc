@@ -2344,6 +2344,8 @@ static int bitfield_width(Type type, NameRef name, int line)
     return width;
 }
 
+static int vla_length;           /* see array_dims */
+
 static void record_members(int x, int is_union, int line)
 {
     /* Where the next member goes: a byte, and a bit within it, for a
@@ -2393,6 +2395,10 @@ static void record_members(int x, int is_union, int line)
             if (tok != TK_COLON)        /* `int : 3` has no name */
                 name = direct_declarator_out(declarator_stars_out(base),
                                              bx, &type, &ext, &count);
+            if (vla_length)             /* C99 6.7.2.1p8 */
+                acc_error_at(mline, "a member's size has to be known as the "
+                                    "program is compiled, and this array's "
+                                    "length is worked out as it runs");
             if (!count)
                 func_suffix(&type, &ext);
             if (type_is_func(type))
@@ -3014,10 +3020,44 @@ static void array_brackets(int line)
  * of elements -- -1 for `[]`, which only the first may be -- and *elem their
  * type, which for an array of arrays is itself an array type: `int m[3][4]`
  * is three elements of int[4]. */
+/* The frame slot a VLA's size is in, when the type is one; 0 otherwise. */
+static inline __attribute__((always_inline))
+int vla_size_slot(Type type, int x)
+{
+    return type_is_array(type) ? ext_vla_size(x) : 0;
+}
+
+/* A row whose length or whose element's size the program works out: its
+ * length -- the slot `length` holds it, or it is the constant `count` --
+ * and its size, that times its element's, each put in a frame slot where
+ * the declaration is, which is when C99 says they are worked out. */
+__attribute__((noinline))
+static int vla_type(Type elem, int elem_x, int length, int count)
+{
+    int size = gen_local(ACC_INT_SIZE), step = vla_size_slot(elem, elem_x);
+
+    if (!length) {
+        length = gen_local(ACC_INT_SIZE);
+        vpush_const(count, TY_INT);
+        vstore_local(length, TY_INT);
+        vdrop();
+    }
+    vpush_local(length, TY_INT);
+    if (step)
+        vpush_local(step, TY_INT);
+    else
+        vpush_const(type_bytes(elem, elem_x), TY_INT);
+    vapply(TK_STAR, 0);
+    vstore_local(size, TY_INT);
+    vdrop();
+
+    return ext_vla(elem, elem_x, length, size);
+}
+
 static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
                       int *count)
 {
-    int dims[8], n = 0, i;
+    int dims[8], lengths[8], n = 0, i;
 
     vla_length = 0;
     while (tok == TK_LBRACKET) {
@@ -3027,18 +3067,17 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
         array_brackets(line);
         if (n == 8)
             acc_error_at(line, "an array may have at most 8 dimensions");
+        lengths[n] = 0;
         if (tok != TK_RBRACKET) {
             int variable;
 
             d = array_size("an array's size", line, &variable);
             if (variable) {
-                /* Only the first: the ones after it are how far an element
-                 * steps, and a step the compiler cannot work out is a
-                 * multiply on every subscript. */
-                if (n > 0)
-                    acc_error_at(line, "only an array's first dimension may "
-                                       "be worked out as it runs");
-                vla_length = 1;
+                /* Kept in the frame, since the rows' sizes are worked out
+                 * from it once every dimension has been read. */
+                lengths[n] = gen_local(ACC_INT_SIZE);
+                vstore_local(lengths[n], TY_INT);
+                vdrop();
             } else if (d < 0) {
                 /* A parameter's `[n]`, which array_size threw away: the
                  * parameter is a pointer, as `[]` would have made it. */
@@ -3070,10 +3109,25 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
     *elem = base;
     *elem_x = base_x;
     for (i = n - 1; i >= 1; i--) {
-        *elem_x = ext_array(*elem, *elem_x, dims[i]);
+        *elem_x = lengths[i] || vla_size_slot(*elem, *elem_x)
+                  ? vla_type(*elem, *elem_x, lengths[i], dims[i])
+                  : ext_array(*elem, *elem_x, dims[i]);
         *elem = TY_EXT;
     }
     *count = dims[0];
+
+    /* A length the program works out, or rows whose size it does: the
+     * length goes on the stack, for the declaration to take the room. */
+    if (lengths[0] || vla_size_slot(*elem, *elem_x)) {
+        if (lengths[0])
+            vpush_local(lengths[0], TY_INT);
+        else
+            vpush_const(dims[0], TY_INT);
+        vla_length = 1;
+        *count = -1;
+
+        return n;
+    }
     if (*count > 0 && (long) *count * type_bytes(*elem, *elem_x) > 0x7fffff)
         acc_error_at(tok_line, "an array this large does not fit in memory");
 
@@ -3122,6 +3176,21 @@ static Type type_name_elem(int *x, int *count, Type *elem, int *elem_x)
     abstract_ok = saved;
     *elem = type;
     *elem_x = *x;
+
+    /* `sizeof(int[n][m])`, `sizeof(row)` with `typedef int row[n];`: an
+     * array whose length the program works out, as a type of its own, its
+     * size put in the frame here. */
+    if (vla_length) {
+        int length = gen_local(ACC_INT_SIZE);
+
+        vstore_local(length, TY_INT);
+        vdrop();
+        vla_length = 0;
+        *x = vla_type(type, *x, length, 0);
+        *count = 0;
+
+        return TY_EXT;
+    }
     if (*count) {
         if (*count > 0)
             *x = ext_array(type, *x, *count);
@@ -3728,6 +3797,11 @@ static void sizeof_value(void)
 
     if (type == TY_VOID)
         acc_error_at(line, "'void' has no size");
+    if (vla_size_slot(type, x)) {       /* a VLA's row, or a typedef of one */
+        vpush_local(vla_size_slot(type, x), TY_UINT);
+
+        return;
+    }
     vpush_const(type_bytes(type, x), TY_UINT);
 }
 
@@ -3787,7 +3861,8 @@ static void decl_apply(const DeclOp *op, Type *t, int *x)
                                    "has; an array of pointers to them is");
         if (type_is_struct(*t))
             record_complete(*x, tok_line);
-        *x = ext_array(*t, *x, op->a);
+        *x = op->b || vla_size_slot(*t, *x) ? vla_type(*t, *x, op->b, op->a)
+                                            : ext_array(*t, *x, op->a);
         *t = TY_EXT;
         break;
     case DECL_FUNC:
@@ -3888,16 +3963,25 @@ static NameRef decl_direct(void)
     suffix = ndecl_ops;
     for (;;) {
         if (accept(TK_LBRACKET)) {
-            int n = -1, line = tok_line;
+            int n = -1, line = tok_line, length = 0, variable;
 
             array_brackets(line);
             if (tok != TK_RBRACKET) {
-                n = constant_int("an array's size", line);
-                if (n <= 0)
+                n = array_size("an array's size", line, &variable);
+
+                /* `int (*p)[m]`: a length the program works out, kept in
+                 * the frame for when the type is put together. */
+                if (variable) {
+                    length = gen_local(ACC_INT_SIZE);
+                    vstore_local(length, TY_INT);
+                    vdrop();
+                    n = 0;
+                } else if (n == 0) {
                     acc_error_at(line, "an array needs at least one element");
+                }
             }
             expect(TK_RBRACKET, "']'");
-            decl_push(DECL_ARRAY, n, 0, 0);
+            decl_push(DECL_ARRAY, n, length, 0);
         } else if (accept(TK_LPAREN)) {
             int first, count, given = param_types(&first, &count);
 
@@ -4047,6 +4131,17 @@ static NameRef paren_declarator(Type t, int tx, Type *type, int *ext,
                 *ext = tx;
                 *count = op->a;
 
+                /* An array whose length the program works out: the length
+                 * on the stack, as array_dims leaves it. */
+                if (op->b || vla_size_slot(t, tx)) {
+                    if (op->b)
+                        vpush_local(op->b, TY_INT);
+                    else
+                        vpush_const(op->a, TY_INT);
+                    vla_length = 1;
+                    *count = -1;
+                }
+
                 return name;
             }
             decl_apply(op, &t, &tx);
@@ -4080,6 +4175,19 @@ static void typedef_array(Type *type, int *ext, int *count)
     *type = ext_elem(x);
     *ext = ext_elem_x(x);
     *count = ext_count(x);
+
+    /* A typedef of an array whose length the program works out, `typedef
+     * int row[n];`: the length it had where the typedef was, for the
+     * declaration to take the room. */
+    if (ext_vla_size(x)) {
+        if (!in_body || in_params)
+            acc_error_at(tok_line, "an array whose length is worked out as "
+                                   "it runs can only be declared in a "
+                                   "function's body");
+        vpush_local(ext_vla_length(x), TY_INT);
+        vla_length = 1;
+        *count = -1;
+    }
 }
 
 /* The same, with the common case -- a plain name, and nothing after it --
@@ -4852,8 +4960,12 @@ static void local_vla(Type elem, int elem_x, NameRef name, int line)
     not_void(elem, "an array's element", line);
     block_vla_mark();
 
-    /* bytes = length * the element's size, and the size local holds it. */
-    if (step != 1) {
+    /* bytes = length * the element's size, and the size local holds it:
+     * a row's size read from the frame when the program worked it out. */
+    if (vla_size_slot(elem, elem_x)) {
+        vpush_local(vla_size_slot(elem, elem_x), TY_INT);
+        vapply(TK_STAR, 0);
+    } else if (step != 1) {
         vpush_const(step, TY_INT);
         vapply(TK_STAR, 0);
     }
@@ -4908,6 +5020,18 @@ static void typedef_declarators(Type base, int bx, unsigned char bc)
 
         if (!count)
             func_suffix(&type, &ext);
+
+        /* `typedef int row[n];`: its length and size are worked out here,
+         * where C99 says they are, and the type keeps where they went. */
+        if (vla_length) {
+            int length = gen_local(ACC_INT_SIZE);
+
+            vstore_local(length, TY_INT);
+            vdrop();
+            ext = vla_type(type, ext, length, 0);
+            type = TY_EXT;
+            count = 0;
+        }
         if (count < 0)
             acc_error_at(line, "a typedef of an array needs the array's size");
         if (count) {
@@ -4997,6 +5121,9 @@ static void storage_declarators(int storage, Type base, int bx,
         Type type, stars = declarator_stars(base);
         NameRef name = direct_declarator(stars, bx, &type, &ext, &count);
 
+        if (vla_length)                 /* C99 6.7.5.2p2 */
+            acc_error_at(line, "a static or extern array's length has to be "
+                               "known as the program is compiled");
         decl_const = stars != base ? stars_const : bc;
         decl_bottom_const = bc ? SQ_CONST : 0;
         if (tok == TK_LPAREN) {

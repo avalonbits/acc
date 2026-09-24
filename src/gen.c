@@ -6312,6 +6312,28 @@ static void vcmp_pointer_check(Type left, Type right)
     acc_error_at(tok_line, "these are pointers to different types");
 }
 
+/* Whether two extensions that are not the same one are rows of the same
+ * shape all the same: every VLA is its own extension, and C99 6.7.5.2p6
+ * makes two arrays of the same element type compatible whatever their
+ * lengths, a VLA's included. */
+__attribute__((noinline))
+static int same_rows(int a, int b)
+{
+    return (ext_vla_size(a) || ext_vla_size(b))
+           && ext_elem(a) == ext_elem(b) && ext_elem_x(a) == ext_elem_x(b);
+}
+
+/* A step that is a row whose length the program works out, `int m[n][n]`'s:
+ * what ext_bytes holds for one is the frame slot its size is in, which is
+ * below the frame pointer and so negative -- past any size an array can
+ * have. The constant just pushed for it becomes a read of that slot, which
+ * is one compare and a store where it is written: a call, or a branch
+ * round a path of its own, moved clang's code for vapply about enough to
+ * cost 0.7% on matrix.c. */
+#define vla_step_fix(step) \
+    ((unsigned) (step) > 0x7fffffu ? (void) ((vsp - 1)->kind = VAL_LOCAL) \
+                                   : (void) 0)
+
 static void vbinop_pointer(int op, Type left, Type right)
 {
     int both = type_pointer(left) && type_pointer(right);
@@ -6325,13 +6347,15 @@ static void vbinop_pointer(int op, Type left, Type right)
                                "arithmetic on it has no step to take");
     if (type_is_func(type_deref(ptr)))
         acc_error_at(tok_line, "a pointer to a function has no step to take");
+
     step = type_step(ptr, ext);
 
     if (both) {
         if (op != TK_MINUS)
             acc_error_at(tok_line, "%s does not take two pointers",
                          tok_spelling(op));
-        if (left != right || (vsp - 2)->ext != (vsp - 1)->ext)
+        if (left != right || ((vsp - 2)->ext != (vsp - 1)->ext
+                              && !same_rows((vsp - 2)->ext, (vsp - 1)->ext)))
             acc_error_at(tok_line, "these are pointers to different types");
 
         /* Signed before the divide and not after it. A pointer counts as
@@ -6345,6 +6369,7 @@ static void vbinop_pointer(int op, Type left, Type right)
         (vsp - 1)->type = TY_INT;
         if ((unsigned) step > 1u) {
             vpush_const(step, TY_INT);
+            vla_step_fix(step);
             vbinop(TK_SLASH);
             (vsp - 1)->type = TY_INT;
         }
@@ -6366,6 +6391,7 @@ static void vbinop_pointer(int op, Type left, Type right)
 
     if ((unsigned) step > 1u) {
         vpush_const(step, TY_INT);
+        vla_step_fix(step);
         vbinop(TK_STAR);
     }
     vbinop(op);

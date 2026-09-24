@@ -399,7 +399,7 @@ static struct {
 } ext_types[NEXT_TYPES + 1];
 
 enum { EXT_ARRAY = 0, EXT_STRUCT = 1, EXT_UNION = 2, EXT_COMPLETE = 4,
-       EXT_BITS = 8, EXT_FUNC = 16, EXT_FLEX = 32 };
+       EXT_BITS = 8, EXT_FUNC = 16, EXT_FLEX = 32, EXT_VLA = 64 };
 
 static unsigned char ext_what[NEXT_TYPES + 1];      /* the kind, and whether
                                                      * a record is complete */
@@ -422,7 +422,7 @@ int ext_array(Type elem, int elem_x, int count)
     int i;
 
     for (i = 1; i <= next_types; i++)
-        if (!(ext_what[i] & (EXT_STRUCT | EXT_UNION | EXT_FUNC))
+        if (!(ext_what[i] & (EXT_STRUCT | EXT_UNION | EXT_FUNC | EXT_VLA))
             && ext_types[i].elem == elem
             && ext_types[i].elem_x == elem_x && ext_types[i].count == count)
             return i;
@@ -497,6 +497,36 @@ Type ext_elem(int x)
 int ext_elem_x(int x)
 {
     return ext_types[x].elem_x;
+}
+
+/* An array whose length the program works out as it runs: the row of `int
+ * m[n][n]`, which is int[n], or a typedef of one. Its length and its size in
+ * bytes are in two frame slots, where its declaration put them, rather than
+ * here -- so each is its own, never one another declaration shares, and
+ * ext_count and ext_bytes have nothing to say about it. */
+int ext_vla(Type elem, int elem_x, int length_slot, int size_slot)
+{
+    int i = ext_new();
+
+    ext_types[i].elem = elem;
+    ext_types[i].elem_x = (unsigned char) elem_x;
+    ext_what[i] = EXT_ARRAY | EXT_COMPLETE | EXT_VLA;
+    ext_types[i].count = length_slot;
+    ext_types[i].bytes = size_slot;
+
+    return i;
+}
+
+/* The slot a VLA's size is in, or 0 for any other extension: a frame
+ * slot is below the frame pointer, so 0 is never one. */
+int ext_vla_size(int x)
+{
+    return ext_what[x] & EXT_VLA ? ext_types[x].bytes : 0;
+}
+
+int ext_vla_length(int x)
+{
+    return ext_types[x].count;
 }
 
 int ext_count(int x)

@@ -198,6 +198,9 @@ Type ext_elem(int x);           /* an array's element type */
 int  ext_elem_x(int x);         /* and its extension */
 int  ext_count(int x);
 int  ext_bytes(int x);
+int  ext_vla(Type elem, int elem_x, int length_slot, int size_slot);
+int  ext_vla_size(int x);       /* the frame slot of a VLA's size, or 0 */
+int  ext_vla_length(int x);     /* and of its length */
 
 int     ext_record(int is_union, NameRef tag);   /* a new, incomplete record */
 int     ext_func(Type ret, int ret_x, int first, int count, int declared);
