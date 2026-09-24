@@ -33,15 +33,18 @@
 typedef long fpos_t;
 
 /* An open stream. What is in it is the library's business; it is here so
- * that the table can be laid out without the heap. */
-typedef struct {
+ * that the table can be laid out without the heap. Tagged, so that
+ * <wchar.h> can name it without declaring the rest of this header. */
+typedef struct __acc_file {
     unsigned char  fh;          /* what MOS calls it, for a file */
     unsigned char  how;         /* how it was opened: see file.c */
     unsigned char  last;        /* whether buf holds input or output */
     unsigned char  error;
     unsigned char  eof;
     unsigned char  vbuf;        /* _IOFBF, _IOLBF or _IONBF */
+    signed char    orient;      /* wide above 0, bytes below, not yet 0 */
     int            unget;       /* a character pushed back, or EOF */
+    int            wunget;      /* a wide one, or WEOF */
     int            held;        /* bytes in buf */
     int            at;          /* and how many of them input has used */
     long           end;         /* how long the file is */

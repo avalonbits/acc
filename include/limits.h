@@ -38,6 +38,6 @@
 #define LLONG_MAX   9223372036854775807LL
 #define ULLONG_MAX  18446744073709551615ULL
 
-#define MB_LEN_MAX  1
+#define MB_LEN_MAX  3           /* UTF-8, to the end of the first plane */
 
 #endif

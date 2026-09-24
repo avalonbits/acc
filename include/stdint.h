@@ -108,8 +108,10 @@ typedef unsigned long long uintmax_t;
 #define SIG_ATOMIC_MIN  INT24_MIN
 #define SIG_ATOMIC_MAX  INT24_MAX
 #define SIZE_MAX        UINT24_MAX
-#define WCHAR_MIN       INT16_MIN
-#define WCHAR_MAX       INT16_MAX
+#ifndef WCHAR_MIN               /* <wchar.h> has them too, spelled the same */
+#define WCHAR_MIN       (-32768)
+#define WCHAR_MAX       32767
+#endif
 #define WINT_MIN        INT24_MIN
 #define WINT_MAX        INT24_MAX
 

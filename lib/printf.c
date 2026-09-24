@@ -42,8 +42,9 @@ static int written;
 FILE  *acc_sink_file;
 int  (*acc_sink_putc)(int, FILE *);
 char  *acc_sink_buf;
-extern int (*__acc_stdout_putc)(int c);
 size_t acc_sink_cap, acc_sink_at;
+int  (*acc_sink_fn)(int);
+extern int (*__acc_stdout_putc)(int c);
 
 static void emit(int c)
 {
@@ -54,6 +55,8 @@ static void emit(int c)
         if (acc_sink_at + 1 < acc_sink_cap)
             acc_sink_buf[acc_sink_at] = (char) c;
         acc_sink_at++;
+    } else if (acc_sink_fn) {
+        acc_sink_fn(c);                 /* the wide printf: see wprintf.c */
     } else if (acc_sink_file) {
         acc_sink_putc(c, acc_sink_file);
     } else if (__acc_stdout_putc) {

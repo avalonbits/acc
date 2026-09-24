@@ -50,9 +50,9 @@ static char  temp_names[FOPEN_MAX][L_tmpnam];
 /* The keyboard's line, and room for the newline after it. */
 static char  line[256];
 
-static FILE  console_in  = { 0, F_READ | F_CONSOLE, 0, 0, 0, _IOLBF, EOF, 0, 0, 0, line };
-static FILE  console_out = { 0, F_WRITE | F_CONSOLE, 0, 0, 0, _IONBF, EOF, 0, 0, 0, 0 };
-static FILE  console_err = { 0, F_WRITE | F_CONSOLE, 0, 0, 0, _IONBF, EOF, 0, 0, 0, 0 };
+static FILE  console_in  = { 0, F_READ | F_CONSOLE, 0, 0, 0, _IOLBF, 0, EOF, EOF, 0, 0, 0, line };
+static FILE  console_out = { 0, F_WRITE | F_CONSOLE, 0, 0, 0, _IONBF, 0, EOF, EOF, 0, 0, 0, 0 };
+static FILE  console_err = { 0, F_WRITE | F_CONSOLE, 0, 0, 0, _IONBF, 0, EOF, EOF, 0, 0, 0, 0 };
 
 FILE *stdin  = &console_in;
 FILE *stdout = &console_out;
@@ -135,6 +135,7 @@ static int drop_input(FILE *f)
 
     f->held = f->at = 0;
     f->unget = EOF;
+    f->wunget = EOF;
     f->last = B_NONE;
     if (!ahead || !is_file(f))
         return 0;
@@ -216,7 +217,9 @@ static FILE *open_into(FILE *f, const char *path, const char *mode, char *buf)
     f->error = 0;
     f->eof = 0;
     f->vbuf = _IOFBF;
+    f->orient = 0;
     f->unget = EOF;
+    f->wunget = EOF;
     f->held = 0;
     f->at = 0;
     f->buf = buf;
@@ -362,6 +365,8 @@ int fgetc(FILE *f)
 {
     int c;
 
+    if (f && !f->orient)
+        f->orient = -1;         /* the first byte read or written says so */
     if (!f || !(f->how & F_READ)) {
         if (f)
             f->error = 1;
@@ -442,6 +447,8 @@ size_t fread(void *to, size_t size, size_t count, FILE *f)
 
     if (!want)
         return 0;
+    if (f && !f->orient)
+        f->orient = -1;
     if (!f || !(f->how & F_READ)) {
         if (f)
             f->error = 1;
@@ -485,6 +492,8 @@ size_t fread(void *to, size_t size, size_t count, FILE *f)
 
 int fputc(int c, FILE *f)
 {
+    if (f && !f->orient)
+        f->orient = -1;
     if (!f || !(f->how & F_WRITE)) {
         if (f)
             f->error = 1;
@@ -521,6 +530,8 @@ size_t fwrite(const void *from, size_t size, size_t count, FILE *f)
 
     if (!want)
         return 0;
+    if (f && !f->orient)
+        f->orient = -1;
     if (!f || !(f->how & F_WRITE)) {
         if (f)
             f->error = 1;
@@ -601,6 +612,7 @@ int fseek(FILE *f, long offset, int whence)
     if (fflush(f) != 0)
         return -1;
     f->unget = EOF;
+    f->wunget = EOF;
     f->held = f->at = 0;
     f->last = B_NONE;
 

@@ -23,6 +23,16 @@ int atexit(void (*f)(void));
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
 
+/* The most bytes a character takes: UTF-8, as far as a sixteen-bit
+ * wchar_t goes. See lib/mb.c. */
+#define MB_CUR_MAX   3
+
+int    mblen(const char *s, size_t n);
+int    mbtowc(wchar_t *pwc, const char *s, size_t n);
+int    wctomb(char *s, wchar_t wc);
+size_t mbstowcs(wchar_t *dst, const char *src, size_t n);
+size_t wcstombs(char *dst, const wchar_t *src, size_t n);
+
 typedef struct { int quot, rem; } div_t;
 typedef struct { long quot, rem; } ldiv_t;
 typedef struct { long long quot, rem; } lldiv_t;
