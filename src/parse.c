@@ -2739,13 +2739,40 @@ void not_void(Type type, const char *what, int line)
 /* A constant integer a declaration needs now: an array's size. Parsed as an
  * expression, which has to fold to a constant with nothing emitted, as a
  * global's initial value does. */
+/* A long or a long long constant where an int one is wanted, which C
+ * allows of any integer constant expression: `-8388608`, which is <limits.h>'s
+ * INT_MIN and a long because 8388608 is too big for an int before the minus
+ * makes it fit, or `2L`. Its value, if an int holds it. */
+__attribute__((noinline))
+static int constant_wide(const char *what, int line)
+{
+    uint64_t bits;
+    int64_t v;
+    Type type;
+
+    if (!vconst_wide(&bits, &type) || type_float(type))
+        acc_error_at(line, "%s has to be a constant integer", what);
+    v = type_unsigned(type) ? (int64_t) bits
+      : type_scalar_bytes(type) == 4 ? (int64_t) (int32_t) (uint32_t) bits
+      : (int64_t) bits;
+    /* Written as long long: on the Agon 0x800000 does not fit an int, so
+     * it is unsigned, and minus it is 8388608 again. */
+    if (v < -0x800000LL || v > 0xffffffLL)
+        acc_error_at(line, "%s has to fit in an int", what);
+
+    return (int) v;
+}
+
 static int constant_folded(const char *what, int line, int before)
 {
     int val;
     Type type;
 
-    if (!vconst_top(&val, &type) || out_here() != before
-        || type_pointer(type) || type_float(type))
+    if (!vconst_top(&val, &type)) {
+        val = constant_wide(what, line);
+        type = TY_INT;
+    }
+    if (out_here() != before || type_pointer(type) || type_float(type))
         acc_error_at(line, "%s has to be a constant integer", what);
     vdrop();
 
@@ -2886,6 +2913,8 @@ static int in_params;
  * says nothing -- the parameter is a pointer either way -- so there the
  * expression is read for its syntax and thrown away with the code it
  * emitted. */
+static int constant_wide(const char *what, int line);
+
 static int array_size(const char *what, int line, int *variable)
 {
     GenMark mark;
@@ -2907,6 +2936,17 @@ static int array_size(const char *what, int line, int *variable)
         vdrop();
 
         return val;
+    }
+    {
+        uint64_t bits;                  /* a long constant: `a[2L]` */
+
+        if (out_here() == before && vconst_wide(&bits, &type)
+            && !type_float(type)) {
+            val = constant_wide(what, line);
+            vdrop();
+
+            return val;
+        }
     }
     if (!in_body || in_params) {
         gen_rollback(&mark);
