@@ -50,6 +50,7 @@ void acc_error(const char *fmt, ...)
 
 static void expr(void);
 static void comma_expr(void);
+static int  paren_name(void);
 
 /* The function being compiled, for __func__ and for the variadic forms;
  * SYM_NONE between functions. */
@@ -1117,6 +1118,17 @@ static void primary(void)
 
             return;
         }
+        if (tok == TK_IDENT) {
+            /* An assignment to it is not this operand's to make: `a + (x) =
+             * 1` has no meaning, and the `=` left over says so. */
+            if (paren_name())
+                vderef();
+            narrow_dest = outer;
+            if (tok_postfix() || tok == TK_LPAREN)
+                subscript_value();
+
+            return;
+        }
         comma_expr();
         narrow_dest = outer;
         expect(TK_RPAREN, "')'");
@@ -1483,10 +1495,18 @@ static void compound_indirect(void)
  * expression, which will refuse an `=` after it. Out of line for the reason
  * object_operand is. */
 __attribute__((noinline))
+static void object_rest(int what, NameRef name);
+
 static void object_statement(int sym, NameRef name)
 {
-    int what = name_operand(sym, name);
+    object_rest(name_operand(sym, name), name);
+}
 
+/* What follows a name that name_operand has read, by what it turned out to
+ * be: for an object, a store, a compound store, a step, or a read and the
+ * rest; for anything else, the rest. */
+static void object_rest(int what, NameRef name)
+{
     if (what != NAME_OBJECT) {
         if (what == NAME_READONLY && (tok == TK_ASSIGN || compound_op[tok]
                                       || tok == TK_INC || tok == TK_DEC))
@@ -1526,6 +1546,17 @@ static void paren_statement(void)
         return;
     }
     narrow_dest = 0;
+    if (tok == TK_IDENT) {
+        int object = paren_name();
+
+        narrow_dest = outer;
+        if (object)
+            deref_rest();               /* `(x) = v`, `(p->n) += 2` */
+        else
+            postfix_statement();
+
+        return;
+    }
     if (!(tok == TK_STAR && paren_deref_step())) {
         comma_expr();
         expect(TK_RPAREN, "')'");
@@ -1555,6 +1586,161 @@ static void postfix_statement(void)
     deref_rest();
 }
 
+/* What follows a name at the start of an expression, the name read: an
+ * assignment to it, a call, or a read and the rest of the expression.
+ * Inlined into both callers -- assignment, and a parenthesis that opens with
+ * a name -- since as a call it would be one more on every statement that
+ * begins with a name. */
+static inline __attribute__((always_inline))
+void name_rest(NameRef name)
+{
+    int sym;
+
+    if (accept(TK_LPAREN)) {
+        call_rest(name);
+        postfix_statement();
+
+        return;
+    }
+
+    /* A global or an element is reached through its address, so what
+     * follows it is handled as what follows `*p` is: a store, a compound
+     * store, a step, or a read and the rest of the expression. */
+    sym = sym_find_value(name);
+    if (sym != SYM_NONE
+        && (sym_at(sym)->kind != SYM_LOCAL || tok_postfix())) {
+        object_statement(sym, name);
+
+        return;
+    }
+
+    if (tok == TK_ASSIGN) {
+        int dest = sym;
+        Type outer = narrow_dest;
+
+        next();
+        /* The destination's width, for the expression about to be parsed.
+         * Looked up before rather than after so the operator loop can use
+         * it; the check that it is assignable stays below, where the
+         * diagnostic belongs. */
+        narrow_dest = 0;
+        if (dest != SYM_NONE) {
+            const Sym *local = sym_at(dest);
+
+            if (local->kind == SYM_LOCAL)
+                narrow_dest = type_narrow(local->type);
+        }
+        expr();
+        narrow_dest = outer;
+
+        /* Looked up again, since the right side may have pushed a symbol
+         * and moved this one -- but only once. */
+        sym = sym_find(name);
+        {
+            const Sym *local = (sym == SYM_NONE) ? NULL : sym_at(sym);
+
+            if (!local || local->kind != SYM_LOCAL)
+                acc_error_at(tok_line, "'%s' cannot be assigned to",
+                             name_text(name));
+            vstore_local(local->val, local->type);
+        }
+
+        return;
+    }
+
+    if (compound_op[tok]) {
+        compound_local(name);
+
+        return;
+    }
+
+    /* Not an assignment. Put the name back by handling it here rather
+     * than by pushing the token back, which would need a queue. */
+    symbol_value(sym, name);
+    binary_rest(PREC_LOWEST);
+
+    return;
+}
+
+/* The rest of what a parenthesis holds, from a point where the first
+ * assignment in it is done: a `?:`, the commas, and the `)`. What expr and
+ * comma_expr do after assignment(). */
+static void paren_rest(void)
+{
+    if (tok == TK_QUESTION)
+        conditional_rest();
+    if (tok == TK_ASSIGN || compound_op[tok] || tok == TK_INC || tok == TK_DEC)
+        acc_error_at(tok_line, "the left of %s is not something that can be "
+                               "assigned to", tok_spelling(tok));
+    while (tok == TK_COMMA) {
+        next();
+        vdrop();
+        expr();
+    }
+    expect(TK_RPAREN, "')'");
+}
+
+/* A parenthesis that opens with a name, from the name: `(x)`, `(p->n)`,
+ * `(x + 1)`. A parenthesis round an object leaves it an object, as C says,
+ * and macros put one round nearly everything they name -- `#define N (v)`
+ * and then `N++`, `N = 0`. Read to a value, as everything in a parenthesis
+ * was, there was nothing left for the `++` or the `=` to change.
+ *
+ * Answers 1 with the object's address on the stack, the `)` read, when an
+ * assignment follows the `)` -- the one thing a caller has to do itself. A
+ * `++`, a `--` or a subscript after it is done here, and then, as for
+ * anything else the parenthesis held, 0 with the value on the stack. */
+__attribute__((noinline))
+static int paren_name(void)
+{
+    NameRef name = tok_name;
+    int sym, what;
+
+    next();
+    if (tok == TK_RPAREN) {             /* `(x)`: the name is all of it */
+        next();
+        sym = sym_find_value(name);
+        if (tok != TK_ASSIGN && !compound_op[tok]) {
+            symbol_value(sym, name);    /* a `++` or a chain after it too */
+
+            return 0;
+        }
+        if (sym != SYM_NONE && sym_at(sym)->kind == SYM_LOCAL) {
+            const Sym *local = sym_at(sym);
+
+            vaddr_local(local->val, local->type);
+            vset_ext(local->ext);
+            vset_quals(local->quals);
+
+            return 1;
+        }
+        what = name_operand(sym, name);
+        if (what == NAME_READONLY)
+            acc_error_at(tok_line, "'%s' is const, so it cannot be changed",
+                         name_text(name));
+
+        return what == NAME_OBJECT;
+    }
+    if (tok_postfix()) {                /* `(p->n)`, `(a[i])` */
+        what = name_operand(sym_find_value(name), name);
+        if (what == NAME_OBJECT && tok == TK_RPAREN) {
+            next();
+            if (tok == TK_ASSIGN || compound_op[tok])
+                return 1;
+            if (!tok_postfix() || postfix_chain(POST_OBJECT) == POST_OBJECT)
+                object_value();         /* a `++` or `--` after it too */
+
+            return 0;
+        }
+        object_rest(what, name);
+    } else {
+        name_rest(name);
+    }
+    paren_rest();
+
+    return 0;
+}
+
 static void assignment(void)
 {
     if (tok == TK_LPAREN) {
@@ -1565,73 +1751,11 @@ static void assignment(void)
 
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
-        int sym;
 
         /* Look one token ahead by remembering this one: an identifier
          * followed by '=' is an assignment, anything else is a value. */
         next();
-        if (accept(TK_LPAREN)) {
-            call_rest(name);
-            postfix_statement();
-
-            return;
-        }
-
-        /* A global or an element is reached through its address, so what
-         * follows it is handled as what follows `*p` is: a store, a compound
-         * store, a step, or a read and the rest of the expression. */
-        sym = sym_find_value(name);
-        if (sym != SYM_NONE
-            && (sym_at(sym)->kind != SYM_LOCAL || tok_postfix())) {
-            object_statement(sym, name);
-
-            return;
-        }
-
-        if (tok == TK_ASSIGN) {
-            int dest = sym;
-            Type outer = narrow_dest;
-
-            next();
-            /* The destination's width, for the expression about to be parsed.
-             * Looked up before rather than after so the operator loop can use
-             * it; the check that it is assignable stays below, where the
-             * diagnostic belongs. */
-            narrow_dest = 0;
-            if (dest != SYM_NONE) {
-                const Sym *local = sym_at(dest);
-
-                if (local->kind == SYM_LOCAL)
-                    narrow_dest = type_narrow(local->type);
-            }
-            expr();
-            narrow_dest = outer;
-
-            /* Looked up again, since the right side may have pushed a symbol
-             * and moved this one -- but only once. */
-            sym = sym_find(name);
-            {
-                const Sym *local = (sym == SYM_NONE) ? NULL : sym_at(sym);
-
-                if (!local || local->kind != SYM_LOCAL)
-                    acc_error_at(tok_line, "'%s' cannot be assigned to",
-                                 name_text(name));
-                vstore_local(local->val, local->type);
-            }
-
-            return;
-        }
-
-        if (compound_op[tok]) {
-            compound_local(name);
-
-            return;
-        }
-
-        /* Not an assignment. Put the name back by handling it here rather
-         * than by pushing the token back, which would need a queue. */
-        symbol_value(sym, name);
-        binary_rest(PREC_LOWEST);
+        name_rest(name);
 
         return;
     }
