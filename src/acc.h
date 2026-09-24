@@ -430,14 +430,15 @@ void lex_define(const char *arg);       /* -D, as a #define would read it */
 void lex_undefine(const char *arg);     /* -U, as a #undef would */
 
 /* Every file the compile read, and enough about each to tell whether it has
- * changed: see the note in src/lex.c. */
+ * changed: see the note in src/lex.c. The last is the -D, -U and -I options,
+ * with the empty path. */
 void        lex_want_deps(void);
 int         lex_ndeps(void);
 const char *lex_dep_path(int i);
 void        lex_dep_marks(int i, unsigned *size, unsigned *sum,
                           unsigned *weighted);
 int         lex_file_marks(const char *path, unsigned *size, unsigned *sum,
-                           unsigned *weighted);  /* a -I directory, in order */
+                           unsigned *weighted);
 void lex_close(void);
 void lex_end(void);   /* what has to be finished before the file is */
 void next(void);                 /* advance to the following token */

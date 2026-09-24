@@ -169,6 +169,26 @@ rm -f "$inc/u.o"
 case $(again) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
 ok "the object deleted"           "$got" compiled
 
+# The options that change what a compile reads. None of the files did, so
+# an object that recorded only them was called up to date after a -D that
+# changed what the program says.
+with() { "$ACC" -c "$inc/u.c" -o "$inc/u.o" "$@" 2>&1; }
+
+case $(with -DEXTRA=1) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "a -D given"                   "$got" compiled
+case $(with -DEXTRA=1) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "the same -D again"            "$got" skipped
+case $(with -DEXTRA=2) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "its value changed"            "$got" compiled
+case $(with -DEXTRA=2 -UEXTRA) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "a -U after it"                "$got" compiled
+case $(with -I"$inc") in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "a -I instead"                 "$got" compiled
+case $(again) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "and none"                     "$got" compiled
+case $(again) in *"up to date"*) got=skipped ;; *) got=compiled ;; esac
+ok "and none again"               "$got" skipped
+
 # An object made by a different acc. The program's own files are untouched,
 # which during acc's own development is exactly the case that matters: the
 # compiler changed and everything it made is out of date.

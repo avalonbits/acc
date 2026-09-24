@@ -473,6 +473,22 @@ static void marks_fold(unsigned *sump, unsigned *weightedp, const char *bytes,
     *weightedp = weighted;
 }
 
+/* The options that change what a compile reads: -D, -U and -I, in the
+ * order they were given, folded into marks of their own as they arrive. An
+ * object records them as one more dependency, after its files, with an
+ * empty path -- a name no file can have -- so that the same source compiled
+ * with another -D is compiled again rather than called up to date. */
+static unsigned opt_size, opt_sum, opt_weighted;
+
+static void opt_fold(char kind, const char *arg)
+{
+    int n = (int) strlen(arg) + 1;      /* its NUL, between one and the next */
+
+    marks_fold(&opt_sum, &opt_weighted, &kind, 1);
+    marks_fold(&opt_sum, &opt_weighted, arg, n);
+    opt_size += (unsigned) n + 1;
+}
+
 /* The bytes just read from the file at `which`, folded in. */
 static void dep_bytes(int which, const char *bytes, int n)
 {
@@ -490,9 +506,18 @@ int lex_file_marks(const char *path, unsigned *size, unsigned *sum,
                    unsigned *weighted)
 {
     char buf[1024];
-    FILE *f = fopen(path, "rb");
+    FILE *f;
     size_t got;
 
+    if (!*path) {
+        *size = opt_size;
+        *sum = opt_sum;
+        *weighted = opt_weighted;
+
+        return 1;
+    }
+
+    f = fopen(path, "rb");
     if (!f)
         return 0;
     *size = *sum = *weighted = 0;
@@ -512,18 +537,24 @@ void lex_want_deps(void)
     want_deps = 1;
 }
 
+/* The files read, and after them the options, as the empty path. */
 int lex_ndeps(void)
 {
-    return ndeps;
+    return want_deps ? ndeps + 1 : 0;
 }
 
 const char *lex_dep_path(int i)
 {
-    return deps[i].path;
+    return i == ndeps ? "" : deps[i].path;
 }
 
 void lex_dep_marks(int i, unsigned *size, unsigned *sum, unsigned *weighted)
 {
+    if (i == ndeps) {
+        lex_file_marks("", size, sum, weighted);
+
+        return;
+    }
     *size = deps[i].size;
     *sum = deps[i].sum;
     *weighted = deps[i].weighted;
@@ -543,6 +574,7 @@ void lex_add_include(const char *dir)
     if (ninclude_dirs == INCLUDE_DIRS)
         acc_error("more than %d -I directories", INCLUDE_DIRS);
     include_dirs[ninclude_dirs++] = dir;
+    opt_fold('I', dir);
 }
 
 int      tok;
@@ -3269,6 +3301,7 @@ void lex_define(const char *arg)
 
     if (!is_alpha((unsigned char) arg[0]))
         acc_error("-D needs a name, and '%s' does not begin with one", arg);
+    opt_fold('D', arg);
     if (!text)
         acc_error("out of memory for a -D");
     if (eq) {
@@ -3294,6 +3327,7 @@ void lex_undefine(const char *arg)
 
     if (!is_alpha((unsigned char) arg[0]))
         acc_error("-U needs a name, and '%s' does not begin with one", arg);
+    opt_fold('U', arg);
     if (!text)
         acc_error("out of memory for a -U");
     strcpy(text, arg);

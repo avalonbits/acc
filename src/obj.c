@@ -110,7 +110,9 @@
  * link, and they are here rather than anywhere else because the question
  * they answer -- "does this object have to be made again?" -- is about the
  * object. An answer kept in a file of its own is one that can be lost, or go
- * stale, on its own. */
+ * stale, on its own. The last of them has an empty path and is not a file:
+ * its marks are those of the -D, -U and -I options the compile was given,
+ * which change what it reads as surely as an edit does. */
 #define OBJ_VERSION  1
 #define OBJ_HEADER   31
 #define OBJ_SYM      7
