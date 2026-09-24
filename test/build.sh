@@ -67,5 +67,33 @@ case $(sed -n 's/^\$(OBJ)\/%.o: *//p' Makefile.agon) in
 esac
 check "the Agon objects depend on them" "$got" yes
 
+# A member taken out of the library. Every prerequisite left is as old as it
+# was, so the library was not made again and kept the member that had gone,
+# and its object stayed in bin/lib for test/lib.sh to archive. Done on a
+# copy of the build in a directory of its own, with LIBSRC given on the
+# command line, so the tree and the real bin are not touched.
+if [ -x bin/acc ] && [ -f bin/libc.a ]; then
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    mkdir "$tmp/bin"
+    cp -a bin/acc bin/libc.a bin/lib "$tmp/bin/"
+    members=$(make -s --no-print-directory -f Makefile -f - print-LIBSRC \
+              <<<'print-%: ; @echo $($*)')
+    fewer=$(printf '%s\n' $members | grep -v '^lib/timer\.c$' | tr '\n' ' ')
+    mk() { make -s --no-print-directory BIN="$tmp/bin" "$@" "$tmp/bin/libc.a" 2>&1; }
+
+    mk >/dev/null
+    check "an unchanged library is left alone" "$(mk)" ""
+    touch "$tmp/bin/lib/gone.o"
+    case $(mk LIBSRC="$fewer") in
+      *"from $(( $(wc -w <<<"$members") - 1 )) objects"*) got=remade ;;
+      *)                                                  got="left alone" ;;
+    esac
+    check "a member taken out remakes it" "$got" remade
+    [ -e "$tmp/bin/lib/timer.o" ] && got=kept || got=removed
+    check "and the member's object goes" "$got" removed
+    [ -e "$tmp/bin/lib/gone.o" ] && got=kept || got=removed
+    check "as does any other that is not one" "$got" removed
+fi
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -93,7 +93,21 @@ $(BIN)/lib:
 $(BIN)/lib/%.o: lib/%.c $(LIBHDR) $(BIN)/acc | $(BIN)/lib
 	@$(BIN)/acc -c $< -o $@ -Iinclude >/dev/null
 
-$(BIN)/libc.a: $(LIBOBJ) $(BIN)/acc
+# Which objects the library is made of, in a file that is written only when
+# the list changes. A member taken out of LIBSRC leaves every remaining
+# prerequisite as old as it was, so without this the library would keep the
+# member that is gone. Its recipe runs every time; the library is remade
+# only when the file it writes is new.
+$(BIN)/lib/members: FORCE | $(BIN)/lib
+	@echo '$(LIBOBJ)' | cmp -s - $@ || echo '$(LIBOBJ)' > $@
+
+FORCE:
+
+# The objects of members that are gone are removed with them, so that what
+# is in $(BIN)/lib is what is in the library -- test/lib.sh builds libraries
+# of its own from that directory.
+$(BIN)/libc.a: $(LIBOBJ) $(BIN)/lib/members $(BIN)/acc
+	@$(RM) $(filter-out $(LIBOBJ),$(wildcard $(BIN)/lib/*.o))
 	@$(BIN)/acc -a $@ $(LIBOBJ) >/dev/null
 	@echo "[$@: $$(stat -c%s $@) bytes from $(words $(LIBOBJ)) objects]"
 
