@@ -1791,6 +1791,21 @@ _acc_rt_fkey:
 ; Unpack the float at (hl) into the four bytes at (iy), the exponent into b and
 ; the sign into c. An exponent of zero is a zero or a denormal, and both come
 ; out as zero: there are no denormals here.
+; The significand at iy shifted up until its leading bit is at the top of
+; its four bytes, and in A how many places that took: none for a normal
+; number, some for a denormal. Only for one that is not zero.
+.fnorm:
+	xor	a, a
+.fnorm_loop:
+	bit	7, (iy + 3)
+	ret	nz
+	sla	(iy + 0)
+	rl	(iy + 1)
+	rl	(iy + 2)
+	rl	(iy + 3)
+	inc	a
+	jr	.fnorm_loop
+
 .funpack:
 	ld	a, (hl)
 	ld	(iy + 1), a		; mantissa 7..0
@@ -2363,6 +2378,18 @@ _acc_rt_fmul:
 	or	a, a
 	jp	z, .fadd_zero
 
+	; A denormal comes out of .funpack with its leading bit clear, and the
+	; product below expects both leading bits at the top: shifted up here,
+	; with the places it took coming off the exponent.
+	push	ix
+	pop	iy
+	call	.fnorm
+	ld	(ix + 22), a
+	lea	iy, ix + 4
+	call	.fnorm
+	add	a, (ix + 22)
+	ld	(ix + 22), a
+
 	ld	(ix + 16), 0		; the product, in six bytes
 	ld	(ix + 17), 0
 	ld	(ix + 18), 0
@@ -2388,6 +2415,9 @@ _acc_rt_fmul:
 	ld	e, (ix + 9)
 	add	hl, de
 	ld	de, 127			; one bias too many, having added two
+	or	a, a
+	sbc	hl, de
+	ld	e, (ix + 22)		; and the places a denormal was moved
 	or	a, a
 	sbc	hl, de
 
@@ -2575,6 +2605,16 @@ _acc_rt_fdiv:
 	jp	.fadd_zero		; a finite number over an infinity
 
 .fdiv_finite:
+	; Denormals shifted up to a leading bit, as in fmul: the dividend's
+	; places come off the exponent and the divisor's go on.
+	push	ix
+	pop	iy
+	call	.fnorm
+	ld	(ix + 15), a
+	lea	iy, ix + 4
+	call	.fnorm
+	ld	(ix + 23), a
+
 	; Which bias the exponent takes, and how many bits the loop has to
 	; produce: a dividend at least the divisor gives its leading 1 at once,
 	; and one fewer iteration is needed for the same twenty-four bits.
@@ -2614,6 +2654,11 @@ _acc_rt_fdiv:
 	ld	de, 0			; have gone negative
 	ld	e, c
 	add	hl, de			; plus the bias
+	ld	e, (ix + 23)		; plus the divisor's shift
+	add	hl, de
+	ld	e, (ix + 15)		; less the dividend's
+	or	a, a
+	sbc	hl, de
 
 	ld	(ix + 20), hl		; kept until there is a quotient to go
 	pop	bc			; with it, because whether it is in
