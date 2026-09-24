@@ -124,13 +124,14 @@ static double exp2_parts(double p, double q, double b)
     double e = p + q + b, r;
     int k;
 
-    if (e > 128.0f)  return __acc_inf();
+    if (e > 128.0f)  return __acc_range_error(HUGE_VAL);
     if (e < -150.0f) return 0.0f;
 
     k = (int) (e + (e < 0.0f ? -0.5f : 0.5f));
     r = ((p - (double) k) + q) + b;
+    r = mk_scalbn(pw_exp(r * LN2_HI + r * LN2_LO), k);
 
-    return mk_scalbn(pw_exp(r * LN2_HI + r * LN2_LO), k);
+    return isinf(r) ? __acc_range_error(r) : r;
 }
 
 /* x^y as 2^(y log2 x).
@@ -168,15 +169,19 @@ double pow(double x, double y)
         }
     }
 
-    if (x == 0.0f)
-        return y > 0.0f ? (odd_int ? x : 0.0f) : __acc_inf();
+    if (x == 0.0f) {
+        if (y > 0.0f)
+            return odd_int ? x : 0.0f;
+
+        return __acc_range_error(odd_int ? copysign(HUGE_VAL, x) : HUGE_VAL);
+    }
     if ((ux & 0x7fffffffu) == 0x7f800000u)
         return (ux & 0x80000000u) == 0 ? (y > 0.0f ? x : 0.0f)
                                        : (y > 0.0f ? (odd_int ? x : -x) : 0.0f);
     if (x < 0.0f) {
         double v;
 
-        if (!is_int) return __acc_nan();
+        if (!is_int) return __acc_domain_error();
         v = pow(-x, y);
 
         return odd_int ? -v : v;

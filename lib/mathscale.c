@@ -7,6 +7,7 @@
  * frexp and ldexp undo each other, and modf splits a number in two.
  * Exact, every one of them, for every value they are given.
  */
+#include <errno.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -78,6 +79,8 @@ double frexp(double x, int *exp)
  * to be a number of its own. */
 double scalbn(double x, int n)
 {
+    int was_inf = isinf(x);
+
     if (n > 127) {
         x = x * from_bits((uint32_t) (127 + 127) << 23);
         n -= 127;
@@ -100,7 +103,11 @@ double scalbn(double x, int n)
         }
     }
 
-    return x * from_bits((uint32_t) (127 + n) << 23);
+    x = x * from_bits((uint32_t) (127 + n) << 23);
+    if (isinf(x) && !was_inf)
+        return __acc_range_error(x);
+
+    return x;
 }
 
 double ldexp(double x, int exp)
@@ -109,19 +116,24 @@ double ldexp(double x, int exp)
 }
 
 /* The exponent of x's leading bit, as an int. C gives a zero, an infinity
- * and a NaN answers of their own, since none of them has one. */
+ * and a NaN answers of their own, since none of them has one, and each
+ * is a domain error, as glibc has it and C11 says. */
 int ilogb(double x)
 {
     int e;
 
     switch (__acc_fpclassify(x)) {
-    case FP_ZERO:     return FP_ILOGB0;
-    case FP_NAN:      return FP_ILOGBNAN;
-    case FP_INFINITE: return INT_MAX;
-    }
-    frexp(x, &e);
+    case FP_ZERO:     e = FP_ILOGB0;   break;
+    case FP_NAN:      e = FP_ILOGBNAN; break;
+    case FP_INFINITE: e = INT_MAX;     break;
+    default:
+        frexp(x, &e);
 
-    return e - 1;
+        return e - 1;
+    }
+    errno = EDOM;
+
+    return e;
 }
 
 /* The same, as a floating value: and so a zero is a pole, at minus

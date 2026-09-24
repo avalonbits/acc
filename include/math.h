@@ -55,9 +55,11 @@ int __acc_signbit(double x);
  * whether a result went out of range asks isinf or isnan, and does not
  * expect either to propagate the way it would elsewhere.
  *
- * That is also why the functions below answer overflow with HUGE_VAL and
- * nothing else: there is no errno here and no floating-point exception,
- * which math_errhandling says by answering zero. */
+ * Errors are reported the way C99 7.12.1 asks when math_errhandling says
+ * MATH_ERRNO: an argument outside a function's domain sets errno to EDOM
+ * and answers a NaN, and a pole or a result too large sets it to ERANGE
+ * and answers HUGE_VAL with the right sign. A result too small is not an
+ * error here; it is the nearest number there is, a denormal or zero. */
 double __acc_inf(void);
 double __acc_nan(void);
 
@@ -68,7 +70,12 @@ double __acc_nan(void);
 
 #define MATH_ERRNO       1
 #define MATH_ERREXCEPT   2
-#define math_errhandling 0
+#define math_errhandling MATH_ERRNO
+
+/* Where the library says so: errno set to EDOM and a NaN answered, or to
+ * ERANGE and the value given. */
+double __acc_domain_error(void);
+double __acc_range_error(double v);
 
 /* Whole numbers and pieces of numbers: none of these is an approximation,
  * so each is exact for every value it is given. */

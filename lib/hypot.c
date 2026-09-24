@@ -79,7 +79,9 @@ double hypot(double x, double y)
         b = mk_scalbn(b, -e);
     }
 
-    return mk_scalbn(sqrt(a * a + b * b), e);
+    a = mk_scalbn(sqrt(a * a + b * b), e);
+
+    return isinf(a) ? __acc_range_error(a) : a;
 }
 
 float hypotf(float x, float y) { return hypot(x, y); }

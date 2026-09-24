@@ -87,7 +87,9 @@ double exp(double x)
     int k;
     double r, p;
 
-    if (x > 88.7228394f)  return __acc_inf();
+    if (isnan(x))         return x;
+    if (isinf(x))         return x > 0.0f ? x : 0.0f;
+    if (x > 88.7228394f)  return __acc_range_error(HUGE_VAL);
     if (x < -103.972084f) return 0.0f;
 
     k = (int) (x * LOG2E + (x < 0.0f ? -0.5f : 0.5f));
@@ -98,7 +100,9 @@ double exp(double x)
     p = p * r + EXP_P1;
     p = p * r + EXP_P0;
 
-    return mk_scalbn(1.0f + r + r * r * p, k);
+    r = mk_scalbn(1.0f + r + r * r * p, k);
+
+    return isinf(r) ? __acc_range_error(r) : r;
 }
 
 /* 2^x. Not exp(x*ln2): that product rounds, and for large x the rounding is
@@ -110,13 +114,17 @@ double exp2(double x)
     int k;
     double r;
 
-    if (x > 128.0f)  return __acc_inf();
+    if (isnan(x))    return x;
+    if (isinf(x))    return x > 0.0f ? x : 0.0f;
+    if (x >= 128.0f) return __acc_range_error(HUGE_VAL);
     if (x < -150.0f) return 0.0f;
 
     k = (int) (x + (x < 0.0f ? -0.5f : 0.5f));
     r = x - (double) k;
 
-    return mk_scalbn(exp(r * LN2_HI + r * LN2_LO), k);
+    r = mk_scalbn(exp(r * LN2_HI + r * LN2_LO), k);
+
+    return isinf(r) ? __acc_range_error(r) : r;
 }
 
 /* exp(x)-1, likewise: for small x the 1 would take the answer's digits. */

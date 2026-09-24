@@ -62,8 +62,9 @@ double log(double x)
     int k;
     double m, s, t, p;
 
-    if ((u & 0x7fffffffu) == 0) return -__acc_inf();
-    if (u & 0x80000000u)        return __acc_nan();
+    if ((u & 0x7fffffffu) > 0x7f800000u) return x;
+    if ((u & 0x7fffffffu) == 0) return __acc_range_error(-__acc_inf());
+    if (u & 0x80000000u)        return __acc_domain_error();
     if (u >= 0x7f800000u)       return x;
 
     k = (int) (u >> 23);
@@ -100,6 +101,10 @@ double log10(double x)
  * working the series in x itself. */
 double log1p(double x)
 {
+    if (x == -1.0f)
+        return __acc_range_error(-__acc_inf());
+    if (x < -1.0f)
+        return __acc_domain_error();
     if (x > -0.25f && x < 0.25f) {
         double s = x / (2.0f + x), t = s * s, p = LOG_R3;
 

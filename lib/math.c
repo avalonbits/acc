@@ -14,6 +14,7 @@
  * what agondev does too. So each function is written once and the name
  * with the `f` on it is the same function.
  */
+#include <errno.h>
 #include <math.h>
 #include <stdint.h>
 
@@ -51,6 +52,20 @@ double __acc_inf(void)
 double __acc_nan(void)
 {
     return from_bits(0x7fc00000u);
+}
+
+double __acc_domain_error(void)
+{
+    errno = EDOM;
+
+    return __acc_nan();
+}
+
+double __acc_range_error(double v)
+{
+    errno = ERANGE;
+
+    return v;
 }
 
 double nan(const char *tag)
@@ -104,6 +119,8 @@ double nextafter(double x, double y)
         u++;
     else
         u--;
+    if ((u & MAG_MASK) == 0x7f800000u)
+        return __acc_range_error(from_bits(u));     /* past the largest */
 
     return from_bits(u);
 }

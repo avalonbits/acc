@@ -55,10 +55,12 @@ double sqrt(double x)
 
     if ((u & 0x7fffffffu) == 0)
         return x;                       /* both zeros are their own root */
+    if ((u & 0x7fffffffu) > 0x7f800000u)
+        return x;                       /* not a number */
     if (u & 0x80000000u)
-        return __acc_nan();             /* every negative, and -infinity */
+        return __acc_domain_error();    /* every negative, and -infinity */
     if (u >= 0x7f800000u)
-        return x;                       /* +infinity, or not a number */
+        return x;                       /* +infinity */
 
     /* The significand with its leading bit put back, and the exponent the
      * root will have. A subnormal is shifted up until the leading bit is

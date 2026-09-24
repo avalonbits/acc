@@ -121,7 +121,7 @@ double asin(double x)
 {
     double a = x < 0.0f ? -x : x, v;
 
-    if (a > 1.0f) return __acc_nan();
+    if (a > 1.0f) return __acc_domain_error();
     if (a <= 0.5f) {
         v = asin_small(a);
     } else {
@@ -140,7 +140,7 @@ double acos(double x)
 {
     double a = x < 0.0f ? -x : x, t, r, h;
 
-    if (a > 1.0f) return __acc_nan();
+    if (a > 1.0f) return __acc_domain_error();
     if (a <= 0.5f) {
         double s = asin_small(a);
 

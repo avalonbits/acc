@@ -65,23 +65,28 @@ double tgamma(double x)
     if (isnan(x))
         return x;
     if (x == 0.0f)
-        return copysign(HUGE_VAL, x);   /* a pole */
+        return __acc_range_error(copysign(HUGE_VAL, x));    /* a pole */
     if (x < 0.0f) {
         if (isinf(x) || is_whole(x))
-            return NAN;
+            return __acc_domain_error();
 
         return PI / (sin_pi(x) * tgamma(1.0f - x));
     }
+    if (isinf(x))
+        return x;
     if (x > 35.5f)
-        return HUGE_VAL;
+        return __acc_range_error(HUGE_VAL);
     if (x < 0.5f)
         return 1.0f / ((1.0f + inverse_less_one(x + 1.0f)) * x);
     while (x >= 3.0f) {
         x = x - 1.0f;
         p = p * x;
     }
+    p = p / (1.0f + inverse_less_one(x));
+    if (isinf(p))
+        return __acc_range_error(p);
 
-    return p / (1.0f + inverse_less_one(x));
+    return p;
 }
 
 double lgamma(double x)
@@ -94,17 +99,21 @@ double lgamma(double x)
         return HUGE_VAL;
     if (x <= 0.0f) {
         if (is_whole(x))
-            return HUGE_VAL;            /* a pole */
+            return __acc_range_error(HUGE_VAL);     /* a pole */
 
         return log(PI / fabs(sin_pi(x))) - lgamma(1.0f - x);
     }
     if (x >= 8.0f) {
         /* Stirling: (x - 1/2)(log x - 1) + (log(2 pi) - 1)/2, and the
          * series in 1/x after it. */
-        double r = 1.0f / x, r2 = r * r;
+        double r = 1.0f / x, r2 = r * r, v;
 
-        return (x - 0.5f) * (log(x) - 1.0f) + 0.418938533f
-               + r * (0.0833333333f - r2 * (0.00277777778f - r2 * 0.000793650794f));
+        v = (x - 0.5f) * (log(x) - 1.0f) + 0.418938533f
+            + r * (0.0833333333f - r2 * (0.00277777778f - r2 * 0.000793650794f));
+        if (isinf(v))
+            return __acc_range_error(v);
+
+        return v;
     }
     if (x < 0.5f)
         return -log1p(inverse_less_one(x + 1.0f)) - log(x);

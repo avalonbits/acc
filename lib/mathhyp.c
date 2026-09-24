@@ -43,6 +43,23 @@ static double from_bits(uint32_t u)
 }
 
 
+/* e^a / 2, for a where e^a itself is past the largest float but half of it
+ * may not be: e^(a/2) times half of that, which is as close as the
+ * exponential and one more rounding. What overflows is an error. */
+static double big_half_exp(double a)
+{
+    double e;
+
+    if (isinf(a) || isnan(a))
+        return a;
+    e = exp(0.5f * a);
+    e = 0.5f * e * e;
+    if (isinf(e))
+        return __acc_range_error(HUGE_VAL);
+
+    return e;
+}
+
 double sinh(double x)
 {
     double a = x < 0.0f ? -x : x, v;
@@ -53,6 +70,8 @@ double sinh(double x)
         double e = expm1(a);
 
         v = 0.5f * (e + e / (1.0f + e));
+    } else if (a > 88.0f) {
+        v = big_half_exp(a);
     } else {
         double e = exp(a);
 
@@ -64,7 +83,11 @@ double sinh(double x)
 
 double cosh(double x)
 {
-    double a = x < 0.0f ? -x : x, e = exp(a);
+    double a = x < 0.0f ? -x : x, e;
+
+    if (a > 88.0f)
+        return big_half_exp(a);
+    e = exp(a);
 
     return 0.5f * (e + 1.0f / e);
 }
@@ -96,7 +119,7 @@ double acosh(double x)
     if (isnan(x))
         return x;
     if (x < 1.0f)
-        return NAN;
+        return __acc_domain_error();
     if (x >= 4096.0f)
         return log(x) + LN2;
     t = x - 1.0f;
@@ -125,9 +148,9 @@ double atanh(double x)
     if (isnan(x))
         return x;
     if (a > 1.0f)
-        return NAN;
+        return __acc_domain_error();
     if (a == 1.0f)
-        return copysign(HUGE_VAL, x);   /* a pole */
+        return __acc_range_error(copysign(HUGE_VAL, x));    /* a pole */
     if (a < 0.5f)
         v = 0.5f * log1p(2.0f * a + 2.0f * a * a / (1.0f - a));
     else

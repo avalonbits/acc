@@ -115,7 +115,8 @@ double sin(double x)
     double r;
     int q;
 
-    if ((bits(x) & 0x7fffffffu) >= 0x7f800000u) return __acc_nan();
+    if (isnan(x)) return x;
+    if (isinf(x)) return __acc_domain_error();
     q = reduce(x, &r);
     switch (q) {
     case 0: return sin_poly(r);
@@ -130,7 +131,8 @@ double cos(double x)
     double r;
     int q;
 
-    if ((bits(x) & 0x7fffffffu) >= 0x7f800000u) return __acc_nan();
+    if (isnan(x)) return x;
+    if (isinf(x)) return __acc_domain_error();
     q = reduce(x, &r);
     switch (q) {
     case 0: return cos_poly(r);
@@ -145,7 +147,8 @@ double tan(double x)
     double r, s, c;
     int q;
 
-    if ((bits(x) & 0x7fffffffu) >= 0x7f800000u) return __acc_nan();
+    if (isnan(x)) return x;
+    if (isinf(x)) return __acc_domain_error();
     q = reduce(x, &r);
     s = sin_poly(r);
     c = cos_poly(r);

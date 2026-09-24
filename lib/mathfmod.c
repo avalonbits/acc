@@ -47,9 +47,10 @@ double fmod(double x, double y)
     double ax = fabs(x), ay = fabs(y), t;
     int ex, ey, i;
 
-    if (__acc_fpclassify(y) == FP_ZERO || __acc_fpclassify(x) == FP_INFINITE
-        || __acc_fpclassify(x) == FP_NAN || __acc_fpclassify(y) == FP_NAN)
+    if (__acc_fpclassify(x) == FP_NAN || __acc_fpclassify(y) == FP_NAN)
         return __acc_nan();
+    if (__acc_fpclassify(y) == FP_ZERO || __acc_fpclassify(x) == FP_INFINITE)
+        return __acc_domain_error();
     if (__acc_fpclassify(y) == FP_INFINITE || ax < ay)
         return x;
 
@@ -77,9 +78,10 @@ double remquo(double x, double y, int *quo)
     unsigned q = 0;
 
     *quo = 0;
-    if (__acc_fpclassify(y) == FP_ZERO || __acc_fpclassify(x) == FP_INFINITE
-        || __acc_fpclassify(x) == FP_NAN || __acc_fpclassify(y) == FP_NAN)
+    if (__acc_fpclassify(x) == FP_NAN || __acc_fpclassify(y) == FP_NAN)
         return __acc_nan();
+    if (__acc_fpclassify(y) == FP_ZERO || __acc_fpclassify(x) == FP_INFINITE)
+        return __acc_domain_error();
     if (__acc_fpclassify(y) == FP_INFINITE)
         return x;
 
