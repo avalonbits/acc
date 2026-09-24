@@ -888,6 +888,7 @@ int  gen_bss_fixup_at(int i);
 int  gen_bss_len(void);
 
 void gen_finish(void);          /* resolve calls to functions defined later */
+void gen_settle(int sym);       /* fill the uses of a symbol just given room */
 
 /* What is still waiting on something, which is what a link takes to a
  * library to ask whether it has it. */

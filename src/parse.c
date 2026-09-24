@@ -4310,10 +4310,30 @@ static int local_struct_object(int x, int line, int braced)
     return array;
 }
 
+/* The name a declaration is binding, for the object that is about to be
+ * made for it; NAME_NONE for a compound literal, which has none. C puts a
+ * name in scope where its declarator ends, before its initialiser, so that
+ * `struct node n = { &n };` points at itself: the object's symbol is pushed
+ * the moment it has room and before a byte of it is initialised. */
+static NameRef decl_name = NAME_NONE;
+
+static int decl_name_push(int kind, int array, Type type, int x)
+{
+    int sym = sym_push(decl_name, kind, array);
+
+    decl_name = NAME_NONE;
+    sym_at(sym)->type = type;
+    sym_at(sym)->ext = (unsigned char) x;
+
+    return sym;
+}
+
 static int local_struct_object_in(int x, int line, int braced)
 {
     int array = gen_local_array();
 
+    if (decl_name != NAME_NONE)
+        decl_name_push(SYM_LOCAL_STRUCT, array, TY_STRUCT, x);
     record_complete(x, line);
     gen_local_array_size(array, ext_bytes(x));
     if (braced || accept(TK_ASSIGN)) {
@@ -4341,11 +4361,8 @@ static int local_struct_object_in(int x, int line, int braced)
 
 static void local_struct(int x, NameRef name, int line)
 {
-    int array = local_struct_object(x, line, 0);
-    int sym = sym_push(name, SYM_LOCAL_STRUCT, array);
-
-    sym_at(sym)->type = TY_STRUCT;
-    sym_at(sym)->ext = (unsigned char) x;
+    decl_name = name;
+    local_struct_object(x, line, 0);
 }
 
 /* A struct member or element of a local's initialiser, given without
@@ -4419,8 +4436,15 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
     int array = gen_local_array();
     int step = type_bytes(elem, elem_x);
     int count = *countp;
-    int init = braced || accept(TK_ASSIGN);
+    int init, sym = SYM_NONE;
 
+    /* Its count is set again below, once a [] array's initialiser has said
+     * what it is. */
+    if (decl_name != NAME_NONE) {
+        sym = decl_name_push(SYM_LOCAL_ARRAY, array, elem, elem_x);
+        sym_set_count(sym, count);
+    }
+    init = braced || accept(TK_ASSIGN);
     if (count > 0)
         gen_local_array_size(array, count * step);
 
@@ -4509,6 +4533,8 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
                            "say how long it is");
     }
 
+    if (sym != SYM_NONE)
+        sym_set_count(sym, count);
     *countp = count;
 
     return array;
@@ -4561,12 +4587,8 @@ static void local_vla(Type elem, int elem_x, NameRef name, int line)
 static void local_array(Type elem, int elem_x, NameRef name, int count,
                         int line)
 {
-    int array = local_array_object(elem, elem_x, &count, line, 0);
-    int sym = sym_push(name, SYM_LOCAL_ARRAY, array);
-
-    sym_at(sym)->type = elem;
-    sym_at(sym)->ext = (unsigned char) elem_x;
-    sym_set_count(sym, count);
+    decl_name = name;
+    local_array_object(elem, elem_x, &count, line, 0);
 }
 
 static int  function_declarator(Type ret_type, int ret_ext, NameRef name,
@@ -4822,6 +4844,15 @@ void declaration(void)
         far = !gen_local_fits(type_scalar_bytes(type));
         off = far ? gen_local_far(type_scalar_bytes(type))
                   : gen_local(type_scalar_bytes(type));
+
+        /* In scope from here, before its initialiser, as C says: in
+         * `int x = x;` the second x is the new one. */
+        sym = sym_push(name, far ? SYM_LOCAL_FAR : SYM_LOCAL, off);
+        sym_at(sym)->type = type;
+        sym_at(sym)->ext = (unsigned char) ext;
+        sym_at(sym)->quals = decl_quals | (bc ? SQ_CONST : 0);
+        if (stars != base ? stars_const : bc)
+            sym_at(sym)->kind = far ? SYM_LOCAL_FAR : SYM_LOCAL_CONST;
         if (accept(TK_ASSIGN)) {
             Type outer = narrow_dest;
 
@@ -4837,13 +4868,6 @@ void declaration(void)
             }
             vdrop();            /* a declaration is not an expression */
         }
-        /* Pushed after the initialiser, so `int x = x;` does not see itself. */
-        sym = sym_push(name, far ? SYM_LOCAL_FAR : SYM_LOCAL, off);
-        sym_at(sym)->type = type;
-        sym_at(sym)->ext = (unsigned char) ext;
-        sym_at(sym)->quals = decl_quals | (bc ? SQ_CONST : 0);
-        if (stars != base ? stars_const : bc)
-            sym_at(sym)->kind = far ? SYM_LOCAL_FAR : SYM_LOCAL_CONST;
 
         if (!accept(TK_COMMA))
             break;
@@ -6565,6 +6589,16 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         return;
     }
 
+    /* A name is in scope from the end of its declarator, so an initialiser
+     * may use it -- `struct node n = { &n };` -- and its address is not
+     * known until the bytes it names have been written. It is declared
+     * first, as `extern` would declare it, and every use in its own
+     * initialiser is filled in when the definition below gives it one. */
+    if (init && !static_local && name_global(name) == SYM_NONE) {
+        global_undefined(type, ext, name, count, line, 1);
+        sym_clear_flags(name_global(name), SYMF_EXTERN);
+    }
+
     if (!static_local && (sym = name_global(name)) != SYM_NONE) {
         int saved, again = global_again(sym, type, ext, count, line);
 
@@ -6634,6 +6668,21 @@ static void global_variable(Type type, int ext, NameRef name, int count,
      * number for all of them. */
     if (!init) {
         global_undefined(type, ext, name, count, line, 0);
+
+        return;
+    }
+
+    /* A block's static with a value, declared first for the same reason a
+     * file-scope one is above, and its uses in its own initialiser filled in
+     * here: its name does not outlive the function. */
+    if (static_local) {
+        global_undefined(type, ext, name, count, line, 1);
+        sym = sym_find(name);
+        sym_clear_flags(sym, SYMF_EXTERN);
+        redefining = sym;
+        global_emit(type, ext, name, count, line);
+        redefining = SYM_NONE;
+        gen_settle(sym);
 
         return;
     }

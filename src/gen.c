@@ -1971,6 +1971,25 @@ static void fixup_add(int fn, int at)
     nfixups++;
 }
 
+/* The uses of `sym` so far, filled in now that it has an address rather
+ * than at the end of the file: a block's static, used in its own
+ * initialiser, is dropped with the rest of the block's names when its
+ * function ends, and gen_finish would find nothing there. The relocation
+ * each slot needs was recorded when the use was. */
+void gen_settle(int sym)
+{
+    int i, kept = 0;
+
+    for (i = 0; i < nfixups; i++) {
+        if (fixups[i].fn != sym) {
+            fixups[kept++] = fixups[i];
+            continue;
+        }
+        out_patch24(fixups[i].at, sym_at(sym)->val + out_read24(fixups[i].at));
+    }
+    nfixups = kept;
+}
+
 /* ------------------------------------------------------------------ */
 /* arithmetic at byte and short width                                  */
 
