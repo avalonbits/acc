@@ -314,12 +314,44 @@ static const char *record_name(int x);
 static void        func_suffix(Type *type, int *ext);
 static void        record_complete(int x, int line);
 
+/* The member of record x called `name`, looked for through its anonymous
+ * members too, with *offset its place from the start of x. -1 if there is
+ * none. `*top` is the member of x itself that holds it: the anonymous one,
+ * when it is inside one, which is where a designated initialiser goes on
+ * from. */
+static int member_lookup(int x, NameRef name, int *offset, int *top)
+{
+    int m;
+
+    for (m = member_first(x); m >= 0; m = member_next(m)) {
+        if (member_name(m) == name) {
+            *offset = member_offset(m);
+            *top = m;
+
+            return m;
+        }
+        if (member_name(m) == NAME_NONE && type_is_struct(member_type(m))) {
+            int inner_top, found = member_lookup(member_ext(m), name, offset,
+                                                 &inner_top);
+
+            if (found >= 0) {
+                *offset += member_offset(m);
+                *top = m;
+
+                return found;
+            }
+        }
+    }
+
+    return -1;
+}
+
 /* `.name` or `->name`, with the struct's address on the stack and the
  * operator not yet read: the member's address in its place. */
 __attribute__((noinline))
 static void member(void)
 {
-    int line = tok_line, arrow = (tok == TK_ARROW), x = vext(), m;
+    int line = tok_line, arrow = (tok == TK_ARROW), x = vext(), m, offset, top;
     Type type = vtype();
     NameRef name;
 
@@ -332,12 +364,12 @@ static void member(void)
         acc_error_at(tok_line, "expected a member's name, found %s",
                      tok_spelling(tok));
     name = tok_name;
-    m = member_find(x, name);
+    m = member_lookup(x, name, &offset, &top);
     if (m < 0)
         acc_error_at(tok_line, "'%s' has no member '%s'", record_name(x),
                      name_text(name));
     next();
-    vmember(member_offset(m), member_type(m), member_ext(m), member_quals(m));
+    vmember(offset, member_type(m), member_ext(m), member_quals(m));
     if (member_bits(m))
         vset_bits(member_bits(m));
 }
@@ -2156,8 +2188,35 @@ static void record_members(int x, int is_union, int line)
         int bx = base_ext;
         unsigned char bc = base_const;
 
-        if (accept(TK_SEMI))
-            continue;               /* a nested struct declared, nothing more */
+        /* A struct or union with no tag and no name: C11's anonymous
+         * member, whose own members are reached as though they were this
+         * record's -- see member_lookup. agondev's <agon/mos.h> has one in
+         * SYSVAR. Otherwise a nested record declared, and nothing more. */
+        if (accept(TK_SEMI)) {
+            int m;
+
+            if (!type_is_struct(base) || ext_tag(bx) != NAME_NONE)
+                continue;
+            record_complete(bx, line);
+            if (!is_union && bit) {
+                size++;
+                bit = 0;
+            }
+            m = member_add(NAME_NONE, base, bx, is_union ? 0 : size,
+                           bc ? SQ_CONST : 0);
+            if (is_union) {
+                if (type_bytes(base, bx) > size)
+                    size = type_bytes(base, bx);
+            } else {
+                size += type_bytes(base, bx);
+            }
+            if (last >= 0)
+                member_link(last, m);
+            else
+                first = m;
+            last = m;
+            continue;
+        }
         for (;;) {
             int mline = tok_line, count = 0, ext = bx, bytes, m, width = -1;
             int at, pos;
@@ -3351,11 +3410,11 @@ static void offsetof_value(void)
 
     for (;;) {
         NameRef name = declared_name();
-        int member = member_find(x, name);
+        int offset, top, member = member_lookup(x, name, &offset, &top);
 
         if (member < 0)
             acc_error_at(line, "'%s' is not a member of it", name_text(name));
-        at += member_offset(member);
+        at += offset;
         type = member_type(member);
         x = member_ext(member);
 
@@ -3949,7 +4008,7 @@ static int init_index(Type elem, int elem_x, int count, int offset, InitPut put)
  * goes on with the one after it. */
 static int init_member(int x, int offset, InitPut put)
 {
-    int line = tok_line, m, saved_bits;
+    int line = tok_line, m, saved_bits, at, top;
     NameRef name;
 
     next();                             /* the '.' */
@@ -3959,18 +4018,17 @@ static int init_member(int x, int offset, InitPut put)
     name = tok_name;
     next();
     record_complete(x, line);
-    m = member_find(x, name);
+    m = member_lookup(x, name, &at, &top);
     if (m < 0)
         acc_error_at(line, "'%s' has no member '%s'", record_name(x),
                      name_text(name));
 
     saved_bits = init_bits;
     init_bits = member_bits(m);
-    init_designated(member_type(m), member_ext(m), offset + member_offset(m),
-                    put);
+    init_designated(member_type(m), member_ext(m), offset + at, put);
     init_bits = saved_bits;
 
-    return m;
+    return top;
 }
 
 static void init_element(Type type, int x, int offset, InitPut put)
