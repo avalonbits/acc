@@ -15,6 +15,7 @@
  * Only `\n` ends a line: the host writes one byte for it and MOS's console
  * takes it, and the test strips the carriage returns MOS adds. */
 
+#include <locale.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -49,6 +50,16 @@ static int to_screen(const char *fmt, ...)
     va_end(ap);
 
     return n;
+}
+
+static void hex_bytes(const char *s, int n)
+{
+    int i;
+
+    printf("%d:", n);
+    for (i = 0; i < n; i++)
+        printf(" %02x", (unsigned char) s[i]);
+    printf("\n");
 }
 
 int main(void)
@@ -163,6 +174,20 @@ int main(void)
         printf("abc%nde%lnf%lln%hn%hhn|\n", &ni, &nl, &nll, &ns, &nc);
         printf("n %d %ld %lld %d %d\n", ni, nl, nll, ns, nc);
     }
+
+    /* %lc and %ls: wide characters written as UTF-8, with widths and
+     * precisions in bytes and never part of a character. The host is put in
+     * its UTF-8 locale for these, which is what acc's C locale is. Shown as
+     * the bytes, since the emulator's screen shows each byte past 127 as a
+     * character of its own. */
+    setlocale(LC_CTYPE, "C.UTF-8");
+    n = snprintf(buf, sizeof buf, "[%lc] [%3lc] [%-3lc] [%lc]", 'A', 0xe9, 'z', 0x20ac);
+    hex_bytes(buf, n);
+    n = snprintf(buf, sizeof buf, "[%ls] [%8ls] [%-8ls] [%.3ls] [%.4ls] [%.1ls]",
+                 L"plain", L"caf\u00e9", L"caf\u00e9", L"caf\u00e9", L"caf\u00e9",
+                 L"\u20ac5");
+    hex_bytes(buf, n);
+    printf("[%ls] [%.2ls]\n", L"", L"ascii");
 
     return 0;
 }

@@ -86,6 +86,54 @@ enum {
     FL_ALT   = 16               /* `#`: octal led by a 0, hex by 0x */
 };
 
+/* A wide character as UTF-8, into `out`: one byte to three, which is as
+ * far as a wchar_t of sixteen bits goes. Answers how many. */
+static int utf8(unsigned c, char *out)
+{
+    c &= 0xffff;
+    if (c < 0x80) {
+        out[0] = (char) c;
+
+        return 1;
+    }
+    if (c < 0x800) {
+        out[0] = (char) (0xc0 | c >> 6);
+        out[1] = (char) (0x80 | (c & 0x3f));
+
+        return 2;
+    }
+    out[0] = (char) (0xe0 | c >> 12);
+    out[1] = (char) (0x80 | ((c >> 6) & 0x3f));
+    out[2] = (char) (0x80 | (c & 0x3f));
+
+    return 3;
+}
+
+/* %ls: the wide string as UTF-8, with the precision the most bytes to
+ * write and never part of a character, as C99 7.19.6.1 says, and the width
+ * counted in bytes too. */
+static void wide_string(const wchar_t *s, int width, int prec, int flags)
+{
+    char b[3];
+    int len = 0, blanks, i, n;
+
+    if (!s)
+        s = L"(null)";
+    for (i = 0; s[i]; i++) {
+        n = utf8((unsigned) s[i], b);
+        if (prec >= 0 && len + n > prec)
+            break;
+        len += n;
+    }
+    blanks = width > len ? width - len : 0;
+    if (!(flags & FL_LEFT))
+        emit_fill(blanks, ' ');
+    while (i-- > 0)
+        emit_run(b, utf8((unsigned) *s++, b));
+    if (flags & FL_LEFT)
+        emit_fill(blanks, ' ');
+}
+
 /* The digits of an unsigned value, in the base asked for, written backwards
  * into `buf` and answered as a length. Backwards because that is the order
  * the divisions produce them in; the caller reads the buffer from its end.
@@ -288,17 +336,34 @@ int acc_format(const char *fmt, va_list ap)
             prefix[nprefix++] = 'x';
             break;
         case 'c': {
-            char one = (char) va_arg(ap, int);
+            char one[3], t;
+            int n = 1;
 
-            emit_number(&one, 1, prefix, 0, width, -1, flags & FL_LEFT);
+            /* %lc is a wide character, written as the bytes of its UTF-8 --
+             * backwards, since emit_number writes digits from the end. */
+            if (longs) {
+                n = utf8((unsigned) va_arg(ap, int), one);
+                t = one[0];
+                one[0] = one[n - 1];
+                one[n - 1] = t;
+            } else {
+                one[0] = (char) va_arg(ap, int);
+            }
+            emit_number(one, n, prefix, 0, width, -1, flags & FL_LEFT);
 
             continue;
         }
         case 's': {
-            const char *s = va_arg(ap, const char *);
+            const char *s;
             int len = 0;
             int blanks;
 
+            if (longs) {
+                wide_string(va_arg(ap, const wchar_t *), width, prec, flags);
+
+                continue;
+            }
+            s = va_arg(ap, const char *);
             if (!s)
                 s = "(null)";
             /* A precision on a string is the most of it to write, and it
