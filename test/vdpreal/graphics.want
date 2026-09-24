@@ -1,0 +1,13 @@
+rectangle inside (20,15) 1
+rectangle outside (40,15) 0
+circle centre (100,100) 1
+circle just in (108,100) 1
+circle outside (113,100) 0
+triangle inside (170,20) 1
+triangle outside (152,45) 0
+thin line (30,150) 1
+beside thin line (30,152) 0
+thick line (30,170) 1
+beside thick line (30,172) 1
+point (205,205) 1
+point from moved origin (100,120) 1
