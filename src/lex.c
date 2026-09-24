@@ -711,6 +711,51 @@ static int ucn_ok_at(const char *r)
     return n && ucn_value(r, n) >= 0 ? n : 0;
 }
 
+/* Trigraphs, C99 5.2.1.1: `??(` is `[`, `??/` a backslash, and so on for
+ * nine. Replaced before anything else reads the text -- before lines are
+ * joined, since `??/` at a line's end joins it -- and in strings as well as
+ * out of them, as C says. pr18502-1 writes `int a??(2??);`.
+ *
+ * Only with -trigraphs, as gcc and clang have them outside their strict
+ * modes: looking for them is a scan of every byte of every file, which cost
+ * 0.57% of a compile, for a form nothing written since C89 uses and that
+ * turns a `??!` in a string into something else. */
+int lex_trigraphs;
+
+static int trigraph(int c)
+{
+    const char *from = "=(/)'<!>-", *to = "#[\\]^{|}~";
+    const char *at = c ? strchr(from, c) : NULL;
+
+    return at ? to[at - from] : 0;
+}
+
+static void untrigraph(char **end)
+{
+    char *r, *w, *stop = *end;
+    int c;
+
+    for (r = src;; r++) {
+        r = memchr(r, '?', (size_t) (stop - r));
+        if (!r || r + 2 >= stop)
+            return;                     /* nothing to replace */
+        if (r[1] == '?' && trigraph(r[2]))
+            break;
+    }
+    for (w = r; r < stop;) {
+        if (r[0] == '?' && r + 2 < stop && r[1] == '?' && (c = trigraph(r[2]))) {
+            *w++ = (char) c;
+            r += 3;
+
+            continue;
+        }
+        *w++ = *r++;
+    }
+    memmove(w, stop, (size_t) (src_raw - stop));
+    src_raw -= stop - w;
+    *end = w;
+}
+
 static void unsplice(char **end)
 {
     char *r, *w, *stop = *end;
@@ -799,6 +844,8 @@ static int refill(void)
     /* Joined lines go before the end is settled: taking one out moves
      * everything behind it down, the end with it, and the byte the
      * sentinel is about to hide is whichever one ends up there. */
+    if (lex_trigraphs)
+        untrigraph(&nl);
     unsplice(&nl);
     src_held = src_file ? *nl : '\0';
     src_end = nl;

@@ -7542,7 +7542,7 @@ static void usage(void)
         "usage: acc [-c] <source.c> -o <out> [-I <dir>]... [-b <addr>]\n"
         "                                    [-D <name>[=<value>]]...\n"
         "                                    [-U <name>]...\n"
-        "                                    [-r <file>] [-x]\n"
+        "                                    [-r <file>] [-x] [-trigraphs]\n"
         "       acc <file.o|lib.a>... -o <out.bin> [-x]\n"
         "       acc -a <lib.a> <file.o>...\n"
         "\n"
@@ -7556,6 +7556,8 @@ static void usage(void)
         "  -D  define a name before the file is read, as #define would:\n"
         "      `-DN` is `-DN=1`, and `-D\'N(a,b)=...\'` takes parameters.\n"
         "  -U  undefine one, as #undef would.\n"
+        "  -trigraphs  read ?\?( as [ and the other eight, as C99 has them.\n"
+        "      Off unless asked, as in gcc and clang: nothing uses them.\n"
         "  -I  a directory to look in for an #include, after the one the\n"
         "      including file is in.\n"
         "  -b  the address the image is loaded at, in hexadecimal. The\n"
@@ -8142,6 +8144,8 @@ int main(int argc, char **argv)
             to_archive = 1;
         } else if (argv[i][0] == '-' && argv[i][1] == 'x' && !argv[i][2]) {
             by_exit = 1;
+        } else if (!strcmp(argv[i], "-trigraphs")) {
+            lex_trigraphs = 1;
         } else if (argv[i][0] == '-') {
             usage();
         } else if (is_object(argv[i]) || is_archive(argv[i])) {

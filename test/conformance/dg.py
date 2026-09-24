@@ -9,7 +9,8 @@
 # kind is run (it is compiled, run and has to return 0), compile (it has to
 # compile), reject (it has to be refused, at one of `lines`), or other
 # (linked, preprocessed or assembled only, which the suite does not take).
-# flags are the -D and -U in its dg-options, which both compilers are given;
+# flags are the -D, -U and -trigraphs in its dg-options, which both
+# compilers are given;
 # the rest of its options -- optimisation, warnings, a -std -- are gcc's
 # business, and the C99 filter decides what the test means here.
 #
@@ -33,7 +34,7 @@ def parse(path):
                 opts = re.search(r'"([^"]*)"', rest)
                 if opts:
                     flags += [o for o in opts.group(1).split()
-                              if re.match(r'-[DU]\w', o)]
+                              if re.match(r'-[DU]\w', o) or o == '-trigraphs']
         for m in re.finditer(r'\{\s*dg-error\b(.*)', text):
             errors.add(error_line(m.group(1), number))
     if kind not in ('run', 'compile'):

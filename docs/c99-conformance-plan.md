@@ -69,7 +69,11 @@ a test's first error:
   while they are out acc is a compiler of C99 programs and not a conforming
   C99 implementation, and this document says so rather than rounding it up.
   `_Complex` is refused too, and stays refused: clause 4 lets a
-  freestanding implementation leave complex types out.
+  freestanding implementation leave complex types out. And trigraphs
+  (5.2.1.1) are read only with `-trigraphs`, as gcc and clang have them
+  outside their strict modes: looking for them is a scan of every byte of
+  every file, which cost 0.57% of a compile, for a form nothing written
+  since C89 uses.
 - **The headers a freestanding implementation must have** (clause 4):
   `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
   `<stddef.h>`, `<stdint.h>`. All seven are there, `<stdint.h>` now the

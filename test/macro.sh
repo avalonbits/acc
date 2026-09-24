@@ -760,6 +760,27 @@ refuses "#ifdef with no name" "needs a name" \
 int main(void) { return 0; }
 '
 
+# -trigraphs: the nine `??` sequences of C99 5.2.1.1, read as what they
+# stand for before anything else -- in strings too, and before lines are
+# joined, so that `??/` at a line's end joins it. pr18502-1 in gcc.dg.
+same_opts "-trigraphs reads them" \
+'int a??(2??) = ??< 40, 2 ??>;
+??=define ADD(x, y) ((x) + ??/
+(y))
+int main(void) { const char *s = "??/"??!"; int b = 1 ??! 2, c = ??-0;
+    return ADD(a??(0??), a??(1??)) + (s??(0??) == 34 && s??(1??) == 124 && b == 3 && c == -1 ? 0 : 1); }
+' 'int a[2] = { 40, 2 };
+#define ADD(x, y) ((x) + (y))
+int main(void) { const char *s = "\"|"; int b = 1 | 2, c = ~0;
+    return ADD(a[0], a[1]) + (s[0] == 34 && s[1] == 124 && b == 3 && c == -1 ? 0 : 1); }
+' "-trigraphs"
+
+# And without it they are what they are written as.
+same_opts "without -trigraphs they are left" \
+'int main(void) { return sizeof "??(" == 4 ? 42 : 1; }
+' 'int main(void) { return sizeof "\?\?(" == 4 ? 42 : 1; }
+'
+
 # -D and -U: a macro made on the command line rather than in the file.
 # Written out as the directive would have read it and handed to the same
 # code, so what these check is that the option reaches it intact.

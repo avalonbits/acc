@@ -4603,7 +4603,7 @@ pr18241-4	pass		6.5.2.1 6.5.3.2 6.5.5 6.5.6 6.5.9 6.5.16.1 6.5.17 6.7.2 6.7.3 6.
 pr18241-5	pass		6.5.3.2 6.5.5 6.5.9 6.5.16.1 6.7.2 6.7.3 6.8.4.1 6.8.6.4 7.20	6.5.16.1:assign 6.5.3.2:address 6.5.3.2:dereference 6.5.5:multiply 6.5.9:equality 6.7.2:int 6.7.2:void 6.7.3:volatile 6.8.4.1:if 6.8.6.4:return 7.20:abort
 pr18479	pass	compiled	6.4.5 6.7.2 6.7.2.1	6.4.5:string 6.7.2.1:struct 6.7.2:int
 pr18501	pass	compiled	6.5.2.5 6.5.3.3 6.5.16.1 6.7.2 6.8.4.1 6.8.5.3	6.5.16.1:assign 6.5.2.5:compound-literal 6.5.3.3:not 6.7.2:int 6.7.2:unsigned 6.7.2:void 6.8.4.1:if 6.8.5.3:for
-pr18502-1	needs	unknown expected ';', found '?'	6.5.15 6.7.2	6.5.15:conditional 6.7.2:int
+pr18502-1	pass	compiled	6.5.15 6.7.2	6.5.15:conditional 6.7.2:int
 pr18520-1	pass	compiled	6.7.1 6.7.2 6.7.3 6.8.6.4 7.12	6.7.1:extern 6.7.2:double 6.7.2:int 6.7.3:const 6.8.6.4:return 7.12:isnan
 pr18596-1	pass	rejected	6.5.2.5 6.5.6 6.7.1 6.7.2 6.8.6.4	6.5.2.5:compound-literal 6.5.6:add 6.7.1:auto 6.7.1:static 6.7.2:int 6.8.6.4:return
 pr18596-2	pass	rejected	6.5.2.5 6.5.6 6.7.1 6.7.2 6.8.6.4	6.5.2.5:compound-literal 6.5.6:add 6.7.1:auto 6.7.1:static 6.7.2:int 6.8.6.4:return
