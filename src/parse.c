@@ -3110,6 +3110,13 @@ static int address_of_literal(int line)
     }
     compound_literal(type, x, count, elem, elem_x, line, 1, NULL);
 
+    /* `&(int []){ 0, 1, 2 }[i]`, `&(struct s){ ... }.m`: what follows binds
+     * to the literal, before the `&` does. An array's literal is already
+     * its first element's address, a value to walk from; a struct's is the
+     * object itself. */
+    if (tok_postfix())
+        postfix_chain(count ? POST_VALUE : POST_OBJECT);
+
     return ADDR_OBJECT;
 }
 
