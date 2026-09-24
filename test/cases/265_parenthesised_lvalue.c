@@ -53,10 +53,23 @@ int main(void)
         if (t.a[0] == 5 && t.a[1] == 10 && t.a[2] == 6) r++;
     }
 
+    /* A parenthesis round one: its object survives both `)`. 20060910-1's
+     * `*((deeper)->buffer_position)++`. */
+    {
+        struct { int a[3]; } t = { { 1, 2, 3 } }, *pt = &t;
+        int v = 1;
+
+        ((v))++;
+        ((pt)->a[0]) = 7;
+        ((pt))->a[1] += 3;
+        ((v) = (v) + 1);
+        if (v == 3 && t.a[0] == 7 && t.a[1] == 5) r++;
+    }
+
     /* And a parenthesis that is only a value binds as it always did. */
     if (2 * (x) + 1 == 33 && (x + 1) * 2 == 34) r++;
     if ((c = x) != 0 && c == 16) r++;
     if ((p)->n == 4 && (s)[1] == 'b' && (node).n == 4) r++;
 
-    return r + 31;              /* 11 checks */
+    return r + 30;              /* 12 checks */
 }

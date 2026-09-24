@@ -1118,11 +1118,11 @@ static void primary(void)
 
             return;
         }
-        if (tok == TK_IDENT) {
+        if (tok_low == TK_IDENT || tok_low == TK_LPAREN) {
             /* An assignment to it is not this operand's to make: `a + (x) =
-             * 1` has no meaning, and the `=` left over says so. */
+             * 1` has no meaning, and the `=` left over says so. A step is. */
             if (paren_name())
-                vderef();
+                object_value();
             narrow_dest = outer;
             if (tok_postfix() || tok == TK_LPAREN)
                 subscript_value();
@@ -1546,14 +1546,18 @@ static void paren_statement(void)
         return;
     }
     narrow_dest = 0;
-    if (tok == TK_IDENT) {
+    if (tok_low == TK_IDENT || tok_low == TK_LPAREN) {
         int object = paren_name();
 
         narrow_dest = outer;
-        if (object)
-            deref_rest();               /* `(x) = v`, `(p->n) += 2` */
-        else
+        if (!object) {
             postfix_statement();
+        } else if (tok == TK_INC || tok == TK_DEC) {
+            object_value();             /* `(p->n)++` */
+            binary_rest(PREC_LOWEST);
+        } else {
+            deref_rest();               /* `(x) = v`, `(p->n) += 2` */
+        }
 
         return;
     }
@@ -1691,14 +1695,16 @@ static void paren_rest(void)
  * `++`, a `--` or a subscript after it is done here, and then, as for
  * anything else the parenthesis held, 0 with the value on the stack. */
 /* After the `)` and any chain after it: 1, the object left for the caller,
- * when an assignment follows; otherwise its value -- stepped first, for a
- * `++` or a `--` -- and 0. `object` says whether there is an object at all
- * rather than a value, which there is not after `(f)(x)`. */
+ * when what follows needs one -- an assignment, a step, or the `)` of a
+ * parenthesis round this one, whose own caller decides; otherwise its value,
+ * and 0. `object` says whether there is an object at all rather than a
+ * value, which there is not after `(f)(x)`. */
 static int paren_object_rest(int object)
 {
     if (!object)
         return 0;
-    if (tok == TK_ASSIGN || compound_op[tok])
+    if (tok == TK_ASSIGN || compound_op[tok] || tok == TK_INC
+        || tok == TK_DEC || tok == TK_RPAREN)
         return 1;
     object_value();
 
@@ -1711,6 +1717,50 @@ static int paren_name(void)
     NameRef name = tok_name;
     int sym, what;
 
+    /* `((p)->n)`, `((x))`: a parenthesis round one, whose object survives
+     * its `)` for this one's to decide about. 20060910-1 steps
+     * `*((deeper)->buffer_position)++`. */
+    if (tok == TK_LPAREN) {
+        int object;
+
+        next();
+        if (starts_decl()) {            /* `((int) x + 1)`, a value */
+            cast_rest();
+            binary_rest(PREC_LOWEST);
+            paren_rest();
+
+            return 0;
+        }
+        if (tok_low == TK_IDENT || tok_low == TK_LPAREN) {
+            object = paren_name();
+        } else {
+            comma_expr();
+            expect(TK_RPAREN, "')'");
+            object = 0;
+        }
+        if (tok_postfix())
+            object = postfix_chain(object ? POST_OBJECT : POST_VALUE)
+                     == POST_OBJECT;
+        if (tok == TK_RPAREN) {         /* it was all of this one */
+            next();
+            if (tok_postfix())
+                object = postfix_chain(object ? POST_OBJECT : POST_VALUE)
+                         == POST_OBJECT;
+
+            return paren_object_rest(object);
+        }
+        if (object && tok != TK_INC && tok != TK_DEC) {
+            deref_rest();               /* `((x) = 5)` */
+        } else {
+            if (object)
+                object_value();
+            binary_rest(PREC_LOWEST);
+        }
+        paren_rest();
+
+        return 0;
+    }
+
     next();
     if (tok == TK_RPAREN) {             /* `(x)`: the name is all of it */
         next();
@@ -1720,7 +1770,7 @@ static int paren_name(void)
          * name's, and what it ends at may be assigned to. */
         if (tok_postfix())
             return paren_object_rest(name_operand(sym, name) == NAME_OBJECT);
-        if (tok != TK_ASSIGN && !compound_op[tok]) {
+        if (tok != TK_ASSIGN && !compound_op[tok] && tok != TK_RPAREN) {
             symbol_value(sym, name);    /* a `++` after it too */
 
             return 0;
