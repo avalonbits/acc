@@ -822,7 +822,7 @@ static int refill(void)
  * all. */
 /* The most parameters a macro may take, and so the most arguments a call
  * may pass. */
-#define PARAMS_MAX 16
+#define PARAMS_MAX 127          /* what C99 5.2.4.1 asks a compiler to take */
 
 typedef struct {
     NameRef  name;              /* NAME_NONE in an empty slot */
@@ -1402,6 +1402,28 @@ static int args_char(void)
     return (unsigned char) *cursor++;
 }
 
+/* A call's arguments start with room for this many and the null after them,
+ * and grow when a macro takes more: most take a few, and C99 asks for 127,
+ * which as the first room would be zeroed on every call. */
+#define ARGS_FIRST 17
+
+/* Room for argument `argc` and the null after it. */
+static char **args_room(char **argv, int argc, int *cap)
+{
+    int more;
+
+    if (argc + 1 < *cap)
+        return argv;
+    more = *cap * 2;
+    argv = realloc(argv, (size_t) more * sizeof *argv);
+    if (!argv)
+        acc_error("out of memory for a macro's arguments");
+    memset(argv + *cap, 0, (size_t) (more - *cap) * sizeof *argv);
+    *cap = more;
+
+    return argv;
+}
+
 /* The arguments of a call, each as the text between the commas. Nesting is
  * counted so that a comma inside parentheses or brackets belongs to what it
  * is inside, and strings and character constants go over whole. */
@@ -1409,9 +1431,9 @@ static char **collect_args(Macro *m, int *out_argc)
 {
     char **argv;
     Buf    arg;
-    int    argc = 0, depth = 0, i;
+    int    argc = 0, depth = 0, i, cap = ARGS_FIRST;
 
-    argv = calloc(PARAMS_MAX + 1, sizeof *argv);
+    argv = calloc(ARGS_FIRST, sizeof *argv);
     if (!argv)
         acc_error("out of memory for a macro's arguments");
     arg.text = NULL; arg.len = 0; arg.cap = 0;
@@ -1445,6 +1467,8 @@ static char **collect_args(Macro *m, int *out_argc)
             if (argc == PARAMS_MAX)
                 acc_error_at(line, "a macro takes at most %d arguments",
                              PARAMS_MAX);
+            if (argc + 1 >= cap)
+                argv = args_room(argv, argc, &cap);
             argv[argc++] = arg.text ? arg.text : strdup("");
             arg.text = NULL; arg.len = 0; arg.cap = 0;
 
@@ -1479,6 +1503,8 @@ static char **collect_args(Macro *m, int *out_argc)
         buf_putc(&arg, c);
     }
 
+    if (argc + 1 >= cap)
+        argv = args_room(argv, argc, &cap);
     argv[argc++] = arg.text ? arg.text : strdup("");
 
     /* `f()` on a macro that takes nothing passes nothing, not one argument
@@ -2236,9 +2262,9 @@ static char **collect_args_text(Macro *m, const char **at, const char *end,
     const char *p = *at;
     char **argv;
     Buf    arg;
-    int    argc = 0, depth = 0, i;
+    int    argc = 0, depth = 0, i, cap = ARGS_FIRST;
 
-    argv = calloc(PARAMS_MAX + 1, sizeof *argv);
+    argv = calloc(ARGS_FIRST, sizeof *argv);
     if (!argv)
         acc_error("out of memory for a macro's arguments");
     arg.text = NULL; arg.len = 0; arg.cap = 0;
@@ -2265,6 +2291,8 @@ static char **collect_args_text(Macro *m, const char **at, const char *end,
             if (argc == PARAMS_MAX)
                 acc_error_at(line, "a macro takes at most %d arguments",
                              PARAMS_MAX);
+            if (argc + 1 >= cap)
+                argv = args_room(argv, argc, &cap);
             argv[argc++] = arg.text ? arg.text : strdup("");
             arg.text = NULL; arg.len = 0; arg.cap = 0;
 
@@ -2297,6 +2325,8 @@ static char **collect_args_text(Macro *m, const char **at, const char *end,
         buf_putc(&arg, c);
     }
 
+    if (argc + 1 >= cap)
+        argv = args_room(argv, argc, &cap);
     argv[argc++] = arg.text ? arg.text : strdup("");
     if (m->nparams == 0 && argc == 1 && !*argv[0]) {
         free(argv[0]);                  /* as above: nothing, not one empty */
@@ -3180,7 +3210,7 @@ static void do_define(void)
 {
     NameRef name;
     NameRef *params = NULL;
-    int nparams = -1, variadic = 0;
+    int nparams = -1, variadic = 0, pcap;
     int len;
 
     skip_blanks();
@@ -3195,7 +3225,8 @@ static void do_define(void)
      * this is asked before any blanks are skipped. */
     if (*cursor == '(') {
         cursor++;
-        params = malloc(PARAMS_MAX * sizeof *params);
+        pcap = 8;                       /* grown as a macro takes more */
+        params = malloc((size_t) pcap * sizeof *params);
         if (!params)
             acc_error("out of memory for a macro's parameters");
         nparams = 0;
@@ -3215,6 +3246,12 @@ static void do_define(void)
                 if (nparams == PARAMS_MAX)
                     acc_error_at(line, "a macro takes at most %d parameters",
                                  PARAMS_MAX);
+                if (nparams == pcap) {
+                    pcap *= 2;
+                    params = realloc(params, (size_t) pcap * sizeof *params);
+                    if (!params)
+                        acc_error("out of memory for a macro's parameters");
+                }
                 params[nparams++] = directive_target("define");
                 skip_blanks();
                 if (*cursor != ',')

@@ -52,7 +52,11 @@
  * in every step of the walk below. An offset needs only the add. So the
  * counts below are in bytes too, and step by the size of a Sym. */
 Sym           *sym_table;     /* sym_at reads it directly */
-static int     nsyms, nglobals, cap;    /* bytes, not symbols */
+/* Bytes, not symbols. The first two are seen outside, so that opening and
+ * closing a scope -- which every statement's body does -- is inline: see
+ * sym_scope_begin in acc.h. */
+int            sym_nbytes, sym_nglobal_bytes;
+static int     cap;
 
 #ifdef ACC_HASH_STATS
 unsigned long sym_probes;
@@ -67,7 +71,7 @@ void sym_init(void)
     sym_table = malloc(cap);
     if (!sym_table)
         acc_error("out of memory for symbols");
-    nsyms = nglobals = 0;
+    sym_nbytes = sym_nglobal_bytes = 0;
 }
 
 /* Out of line for the same reason out_grow is: sym_push runs for every name
@@ -96,9 +100,9 @@ int push_local(NameRef name, int kind, int val)
     Sym *sym;
     int at;
 
-    if (nsyms == cap)
+    if (sym_nbytes == cap)
         syms_grow();
-    at = nsyms;
+    at = sym_nbytes;
     sym = sym_at(at);
     sym->name = name;
     sym->kind = (unsigned char) kind;
@@ -106,7 +110,7 @@ int push_local(NameRef name, int kind, int val)
     sym->type = TY_INT;     /* until the declaration says otherwise */
     sym->ext = 0;
     sym->quals = 0;
-    nsyms += sizeof *sym;
+    sym_nbytes += sizeof *sym;
 
     return at;
 }
@@ -123,7 +127,7 @@ int sym_push(NameRef name, int kind, int val)
 
     if (sym_kind_local(kind))
         return push_local(name, kind, val);
-    if (nsyms == cap)
+    if (sym_nbytes == cap)
         syms_grow();
 
     /* File scope. It goes in below the locals, which keeps every index
@@ -131,15 +135,15 @@ int sym_push(NameRef name, int kind, int val)
      * generator is holding in its fixups -- pointing at the same symbol.
      * Only the locals move, and nothing holds a local's index across a push.
      * A function has a handful of them, so the move is a few dozen bytes. */
-    at = nglobals;
+    at = sym_nglobal_bytes;
     sym = sym_at(at);
-    memmove(sym + 1, sym, (size_t) (nsyms - at));
+    memmove(sym + 1, sym, (size_t) (sym_nbytes - at));
 
     /* And what the table beside it holds for the locals -- an array's count
      * -- moves with them: `sizeof a` after a call to a function not yet
      * seen read another symbol's. */
-    if (nsyms != at)            /* at file scope there are no locals */
-        fn_shift(at, nsyms - at);
+    if (sym_nbytes != at)            /* at file scope there are no locals */
+        fn_shift(at, sym_nbytes - at);
     sym->name = name;
     sym->kind = (unsigned char) kind;
     sym->val = val;
@@ -148,8 +152,8 @@ int sym_push(NameRef name, int kind, int val)
     sym->ext = 0;
     sym->quals = 0;
     sym_set_params(at, 0, 0);   /* and to take nothing known */
-    nsyms += sizeof *sym;
-    nglobals += sizeof *sym;
+    sym_nbytes += sizeof *sym;
+    sym_nglobal_bytes += sizeof *sym;
     name_set_global(name, at);
 
     return at;
@@ -161,7 +165,7 @@ int sym_push(NameRef name, int kind, int val)
  * regions. */
 int sym_nglobals(void)
 {
-    return nglobals;
+    return sym_nglobal_bytes;
 }
 
 int sym_find(NameRef name)
@@ -170,9 +174,9 @@ int sym_find(NameRef name)
      * same spelling. There are a handful and the walk stops at the first
      * match. The counter is unsigned so the loop test is not a signed
      * compare, which on this target is a helper call to repair the flags. */
-    unsigned i = (unsigned) nsyms;
+    unsigned i = (unsigned) sym_nbytes;
 
-    while (i > (unsigned) nglobals) {
+    while (i > (unsigned) sym_nglobal_bytes) {
         i -= sizeof(Sym);
         COUNT_PROBE();
         if (sym_at(i)->name == name)
@@ -347,22 +351,12 @@ int sym_param_ext(int first, int index)
  * position in the table, because a file-scope symbol pushed inside the scope
  * -- a call to a function not seen yet -- goes in underneath the locals and
  * moves them all along by one. */
-int sym_scope_begin(void)
-{
-    return nsyms - nglobals;
-}
-
-void sym_scope_end(int mark)
-{
-    nsyms = nglobals + mark;
-}
-
 int sym_declared_in(int sym, int mark)
 {
     if (mark < 0)
-        return sym < nglobals;
+        return sym < sym_nglobal_bytes;
 
-    return sym >= nglobals + mark;
+    return sym >= sym_nglobal_bytes + mark;
 }
 
 void sym_set_count(int sym, int count)
@@ -765,5 +759,5 @@ int member_offset(int member)
 
 void sym_drop_locals(void)
 {
-    nsyms = nglobals;
+    sym_nbytes = sym_nglobal_bytes;
 }

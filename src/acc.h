@@ -639,8 +639,17 @@ void sym_drop_locals(void);              /* at the end of a function */
 
 /* A scope inside a function, which so far only a `for` has: the locals it
  * declares are dropped at its end, and their frame bytes are not reused. */
-int  sym_scope_begin(void);
-void sym_scope_end(int mark);
+extern int sym_nbytes, sym_nglobal_bytes;       /* see src/sym.c */
+
+static inline int sym_scope_begin(void)
+{
+    return sym_nbytes - sym_nglobal_bytes;
+}
+
+static inline void sym_scope_end(int mark)
+{
+    sym_nbytes = sym_nglobal_bytes + mark;
+}
 int  sym_declared_in(int sym, int mark);  /* in the scope from mark on; -1 is file scope */
 
 /* ------------------------------------------------------------------ */

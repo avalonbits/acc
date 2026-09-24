@@ -2745,7 +2745,8 @@ static unsigned char decl_start[TK_COUNT] = {
     [TK_KW_TYPEDEF] = 1, [TK_KW_STATIC] = 1, [TK_KW_EXTERN] = 1,
     [TK_KW_STATIC_ASSERT] = 1,
     [TK_KW_AUTO] = 1, [TK_KW_REGISTER] = 1, [TK_KW_CONST] = 1,
-    [TK_KW_VOLATILE] = 1, [TK_KW_INLINE] = 1, [TK_KW_BOOL] = 1,
+    [TK_KW_VOLATILE] = 1, [TK_KW_RESTRICT] = 1, [TK_KW_INLINE] = 1,
+    [TK_KW_BOOL] = 1,
     [TK_KW_VA_LIST] = 1
 };
 
@@ -4312,7 +4313,15 @@ static void typedef_array(Type *type, int *ext, int *count)
      * int row[n];`: the length it had where the typedef was, for the
      * declaration to take the room. */
     if (ext_vla_size(x)) {
-        if (!in_body || in_params)
+        /* A parameter of the typedef's type is a pointer to its element,
+         * as any array parameter is, and its length is nothing to it:
+         * `void g1 (A);` with `typedef int A[n];` in a block. */
+        if (in_params) {
+            *count = -1;
+
+            return;
+        }
+        if (!in_body)
             acc_error_at(tok_line, "an array whose length is worked out as "
                                    "it runs can only be declared in a "
                                    "function's body");
@@ -5416,6 +5425,21 @@ void declaration(void)
 }
 
 static void statement(void);
+
+/* The body of a selection or an iteration statement, which is a block of
+ * its own whether it has braces or not (C99 6.8.4p3, 6.8.5p5): a tag or a
+ * compound literal it declares ends with it. c99-scope-2 defines a new
+ * `struct foo` in each. */
+static inline __attribute__((always_inline))
+void substatement(void)
+{
+    int mark = sym_scope_begin(), outer = scope_mark;
+
+    scope_mark = mark;
+    statement();
+    sym_scope_end(mark);
+    scope_mark = outer;
+}
 static void condition(void);
 
 /* ------------------------------------------------------------------ */
@@ -5573,17 +5597,20 @@ __attribute__((noinline))
 static void while_statement(void)
 {
     int top, to_end, mark = sym_scope_begin();     /* see TK_KW_IF */
+    int outer = scope_mark;
 
+    scope_mark = mark;
     next();
     top = gen_here();
     condition();
     to_end = gen_jump_if_false();
     loop_begin(top);
-    statement();
+    substatement();
     gen_jump_to(top);
     gen_label(to_end);
     loop_end();
     sym_scope_end(mark);
+    scope_mark = outer;
 }
 
 /* `do body while (condition);` -- the body first, then the test, and back to
@@ -5593,10 +5620,12 @@ __attribute__((noinline))
 static void do_statement(void)
 {
     int top = gen_here(), mark = sym_scope_begin();    /* see TK_KW_IF */
+    int outer = scope_mark;
 
+    scope_mark = mark;
     next();
     loop_begin(-1);
-    statement();
+    substatement();
     expect(TK_KW_WHILE, "'while' after the body of a do");
     holes_land(&continues, jumps.continue_mark);
     condition();
@@ -5604,6 +5633,7 @@ static void do_statement(void)
     gen_jump_if_true_to(top);
     loop_end();
     sym_scope_end(mark);
+    scope_mark = outer;
 }
 
 /* The constant a case label names, converted to the type the switch compares
@@ -5736,7 +5766,9 @@ static void switch_statement(void)
     Switch saved_switch = in_switch;
     Type type;
     int line, slot, to_tests, i, mark = sym_scope_begin();     /* see TK_KW_IF */
+    int outer = scope_mark;
 
+    scope_mark = mark;
     next();
     expect(TK_LPAREN, "'('");
     line = tok_line;
@@ -5759,7 +5791,7 @@ static void switch_statement(void)
     jumps_push();
     jumps.break_mark = breaks.count;
 
-    statement();
+    substatement();
 
     hole_push(&breaks, gen_jump());
     gen_label(to_tests);
@@ -5776,6 +5808,7 @@ static void switch_statement(void)
     holes_land(&breaks, jumps.break_mark);
     in_switch = saved_switch;
     sym_scope_end(mark);
+    scope_mark = outer;
     jumps_pop();
 }
 
@@ -5948,9 +5981,10 @@ static void labels_end(void)
 __attribute__((noinline))
 static void for_statement(void)
 {
-    int mark = sym_scope_begin();
+    int mark = sym_scope_begin(), outer = scope_mark;
     int top, to_end = -1, to_body, again;
 
+    scope_mark = mark;
     next();
     expect(TK_LPAREN, "'('");
 
@@ -5985,13 +6019,14 @@ static void for_statement(void)
     expect(TK_RPAREN, "')'");
 
     loop_begin(again);
-    statement();
+    substatement();
     gen_jump_to(again);
     if (to_end >= 0)
         gen_label(to_end);
     loop_end();
 
     sym_scope_end(mark);
+    scope_mark = outer;
 }
 
 /* `{ ... }`: declarations and statements in any order, as C99 has them, and
@@ -6058,12 +6093,13 @@ static void statement(void)
      * -- `if (sizeof (enum { T }))`, pr67784 -- ends with the statement,
      * and a name it hid is seen again after it. */
     case TK_KW_IF: {
-        int to_else, mark = sym_scope_begin();
+        int to_else, mark = sym_scope_begin(), outer = scope_mark;
 
+        scope_mark = mark;              /* so a tag may be defined again */
         next();
         condition();
         to_else = gen_jump_if_false();
-        statement();
+        substatement();
 
         /* `else if` needs nothing of its own: the else branch is a statement,
          * and an if is a statement. A dangling else binds to the nearest if
@@ -6072,12 +6108,13 @@ static void statement(void)
             int to_end = gen_jump();
 
             gen_label(to_else);
-            statement();
+            substatement();
             gen_label(to_end);
         } else {
             gen_label(to_else);
         }
         sym_scope_end(mark);
+        scope_mark = outer;
 
         return;
     }

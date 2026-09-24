@@ -39,7 +39,7 @@ GNU = re.compile(r'__attribute|__builtin_|__asm|\basm\b|__inline|__restrict|'
                  r'__alignof|__FLT_|__DBL_|__INT\w*_TYPE__|__SIZEOF_|'
                  r'__UINT\w*_TYPE__|__signed__|__const\b|__volatile\b|'
                  r'__complex__|__real__|__imag__|\blink_error\b|\bmempcpy\b|'
-                 r'__FUNCTION__|__PRETTY_FUNCTION__')
+                 r'__FUNCTION__|__PRETTY_FUNCTION__|__atomic_|__sync_')
 
 
 def needs(text, census_line, message):
@@ -49,7 +49,7 @@ def needs(text, census_line, message):
     code = re.sub(r'//[^\n]*', '', code)
     if 'old-style-definition' in census_line:
         return 'k&r-definitions'
-    if re.search(r'\blong\s+double\b', code):
+    if re.search(r'\blong\s+double\b', code) or 'long double' in message:
         return 'long-double'
     if re.search(r'_Complex|__complex', code):
         return 'complex'
