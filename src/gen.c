@@ -1532,6 +1532,8 @@ static int fold_unsigned(int op, const Value *lhs, const Value *rhs)
     return either_unsigned(lhs, rhs);
 }
 
+static int in_function;                 /* see gen_func_begin */
+
 static void no_addr_arithmetic(void)
 {
     acc_error_at(tok_line, "only adding a number to an address, or taking "
@@ -1553,9 +1555,11 @@ static void no_addr_arithmetic(void)
  * 2` would move twice as far as the image does, `&a & 255` not at all, and
  * `&a + &b` twice. Each of those is a number that silently depends on where
  * the program was loaded, and the one thing a compiler that is about to gain
- * a linker must not do is write one of them down. Said at run time -- the
- * address into a variable first, the arithmetic after -- they all still
- * work, because then the address in the image is a whole one. */
+ * a linker must not do is write one of them down. At run time they all
+ * still work, because then the address in the image is a whole one, which
+ * is how one in a function is done: -1 says it cannot be folded, and in a
+ * function the operation is then emitted like any other. In a global's
+ * initial value, which has to be bytes now, it is refused. */
 static int fold_addr(int op, const Value *lhs, const Value *rhs)
 {
     int left = lhs->kind, right = rhs->kind;
@@ -1578,9 +1582,8 @@ static int fold_addr(int op, const Value *lhs, const Value *rhs)
      * and how far apart they are is not known until the image is finished. */
     if (op == TK_MINUS && left == right)
         return VAL_CONST;
-    no_addr_arithmetic();
 
-    return VAL_CONST;
+    return -1;
 }
 
 /* Whether both sides can be worked out now.
@@ -1633,13 +1636,25 @@ static void vbinop(int op)
         int kind = val_pending(lhs->kind) || val_pending(rhs->kind)
                    ? fold_addr(op, lhs, rhs) : VAL_CONST;
 
-        vdrop();
-        vdrop();
-        vpush_const(folded, folded_type);
-        if (kind != VAL_CONST)
-            (vsp - 1)->kind = (unsigned char) kind;
+        if (kind >= 0) {
+            vdrop();
+            vdrop();
+            vpush_const(folded, folded_type);
+            if (kind != VAL_CONST)
+                (vsp - 1)->kind = (unsigned char) kind;
 
-        return;
+            return;
+        }
+        if (!in_function)
+            no_addr_arithmetic();
+
+        /* Loaded, relocated, before anything below takes either side for
+         * an immediate: the number in the Value is where the address will
+         * be relative to the image, which is not what it is worth. */
+        if (val_pending(lhs->kind))
+            force_reg(lhs);
+        if (val_pending(rhs->kind))
+            force_reg(rhs);
     }
 
     /* Adding or subtracting nothing is nothing. Worth the two lines: it is
@@ -1866,12 +1881,15 @@ void vneg(void)
         return;
     }
 
-    if (val_const(top->kind)) {
-        if (val_pending(top->kind))
-            no_addr_arithmetic();
+    if (val_const(top->kind) && !val_pending(top->kind)) {
         top->val = trunc_int(-top->val);
 
         return;
+    }
+    if (val_pending(top->kind)) {
+        if (!in_function)
+            no_addr_arithmetic();
+        force_reg(top);
     }
 
     /* 0 - x, so the operand goes anywhere but HL and HL is then cleared of
