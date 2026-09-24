@@ -7186,6 +7186,13 @@ static Type cond_type(Type a, int a_null, Type b, int b_null)
             return a;
         if (type_pointer(b) && a_null)
             return b;
+
+        /* A pointer to an object and a `void *` meet at `void *` (C99
+         * 6.5.15p6): c99-const-expr-4's `j ? p : n`, where n is a const
+         * `void *` that is 0 but not a null pointer constant. */
+        if (type_pointer(a) && type_pointer(b)
+            && (type_deref(a) == TY_VOID || type_deref(b) == TY_VOID))
+            return type_ptr_to(TY_VOID);
         acc_error_at(tok_line, "the two sides of ?: are %s",
                      type_pointer(a) && type_pointer(b)
                          ? "pointers to different types"

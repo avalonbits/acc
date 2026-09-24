@@ -279,19 +279,30 @@ static void object_value(void)
 
 /* `[index]`, with a pointer on the stack: the address of the element it
  * picks, which is `pointer + index` with the step C gives it. */
+/* Neither side of a subscript a pointer, said of the one on the left. */
+__attribute__((noinline))
+static void subscript_refused(void)
+{
+    acc_error_at(tok_line, "'[' needs an array or a pointer, and this is %s",
+                 type_float(vtype_at(1)) ? "a floating-point value"
+                                         : "an integer");
+}
+
 static void subscript(void)
 {
     Type outer = narrow_dest;
+    int left = type_pointer(vtype()) != 0;
 
-    if (!type_pointer(vtype()))
-        acc_error_at(tok_line, "'[' needs an array or a pointer, and this is %s",
-                     type_float(vtype()) ? "a floating-point value"
-                                         : "an integer");
     next();
     narrow_dest = 0;            /* the index is not the destination */
     comma_expr();
     narrow_dest = outer;
     expect(TK_RBRACKET, "']'");
+
+    /* `a[i]` is `*(a + i)`, and so is `i[a]` (C99 6.5.2.1): one of the two
+     * is the pointer, and the addition takes it on either side. */
+    if (!left && !type_pointer(vtype()))
+        subscript_refused();
     vapply(TK_PLUS, 0);
 }
 
@@ -3551,11 +3562,31 @@ static int sizeof_paren(void)
     narrow_dest = 0;
     what = sizeof_unary();
     if (tok != TK_RPAREN) {
+        /* `sizeof (x = y)`: the type is x's, and nothing is done, so the
+         * right side is read only to be passed over. */
+        if (what == SIZEOF_OBJECT && (tok == TK_ASSIGN || compound_op[tok])) {
+            next();
+            expr();
+            vdrop();
+            if (tok == TK_RPAREN) {     /* the object's type, not widened */
+                narrow_dest = outer;
+                next();
+
+                return sizeof_postfix(SIZEOF_OBJECT);
+            }
+        }
         if (what == SIZEOF_OBJECT)
             vderef();
         binary_rest(PREC_LOWEST);
         if (tok == TK_QUESTION)
             conditional_rest();
+
+        /* `sizeof (0, x.c)`: the comma's answer is its right side, a
+         * value, so an array there is its first element's address. */
+        while (accept(TK_COMMA)) {
+            vdrop();
+            expr();
+        }
         what = SIZEOF_VALUE;
     }
     narrow_dest = outer;
@@ -3874,7 +3905,15 @@ static void sizeof_value(void)
             acc_error_at(line, "a bit-field has no size of its own");
         if (what == SIZEOF_OBJECT)
             type = type_deref(type);
-        gen_rollback(&mark);
+
+        /* An operand whose type is a VLA is evaluated (C99 6.5.3.4p2), and
+         * the code that worked out its size is part of what it did:
+         * rolled back, the size's slot was never written. typename-vla-1
+         * takes `sizeof (*(++a, (char (*)[a])0))`. */
+        if (vla_size_slot(type, x))
+            vdrop();
+        else
+            gen_rollback(&mark);
 
         /* An array whose length the program worked out: its size is the
          * value the declaration put beside it. */
@@ -5533,7 +5572,7 @@ static void continue_statement(void)
 __attribute__((noinline))
 static void while_statement(void)
 {
-    int top, to_end;
+    int top, to_end, mark = sym_scope_begin();     /* see TK_KW_IF */
 
     next();
     top = gen_here();
@@ -5544,6 +5583,7 @@ static void while_statement(void)
     gen_jump_to(top);
     gen_label(to_end);
     loop_end();
+    sym_scope_end(mark);
 }
 
 /* `do body while (condition);` -- the body first, then the test, and back to
@@ -5552,7 +5592,7 @@ static void while_statement(void)
 __attribute__((noinline))
 static void do_statement(void)
 {
-    int top = gen_here();
+    int top = gen_here(), mark = sym_scope_begin();    /* see TK_KW_IF */
 
     next();
     loop_begin(-1);
@@ -5563,6 +5603,7 @@ static void do_statement(void)
     expect(TK_SEMI, "';'");
     gen_jump_if_true_to(top);
     loop_end();
+    sym_scope_end(mark);
 }
 
 /* The constant a case label names, converted to the type the switch compares
@@ -5694,7 +5735,7 @@ static void switch_statement(void)
 {
     Switch saved_switch = in_switch;
     Type type;
-    int line, slot, to_tests, i;
+    int line, slot, to_tests, i, mark = sym_scope_begin();     /* see TK_KW_IF */
 
     next();
     expect(TK_LPAREN, "'('");
@@ -5734,6 +5775,7 @@ static void switch_statement(void)
     ncases = in_switch.case_mark;
     holes_land(&breaks, jumps.break_mark);
     in_switch = saved_switch;
+    sym_scope_end(mark);
     jumps_pop();
 }
 
@@ -6011,8 +6053,12 @@ static void statement(void)
         reserved_word();
 
     switch (tok) {
+    /* A selection statement is a block of its own, and so is an iteration
+     * one (C99 6.8.4p3, 6.8.5p5): what its controlling expression declares
+     * -- `if (sizeof (enum { T }))`, pr67784 -- ends with the statement,
+     * and a name it hid is seen again after it. */
     case TK_KW_IF: {
-        int to_else;
+        int to_else, mark = sym_scope_begin();
 
         next();
         condition();
@@ -6031,6 +6077,7 @@ static void statement(void)
         } else {
             gen_label(to_else);
         }
+        sym_scope_end(mark);
 
         return;
     }
