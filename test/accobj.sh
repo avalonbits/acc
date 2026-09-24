@@ -1,7 +1,7 @@
 #!/bin/bash
-# ACC version 6 objects that acc does not write itself: the relocation kinds,
+# ACC version 1 objects that acc does not write itself: the relocation kinds,
 # the second table of them, and alignment, which are for assembly -- zap
-# writes such objects for C to call. test/objv6.py writes them from the
+# writes such objects for C to call. test/accobj.py writes them from the
 # format as src/obj.c describes it, and a C program checks every value the
 # linker made against the addresses it can see for itself, linked from the
 # objects as they are and from an archive of them, which takes items rather
@@ -21,7 +21,7 @@ bad() { printf '  FAIL %-40s %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
 PYTHONPATH=test python3 - "$tmp" <<'PYEOF'
 import sys
-from objv6 import Obj
+from accobj import Obj
 tmp = sys.argv[1]
 
 # The table, and what can be asked of its address a byte at a time. Machine

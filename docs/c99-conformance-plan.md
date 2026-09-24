@@ -492,7 +492,7 @@ done, and then what is next.
     `__STDC_VERSION__` and `__STDC_HOSTED__`, and the whole of
     `<stdint.h>`.
 
-11. **A link that takes functions, not files**, and object format v6.
+11. **A link that takes functions, not files**, and object format version 1.
 
 12. **`%f`, `%e`, `%g` and `%a`**, exact, in a member a program reaches
     only when it passes a float to something that takes `...`.

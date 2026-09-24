@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# A writer of ACC version 6 objects, from the format as src/obj.c describes
+# A writer of ACC version 1 objects, from the format as src/obj.c describes
 # it and not from acc's own writer: what an assembler that writes them -- zap
 # -- is held to, and what the linker's handling of the kinds acc itself never
-# writes is tested with. See test/v6.sh.
+# writes is tested with. See test/accobj.sh.
 #
 #   obj = Obj()
 #   obj.item(0, align=8)                       # an item, at an offset
@@ -84,7 +84,7 @@ class Obj:
         for name, _, _ in self.syms:
             offsets.append(len(strings))
             strings += name.encode() + b'\0'
-        out = bytearray(b'ACC\x06')
+        out = bytearray(b'ACC\x01')
         out += n3(0)                                    # build: not acc's
         out += n3(len(self.text))
         out += n3(self.bss_len | self.bss_align << 20)
@@ -109,4 +109,4 @@ class Obj:
 
 
 if __name__ == '__main__':
-    sys.exit('objv6.py is a module: see test/v6.sh')
+    sys.exit('accobj.py is a module: see test/accobj.sh')

@@ -89,7 +89,7 @@ everything else. With function sections: 76.0 KB, 56.3 KB of it overhead.
 2. Drop externs that no relocation uses when writing an object. 1,289 of
    libc.a's 1,692 symbols are header declarations nothing references:
    17.8 KB, 16% of the library. This is independent of the ELF question.
-3. Extend ACC (v6) for assembly libraries. Hand-written assembly needs two
+3. Extend ACC for assembly libraries (what became version 1). Hand-written assembly needs two
    things the format can't express:
    - relocation kinds: the low, high and upper byte of an address, and an
      8-bit PC-relative reference (`jr`/`djnz`) to an external symbol;
@@ -111,9 +111,9 @@ then, and added here unchanged apart from this section.
 1. ACC stays.
 2. Dropping unused externs: taken on in acc; see the commit that follows
    this one for the measurement.
-3. v6: proposed from acc, agreed with zap, and built. src/obj.c's note on
+3. v1: proposed from acc, agreed with zap, and built. src/obj.c's note on
    the format is the specification both sides work from, and
-   test/objv6.py writes it independently of acc's writer, for test/v6.sh
+   test/accobj.py writes it independently of acc's writer, for test/accobj.sh
    and as a cross-check of zap's output. As built:
    - the relocation kind in the top 4 bits of the 24-bit target field:
      ABS24, LOW8, HIGH8, UPPER8, PCREL8 and ABS16;
@@ -124,7 +124,7 @@ then, and added here unchanged apart from this section.
    - alignment per item, in the top 4 bits of an item's offset, since a link
      takes items out of their object and packs them; and the bss's, in the
      top 4 bits of bss_len;
-   - OBJ_VERSION 6 and one more header field, nrelocs_a;
+   - OBJ_VERSION 1 and one more header field, nrelocs_a;
    - C names spelled as agondev spells them, with a leading underscore:
      `_foo`, `_main`, `_acc_rt_fmul`. A name without one is an assembly
      object's own, which C cannot name.

@@ -24,10 +24,10 @@
  * read and write in one move. Names are a blob of NUL-terminated strings
  * that everything else points into by offset.
  *
- * Version 6 was agreed with zap, which writes it too, for assembly that C
+ * Version 1 was agreed with zap, which writes it too, for assembly that C
  * calls: see docs/object-format-vs-elf.md, and below.
  *
- *   0   4   'A', 'C', 'C', 6        what it is, and the version of this
+ *   0   4   'A', 'C', 'C', 1        what it is, and the version of this
  *   4   3   build                   which acc made it (see src/build_id.sh);
  *                                   0 for one acc did not make
  *   7   3   text_len
@@ -111,7 +111,7 @@
  * they answer -- "does this object have to be made again?" -- is about the
  * object. An answer kept in a file of its own is one that can be lost, or go
  * stale, on its own. */
-#define OBJ_VERSION  6
+#define OBJ_VERSION  1
 #define OBJ_HEADER   31
 #define OBJ_SYM      7
 #define OBJ_RELOC    6
