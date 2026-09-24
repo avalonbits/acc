@@ -54,7 +54,7 @@ if [ "${count:-0}" -le 33554432 ]; then
 fi
 echo "  cycles: $count for long.c, past two passes of the timer"
 
-# And the emulator's own count, where it keeps one (2037657 on): the build
+# And the emulator's own count (2037657 on, which test/emu.sh runs): the build
 # starts it with a write to port 0x40 and prints it with one to 0x41, and
 # bench.sh takes it over the timer's. It has to agree with the timer to
 # within the timer's two ticks and the few instructions between the reads.
@@ -72,8 +72,9 @@ rm -rf "$sd"
 emu=$(printf '%s\n' "$out" | sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
 timer=$(printf '%s\n' "$out" | sed -n 's/.*Cycles: \([0-9]*\).*/\1/p' | head -1)
 if [ -z "$emu" ]; then
-    echo "  [this emulator keeps no count: the port 0x41 check skipped]"
-    exit 0
+    echo "  FAIL cycles: the emulator printed no count for port 0x41 (test/emu.sh"
+    echo "       runs one that keeps it: fab-agon-emulator 2037657 or later)"
+    exit 1
 fi
 diff=$((emu > timer ? emu - timer : timer - emu))
 if [ -z "$timer" ] || [ "$diff" -gt 1024 ]; then
