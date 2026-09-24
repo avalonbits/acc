@@ -178,11 +178,11 @@ static int items_settle(int *at, int n)
         }
         at[j] = v;
     }
+    /* An object with no text has no items: each starts inside the text,
+     * which is what take_object checks. */
     for (i = 0; i < n; i++)
         if ((i == 0 || at[i] != at[kept - 1]) && at[i] < out_len())
             at[kept++] = at[i];
-    if (!kept)
-        at[kept++] = 0;                 /* an object with no text at all */
 
     return kept;
 }

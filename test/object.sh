@@ -440,5 +440,36 @@ const int limit = 50;
 int main(void) { return under(1) ? 42 : 0; }
 '
 
+# A file with nothing in it, and one with only a variable at zero: neither
+# has any text, and so neither has an item. The writer used to give each an
+# item at 0 anyway, which is not inside the text, and the link refused the
+# object as having its items out of order.
+split "a file with nothing in it" \
+'' \
+'int main(void) { return 42; }
+' \
+'int main(void) { return 42; }
+'
+
+# The variable's place in the bss differs from where one file would put it,
+# so this one is run rather than compared.
+printf 'int shared;\n' > "$work/b1.c"
+printf 'extern int shared;\nint main(void) { shared = 40; return shared + 2; }\n' > "$work/b2.c"
+if "$ACC" -c "$work/b1.c" -o "$work/b1.o" >/dev/null 2>&1 \
+   && "$ACC" -c "$work/b2.c" -o "$work/b2.o" >/dev/null 2>&1 \
+   && "$ACC" "$work/b2.o" "$work/b1.o" -o "$work/b.bin" -x >/dev/null 2>&1; then
+    test/agon.sh "$work/b.bin" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" -eq 42 ] || [ "$rc" -eq 77 ]; then
+        pass=$((pass+1))
+    else
+        printf '  FAIL %-32s returned %d\n' "a file with only a variable" "$rc"
+        fail=$((fail+1))
+    fi
+else
+    printf '  FAIL %-32s did not link\n' "a file with only a variable"
+    fail=$((fail+1))
+fi
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
