@@ -447,6 +447,7 @@ void lex_end(void);   /* what has to be finished before the file is */
 void next(void);                 /* advance to the following token */
 int  lex_colon_follows(void);    /* whether `:` comes after the current token */
 int  lex_rparen_follows(void);   /* and whether `)` does */
+int  lex_rbracket_follows(void); /* or `]` */
 int  lex_ident_follows(void);    /* and whether a name does */
 int  lex_rbrace_follows(void);   /* and whether `}` does */
 int         accept_next(void);          /* next(), returning 1, for accept */

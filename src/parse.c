@@ -3073,6 +3073,22 @@ static void array_brackets(int line)
         }
         next();
     }
+
+    /* `[*]`, `[const *]`: a length that varies and is not said, which C99
+     * 6.7.5.2p4 allows in a prototype's parameter. A parameter's first
+     * dimension is a pointer whatever it says, so it is read as `[]`.
+     * c-testsuite's 00162 declares one. */
+    if (tok == TK_STAR && lex_rbracket_follows()) {
+        if (!in_params)
+            acc_error_at(line, "'[*]' belongs in a function's parameters, "
+                               "where its length is said elsewhere");
+        if (had_static)
+            acc_error_at(line, "'static' says how many elements there are "
+                               "at least, and '[*]' says nothing");
+        next();
+
+        return;
+    }
     if (!had_static && !had_qualifier)
         return;
     if (!in_params)

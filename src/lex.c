@@ -1301,6 +1301,11 @@ int lex_rbrace_follows(void)
     return next_char() == '}';
 }
 
+int lex_rbracket_follows(void)
+{
+    return next_char() == ']';
+}
+
 /* Whether a name comes after the current token, which is what tells a
  * designator's `.` from a floating literal's: `.x` names a member and `.5`
  * is a number, and the difference is one character away. */
