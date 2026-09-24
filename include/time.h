@@ -11,6 +11,32 @@
 
 typedef unsigned long clock_t;
 
-clock_t clock(void);
+/* Seconds since the start of 1970, as everywhere else, and in 64 bits so
+ * that 2038 is not the end of it. The Agon's clock keeps no time zone, so
+ * the time it keeps is taken as UTC and local time is the same. */
+typedef long long time_t;
+
+struct tm {
+    int tm_sec;                 /* 0 to 60 */
+    int tm_min;
+    int tm_hour;
+    int tm_mday;                /* 1 to 31 */
+    int tm_mon;                 /* 0 to 11 */
+    int tm_year;                /* since 1900 */
+    int tm_wday;                /* 0 to 6, from Sunday */
+    int tm_yday;                /* 0 to 365 */
+    int tm_isdst;
+};
+
+clock_t    clock(void);
+double     difftime(time_t t1, time_t t0);
+time_t     mktime(struct tm *t);
+time_t     time(time_t *t);
+
+char      *asctime(const struct tm *t);
+char      *ctime(const time_t *t);
+struct tm *gmtime(const time_t *t);
+struct tm *localtime(const time_t *t);
+size_t     strftime(char *s, size_t max, const char *fmt, const struct tm *t);
 
 #endif

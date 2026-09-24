@@ -41,6 +41,7 @@ typedef struct {
     unsigned char  min;         /* the least it may come to, against overlongs */
 } mbstate_t;
 
+struct tm;
 struct __acc_file;
 
 /* Formatted. */
@@ -99,6 +100,8 @@ wchar_t *wcstok(wchar_t *s, const wchar_t *delim, wchar_t **save);
 wchar_t *wmemchr(const wchar_t *s, wchar_t c, size_t n);
 size_t   wcslen(const wchar_t *s);
 wchar_t *wmemset(wchar_t *s, wchar_t c, size_t n);
+
+size_t wcsftime(wchar_t *s, size_t max, const wchar_t *fmt, const struct tm *t);
 
 
 /* Multibyte and wide, one to the other. */
