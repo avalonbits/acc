@@ -62,7 +62,7 @@ for src in "${srcs[@]}"; do
 
     sd=$(emu_card)
     cp "$tmp/p.bin" "$sd/bin/p.bin"
-    printf 'p\r\n' > "$sd/autoexec.txt"
+    printf 'bin/p\r\n' > "$sd/autoexec.txt"
     ACC_EMU_PROMPT=1 ACC_EMU_TIMEOUT=${ACC_EMU_TIMEOUT:-120} emu_run "$sd" -z -u > "$tmp/raw" 2>&1
     rm -rf "$sd"
 

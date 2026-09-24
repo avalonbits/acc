@@ -47,8 +47,8 @@ runs() {
 
     sd=$(emu_card)
     cp "$tmp/p.bin" "$sd/bin/p.bin"
-    printf 'p%s\r\n' "$tail" > "$sd/autoexec.txt"
-    out=$(ACC_EMU_TIMEOUT=${ACC_EMU_TIMEOUT:-30} emu_run "$sd" -z -u 2>&1)
+    printf 'bin/p%s\r\n' "$tail" > "$sd/autoexec.txt"
+    out=$(ACC_EMU_PROMPT=1 ACC_EMU_TIMEOUT=${ACC_EMU_TIMEOUT:-30} emu_run "$sd" -z -u 2>&1)
     rm -rf "$sd"
 
     banners=$(printf '%s' "$out" | grep -c 'MOS Version')

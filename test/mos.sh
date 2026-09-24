@@ -39,8 +39,8 @@ returns() {
 
     sd=$(emu_card)
     cp "$tmp/p.bin" "$sd/bin/p.bin"
-    printf 'p\r\n' > "$sd/autoexec.txt"
-    out=$(ACC_EMU_TIMEOUT=${ACC_EMU_TIMEOUT:-30} emu_run "$sd" -z -u 2>&1)
+    printf 'bin/p\r\n' > "$sd/autoexec.txt"
+    out=$(ACC_EMU_PROMPT=1 ACC_EMU_TIMEOUT=${ACC_EMU_TIMEOUT:-30} emu_run "$sd" -z -u 2>&1)
     rm -rf "$sd"
 
     # One banner: the machine booted once and stayed up. More than one means

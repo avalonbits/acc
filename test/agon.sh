@@ -20,6 +20,6 @@ emu_available >/dev/null 2>&1 || exit 77
 
 sd=$(emu_card); trap 'rm -rf "$sd"' EXIT
 cp "$1" "$sd/bin/p.bin"
-printf 'p\r\n' > "$sd/autoexec.txt"
+printf 'bin/p\r\n' > "$sd/autoexec.txt"
 
 ACC_EMU_TIMEOUT=${ACC_EMU_TIMEOUT:-60} emu_run "$sd" -z -u >/dev/null 2>&1

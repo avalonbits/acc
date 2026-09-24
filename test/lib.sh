@@ -503,7 +503,7 @@ if emu_available >/dev/null 2>&1; then
     "$ACC" "$tmp/w1.o" "$LIB" -o "$sd/bin/w1.bin" >/dev/null 2>&1
     "$ACC" "$tmp/w2.o" "$LIB" -o "$sd/bin/w2.bin" >/dev/null 2>&1
     "$ACC" "$tmp/r1.o" "$LIB" -o "$sd/bin/r1.bin" -x >/dev/null 2>&1
-    printf 'w1\r\nw2\r\nr1\r\n' > "$sd/autoexec.txt"
+    printf 'bin/w1\r\nbin/w2\r\nbin/r1\r\n' > "$sd/autoexec.txt"
     ACC_EMU_TIMEOUT=60 emu_run "$sd" -z -u >/dev/null 2>&1
     ok "the end of a program closes its files" "$?" 42
     rm -rf "$sd"

@@ -6,10 +6,12 @@
 # also used would still print a number -- one that means nothing and that
 # the benchmark would report to a decimal place. So: build it, compile one
 # program with it twice, and require a count above zero and the two within
-# two ticks of the timer, 512 cycles, and a count for an input that takes
-# longer than two passes of the timer. Not exactly equal: an interrupt that
-# arrives during one compile and not the other -- MOS's vertical blank, which
-# the emulator paces by the host's clock -- adds its handler's cycles.
+# 16384 cycles, and a count for an input that takes longer than two passes
+# of the timer. Not exactly equal: an interrupt that arrives during one
+# compile and not the other -- MOS's vertical blank, which the emulator paces
+# by the host's clock -- adds its handler's cycles, and under MOS 3 the first
+# of two compiles costs about 7,000 more than the second, every time. A timer
+# that was misused is out by millions, not thousands.
 #
 # Needs agondev and the emulator. Skips (77) without them.
 set -uo pipefail
@@ -23,8 +25,8 @@ out=$(ACC_BIN=bin/acc-cycles.bin test/bench.sh 2 test/cases/010_return.c 2>/dev/
 line=$(printf '%s\n' "$out" | grep ' 010_return.c ')
 count=$(printf '%s\n' "$line" | sed -n 's/.*runs  *\([0-9]*\) cycles each.*/\1/p')
 spread=$(printf '%s\n' "$line" | sed -n 's/.*, spread \([0-9]*\) .*/\1/p')
-if [ "${count:-0}" -le 0 ] || [ -z "$spread" ] || [ "$spread" -gt 512 ]; then
-    echo "  FAIL cycles: expected a count within 512 cycles twice, got:"
+if [ "${count:-0}" -le 0 ] || [ -z "$spread" ] || [ "$spread" -gt 16384 ]; then
+    echo "  FAIL cycles: expected a count within 16384 cycles twice, got:"
     printf '%s\n' "$out"
     exit 1
 fi

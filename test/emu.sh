@@ -42,6 +42,11 @@ else
 fi
 EMU_BIN=$EMU/agon-cli-emulator
 
+# Which MOS. 3.0.2 -- the release the library is written against, and what
+# the emulator's platform firmware is -- unless ACC_EMU_MOS names another,
+# or the build has no platform firmware and boots its own default.
+EMU_MOS=${ACC_EMU_MOS:-$EMU/firmware/mos_platform.bin}
+
 emu_available() {
     [ -x "$EMU_BIN" ] || { echo "no emulator at $EMU_BIN (set ACC_EMU)" >&2; return 1; }
     [ -f "$EMU/sdcard/MOS.bin" ] || { echo "no MOS.bin under $EMU/sdcard" >&2; return 1; }
@@ -66,8 +71,10 @@ emu_run() {
     mkfifo "$fifo"
     tail -f /dev/null > "$fifo" & hold=$!
 
+    local mos=() mos_bin=${ACC_EMU_MOS:-$EMU_MOS}
+    [ -f "$mos_bin" ] && mos=(--mos "$mos_bin")
     (cd "$EMU" && exec timeout "${ACC_EMU_TIMEOUT:-300}" ./agon-cli-emulator \
-        --sdcard "$sd" "$@" < "$fifo" > "$cap" 2>&1) & emu=$!
+        --sdcard "$sd" "${mos[@]}" "$@" < "$fifo" > "$cap" 2>&1) & emu=$!
 
     # With ACC_EMU_PROMPT set, stopped as soon as MOS prints its prompt,
     # which is when autoexec.txt has run: a program that prints its answer

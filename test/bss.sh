@@ -229,7 +229,7 @@ C
         sd=$(emu_card)
         cp "$tmp/dirty.bin" "$sd/bin/d.bin"
         cp "$tmp/check.bin" "$sd/bin/c.bin"
-        printf 'd\r\nc\r\n' > "$sd/autoexec.txt"
+        printf 'bin/d\r\nbin/c\r\n' > "$sd/autoexec.txt"
         ACC_EMU_TIMEOUT=${ACC_EMU_TIMEOUT:-180} emu_run "$sd" -z -u >/dev/null 2>&1
         got=$?
         rm -rf "$sd"
