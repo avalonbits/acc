@@ -906,13 +906,11 @@ static int address_of_operand(void)
         return ADDR_OBJECT;
 
     /* A whole array: the same address as its first element, as a pointer to
-     * the array, which steps over all of it at once. */
+     * the array, which steps over all of it at once. One with no size yet,
+     * `extern int a[];`, is a pointer to an array of unknown size, which
+     * has no step to take but is an address like any other. */
     {
         const Sym *array = sym_at(sym);
-
-        if (sym_count(sym) < 0)
-            acc_error_at(line, "'%s' has no size yet, so there is no whole "
-                               "array to take the address of", name_text(name));
 
         vset_type(type_ptr_to(TY_EXT),
                   ext_array(array->type, array->ext, sym_count(sym)));
@@ -3886,6 +3884,8 @@ static void sizeof_value(void)
 
         return;
     }
+    if (type_is_array(type) && ext_count(x) < 0)
+        acc_error_at(line, "an array of unknown size has no size to give");
     vpush_const(type_bytes(type, x), TY_UINT);
 }
 
@@ -3937,7 +3937,9 @@ static void decl_apply(const DeclOp *op, Type *t, int *x)
         *t = type_ptr_to(*t);
         break;
     case DECL_ARRAY:
-        if (op->a < 0)
+        /* An array of unknown size is a type, `int (*p)[]` points at one;
+         * but not an array's element, whose size a step needs. */
+        if (type_is_array(*t) && !vla_size_slot(*t, *x) && ext_count(*x) < 0)
             acc_error_at(tok_line, "only an array's first dimension may be "
                                    "left out");
         if (type_is_func(*t))
@@ -4201,10 +4203,6 @@ static NameRef paren_declarator(Type t, int tx, Type *type, int *ext,
 
             /* The last applied, when it is an array, makes the object an
              * array, which callers take as its element type and count. */
-            if (op->op == DECL_ARRAY && op->a < 0 && i < ndecl_ops - 1
-                && decl_ops[i + 1].op == DECL_PTR)
-                acc_error_at(tok_line, "a pointer to an array needs the "
-                                       "array's size");
             if (op->op == DECL_ARRAY && i == ndecl_ops - 1) {
                 if (type_is_func(t))
                     acc_error_at(tok_line, "an array of functions is not a "
@@ -5116,8 +5114,8 @@ static void typedef_declarators(Type base, int bx, unsigned char bc)
             type = TY_EXT;
             count = 0;
         }
-        if (count < 0)
-            acc_error_at(line, "a typedef of an array needs the array's size");
+        /* `typedef int A[];` names an array of unknown size, and what is
+         * declared with it takes its length from its initialiser. */
         if (count) {
             ext = ext_array(type, ext, count);
             type = TY_EXT;

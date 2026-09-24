@@ -6349,6 +6349,8 @@ static void vbinop_pointer(int op, Type left, Type right)
         acc_error_at(tok_line, "a pointer to a function has no step to take");
 
     step = type_step(ptr, ext);
+    if (step == 0 && type_is_array(type_deref(ptr)))
+        acc_error_at(tok_line, "an array of unknown size has no step to take");
 
     if (both) {
         if (op != TK_MINUS)

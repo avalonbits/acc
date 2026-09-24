@@ -435,7 +435,11 @@ int ext_array(Type elem, int elem_x, int count)
     ext_types[i].elem_x = (unsigned char) elem_x;
     ext_what[i] = EXT_ARRAY | EXT_COMPLETE;
     ext_types[i].count = count;
-    ext_types[i].bytes = count * type_bytes(elem, elem_x);
+
+    /* An array of unknown size, count -1, `int (*p)[]` points at: its size
+     * is nothing anyone may ask, and a negative one here would be read as
+     * a VLA's frame slot. */
+    ext_types[i].bytes = count > 0 ? count * type_bytes(elem, elem_x) : 0;
 
     return i;
 }

@@ -1,5 +1,5 @@
-/* expect: 2: error: a typedef of an array needs the array's size */
+/* expect: 4: error: an array type here needs its size */
 typedef int list[];
 int main(void) {
-    return 0;
+    return sizeof(list);
 }
