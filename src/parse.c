@@ -1794,7 +1794,10 @@ static int paren_name(void)
             return 1;
         }
         what = name_operand(sym, name);
-        if (what == NAME_READONLY)
+
+        /* A const one is a value, which is all the parenthesis round it
+         * wants, `((void *)(v))`; only an assignment to it is wrong. */
+        if (what == NAME_READONLY && tok != TK_RPAREN)
             acc_error_at(tok_line, "'%s' is const, so it cannot be changed",
                          name_text(name));
 
@@ -4066,6 +4069,12 @@ static int params_keep_run(int first, int count)
 }
 static NameRef decl_full(void);
 
+/* How deep in parentheses the declarator being read is, and how deep the
+ * name was when decl_direct met it: the stars beside the name are the
+ * object's own, and a `const` among them is what makes it const. In `void *
+ * const (*p2)[2]` that const is the elements', and p2 is not. */
+static unsigned char decl_depth, decl_name_depth;
+
 /* A declarator's direct part, from a `(`, a name or nothing: the
  * parenthesised declarator inside, or the name, and the dimensions and
  * parameter lists after it -- its derivations appended in the order they
@@ -4092,6 +4101,7 @@ static NameRef decl_direct(void)
         }
     } else if (tok == TK_IDENT) {
         name = tok_name;
+        decl_name_depth = decl_depth;
         next();
     } else if (!abstract_ok) {
         acc_error_at(tok_line, "expected a name, found %s", tok_spelling(tok));
@@ -4147,17 +4157,23 @@ static NameRef decl_direct(void)
 /* A whole declarator: its stars, which apply first, then its direct part. */
 static NameRef decl_full(void)
 {
-    int stars = 0;
+    int stars = 0, n, last_const = 0;
+    NameRef name;
 
     while (accept(TK_STAR)) {
         stars++;
-        if (tok_qualifier())
-            star_qualifiers();
+        last_const = tok_qualifier() ? star_qualifiers() : 0;
     }
-    while (stars--)
+    for (n = stars; n > 0; n--)
         decl_push(DECL_PTR, 0, 0, 0);
 
-    return decl_direct();
+    decl_depth++;
+    name = decl_direct();
+    decl_depth--;
+    if (stars && decl_name_depth == decl_depth + 1)
+        stars_const = (unsigned char) last_const;
+
+    return name;
 }
 
 /* The parameter types of a function type in a declarator, from just past
