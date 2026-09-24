@@ -131,6 +131,8 @@ int main(int argc, char **argv)
     int pass = 0, fail = 0;
 
     while (fgets(line, sizeof line, f)) {
+        if (line[0] == '!')
+            continue;           // CALL_UNREPLAYED: see capture.h
         char *colon = strstr(line, "): ");
         if (!colon) {
             colon = strstr(line, "):");

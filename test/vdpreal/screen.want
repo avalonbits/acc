@@ -1,0 +1,15 @@
+mode 8
+dims 40 30 320 240 colours 64 mode 8
+cursor 10 5
+moved 11 6
+char X
+blank 32
+requested X
+char at graphics X
+palette 5 ffaa55 index 5
+requested palette ffaa55
+pixel ffaa55 index 5
+background 000000
+rtc answered 1
+keycode 0 keymap 0
+key up

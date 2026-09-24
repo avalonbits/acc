@@ -104,3 +104,21 @@ emu_run() {
 
     return $rc
 }
+
+# emu_run_gui <card> [emulator flags...]
+#
+# The full emulator, with the VDP's own firmware rather than the CLI's
+# fake one, run with no window through SDL's offscreen driver. What it puts
+# on the screen goes nowhere, so a program run this way says what it found
+# in a file on the card; it stops the machine through port 0 (-x), which
+# this emulator honours as the CLI does. No stdin to hold open: it does not
+# read one.
+emu_run_gui() {
+    local sd=$1; shift
+    local mos=() mos_bin=${ACC_EMU_MOS:-$EMU_MOS}
+
+    [ -f "$mos_bin" ] && mos=(--mos "$mos_bin")
+    (cd "$EMU" && SDL_VIDEODRIVER=offscreen SDL_AUDIODRIVER=dummy \
+        timeout "${ACC_EMU_TIMEOUT:-120}" ./fab-agon-emulator --sdcard "$sd" \
+        "${mos[@]}" "$@" < /dev/null > /dev/null 2>&1)
+}

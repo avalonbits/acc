@@ -58,6 +58,12 @@ static void sent(const char *name)
 
 #define CALL(x) do { ncaught = 0; x; sent(#x); } while (0)
 
+/* A call test/vdpsync.sh should not play into the VDP, because of what it
+ * does there -- terminal mode stops the VDU commands altogether -- written
+ * with a ! in front, which the replay passes over. Its bytes are still held
+ * to libagon's. */
+#define CALL_UNREPLAYED(x) do { ncaught = 0; x; sent("!" #x); } while (0)
+
 /* A call libagon does not have: acc's build makes it and writes what it
  * sent, and libagon's build writes the bytes the VDP's own source says the
  * command is -- worked out by hand, which is the point: the two lines have
@@ -72,8 +78,10 @@ static void expect(const char *name, const char *hex)
 
 #ifdef AGONDEV
 #define NEW(x, hex) expect(#x, hex)
+#define NEW_UNREPLAYED(x, hex) expect("!" #x, hex)
 #else
 #define NEW(x, hex) CALL(x)
+#define NEW_UNREPLAYED(x, hex) CALL_UNREPLAYED(x)
 #endif
 
 static void done(void)
