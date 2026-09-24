@@ -259,6 +259,79 @@ _rt_bc_is_zero:
 	pop	hl
 	ret
 
+;---------------------------------------------------------------- MOS calls
+; int acc_rt_mos_call(AccMosRegs *r): a MOS call with every register it may
+; want, and every register it may answer in, through one structure:
+;
+;	+0  HL   +3  DE   +6  BC   +9  IX   +12  IY   (three bytes each)
+;	+15 A, the call's number going in and what MOS answers coming out
+;	+16 the carry flag MOS left, 0 or 1
+;
+; Some calls take IX and IY as arguments and some answer in them, so both
+; are loaded from the structure and stored back to it; the caller's own are
+; kept on the stack meanwhile, IX being its frame. What comes back in HL is
+; A, which is what most calls answer with.
+
+	.global _acc_rt_mos_call
+
+_acc_rt_mos_call:
+	push	ix
+	push	iy
+	ld	iy, 0
+	add	iy, sp
+	ld	hl, (iy+9)		; r
+	push	hl			; kept, to store the answers through
+	push	hl
+	pop	iy
+	ld	hl, (iy+0)
+	ld	de, (iy+3)
+	ld	bc, (iy+6)
+	ld	ix, (iy+9)
+	ld	a, (iy+15)
+	ld	iy, (iy+12)
+	rst.lil	$08
+	ex	(sp), iy		; iy = r, and MOS's iy kept; flags untouched
+	ld	(iy+16), 0		; nor does this touch them
+	jr	nc, _rt_mos_nc
+	ld	(iy+16), 1
+_rt_mos_nc:
+	ld	(iy+0), hl
+	ld	(iy+3), de
+	ld	(iy+6), bc
+	ld	(iy+9), ix
+	ld	(iy+15), a
+	pop	hl			; MOS's iy
+	ld	(iy+12), hl
+	ld	hl, 0
+	ld	l, a
+	pop	iy
+	pop	ix
+	ret
+
+; int acc_rt_port_in(int port) and void acc_rt_port_out(int port, int value):
+; the eZ80's own I/O space, where the GPIO ports and the timers are, which
+; C has no way to reach. The port is the whole of BC, as IN r,(C) takes it.
+
+	.global _acc_rt_port_in
+	.global _acc_rt_port_out
+
+_acc_rt_port_in:
+	ld	iy, 0
+	add	iy, sp
+	ld	bc, (iy+3)
+	in	a, (c)
+	ld	hl, 0
+	ld	l, a
+	ret
+
+_acc_rt_port_out:
+	ld	iy, 0
+	add	iy, sp
+	ld	bc, (iy+3)
+	ld	a, (iy+6)
+	out	(c), a
+	ret
+
 ;---------------------------------------------------------------- setjmp
 ; setjmp and longjmp, which C cannot write: they are the stack pointer and
 ; the frame pointer, put back. Named as C names them rather than as acc_rt_

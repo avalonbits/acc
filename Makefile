@@ -33,7 +33,7 @@ LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c lib/scanf.c l
          lib/exp.c lib/log.c lib/pow.c \
          lib/trig.c lib/atan.c lib/mathhyp.c lib/erf.c lib/gamma.c lib/fma.c \
          lib/file.c \
-         lib/stdlib.c lib/stdlib2.c lib/atexit.c lib/strtol.c lib/strtod.c lib/errno.c lib/fenv.c lib/locale.c lib/signal.c lib/wctype.c lib/inttypes.c lib/wcs.c lib/mb.c lib/wcsto.c lib/wfile.c lib/wprintf.c lib/wscanf.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c \
+         lib/stdlib.c lib/stdlib2.c lib/atexit.c lib/strtol.c lib/strtod.c lib/errno.c lib/fenv.c lib/locale.c lib/signal.c lib/wctype.c lib/inttypes.c lib/wcs.c lib/mb.c lib/wcsto.c lib/wfile.c lib/wprintf.c lib/wscanf.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c lib/gpio.c lib/timer.c \
          lib/time.c lib/strftime.c
 LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          include/stdbool.h include/stdlib.h include/time.h \
@@ -41,7 +41,9 @@ LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          include/errno.h include/limits.h include/fenv.h include/locale.h include/setjmp.h \
          include/signal.h include/wctype.h include/inttypes.h include/tgmath.h \
          include/wchar.h \
-         include/agon/mos.h include/agon/vdp.h include/agon/keyboard.h
+         include/agon/mos.h include/agon/vdp.h include/agon/keyboard.h \
+         include/agon/gpio.h include/agon/joystick.h include/agon/timer.h \
+         include/ez80f92.h
 LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 
 .PHONY: all clean test unit agon
@@ -136,6 +138,7 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/lib.sh
 	@ACC=$(BIN)/acc-asan test/printf.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/hosted.sh || [ $$? -eq 77 ]
+	@ACC=$(BIN)/acc-asan test/agonlib.sh || [ $$? -eq 77 ]
 	@test/heap.sh || [ $$? -eq 77 ]
 	@test/cycles.sh || [ $$? -eq 77 ]
 	@test/abi-acc.sh

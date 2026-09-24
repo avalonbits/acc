@@ -558,6 +558,36 @@ int main(void) {
     return r + 37;
 }'
 
+# delay, from <agon/timer.h>, timed by the emulator's cycle counter: a
+# write to port 0x40 starts it and one to 0x41 prints it. The emulator
+# test/emu.sh runs has one, so no count is a failure. Ten milliseconds
+# at 18.432 MHz is 184,320 cycles, and the loop around the timer may add
+# a little. MOS's own clock cannot time it at -u, where the emulator runs
+# the eZ80 faster than the host's frames go by.
+if emu_available >/dev/null 2>&1; then
+    printf '#include <agon/timer.h>\n#include <ez80f92.h>\nint main(void) { io_out(0x40, 0); delay(10); io_out(0x41, 0); delay(1); return 42; }\n' > "$tmp/dl.c"
+    if "$ACC" -c "$tmp/dl.c" -o "$tmp/dl.o" -Iinclude >/dev/null 2>&1 \
+       && "$ACC" "$tmp/dl.o" "$LIB" -o "$tmp/dl.bin" -x >/dev/null 2>&1; then
+        sd=$(emu_card)
+        cp "$tmp/dl.bin" "$sd/bin/p.bin"
+        printf 'bin/p\r\n' > "$sd/autoexec.txt"
+        cycles=$(ACC_EMU_TIMEOUT=60 emu_run "$sd" -z -u 2>&1 \
+                 | sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
+        rm -rf "$sd"
+        if [ -n "$cycles" ] && [ "$cycles" -ge 184320 ] && [ "$cycles" -le 186000 ]; then
+            pass=$((pass + 1))
+        else
+            printf '  FAIL %-36s %s cycles for 10 ms, not 184320\n' "delay" "${cycles:-no count of}"
+            fail=$((fail + 1))
+        fi
+    else
+        printf '  FAIL %-36s it did not build\n' "delay"
+        fail=$((fail + 1))
+    fi
+else
+    pass=$((pass + 1))
+fi
+
 # exit through a pointer. A call to exit by name is written out at the call
 # and never reaches the library, which is why exit had no member and a
 # pointer to it -- gcc's pr54937 keeps one -- did not link. Every way a
