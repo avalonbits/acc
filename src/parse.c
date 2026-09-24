@@ -3055,6 +3055,10 @@ static int array_size(const char *what, int line, int *variable)
  * Anywhere else they are a constraint violation, and someone who writes
  * `int a[static 3]` for a local has said something that does not mean what
  * they think, so it is refused rather than ignored. */
+/* That the brackets just read held `[*]`: a length, not said, rather than
+ * none at all -- which only the first dimension may leave out. */
+static unsigned char star_length;
+
 static void array_brackets(int line)
 {
     int had_static = 0, had_qualifier = 0;
@@ -3076,6 +3080,7 @@ static void array_brackets(int line)
      * 6.7.5.2p4 allows in a prototype's parameter. A parameter's first
      * dimension is a pointer whatever it says, so it is read as `[]`.
      * c-testsuite's 00162 declares one. */
+    star_length = 0;
     if (tok == TK_STAR && lex_rbracket_follows()) {
         if (!in_params)
             acc_error_at(line, "'[*]' belongs in a function's parameters, "
@@ -3084,6 +3089,7 @@ static void array_brackets(int line)
             acc_error_at(line, "'static' says how many elements there are "
                                "at least, and '[*]' says nothing");
         next();
+        star_length = 1;
 
         return;
     }
@@ -3139,7 +3145,7 @@ static int vla_type(Type elem, int elem_x, int length, int count)
 static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
                       int *count)
 {
-    int dims[8], lengths[8], n = 0, i;
+    int dims[12], lengths[12], n = 0, i;
 
     vla_length = 0;
     while (tok == TK_LBRACKET) {
@@ -3147,8 +3153,8 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
 
         next();
         array_brackets(line);
-        if (n == 8)
-            acc_error_at(line, "an array may have at most 8 dimensions");
+        if (n == 12)                    /* C99 5.2.4.1 asks for 12 */
+            acc_error_at(line, "an array may have at most 12 dimensions");
         lengths[n] = 0;
         if (tok != TK_RBRACKET) {
             int variable;
@@ -3162,14 +3168,16 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
                 vdrop();
             } else if (d < 0) {
                 /* A parameter's `[n]`, which array_size threw away: the
-                 * parameter is a pointer, as `[]` would have made it. */
-                if (n > 0)
-                    acc_error_at(line, "only an array's first dimension may "
-                                       "be left out");
+                 * parameter is a pointer, as `[]` would have made it.
+                 * After the first, `int a[][n]`, the rows are arrays whose
+                 * length is worked out when the function is entered -- C99
+                 * 6.9.1p10 -- which acc does not do; they are arrays of
+                 * unknown size, so a prototype says what C says, and a
+                 * subscript through one is refused as having no step. */
             } else if (d == 0) {
                 acc_error_at(line, "an array needs at least one element");
             }
-        } else if (n > 0) {
+        } else if (n > 0 && !star_length) {
             acc_error_at(line, "only an array's first dimension may be left "
                                "out");
         }
@@ -3938,8 +3946,11 @@ static void decl_apply(const DeclOp *op, Type *t, int *x)
         break;
     case DECL_ARRAY:
         /* An array of unknown size is a type, `int (*p)[]` points at one;
-         * but not an array's element, whose size a step needs. */
-        if (type_is_array(*t) && !vla_size_slot(*t, *x) && ext_count(*x) < 0)
+         * but not an array's element, whose size a step needs -- except in
+         * a parameter, where array_dims makes one of a row whose length
+         * is worked out on entry. */
+        if (type_is_array(*t) && !vla_size_slot(*t, *x) && ext_count(*x) < 0
+            && !in_params)
             acc_error_at(tok_line, "only an array's first dimension may be "
                                    "left out");
         if (type_is_func(*t))
@@ -6191,7 +6202,7 @@ static void same_signature(int fn, Type ret_type, int ret_ext, int first,
                      name_text(name), count, sym_nparams(fn));
     for (i = 0; i < count; i++)
         if (sym_param_type(first, i) != sym_param_type(prior, i)
-            || sym_param_ext(first, i) != sym_param_ext(prior, i))
+            || !ext_compatible(sym_param_ext(first, i), sym_param_ext(prior, i)))
             acc_error_at(line, "'%s' is declared again with parameter %d of "
                                "another type", name_text(name), i + 1);
 }
@@ -6916,7 +6927,7 @@ static int global_again(int sym, Type type, int ext, int count, int line)
     if (g->kind != (count ? SYM_GLOBAL_ARRAY
                           : decl_const && !type_is_struct(type) ? SYM_GLOBAL_CONST
                           : SYM_GLOBAL)
-        || g->type != type || g->ext != ext
+        || g->type != type || !ext_compatible(g->ext, ext)
         || (count && count != sym_count(sym)))
         acc_error_at(line, "'%s' is declared again with another type",
                      name_text(name));

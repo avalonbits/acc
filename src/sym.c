@@ -533,6 +533,26 @@ int ext_vla_length(int x)
     return ext_types[x].count;
 }
 
+/* Whether two extensions are of compatible types, as a function's
+ * declarations are held to: the same, or arrays of the same element whose
+ * length one of them does not say -- `int (*)[]` and `int (*)[3]`, C99
+ * 6.7.5.2p6 -- or that the program works out. */
+int ext_compatible(int a, int b)
+{
+    if (a == b)
+        return 1;
+    if (!a || !b || (ext_what[a] & (EXT_STRUCT | EXT_UNION | EXT_FUNC))
+        || (ext_what[b] & (EXT_STRUCT | EXT_UNION | EXT_FUNC)))
+        return 0;
+    if (ext_types[a].elem != ext_types[b].elem
+        || !ext_compatible(ext_types[a].elem_x, ext_types[b].elem_x))
+        return 0;
+
+    return ext_types[a].count < 0 || ext_types[b].count < 0
+           || (ext_what[a] & EXT_VLA) || (ext_what[b] & EXT_VLA)
+           || ext_types[a].count == ext_types[b].count;
+}
+
 int ext_count(int x)
 {
     return ext_types[x].count;

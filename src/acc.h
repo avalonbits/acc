@@ -201,6 +201,7 @@ int  ext_bytes(int x);
 int  ext_vla(Type elem, int elem_x, int length_slot, int size_slot);
 int  ext_vla_size(int x);       /* the frame slot of a VLA's size, or 0 */
 int  ext_vla_length(int x);     /* and of its length */
+int  ext_compatible(int a, int b);  /* the same, or arrays that could be */
 
 int     ext_record(int is_union, NameRef tag);   /* a new, incomplete record */
 int     ext_func(Type ret, int ret_x, int first, int count, int declared);
