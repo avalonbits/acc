@@ -3231,8 +3231,34 @@ static int address_of_literal(int line)
      * what the address is being taken of, which C allows and which says
      * nothing beyond where the operand ends. */
     if (!starts_decl()) {
-        int kind = address_of_operand();
+        int kind;
 
+        /* `&((&a[1])->m)`, `&(p + 1)->m`: what is inside is a value, a
+         * pointer, and the chain after the `)` is what makes an object of
+         * it. address_of_operand reads the operands `&` can take -- a name,
+         * a `*`, a string, another parenthesis -- and past one of those, or
+         * in place of one, the rest is read as the value it is. */
+        if (tok != TK_IDENT && tok != TK_STAR && tok != TK_STRING
+            && tok != TK_LPAREN) {
+            comma_expr();
+            kind = ADDR_VALUE;
+        } else {
+            kind = address_of_operand();
+        }
+        if (tok != TK_RPAREN) {
+            if (kind == ADDR_ARRAY)
+                vset_type(type_ptr_to(ext_elem(vext())), ext_elem_x(vext()));
+            else if (kind == ADDR_OBJECT)
+                object_value();
+            binary_rest(PREC_LOWEST);
+            if (tok == TK_QUESTION)
+                conditional_rest();
+            while (accept(TK_COMMA)) {
+                vdrop();
+                expr();
+            }
+            kind = ADDR_VALUE;
+        }
         expect(TK_RPAREN, "')'");
 
         /* `&(*p)[i]`, `&(*p).m`: the parenthesis ended the operand, and the
@@ -3248,8 +3274,8 @@ static int address_of_literal(int line)
             return ADDR_OBJECT;
         }
         if (kind == ADDR_VALUE)
-            acc_error_at(line, "'&' takes the address of a variable, and a "
-                               "cast has none");
+            acc_error_at(line, "'&' takes the address of a variable, and "
+                               "what is in the parenthesis is a value");
 
         return kind;
     }
