@@ -19,14 +19,17 @@ against the compiler rather than remembered:
   `#if`/`#ifdef`/`#elif`, `#line`, `#error`, `#pragma once`, `#` and `##`,
   and argument prescan. 139 of Decus CPP's C89 conformance tests pass; see
   `test/cpp89`.
-- **A library.** Fourteen headers -- `<assert.h>`, `<ctype.h>`,
-  `<float.h>`, `<iso646.h>`, `<limits.h>`, `<math.h>`, `<stdarg.h>`,
-  `<stdbool.h>`, `<stddef.h>`, `<stdint.h>`, `<stdio.h>`, `<stdlib.h>`,
-  `<string.h>`, `<time.h>` -- over 28 members,
-  linked from `bin/libc.a` by acc's own linker, which takes only what is
-  used. `<math.h>` is the whole of 7.12 that one floating type can carry,
-  each function measured against the host's library rather than assumed:
-  exact for the square root, within an ulp or two for most of the rest.
+- **A library.** Every C99 header but `<complex.h>`, twenty-three of
+  them, over 51 members, linked from `bin/libc.a` by acc's own linker,
+  which takes only the functions a program reaches. Every function the
+  headers declare is there, apart from the two that need a `long double`
+  (`wcstold`, `nexttoward`). `<math.h>` is the whole of 7.12 that one
+  floating type can carry, each function measured against the host's
+  library rather than assumed: exact where the answer can be (`sqrt`,
+  `fma`, `remquo` and the rest, bit for bit with glibc), within an ulp or
+  two for most approximations and 7 or 8 for the gamma functions.
+  `test/hosted.sh` holds eighteen programs to the host's C library line for
+  line, from `strtod`'s rounding to `strftime`'s ISO weeks.
 - **The language.** Structs, unions, enums, bit-fields (including of
   `long long`, to 64 bits), `typedef`, `sizeof`, `switch`, `do`, `break`,
   `continue`, string and character literals, `void` functions, designated
@@ -48,7 +51,7 @@ a test's first error:
   deviations below. The last to come in were digraphs (6.4.6), universal
   character names (6.4.3), wide literals (6.4.4.4, 6.4.5), `_Pragma`
   (6.10.9), and `__STDC_VERSION__` and `__STDC_HOSTED__` (6.10.8).
-  `__STDC_HOSTED__` is 0 until the library is complete.
+  `__STDC_HOSTED__` is 0; see the hosted library below.
 - **Language, out by decision:** old-style function definitions and `long
   double` -- see the decisions at the end. C99 still requires both, so
   while they are out acc is a compiler of C99 programs and not a conforming
@@ -60,12 +63,28 @@ a test's first error:
   `<stddef.h>`, `<stdint.h>`. All seven are there, `<stdint.h>` now the
   whole of 7.18. `<float.h>` says what is true of the machine, including
   that `double` falls short of 5.2.4.2.2; see the data model below.
-- **The hosted library:** fourteen of the twenty-four headers. Missing are
-  `<errno.h>`, `<setjmp.h>`, `<signal.h>`, `<locale.h>`, `<inttypes.h>`,
-  `<wchar.h>`, `<wctype.h>`, `<complex.h>`, `<fenv.h>` and `<tgmath.h>`.
-  And the printf family has no floating conversions -- `%f`, `%e`, `%g`,
-  `%a` -- which 7.19.6.1 requires; it was left out so that a program
-  printing an integer would not carry them.
+- **The hosted library:** twenty-three of the twenty-four headers, all
+  but `<complex.h>`, and each complete. What the library does where C
+  leaves it to the implementation:
+  - The C locale's multibyte characters are UTF-8, as far as a sixteen-bit
+    `wchar_t` goes: one byte to three, `MB_CUR_MAX` 3. A four-byte
+    sequence is refused with `EILSEQ`.
+  - `math_errhandling` is `MATH_ERRNO`: domain errors set `EDOM`, poles
+    and overflows `ERANGE`. `<fenv.h>` has no exceptions and one rounding
+    mode, to nearest.
+  - `time_t` is 64 bits of seconds since 1970, and local time is UTC, the
+    Agon having no time zone. `time` answers -1 when the Agon's clock was
+    never set, which the emulator's never is.
+  - stdin is the keyboard, a line at a time through MOS's line editor,
+    escape ending the input. `getenv` finds nothing, and `system` hands its
+    command to MOS.
+  - The end of a program runs what `atexit` registered and closes every
+    open file, through a hook the startup stub calls on the way out.
+  - Where glibc's `scanf` and C99 disagree -- `"1e+"` and `"1e"` for `%f`,
+    input that runs out inside `%3c` -- acc does what C99 says.
+- **`__STDC_HOSTED__` is still 0.** With `long double`, `_Complex` and
+  old-style definitions out, acc is not a conforming hosted
+  implementation, and the macro should not say it is.
 
 Two things have not changed, and they still shape everything:
 
@@ -473,14 +492,25 @@ done, and then what is next.
     `__STDC_VERSION__` and `__STDC_HOSTED__`, and the whole of
     `<stdint.h>`.
 
+11. **A link that takes functions, not files**, and object format v6.
+
+12. **`%f`, `%e`, `%g` and `%a`**, exact, in a member a program reaches
+    only when it passes a float to something that takes `...`.
+
+13. **The hosted library.** `<errno.h>`, `<fenv.h>`, `<locale.h>`,
+    `<setjmp.h>`, `<signal.h>`, `<wctype.h>`, `<inttypes.h>`,
+    `<tgmath.h>` and `<wchar.h>`, and what the existing headers lacked:
+    input and every mode in `<stdio.h>`, the `scanf` family, a correctly
+    rounded `strtod`, `atexit` and files closed at the end of a program,
+    seventeen functions and the error reporting of `<math.h>`, and the
+    rest of `<string.h>`, `<stdlib.h>` and `<time.h>`. On the way it
+    turned up three bugs in the compiler: the runtime multiplied and
+    divided denormal floats wrongly, a scratch slot could be spilled over
+    before it was used, and an object with no text could not be linked.
+
 **Next, in this order:**
 
-1. **A link that takes functions, not files.** A library member is taken
-   whole today, which is why printf and sprintf had to be split into two
-   files; the link should take only the functions a program reaches.
-2. **`%f`, `%e`, `%g` and `%a`** in the printf family.
-3. **The missing hosted headers**, all but `<complex.h>`.
-4. **gcc.c-torture/execute, all of it that the filter takes.**
+1. **gcc.c-torture/execute, all of it that the filter takes.**
    - Build the importer, filter, census, manifest, runner and scoreboard
      around it. The filter and the compile pass already exist as a script;
      what is missing is everything that turns a count into a scoreboard.
@@ -490,14 +520,14 @@ done, and then what is next.
    - And how many run and give the right answer, which has so far been
      measured by scripts outside the repository: 1,077 of the 1,127 that
      hold on this machine. The runner is what makes that number stay true.
-5. **c-testsuite, all 220.**
+2. **c-testsuite, all 220.**
    - ISC and MIT, so it can be vendored with its notices.
-6. **The rest of `gcc.dg`, not just `c99-*`.**
+3. **The rest of `gcc.dg`, not just `c99-*`.**
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.
-7. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
-8. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
+4. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
+5. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
    `test/fuzz/reduce.py` as the reducer.
 
 **Not being done, and why:**
