@@ -566,9 +566,31 @@ done, and then what is next.
     after an #include (00201); and nothing at all in 00040, an eight-queens
     search whose three minutes under acc were taken for a hang.
 
+17. **The rest of `gcc.dg`**, at the same revision. Its tests say in their
+    DejaGnu directives what kind each is (`dg.py`, `kinds dg` in
+    sources.txt): 1,247 are run, 4,916 only have to compile, and 1,207 have
+    to be refused, with an error on a line they name. One that has to be
+    refused counts as C99 only when clang refuses it too, at one of those
+    lines -- an error in C99 and not only under the test's own options --
+    and acc passes it when its first error is on one of them.
+
+    4,637 are strict C99 by that filter and 4,516 hold on this machine.
+    acc passes 3,815 of those: 2,835 that compile, 542 refused where they
+    should be, and 438 run. What is left is the first list of its kind this
+    plan has had:
+    - **144 that acc accepts** and C99 forbids, and 75 it refuses at a line
+      the test does not name. These are the checks acc does not make.
+    - **87 that acc refuses** and C99 allows, not yet read one by one.
+    - 258 that want GNU extensions, 51 complex, 45 long double and 22 K&R
+      definitions, as elsewhere; 13 that abort and 1 that crashes.
+
+    An import of it takes about an hour, most of it the reference runs; a
+    check about three minutes.
+
 **Next, in this order:**
 
-1. **The rest of `gcc.dg`, not just `c99-*`.**
+1. **What gcc.dg found:** the 87 refusals of valid C99 first, since each
+   is a program acc cannot compile, and then the 144 it accepts.
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.

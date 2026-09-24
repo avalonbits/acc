@@ -155,7 +155,7 @@ def expected(row):
 def observed(line):
     status, _, rest = line.partition(' ')
     if status == 'fail':
-        return 'fail ' + rest.split(' ')[0]
+        return 'fail ' + rest
     if status == 'needs':
         return 'needs ' + rest.split(' ')[0]
     return status

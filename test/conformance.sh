@@ -48,7 +48,16 @@ while read -r word name url rev dir; do
                  test/conformance/sources.txt)
         work=$(mktemp -d)
         awk -F'\t' '!/^#/ && $2 != "excluded" { print $1 }' "$manifest" > "$work/names"
-        observe "$tests" "$work/names" "$defines" "$work/seen" "$expect" || exit 2
+        kinds=
+        if awk -v n="$name" '$1 == "source" { on = ($2 == n) }
+                             on && $1 == "kinds" && $2 == "dg" { found = 1 }
+                             END { exit !found }' test/conformance/sources.txt; then
+            kinds=$work/kinds.txt
+            (cd "$tests" && python3 "$OLDPWD/test/conformance/dg.py" \
+                $(sed 's/$/.c/' "$work/names")) > "$kinds"
+        fi
+        observe "$tests" "$work/names" "$defines" "$work/seen" "$expect" "$kinds" ||
+            exit 2
         if [ "$mode" = --update ]; then
             python3 test/conformance/suite.py update "$manifest" "$work/seen"
             echo "  updated $manifest"
