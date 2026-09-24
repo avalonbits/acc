@@ -50,6 +50,12 @@ run() {
       | sed '1d; /^\/ \*/,$d' \
       | sed '/./,$!d' \
       | sed '${/^[0-9A-F]\{6\}$/d}' > "$2"
+    # And what it wrote to vdp.txt, which is where the VDP tests put what
+    # they caught: see test/agonlib/capture.h.
+    if [ -f "$sd/vdp.txt" ]; then
+        echo "--- vdp.txt" >> "$2"
+        tr -d '\r' < "$sd/vdp.txt" >> "$2"
+    fi
     rm -rf "$sd"
 }
 

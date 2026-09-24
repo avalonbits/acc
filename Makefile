@@ -33,7 +33,7 @@ LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c lib/scanf.c l
          lib/exp.c lib/log.c lib/pow.c \
          lib/trig.c lib/atan.c lib/mathhyp.c lib/erf.c lib/gamma.c lib/fma.c \
          lib/file.c \
-         lib/stdlib.c lib/stdlib2.c lib/atexit.c lib/strtol.c lib/strtod.c lib/errno.c lib/fenv.c lib/locale.c lib/signal.c lib/wctype.c lib/inttypes.c lib/wcs.c lib/mb.c lib/wcsto.c lib/wfile.c lib/wprintf.c lib/wscanf.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c lib/gpio.c lib/timer.c \
+         lib/stdlib.c lib/stdlib2.c lib/atexit.c lib/strtol.c lib/strtod.c lib/errno.c lib/fenv.c lib/locale.c lib/signal.c lib/wctype.c lib/inttypes.c lib/wcs.c lib/mb.c lib/wcsto.c lib/wfile.c lib/wprintf.c lib/wscanf.c lib/qsort.c lib/mos.c lib/vdp_screen.c lib/vdp_graphics.c lib/vdp_bitmap.c lib/vdp_buffer.c lib/vdp_audio.c lib/keyboard.c lib/gpio.c lib/timer.c \
          lib/time.c lib/strftime.c
 LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          include/stdbool.h include/stdlib.h include/time.h \
@@ -43,7 +43,9 @@ LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          include/wchar.h \
          include/agon/mos.h include/agon/vdp.h include/agon/keyboard.h \
          include/agon/gpio.h include/agon/joystick.h include/agon/timer.h \
-         include/ez80f92.h
+         include/ez80f92.h include/agon/vdp/screen.h include/agon/vdp/graphics.h \
+         include/agon/vdp/bitmap.h include/agon/vdp/buffer.h include/agon/vdp/audio.h \
+         lib/vdp_emit.h
 LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 
 .PHONY: all clean test unit agon
