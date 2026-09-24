@@ -1581,6 +1581,20 @@ static int hashhash_at(const char *p)
     return p[0] == '%' && p[1] == ':' && p[2] == '%' && p[3] == ':' ? 4 : 0;
 }
 
+/* Whether two characters side by side could be one token that they were
+ * not: both punctuation that joins -- `-` and `-`, `<` and `=`. */
+static int punct_pair(int a, int b)
+{
+    return a && b && strchr("+-*/%<>=!&|^.#:", a) && strchr("+-*/%<>=!&|^.#:", b);
+}
+
+static void buf_insert_space(Buf *b, int at)
+{
+    buf_putc(b, ' ');
+    memmove(b->text + at + 1, b->text + at, (size_t) (b->len - at - 1));
+    b->text[at] = ' ';
+}
+
 static char *build_expansion(Macro *m, char **argv, int argc)
 {
     const char *p = m->text;
@@ -1667,13 +1681,27 @@ static char *build_expansion(Macro *m, char **argv, int argc)
         {
             const char *arg = idx < argc ? argv[idx] : "";
             const char *q = p;
+            int at = out.len, paste_after;
 
             while (*q == ' ' || *q == '\t')
                 q++;
-            if (paste_before || hashhash_at(q))
+            paste_after = hashhash_at(q) != 0;
+            if (paste_before || paste_after)
                 buf_put(&out, arg, (int) strlen(arg));
             else
                 put_expanded(&out, arg);
+
+            /* The argument's tokens and the body's are separate tokens,
+             * and the text they are kept as must not let them run
+             * together where they meet: `#define NEG(x) -x` with -1 is
+             * `- -1` and not `--1`, and c-testsuite's 00202 pastes a `+`
+             * to nothing just before the body's own `+`. A `##` joins on
+             * purpose, so not there. */
+            if (!paste_before && at > 0 && out.len > at
+                && punct_pair(out.text[at - 1], out.text[at]))
+                buf_insert_space(&out, at);
+            if (!paste_after && out.len > 0 && punct_pair(out.text[out.len - 1], *p))
+                buf_putc(&out, ' ');
         }
     }
 
@@ -1862,6 +1890,37 @@ int at_line_start(const char *at)
 /* Space that is not a line's end: a directive lives on one line, so the
  * newline that ends it is what stops the scan rather than something to be
  * skipped over. */
+/* Past blanks and the comments among them, to what really follows on the
+ * line: a comment is one space by the time directives are read (C99
+ * 5.1.1.2), so `#include <stdio.h> // printf` has nothing after its name.
+ * A block comment that runs on past the line's end is left where it is. */
+static const char *blanks_and_comments(const char *p)
+{
+    for (;;) {
+        while (*p == ' ' || *p == '\t' || *p == '\r')
+            p++;
+        if (p[0] == '/' && p[1] == '/') {
+            while (*p && *p != '\n')
+                p++;
+
+            return p;
+        }
+        if (p[0] == '/' && p[1] == '*') {
+            const char *end = p + 2;
+
+            while (*end && *end != '\n' && !(end[0] == '*' && end[1] == '/'))
+                end++;
+            if (end[0] != '*')
+                return p;
+            p = end + 2;
+
+            continue;
+        }
+
+        return p;
+    }
+}
+
 static void skip_blanks(void)
 {
     while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r')
@@ -2112,7 +2171,7 @@ static void do_include(void)
 
     skip_blanks();
     how = include_name(name, (int) sizeof name);
-    skip_blanks();
+    cursor = (char *) blanks_and_comments(cursor);
     if (*cursor && *cursor != '\n')
         acc_error_at(line, "an #include takes one file name and nothing else");
 
@@ -3188,7 +3247,7 @@ static void do_undef(void)
     if (predefined_name(name))
         acc_error_at(line, "'%s' is the compiler's to define",
                      name_text(name));
-    skip_blanks();
+    cursor = (char *) blanks_and_comments(cursor);
     if (*cursor && *cursor != '\n')
         acc_error_at(line, "#undef takes one name and nothing else");
 
@@ -3450,7 +3509,7 @@ static void do_line(void)
         src_owned |= OWN_PATH;
     }
 
-    p = line_blanks(p);
+    p = blanks_and_comments(p);
     if (*p && *p != '\n')
         acc_error_at(line, "#line takes a number and a file name, and "
                            "nothing else");
