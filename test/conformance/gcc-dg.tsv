@@ -1225,7 +1225,7 @@ auto-init-uninit-5	pass	compiled	6.10.2	6.10.2:include
 auto-init-uninit-6	pass	compiled	6.10.2	6.10.2:include
 auto-init-uninit-8	pass	compiled	6.10.2	6.10.2:include
 auto-init-uninit-9	pass	compiled	6.10.2	6.10.2:include
-auto-init-uninit-A	needs	unknown expected a type, found a name	6.10.2	6.10.2:include
+auto-init-uninit-A	needs	k&r-definitions	6.10.2	6.10.2:include
 auto-init-uninit-B	pass	compiled	6.5.3.2 6.5.5 6.7.1 6.7.2 6.8.4.1	6.5.3.2:address 6.5.5:multiply 6.7.1:extern 6.7.2:int 6.7.2:void 6.8.4.1:if
 auto-init-uninit-C	pass	compiled	6.10.2	6.10.2:include
 auto-init-uninit-H	pass	compiled	6.10.2	6.10.2:include
@@ -4568,7 +4568,7 @@ pr15698-5	pass	rejected	6.7.2 6.9.1 7.12	6.7.2:int 6.7.2:void 6.9.1:old-style-de
 pr15698-6	needs	k&r-definitions	6.5.5 6.7.2 6.7.3 6.8.6.4 6.9.1 7.21	6.5.5:multiply 6.7.2:char 6.7.3:const 6.8.6.4:return 6.9.1:old-style-definition 7.21:strchr
 pr15698-7	pass	rejected	6.5.5 6.5.17 6.7.2 6.7.3 6.8.6.4 6.9.1 7.21	6.5.17:comma 6.5.5:multiply 6.7.2:char 6.7.2:int 6.7.3:const 6.8.6.4:return 6.9.1:old-style-definition 7.21:strchr
 pr15698-8	excluded	not C99: an error only under its own options: clang takes it	6.5.2.1 6.5.3.2 6.7.2 6.7.5.1 6.8.6.4	6.5.2.1:subscript 6.5.3.2:dereference 6.7.2:int 6.7.5.1:pointer-to-array 6.8.6.4:return
-pr15749-1	needs	unknown 'struct flex' ends in an array with no size, so it cannot be a member	6.10.2	6.10.2:include
+pr15749-1	needs	gnu-extensions	6.10.2	6.10.2:include
 pr15784-1	pass	compiled	6.4.4.2 6.5.3.3 6.5.8 6.5.9 6.7.1 6.7.2 6.8.6.4 6.10.3 7.12 7.20	6.10.3:define-function 6.4.4.2:float 6.5.3.3:unary-minus 6.5.8:relational 6.5.9:equality 6.7.1:extern 6.7.2:double 6.7.2:float 6.7.2:int 6.8.6.4:return 7.12:fabs 7.20:abs
 pr15784-2	pass	compiled	6.4.4.2 6.5.8 6.7.1 6.7.2 6.8.6.4 6.10.3 7.12	6.10.3:define-function 6.4.4.2:float 6.5.8:relational 6.7.1:extern 6.7.2:double 6.7.2:float 6.7.2:int 6.8.6.4:return 7.12:fabs
 pr15784-3	pass	compiled	6.4.4.2 6.5.8 6.7.1 6.7.2 6.8.6.4 6.10.3 7.12	6.10.3:define-function 6.4.4.2:float 6.5.8:relational 6.7.1:extern 6.7.2:double 6.7.2:float 6.7.2:int 6.8.6.4:return 7.12:fabs
@@ -5583,10 +5583,10 @@ pr63477	pass	compiled	6.5.2.1 6.5.2.3 6.5.2.4 6.5.2.5 6.5.3.1 6.5.5 6.5.6 6.5.8 
 pr63480	excluded	not C99: use of GNU empty initializer extension [-Werror,-Wgnu-empty-initializer]	6.5.2.5 6.5.16.1 6.5.17 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.17:comma 6.5.2.5:compound-literal 6.7.2.1:struct 6.7.2:int 6.7.2:void 6.7.8:braced-initializer
 pr63543	pass	rejected	6.5.2.3 6.5.5 6.5.6 6.7.2 6.7.2.1 6.8.6.4	6.5.2.3:arrow 6.5.5:multiply 6.5.6:add 6.7.2.1:struct 6.7.2.1:union 6.7.2:int 6.8.6.4:return
 pr63549	pass	rejected	6.5.2.1 6.5.16.1 6.7.2 6.7.2.2	6.5.16.1:assign 6.5.2.1:subscript 6.7.2.2:enum 6.7.2:int
-pr63567-1	needs	unknown expected '{', found '('	6.5.2.3 6.5.16.1 6.7.1 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.2.3:member 6.7.1:static 6.7.2.1:struct 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator
-pr63567-2	needs	unknown expected '{', found '('	6.5.2.3 6.5.16.1 6.7.1 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.2.3:member 6.7.1:static 6.7.2.1:struct 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator
-pr63567-3	needs	unknown a global's initial value has to be a constant	6.5.2.3 6.5.2.5 6.5.16.1 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.2.3:member 6.5.2.5:compound-literal 6.7.2.1:struct 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator
-pr63567-4	needs	unknown a global's initial value has to be a constant	6.5.2.3 6.5.2.5 6.5.16.1 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.2.3:member 6.5.2.5:compound-literal 6.7.2.1:struct 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator
+pr63567-1	needs	constant-initializer	6.5.2.3 6.5.16.1 6.7.1 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.2.3:member 6.7.1:static 6.7.2.1:struct 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator
+pr63567-2	needs	constant-initializer	6.5.2.3 6.5.16.1 6.7.1 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.2.3:member 6.7.1:static 6.7.2.1:struct 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator
+pr63567-3	needs	constant-initializer	6.5.2.3 6.5.2.5 6.5.16.1 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.2.3:member 6.5.2.5:compound-literal 6.7.2.1:struct 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator
+pr63567-4	needs	constant-initializer	6.5.2.3 6.5.2.5 6.5.16.1 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.2.3:member 6.5.2.5:compound-literal 6.7.2.1:struct 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator
 pr63568	pass	compiled	6.5.3.3 6.5.10 6.5.12 6.5.16.1 6.5.17 6.7.2 6.8.6.4	6.5.10:and 6.5.12:or 6.5.16.1:assign 6.5.17:comma 6.5.3.3:complement 6.7.2:int 6.8.6.4:return
 pr63593	pass	compiled	6.5.2.1 6.5.2.4 6.5.2.5 6.5.5 6.5.6 6.5.8 6.5.16.1 6.5.16.2 6.5.17 6.7.2 6.7.5.2 6.8.5.3	6.5.16.1:assign 6.5.16.2:compound-assign 6.5.17:comma 6.5.2.1:subscript 6.5.2.4:increment 6.5.2.5:compound-literal 6.5.5:multiply 6.5.6:add 6.5.8:relational 6.7.2:int 6.7.2:void 6.7.5.2:multidimensional 6.8.5.3:for
 pr63594-1	excluded	not C99: error in backend: unable to translate instruction: ret (in function: test1char64)	6.5.17 6.7.2 6.7.7 6.10.3 6.10.3.3	6.10.3.3:paste 6.10.3:define-function 6.10.3:define-object 6.5.17:comma 6.7.2:char 6.7.2:double 6.7.2:float 6.7.2:int 6.7.2:long 6.7.2:long-long 6.7.2:short 6.7.7:typedef
@@ -5673,7 +5673,7 @@ pr66299-2	pass		6.5.7 6.5.9 6.5.14 6.5.16.1 6.5.17 6.7.2 6.8.4.1	6.5.14:logical-
 pr66299-3	pass		6.5.7 6.5.9 6.5.13 6.5.14 6.5.17 6.7.2 6.8.4.1	6.5.13:logical-and 6.5.14:logical-or 6.5.17:comma 6.5.7:shift 6.5.9:equality 6.7.2:int 6.7.2:void 6.8.4.1:else 6.8.4.1:if
 pr66444	pass		6.5.5 6.5.6 6.5.9 6.5.16.1 6.5.16.2 6.5.17 6.7.1 6.7.2 6.7.2.1 6.8.4.1 6.8.6.4 6.10.1 6.10.3 6.10.3.3 6.10.5 7.20	6.10.1:conditional 6.10.3.3:paste 6.10.3:define-function 6.10.3:define-object 6.10.5:error 6.5.16.1:assign 6.5.16.2:compound-assign 6.5.17:comma 6.5.5:multiply 6.5.6:add 6.5.9:equality 6.7.1:extern 6.7.2.1:struct 6.7.2:int 6.7.2:long 6.7.2:unsigned 6.7.2:void 6.8.4.1:if 6.8.6.4:return 7.20:abort
 pr66552	pass	compiled	6.5.5 6.5.7 6.5.17 6.7.2 6.8.6.4	6.5.17:comma 6.5.5:remainder 6.5.7:shift 6.7.2:int 6.7.2:unsigned 6.8.6.4:return
-pr66618	needs	unknown a global's initial value has to be a constant	6.5.16.1 6.7.1 6.7.2 6.7.3 6.8.6.4	6.5.16.1:assign 6.7.1:static 6.7.2:int 6.7.2:void 6.7.3:const 6.8.6.4:return
+pr66618	needs	constant-initializer	6.5.16.1 6.7.1 6.7.2 6.7.3 6.8.6.4	6.5.16.1:assign 6.7.1:static 6.7.2:int 6.7.2:void 6.7.3:const 6.8.6.4:return
 pr66618-2	fail	line 5	6.4.5 6.5.2.1 6.5.3.3 6.5.5 6.5.16.1 6.7.2	6.4.5:string 6.5.16.1:assign 6.5.2.1:subscript 6.5.3.3:unary-minus 6.5.5:multiply 6.7.2:int
 pr66688	excluded	not C99: use of GNU ?: conditional expression extension, omitting middle operand [-Werror,-Wgnu-conditional-omitted-oper	6.5.2.3 6.5.5 6.5.15 6.5.16.1 6.7.2 6.7.2.1 6.8.4.1 6.8.6.4	6.5.15:conditional 6.5.16.1:assign 6.5.2.3:arrow 6.5.5:multiply 6.7.2.1:struct 6.7.2:int 6.7.2:unsigned 6.7.2:void 6.8.4.1:if 6.8.6.4:return
 pr66869	pass	compiled	6.7.1 6.7.2	6.7.1:static 6.7.2:int 6.7.2:void
@@ -5797,7 +5797,7 @@ pr69896	excluded	not C99: vector size not an integral multiple of component size
 pr69900	excluded	not C99: ISO C requires a translation unit to contain at least one declaration [-Werror,-Wempty-translation-unit]	6.10.6	6.10.6:pragma
 pr69915	needs	gnu-extensions	6.5.2.1 6.5.2.5 6.5.3.2 6.5.5 6.5.8 6.5.16.1 6.5.16.2 6.5.17 6.7.2 6.7.7 6.8.4.1 6.8.6.4	6.5.16.1:assign 6.5.16.2:compound-assign 6.5.17:comma 6.5.2.1:subscript 6.5.2.5:compound-literal 6.5.3.2:dereference 6.5.5:multiply 6.5.8:relational 6.7.2:short 6.7.2:unsigned 6.7.7:typedef 6.8.4.1:if 6.8.6.4:return
 pr69956	pass	compiled	6.5.2.1 6.5.2.4 6.5.5 6.5.16.1 6.5.17 6.7.2 6.8.4.1 6.8.5.3	6.5.16.1:assign 6.5.17:comma 6.5.2.1:subscript 6.5.2.4:increment 6.5.5:multiply 6.7.2:char 6.7.2:int 6.7.2:void 6.8.4.1:if 6.8.5.3:for
-pr69960	needs	unknown a global's initial value has to be a constant	6.4.5 6.5.16.1 6.7.2 6.7.3 6.10.3	6.10.3:define-function 6.4.5:string 6.5.16.1:assign 6.7.2:int 6.7.2:unsigned 6.7.3:const
+pr69960	needs	constant-initializer	6.4.5 6.5.16.1 6.7.2 6.7.3 6.10.3	6.10.3:define-function 6.4.5:string 6.5.16.1:assign 6.7.2:int 6.7.2:unsigned 6.7.3:const
 pr69973	excluded	not C99: vector size not an integral multiple of component size	6.5.7 6.7.2 6.7.7	6.5.7:shift 6.7.2:int 6.7.7:typedef
 pr69974	fail	accepts	6.5.3.2 6.5.5 6.5.16.2 6.7.2 6.7.2.1	6.5.16.2:compound-assign 6.5.3.2:address 6.5.5:multiply 6.7.2.1:struct 6.7.2:char 6.7.2:int 6.7.2:void
 pr69990	pass		6.5.2.1 6.5.2.3 6.5.5 6.5.9 6.5.13 6.5.15 6.5.16.1 6.5.17 6.7.1 6.7.2 6.7.2.1 6.7.3 6.7.8 6.8.6.4 6.10.6	6.10.6:pragma 6.5.13:logical-and 6.5.15:conditional 6.5.16.1:assign 6.5.17:comma 6.5.2.1:subscript 6.5.2.3:arrow 6.5.2.3:member 6.5.5:multiply 6.5.9:equality 6.7.1:static 6.7.2.1:bit-field 6.7.2.1:struct 6.7.2:int 6.7.2:void 6.7.3:volatile 6.7.8:braced-initializer 6.8.6.4:return
@@ -6589,7 +6589,7 @@ pragma-pack-4	pass	compiled	6.10.6	6.10.6:pragma
 pragma-pack-5	pass	compiled	6.5.2.1 6.5.3.3 6.5.3.4 6.5.9 6.5.15 6.7.2 6.7.2.1 6.10.6	6.10.6:pragma 6.5.15:conditional 6.5.2.1:subscript 6.5.3.3:unary-minus 6.5.3.4:sizeof 6.5.9:equality 6.7.2.1:struct 6.7.2:char 6.7.2:int
 pragma-pop_options-1	excluded	not C99: not a test that is run or compiled	6.7.2 6.10.6	6.10.6:pragma 6.7.2:int
 pragma-push_macro-1	excluded	not C99: not a test that is run or compiled	6.4.5 6.5.9 6.5.17 6.7.2 6.8.4.1 6.8.6.4 6.10.3 6.10.3.5 6.10.6	6.10.3.5:undef 6.10.3:define-object 6.10.6:pragma 6.4.5:string 6.5.17:comma 6.5.9:equality 6.7.2:int 6.8.4.1:if 6.8.6.4:return
-pragma-re-1	needs	unknown #error 	6.5.3.2 6.5.16.1 6.7.1 6.7.2 6.7.5.3 6.10.1 6.10.5 6.10.6	6.10.1:conditional 6.10.5:error 6.10.6:pragma 6.5.16.1:assign 6.5.3.2:dereference 6.7.1:extern 6.7.2:int 6.7.2:void 6.7.5.3:function-pointer
+pragma-re-1	needs	gnu-extensions	6.5.3.2 6.5.16.1 6.7.1 6.7.2 6.7.5.3 6.10.1 6.10.5 6.10.6	6.10.1:conditional 6.10.5:error 6.10.6:pragma 6.5.16.1:assign 6.5.3.2:dereference 6.7.1:extern 6.7.2:int 6.7.2:void 6.7.5.3:function-pointer
 pragma-re-2	pass	compiled	6.7.2 6.10.6	6.10.6:pragma 6.7.2:int
 pragma-re-3	excluded	not C99: call to undeclared function 'g1'; ISO C99 and later do not support implicit function declarations [-Werror,-Wim	6.7.1 6.7.2 6.10.6	6.10.6:pragma 6.7.1:extern 6.7.2:int 6.7.2:void
 pragma-re-4	pass	compiled	6.7.1 6.7.2 6.8.6.4 6.10.3 6.10.6	6.10.3:define-object 6.10.6:pragma 6.7.1:extern 6.7.2:int 6.7.2:void 6.8.6.4:return

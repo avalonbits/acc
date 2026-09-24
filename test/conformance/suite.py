@@ -32,14 +32,15 @@ import sys
 from collections import OrderedDict
 
 sys.path.insert(0, __import__('os').path.dirname(__file__))
-from census import clauses          # noqa: E402
+from census import census, clauses  # noqa: E402
 
 GNU = re.compile(r'__attribute|__builtin_|__asm|\basm\b|__inline|__restrict|'
                  r'__extension__|__typeof|\btypeof\b|vector_size|__label__|'
                  r'__alignof|__FLT_|__DBL_|__INT\w*_TYPE__|__SIZEOF_|'
                  r'__UINT\w*_TYPE__|__signed__|__const\b|__volatile\b|'
                  r'__complex__|__real__|__imag__|\blink_error\b|\bmempcpy\b|'
-                 r'__FUNCTION__|__PRETTY_FUNCTION__|__atomic_|__sync_')
+                 r'__FUNCTION__|__PRETTY_FUNCTION__|__atomic_|__sync_|'
+                 r'__PRAGMA_')
 
 
 def needs(text, census_line, message):
@@ -47,7 +48,10 @@ def needs(text, census_line, message):
     that building one moves a known set of rows."""
     code = re.sub(r'/\*.*?\*/', ' ', text, flags=re.S)
     code = re.sub(r'//[^\n]*', '', code)
-    if 'old-style-definition' in census_line:
+    # The census of what it includes too: auto-init-uninit-A is
+    # uninit-A.c again, which defines its functions the K&R way.
+    if 'old-style-definition' in census_line \
+       or '6.9.1:old-style-definition' in census(text):
         return 'k&r-definitions'
     if re.search(r'\blong\s+double\b', code) or 'long double' in message:
         return 'long-double'
@@ -62,6 +66,18 @@ def needs(text, census_line, message):
     m = re.search(r"'(\w+)' takes \d+ arguments?, and this call", message)
     if m and '__builtin_' + m.group(1) in code:
         return 'builtin-mapping'
+
+    # A struct that ends in an array with no size, as another's member:
+    # C99 6.7.2.1p2 forbids it and gcc takes it (pr15749-1).
+    if "ends in an array with no size, so it cannot be a member" in message:
+        return 'gnu-extensions'
+
+    # An object with static storage given a value that is not a constant
+    # expression, which C99 6.7.8p4 forbids and gcc takes: a compound
+    # literal, or another const variable, as pr63567 and pr66618 do.
+    if "initial value has to be a constant" in message \
+       or re.search(r"static [^;=]*=\s*\([^)]*\)\s*\{", code) and "expected '{'" in message:
+        return 'constant-initializer'
 
     # A call with arguments to a function defined with none: undefined
     # (6.5.2.2p6), and acc may refuse it. 20051012-1.
