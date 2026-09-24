@@ -1343,6 +1343,11 @@ int lex_rparen_follows(void)
     return next_char() == ')';
 }
 
+int lex_string_follows(void)
+{
+    return next_char() == '"';
+}
+
 int lex_rbrace_follows(void)
 {
     return next_char() == '}';
@@ -2075,12 +2080,40 @@ static int logical_line(void)
 }
 
 /* The rest of the directive's line, thrown away. The newline is left for
- * skip_space, which is what counts the lines. */
+ * skip_space, which is what counts the lines. A block comment is one space,
+ * so one that runs past the line's end takes the directive with it to where
+ * it closes (pragma-pack-3); a string is passed over whole, so that what
+ * opens a comment inside one is not taken for one. */
 static void rest_of_line(void)
 {
+    int in_comment = 0, quote = 0;
+
     for (;;) {
-        while (*cursor && *cursor != '\n')
+        while (*cursor && (*cursor != '\n' || in_comment)) {
+            if (in_comment) {
+                if (cursor[0] == '*' && cursor[1] == '/') {
+                    in_comment = 0;
+                    cursor++;
+                } else if (*cursor == '\n') {
+                    line++;
+                }
+            } else if (quote) {
+                if (*cursor == '\\' && cursor[1] && cursor[1] != '\n')
+                    cursor++;
+                else if (*cursor == quote)
+                    quote = 0;
+            } else if (*cursor == '"' || *cursor == '\'') {
+                quote = *cursor;
+            } else if (cursor[0] == '/' && cursor[1] == '*') {
+                in_comment = 1;
+                cursor++;
+            } else if (cursor[0] == '/' && cursor[1] == '/') {
+                while (*cursor && *cursor != '\n')
+                    cursor++;
+                break;
+            }
             cursor++;
+        }
         if (*cursor || !refill())
             return;
     }

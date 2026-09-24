@@ -3796,6 +3796,9 @@ static void va_form(void)
             acc_error_at(tok_line, "va_arg needs a type, found %s",
                          tok_spelling(tok));
         type = type_name(&x);
+        if (type_is_func(type))         /* 7.15.1.1: an object's type */
+            acc_error_at(tok_line, "va_arg reads a value, and a function "
+                                   "type has none");
         slot = va_slot(type, x);
 
         /* ap = ap + slot, and the value at ap - slot. */
@@ -3809,6 +3812,11 @@ static void va_form(void)
         vset_type(type_ptr_to(type), x);
         vderef();
         expect(TK_RPAREN, "')'");
+
+        /* A value like any other, and a subscript or a member may follow
+         * it: `va_arg (ap, char *)[0]`, pr46130-1. */
+        if (tok_postfix() || tok == TK_LPAREN)
+            subscript_value();
 
         return;
     }
@@ -4411,6 +4419,8 @@ static int init_pending;
 static int init_bits;
 static void init_record(int x, int offset, InitPut put, int braced);
 static int  init_string(Type elem, int count, int offset, InitPut put);
+static int  braced_string(Type elem);
+static void braced_string_end(void);
 static int  init_index(Type elem, int elem_x, int count, int offset,
                        InitPut put);
 static int  init_member(int x, int offset, InitPut put);
@@ -4604,6 +4614,12 @@ static void init_element(Type type, int x, int offset, InitPut put)
 
             return;
         }
+        if (!init_pending && braced_string(ext_elem(x))) {
+            init_string(ext_elem(x), ext_count(x), offset, put);
+            braced_string_end();
+
+            return;
+        }
         if (accept(TK_LBRACE))
             init_list(ext_elem(x), ext_elem_x(x), ext_count(x), offset, put, 0);
         else
@@ -4625,6 +4641,27 @@ static void init_element(Type type, int x, int offset, InitPut put)
  * terminator if there is room for it -- C lets a string exactly as long as
  * the array leave it out. Returns how many elements it filled; `count` is
  * how many there are, -1 when that is for the string to say. */
+/* `char s[] = { "foo" }`: a char array's string may be in braces (C99
+ * 6.7.8p14). With the `{` next, reads it and answers 1 when a string
+ * follows, which then goes the way a string without braces does;
+ * braced_string_end reads the `}` after it. acc took the string for the
+ * array's first char, and refused every one of these. */
+static int braced_string(Type elem)
+{
+    if (tok != TK_LBRACE || !(type_is_char(elem) || type_is_wchar(elem))
+        || !lex_string_follows())
+        return 0;
+    next();
+
+    return 1;
+}
+
+static void braced_string_end(void)
+{
+    accept(TK_COMMA);
+    expect(TK_RBRACE, "'}'");
+}
+
 static int init_string(Type elem, int count, int offset, InitPut put)
 {
     int line = tok_line, len = string_gather(), i;
@@ -4988,7 +5025,7 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
     int array = gen_local_array();
     int step = type_bytes(elem, elem_x);
     int count = *countp;
-    int init, sym = SYM_NONE;
+    int init, sym = SYM_NONE, in_braces;
 
     /* Its count is set again below, once a [] array's initialiser has said
      * what it is. */
@@ -5002,7 +5039,8 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
 
     /* A string for a char array: its bytes written into the image, where a
      * string constant goes, and copied into the array with ldir, the rest
-     * zeroed after. */
+     * zeroed after. In braces too. */
+    in_braces = init && braced_string(elem);
     if (init && tok == TK_STRING && (type_is_char(elem) || type_is_wchar(elem))) {
         int len = string_gather(), units, from, n;
 
@@ -5020,6 +5058,8 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
         gen_copy_to_array(array, 0, from, n * step);
         if (n < count)
             gen_zero_array(array, n * step, (count - n) * step);
+        if (in_braces)
+            braced_string_end();
     } else if (init && !type_is_array(elem) && !type_is_struct(elem)) {
         /* One dimension: the values in order, each stored as it is read, and
          * the rest zeroed after them in one run, as before arrays of
@@ -5419,10 +5459,17 @@ void declaration(void)
             sym_at(sym)->kind = far ? SYM_LOCAL_FAR : SYM_LOCAL_CONST;
         if (accept(TK_ASSIGN)) {
             Type outer = narrow_dest;
+            int braced = tok == TK_LBRACE;      /* as global_emit's */
 
+            if (braced)
+                next();
             narrow_dest = type_narrow(type);
             expr();
             narrow_dest = outer;
+            if (braced) {
+                accept(TK_COMMA);
+                expect(TK_RBRACE, "'}'");
+            }
             if (far) {
                 vaddr_array(off, type);
                 vswap();
@@ -6321,6 +6368,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
 {
     int fn, declared, params = 1, unnamed = 0, mark, variadic = 0;
     int nparams = 0, argoff, params_first;
+    int incomplete_line = 0, incomplete_x = 0;
     unsigned seen = nested_lists;
 
     expect(TK_LPAREN, "'('");
@@ -6415,7 +6463,13 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
              * agondev does, and the narrow ones are read from the low bytes
              * of their slot. */
             if (type_is_struct(ptype)) {
-                record_complete(pext, pline);
+                /* A prototype may name a struct not yet complete (C99
+                 * 6.7.5.3p12 asks it only of a definition): whether this is
+                 * one is known at the `)`, and it is asked then. */
+                if (!ext_complete(pext) && !incomplete_line) {
+                    incomplete_line = pline;
+                    incomplete_x = pext;
+                }
                 if (nstruct_params == struct_params_cap) {
                     struct_params_cap = struct_params_cap
                                         ? struct_params_cap * 2 : 8;
@@ -6481,6 +6535,8 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     if (unnamed)
         acc_error_at(line, "a parameter of a function's definition needs a "
                            "name");
+    if (incomplete_line)
+        record_complete(incomplete_x, incomplete_line);
     next();                     /* the body's `{` */
 
     sym_set_params(fn, params_first, nparams);
@@ -6791,9 +6847,18 @@ static void literal_bytes_in(Type type, int x, int count, Type elem,
         int at, total, i;
 
         init_bytes_len = 0;
-        expect(TK_LBRACE, "'{'");
-        if (count) {
-            int n = init_list(elem, elem_x, count, 0, global_put, 0);
+        if (count && braced_string(elem)) {     /* `(char []){ "foo" }` */
+            int n = init_string(elem, count, 0, global_put);
+
+            braced_string_end();
+            if (count < 0)
+                count = n;
+            total = count * type_bytes(elem, elem_x);
+        } else if (count) {
+            int n;
+
+            expect(TK_LBRACE, "'{'");
+            n = init_list(elem, elem_x, count, 0, global_put, 0);
 
             if (count < 0) {
                 if (n == 0)
@@ -6804,9 +6869,11 @@ static void literal_bytes_in(Type type, int x, int count, Type elem,
             }
             total = count * type_bytes(elem, elem_x);
         } else if (type_is_struct(type)) {
+            expect(TK_LBRACE, "'{'");
             init_record(x, 0, global_put, 1);
             total = ext_bytes(x);
         } else {
+            expect(TK_LBRACE, "'{'");
             global_put(type, 0, -1);
             accept(TK_COMMA);
             expect(TK_RBRACE, "'}'");
@@ -6844,7 +6911,7 @@ static void literal_bytes_in(Type type, int x, int count, Type elem,
 static void global_array(Type elem, int elem_x, NameRef name, int count,
                          int line)
 {
-    int step = type_bytes(elem, elem_x), total, at, sym, i;
+    int step = type_bytes(elem, elem_x), total, at, sym, i, braces;
     /* Read as a test and then consumed, rather than as accept's value.
      * agondev's clang lowers `x = accept(t)` into a compare, the zero for
      * the other arm, and a conditional call -- and puts the zero, which is
@@ -6871,7 +6938,9 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
      * buffer, the array's address is taken once everything it refers to has
      * been written, and it is contiguous. */
     if (!type_is_array(elem) && !type_is_struct(elem) && !type_pointer(elem)
-        && !(init && tok == TK_STRING)) {
+        && !(init && (tok == TK_STRING
+                      || ((type_is_char(elem) || type_is_wchar(elem))
+                          && tok == TK_LBRACE && lex_string_follows())))) {
         int n = 0, designated = 0;
 
         at = out_here();
@@ -6949,11 +7018,14 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
 
     init_bytes_len = 0;
 
+    braces = init && braced_string(elem);       /* `{ "foo" }` */
     if (init && tok == TK_STRING && (type_is_char(elem) || type_is_wchar(elem))) {
         int n = init_string(elem, count, 0, global_put);
 
         if (count < 0)
             count = n;
+        if (braces)
+            braced_string_end();
     } else if (init) {
         int n;
 
@@ -7072,8 +7144,17 @@ static void global_emit(Type type, int ext, NameRef name, int count, int line)
     }
 
     not_void(type, "a variable", line);
-    if (accept(TK_ASSIGN))
+    if (accept(TK_ASSIGN)) {
+        /* A scalar's value may be in braces, `int m = {0};` (C99
+         * 6.7.8p11), and a comma may end it. */
+        int braced = accept(TK_LBRACE);
+
         global_initializer(type, bytes, line);
+        if (braced) {
+            accept(TK_COMMA);
+            expect(TK_RBRACE, "'}'");
+        }
+    }
 
     at = out_here();
     data_fn_at(at);
@@ -7325,9 +7406,10 @@ static void bss_end(void)
             continue;
         if (sym_flags(s) & SYMF_EXTERN)
             continue;                   /* another file's to define */
+        /* `int a[];` at file scope and never given a size is an array of
+         * one, as if its initialiser had given it one (C99 6.9.2p5). */
         if (sym->kind == SYM_GLOBAL_ARRAY && sym_count(s) < 0)
-            acc_error("'%s' is declared with no size and never given one",
-                      name_text(sym->name));
+            sym_set_count(s, 1);
         at = gen_bss_reserve(global_bytes(s));
         sym_at(s)->val = sym_bss_val(at);
         gen_bss_symbol(s, at);

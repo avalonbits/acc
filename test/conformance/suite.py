@@ -76,6 +76,7 @@ def needs(text, census_line, message):
     # expression, which C99 6.7.8p4 forbids and gcc takes: a compound
     # literal, or another const variable, as pr63567 and pr66618 do.
     if "initial value has to be a constant" in message \
+       or "one address not yet known in each initial value" in message \
        or re.search(r"static [^;=]*=\s*\([^)]*\)\s*\{", code) and "expected '{'" in message:
         return 'constant-initializer'
 
