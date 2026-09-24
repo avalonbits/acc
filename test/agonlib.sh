@@ -13,6 +13,10 @@
 # prints the same thing from a table, so that both still agree line for
 # line; see the programs.
 #
+# And what acc's build of each VDP program sent is played into the VDP
+# firmware itself afterwards, by test/vdpsync.sh, which holds every command
+# -- the ones libagon does not have most of all -- to what the VDP takes.
+#
 #   test/agonlib.sh                every program
 #   test/agonlib.sh mos vdp        only these
 set -uo pipefail
@@ -30,6 +34,7 @@ export ASAN_OPTIONS=detect_leaks=0
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 pass=0; fail=0
+captured=()
 
 if [ $# -gt 0 ]; then
     srcs=(); for n in "$@"; do srcs+=("test/agonlib/$n.c"); done
@@ -75,6 +80,10 @@ for src in "${srcs[@]}"; do
     run "$tmp/ref.bin" "$tmp/want"
     run "$tmp/acc.bin" "$tmp/got"
 
+    # What acc's build caught, for test/vdpsync.sh below.
+    sed -n '/^--- vdp.txt$/,$p' "$tmp/got" | sed 1d > "$tmp/$name.vdp.txt"
+    [ -s "$tmp/$name.vdp.txt" ] && captured+=("$tmp/$name.vdp.txt")
+
     if [ ! -s "$tmp/want" ]; then
         printf '  FAIL %-12s libagon'"'"'s build printed nothing\n' "$name"
         fail=$((fail + 1))
@@ -87,6 +96,14 @@ for src in "${srcs[@]}"; do
         fail=$((fail + 1))
     fi
 done
+
+if [ ${#captured[@]} -gt 0 ]; then
+    test/vdpsync.sh "${captured[@]}"
+    case $? in
+        0|77) ;;
+        *) fail=$((fail + 1)) ;;
+    esac
+fi
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

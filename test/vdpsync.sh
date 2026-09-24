@@ -1,7 +1,7 @@
 #!/bin/bash
 # Every VDP call's bytes, played into the VDP firmware itself.
 #
-#   test/vdpsync.sh <captured.txt>
+#   test/vdpsync.sh <captured.txt>...
 #
 # test/agonlib.sh holds each call to what libagon sends; this holds what is
 # sent to what the VDP takes -- which is the only check there is for the
@@ -18,7 +18,7 @@ cd "$(dirname "$0")/.."
 
 EMU=${FAB_EMU:-$HOME/code/fab-agon-emulator}
 VDPDIR=$EMU/src/vdp
-[ $# -eq 1 ] || { echo "usage: $0 <captured.txt>" >&2; exit 2; }
+[ $# -ge 1 ] || { echo "usage: $0 <captured.txt>..." >&2; exit 2; }
 if [ ! -d "$VDPDIR/userspace-vdp-gl/src" ] || [ ! -d "$VDPDIR/vdp-console8/video" ]; then
     echo "  [no fab-agon-emulator source at $EMU: the VDP replay is skipped]"
     exit 77
@@ -37,4 +37,9 @@ fi
     -I./userspace-vdp-gl/src/userspace-platform/matrix -I./vdp-console8/video \
     -o "$out/replay" "$OLDPWD/test/vdpsync/replay.cpp" \
     rust_glue.o vdp-console8.o userspace-vdp-gl/src/vdp-gl.a -pthread) || exit 1
-"$out/replay" "$1"
+status=0
+for f in "$@"; do
+    printf '  %s\n' "$(basename "$f")"
+    "$out/replay" "$f" || status=1
+done
+exit $status
