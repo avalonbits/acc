@@ -42,18 +42,20 @@ CFLAGS="-mllvm -z80-gas-style -mllvm -z80-print-zero-offset -nostdinc
         -isystem $AGONDEV/include -target ez80-none-elf -Oz -Wa,-march=ez80+full"
 
 import_source() {
-    local name=$1 url=$2 rev=$3 dir=$4 filter=$5 defines=$6 also=$7
+    local name=$1 url=$2 rev=$3 dir=$4 filter=$5 defines=$6 also=$7 expect=$8
     local cache=test/conformance/cache/$name work tests have d paths
 
     echo "[$name at ${rev:0:12}]"
 
     # 1. The tests, at the pinned revision, and the directories beside them
-    # that some of them include from: their C sources and headers.
+    # that some of them include from: their C sources and headers, and what
+    # the tests have to print, when the source says.
     tests=$cache/$dir
     paths=
     for d in $dir $also; do
         paths="$paths /$d/*.c /$d/*.h"
     done
+    [ -n "$expect" ] && paths="$paths /$dir/*.c$expect"
     have=$(git -C "$cache" rev-parse HEAD 2>/dev/null || true)
     if [ "$have" != "$rev" ] && [ ! -f "$cache/.from-$rev" ]; then
         rm -rf "$cache"
@@ -64,6 +66,7 @@ import_source() {
                 mkdir -p "$cache/$d"
                 cp "$from/$d"/*.[ch] "$cache/$d/" 2>/dev/null
             done
+            [ -n "$expect" ] && cp "$from/$dir"/*.c"$expect" "$tests/"
             touch "$cache/.from-$rev"
         else
             git init -q "$cache"
@@ -77,6 +80,7 @@ import_source() {
 
     work=$(mktemp -d)
     ls "$tests" | sed -n 's/\.c$//p' | sort > "$work/all"
+    [ -n "$expect" ] && echo "  what each prints is checked against its .c$expect"
     echo "  $(wc -l < "$work/all") tests"
 
     # 2. Strict C99, as clang says.
@@ -120,8 +124,13 @@ import_source() {
             echo "$n $work/$n.r.bin" >> "$work/reflist"
         fi
     done < "$work/c99"
-    batch_run "$work/reflist" "$work/refran" || return 2
-    cat "$work/refran" >> "$work/ref.txt"
+    mkdir "$work/refprinted"
+    batch_run "$work/reflist" "$work/refran" "$work/refprinted" || return 2
+    while read -r n r; do
+        [ "$r" = 00 ] && ! printed_right "$tests" "$n" "$expect" "$work/refprinted" &&
+            r=output
+        echo "$n $r"
+    done < "$work/refran" >> "$work/ref.txt"
     echo "  $(grep -c ' 00$' "$work/ref.txt") right under agondev"
 
     # 4. What each is made of.
@@ -130,7 +139,7 @@ import_source() {
 
     # 5. And what acc does with the ones that hold.
     awk '$2 == "00" { print $1 }' "$work/ref.txt" | sort > "$work/hold"
-    observe "$tests" "$work/hold" "$defines" "$work/acc.txt" || return 2
+    observe "$tests" "$work/hold" "$defines" "$work/acc.txt" "$expect" || return 2
     echo "  $(grep -c ' pass$' "$work/acc.txt") pass under acc"
 
     python3 test/conformance/suite.py manifest "$name" "$rev" "$work" "$tests" \
@@ -143,7 +152,8 @@ import_source() {
 name=
 flush() {
     if [ -n "$name" ]; then
-        import_source "$name" "$url" "$rev" "$dir" "$filter" "$defines" "$also"
+        import_source "$name" "$url" "$rev" "$dir" "$filter" "$defines" "$also" \
+            "$expect"
     fi
 }
 while read -r word rest; do
@@ -151,8 +161,9 @@ while read -r word rest; do
       source)
         flush || exit $?
         read -r name url rev dir <<< "$rest"
-        filter= defines= also= ;;
+        filter= defines= also= expect= ;;
       also) also="$also $rest" ;;
+      expect) expect=$rest ;;
       filter) filter=$rest ;;
       define) defines=$rest ;;
     esac

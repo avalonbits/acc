@@ -1,9 +1,15 @@
 ; The start of a reference build: a test compiled and linked by agondev, to
-; say what the right answer is on this machine. MOS's header, the bss
+; say what the right answer is on this machine. MOS's header, memory
 ; cleared, main called, and its result printed as six hex digits -- the
 ; line acc's own startup prints -- before returning 0 to MOS whatever the
 ; result was. MOS 3 stops an autoexec.txt at the first command that fails,
 ; and one card runs every test in a row. See shim.s for exit and abort.
+;
+; Memory is cleared from the bss to the top of the heap, which the link puts
+; below 0xB0000, and not the bss alone: one card runs many programs, each in
+; what the last left, and agondev's library answers differently in memory
+; that is not the zeros a fresh machine has -- 27 of gcc's tests gave one
+; answer on one import and another on the next.
 	.assume adl=1
 	.section .text,"ax",@progbits
 	.global _start
@@ -13,16 +19,18 @@ _start:
 	.fill	0x40 - 4, 1, 0
 	.db	'M', 'O', 'S', 0, 1	; the header: an executable, in ADL mode
 entry:
-	ld	hl, __bss_start
-	ld	de, _end
-clear:
+	ld	hl, 0xB0000 - 1		; how many bytes past the first
+	ld	de, __bss_start
 	or	a, a
 	sbc	hl, de
-	jr	z, cleared
-	add	hl, de
+	push	hl
+	pop	bc
+	ex	de, hl			; the first zeroed, and ldir copies it on
 	ld	(hl), 0
-	inc	hl
-	jr	clear
+	push	hl
+	pop	de
+	inc	de
+	ldir
 cleared:
 	ld	(__ref_sp), sp		; for exit, from however deep it is called,
 	ld	ix, 0			; and after the clearing, which is where

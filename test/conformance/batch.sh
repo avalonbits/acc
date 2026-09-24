@@ -1,7 +1,7 @@
 # Running many programs on the emulator in few boots. Sourced by
 # test/conformance/import.sh and test/conformance.sh, after test/emu.sh.
 #
-#   batch_run <list> <results>
+#   batch_run <list> <results> [<outputs>]
 #
 # <list> has a line per program, `name path-to-image`. Each image is one
 # built to print its result as six hex digits and return to MOS: acc's
@@ -9,7 +9,8 @@
 # agondev's. <results> gets a line per program, `name status`: the status
 # is the low byte of the result, as two hex digits -- what an exit status
 # is, and all acc's -x sends; the rest of the register is whatever main
-# left there -- or `hang` or `crash`.
+# left there -- or `hang` or `crash`. With <outputs>, a directory, what each
+# program printed before its result goes in <outputs>/<name>.out.
 #
 # The programs go on one card, `echo @n` in front of each so that the
 # console says which printed what, a chunk to a boot. MOS 3 stops the
@@ -21,7 +22,8 @@ BATCH_CHUNK=${BATCH_CHUNK:-150}
 BATCH_JOBS=${BATCH_JOBS:-8}           # emulators at once: a program takes
                                       # about two seconds to load and run
 BATCH_TIMEOUT=${BATCH_TIMEOUT:-1800}   # a whole boot, as a last resort
-BATCH_HANG=${BATCH_HANG:-60}           # one program, in seconds
+BATCH_HANG=${BATCH_HANG:-300}          # one program, in seconds: c-testsuite's 00040
+                                      # takes three minutes of acc's code
 
 # Whether a boot is over short of its `stop`: MOS's prompt, which it shows
 # once the autoexec has stopped at a program that failed; a second banner,
@@ -44,12 +46,12 @@ batch_watch() {
 # The list split among BATCH_JOBS emulators, and their results put back in
 # the list's order.
 batch_run() {
-    local list=$1 results=$2 parts j
+    local list=$1 results=$2 outputs=${3:-} parts j
 
     parts=$(mktemp -d)
     split -n "r/$BATCH_JOBS" -d "$list" "$parts/list."
     for j in "$parts"/list.*; do
-        [ -s "$j" ] && batch_serial "$j" "$j.out" &
+        [ -s "$j" ] && batch_serial "$j" "$j.out" "$outputs" &
     done
     wait
     cat "$parts"/list.*.out 2>/dev/null > "$parts/all"
@@ -59,7 +61,7 @@ batch_run() {
 }
 
 batch_serial() {
-    local list=$1 results=$2 work stop sd n total from i name path
+    local list=$1 results=$2 outputs=$3 work stop sd n total from i name path
 
     work=$(mktemp -d)
     stop=$work/stop.bin
@@ -92,19 +94,33 @@ batch_serial() {
         # unless it is the last of the chunk and the boot ended cleanly.
         # A program that crashes the machine starts MOS again, and the
         # autoexec with it: the second banner ends what this boot says.
-        awk -v names="$work/names" '
+        awk -v names="$work/names" -v outputs="$outputs" '
             BEGIN { while ((getline l < names) > 0) name[++k] = l }
             { sub(/\r$/, "") }
             /^Agon .*MOS Version/ && ++boots > 1 {
                 if (at && !(at in result)) result[at] = "crash"
                 exit
             }
-            /^@[0-9]+$/ { at = substr($0, 2) + 0; last = at; next }
-            # The result is the last thing a program prints, six hex
-            # digits, and may follow what it printed on the same line.
-            at && /[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]$/ {
-                result[at] = substr($0, length($0) - 1)
+            /^@[0-9]+$/ {
+                at = substr($0, 2) + 0; last = at
+                if (outputs != "") {
+                    file = outputs "/" name[at] ".out"
+                    printf "" > file
+                }
+                next
             }
+            !at || (at in result) { next }
+            # The result is the last thing a program prints, six hex
+            # digits, and may follow what it printed on the same line;
+            # what it printed before them is its output.
+            /[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]$/ {
+                result[at] = substr($0, length($0) - 1)
+                $0 = substr($0, 1, length($0) - 6)
+                if (outputs != "" && $0 != "")
+                    printf "%s", $0 > file
+                next
+            }
+            outputs != "" { print > file }
             END {
                 for (i = 1; i <= last; i++)
                     print name[i], (i in result) ? result[i] : "hang"

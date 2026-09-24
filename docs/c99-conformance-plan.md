@@ -538,27 +538,42 @@ done, and then what is next.
       fails, so a boot runs until one does, and the next starts after it.
       A crash or a hang ends a boot early rather than at its timeout.
 
-    The first import: 1,698 files, 1,303 strict C99, 1,207 right under
-    agondev -- more than the 1,127 of the scripts before it, because the
-    reference build now has the builtin mapping too -- and acc passes 1,090
-    of those. The other 117 wait on GNU extensions (63), K&R definitions
-    (26), long double (10), complex (7), a side effect in a parameter's
-    array size (3), the mapping's own collision with a test's static
-    strcmp (1) and an undefined call (1), or give a wrong answer for a GNU
-    attribute acc ignores or an order C leaves unspecified (6). Every
-    clause but 6.9.1 has tests that pass; 6.9.1's 26 are the K&R ones.
-    A run takes about half a minute; an import about twelve.
+    The import: 1,698 files, 1,303 strict C99, 1,235 right under agondev
+    -- more than the 1,127 of the scripts before it, because the reference
+    build now has the builtin mapping too, and runs in cleared memory --
+    and acc passes 1,117 of those. The other 118 wait on GNU extensions,
+    K&R definitions, long double, complex, a side effect in a parameter's
+    array size, the mapping's own collision with a test's static strcmp,
+    and an undefined call, or give a wrong answer for a GNU attribute acc
+    ignores or an order C leaves unspecified (6). Every clause but 6.9.1
+    has tests that pass; 6.9.1's 26 are the K&R ones. A run takes about
+    half a minute; an import of both sources about fifteen.
+
+    One thing the first imports taught: a card runs many programs, each in
+    the memory the last left, and agondev's library does not answer the
+    same there as in the zeros of a fresh machine. 27 tests changed their
+    reference answer from one import to the next until refkit/start.s
+    cleared memory up to the stack; two imports now agree row for row.
+
+16. **c-testsuite, all 220.** Imported the same way, pinned at 5c7275656d75,
+    with what each test prints held to its `.expected` file as well as its
+    status (`expect` in sources.txt). 208 are strict C99, 198 print and
+    return what they should under agondev, and acc passes 197; the other
+    is 00206, which leans on `#pragma push_macro`, an extension acc ignores
+    as it does in gcc's pushpop_macro. It found four more gaps, now
+    built: `[*]` in a prototype's parameter (00162); a macro argument's
+    tokens running into the body's (00202, and `-x` with -1); a comment
+    after an #include (00201); and nothing at all in 00040, an eight-queens
+    search whose three minutes under acc were taken for a hang.
 
 **Next, in this order:**
 
-1. **c-testsuite, all 220.**
-   - ISC and MIT, so it can be vendored with its notices.
-2. **The rest of `gcc.dg`, not just `c99-*`.**
+1. **The rest of `gcc.dg`, not just `c99-*`.**
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.
-3. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
-4. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
+2. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
+3. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
    `test/fuzz/reduce.py` as the reducer.
 
 **Not being done, and why:**

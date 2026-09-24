@@ -43,9 +43,12 @@ while read -r word name url rev dir; do
         defines=$(awk -v n="$name" '$1 == "source" { on = ($2 == n) }
                                     on && $1 == "define" { $1 = ""; print }' \
                   test/conformance/sources.txt)
+        expect=$(awk -v n="$name" '$1 == "source" { on = ($2 == n) }
+                                   on && $1 == "expect" { print $2 }' \
+                 test/conformance/sources.txt)
         work=$(mktemp -d)
         awk -F'\t' '!/^#/ && $2 != "excluded" { print $1 }' "$manifest" > "$work/names"
-        observe "$tests" "$work/names" "$defines" "$work/seen" || exit 2
+        observe "$tests" "$work/names" "$defines" "$work/seen" "$expect" || exit 2
         if [ "$mode" = --update ]; then
             python3 test/conformance/suite.py update "$manifest" "$work/seen"
             echo "  updated $manifest"
