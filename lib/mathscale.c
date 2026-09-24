@@ -7,6 +7,7 @@
  * frexp and ldexp undo each other, and modf splits a number in two.
  * Exact, every one of them, for every value they are given.
  */
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 
@@ -107,9 +108,53 @@ double ldexp(double x, int exp)
     return scalbn(x, exp);
 }
 
+/* The exponent of x's leading bit, as an int. C gives a zero, an infinity
+ * and a NaN answers of their own, since none of them has one. */
+int ilogb(double x)
+{
+    int e;
+
+    switch (__acc_fpclassify(x)) {
+    case FP_ZERO:     return FP_ILOGB0;
+    case FP_NAN:      return FP_ILOGBNAN;
+    case FP_INFINITE: return INT_MAX;
+    }
+    frexp(x, &e);
+
+    return e - 1;
+}
+
+/* The same, as a floating value: and so a zero is a pole, at minus
+ * infinity, and an infinity is positive infinity. */
+double logb(double x)
+{
+    switch (__acc_fpclassify(x)) {
+    case FP_ZERO:     return -HUGE_VAL;
+    case FP_NAN:      return x;
+    case FP_INFINITE: return fabs(x);
+    }
+
+    return (double) ilogb(x);
+}
+
+/* scalbn with a long, which is only different in how far it can be asked
+ * to go: nothing past a few hundred steps changes the answer. */
+double scalbln(double x, long n)
+{
+    if (n > 1000)
+        n = 1000;
+    if (n < -1000)
+        n = -1000;
+
+    return scalbn(x, (int) n);
+}
+
 /* The same functions under the names a program that says `float` reaches
  * for. float and double are one type here, so each of these is a jump. */
 float modff(float x, float *ip)        { return modf(x, ip); }
 float frexpf(float x, int *exp)        { return frexp(x, exp); }
 float ldexpf(float x, int exp)         { return ldexp(x, exp); }
 float scalbnf(float x, int exp)        { return scalbn(x, exp); }
+int   ilogbf(float x)                  { return ilogb(x); }
+float logbf(float x)                   { return logb(x); }
+float scalblnf(float x, long exp)      { return scalbln(x, exp); }

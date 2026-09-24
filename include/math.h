@@ -92,6 +92,20 @@ double nan(const char *tag);
 
 long   lround(double x);
 long   lrint(double x);
+long long llround(double x);
+long long llrint(double x);
+
+double remainder(double x, double y);
+double remquo(double x, double y, int *quo);
+double nextafter(double x, double y);
+double fma(double x, double y, double z);
+double scalbln(double x, long exp);
+double logb(double x);
+int    ilogb(double x);
+
+/* What ilogb answers for a zero and for a NaN, which have no exponent. */
+#define FP_ILOGB0   (-8388607 - 1)
+#define FP_ILOGBNAN 8388607
 
 /* And the approximations. */
 double sqrt(double x);
@@ -118,6 +132,14 @@ double atan2(double y, double x);
 double sinh(double x);
 double cosh(double x);
 double tanh(double x);
+double asinh(double x);
+double acosh(double x);
+double atanh(double x);
+
+double erf(double x);
+double erfc(double x);
+double tgamma(double x);
+double lgamma(double x);
 
 /* The float family, which on this machine is the same set of functions
  * under the names a program that says `float` reaches for. */
@@ -159,5 +181,25 @@ float atan2f(float y, float x);
 float sinhf(float x);
 float coshf(float x);
 float tanhf(float x);
+float asinhf(float x);
+float acoshf(float x);
+float atanhf(float x);
+float erff(float x);
+float erfcf(float x);
+float tgammaf(float x);
+float lgammaf(float x);
+
+float nanf(const char *tag);
+float remainderf(float x, float y);
+float remquof(float x, float y, int *quo);
+float nextafterf(float x, float y);
+float fmaf(float x, float y, float z);
+float scalblnf(float x, long exp);
+float logbf(float x);
+int   ilogbf(float x);
+long  lroundf(float x);
+long  lrintf(float x);
+long long llroundf(float x);
+long long llrintf(float x);
 
 #endif

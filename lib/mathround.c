@@ -129,6 +129,16 @@ long lround(double x)
     return (long) round(x);
 }
 
+long long llrint(double x)
+{
+    return (long long) rint(x);
+}
+
+long long llround(double x)
+{
+    return (long long) round(x);
+}
+
 /* The same functions under the names a program that says `float` reaches
  * for. float and double are one type here, so each of these is a jump. */
 float floorf(float x)                  { return floor(x); }
@@ -137,3 +147,7 @@ float truncf(float x)                  { return trunc(x); }
 float roundf(float x)                  { return round(x); }
 float rintf(float x)                   { return rint(x); }
 float nearbyintf(float x)              { return nearbyint(x); }
+long      lrintf(float x)              { return lrint(x); }
+long      lroundf(float x)             { return lround(x); }
+long long llrintf(float x)             { return llrint(x); }
+long long llroundf(float x)            { return llround(x); }

@@ -87,7 +87,30 @@ double copysign(double x, double y)
     return from_bits((bits(x) & MAG_MASK) | (bits(y) & SIGN_BIT));
 }
 
+/* The next float after x in the direction of y: a step of one in the bit
+ * pattern, which counts the way the magnitudes do. */
+double nextafter(double x, double y)
+{
+    uint32_t u;
+
+    if (__acc_fpclassify(x) == FP_NAN || __acc_fpclassify(y) == FP_NAN)
+        return __acc_nan();
+    if (x == y)
+        return y;
+    if (x == 0.0f)
+        return from_bits((bits(y) & SIGN_BIT) | 1u);
+    u = bits(x);
+    if ((x < y) == (x > 0.0f))
+        u++;
+    else
+        u--;
+
+    return from_bits(u);
+}
+
 /* The same functions under the names a program that says `float` reaches
  * for. float and double are one type here, so each of these is a jump. */
 float fabsf(float x)                   { return fabs(x); }
 float copysignf(float x, float y)      { return copysign(x, y); }
+float nextafterf(float x, float y)     { return nextafter(x, y); }
+float nanf(const char *tag)            { return nan(tag); }

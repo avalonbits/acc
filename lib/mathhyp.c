@@ -84,6 +84,61 @@ double tanh(double x)
     return x < 0.0f ? -v : v;
 }
 
+/* The inverses, as fdlibm writes them: each a log1p of something that
+ * keeps its digits where the plain formula would take them away, and a
+ * plain log once x is so large that the rest no longer counts. */
+#define LN2 0.693147181f
+
+double acosh(double x)
+{
+    double t;
+
+    if (isnan(x))
+        return x;
+    if (x < 1.0f)
+        return NAN;
+    if (x >= 4096.0f)
+        return log(x) + LN2;
+    t = x - 1.0f;
+
+    return log1p(t + sqrt(2.0f * t + t * t));
+}
+
+double asinh(double x)
+{
+    double a = fabs(x), v;
+
+    if (isnan(x) || isinf(x) || a < 1.0f / 4096.0f)
+        return x;
+    if (a >= 4096.0f)
+        v = log(a) + LN2;
+    else
+        v = log1p(a + a * a / (1.0f + sqrt(1.0f + a * a)));
+
+    return x < 0.0f ? -v : v;
+}
+
+double atanh(double x)
+{
+    double a = fabs(x), v;
+
+    if (isnan(x))
+        return x;
+    if (a > 1.0f)
+        return NAN;
+    if (a == 1.0f)
+        return copysign(HUGE_VAL, x);   /* a pole */
+    if (a < 0.5f)
+        v = 0.5f * log1p(2.0f * a + 2.0f * a * a / (1.0f - a));
+    else
+        v = 0.5f * log1p(2.0f * a / (1.0f - a));
+
+    return x < 0.0f ? -v : v;
+}
+
 float sinhf(float x) { return sinh(x); }
 float coshf(float x) { return cosh(x); }
 float tanhf(float x) { return tanh(x); }
+float acoshf(float x) { return acosh(x); }
+float asinhf(float x) { return asinh(x); }
+float atanhf(float x) { return atanh(x); }

@@ -48,6 +48,21 @@ FN2 = [
      pick(1e-5, 1e5, 10, log=True) + [4.0], 2),
 ]
 
+
+# Added after the others, and drawn after them, so that their values stay
+# as they were.
+FN1 += [
+    ("asinh", math.asinh, pick(-1e30, 1e30, 6) + pick(-3, 3, 10) + [0.0, 1e-5, 0.5, -2.0], 2),
+    ("acosh", math.acosh, pick(1, 1e30, 8, log=True) + pick(1, 3, 8) + [1.0, 1.0001, 2.0], 2),
+    ("atanh", math.atanh, pick(-0.999, 0.999, 14) + [0.0, 1e-5, 0.5, -0.9999], 3),
+    ("erf",   math.erf,   pick(-4, 4, 20) + [0.0, 1e-5, 0.5, 1.0, -1.5, 3.0], 2),
+    ("erfc",  math.erfc,  pick(-3, 9, 24) + pick(2, 10, 24) + [0.0, 0.5, 1.0, 2.0, 4.0, 9.0], 4),
+    ("tgamma", math.gamma, pick(0.01, 35, 20) + pick(-10, -0.01, 10)
+              + [0.5, 1.0, 2.0, 3.5, 10.0, 34.5], 10),
+    ("lgamma", math.lgamma, pick(0.01, 8, 14) + pick(8, 1e30, 8, log=True)
+              + pick(-10, -0.01, 6) + [0.5, 1.001, 1.999, 2.5, 3.0, 100.0], 10),
+]
+
 out = []
 w = out.append
 w("/* What every one of these should answer, worked out to more digits than")
