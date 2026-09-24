@@ -880,7 +880,7 @@ int  gen_late_sym(int i);
 void gen_slot(int at, int kind, long value);    /* a slot of a kind, filled */
 void gen_bss_symbol(int sym, int at); /* and which symbol is there */
 int  gen_bss_offset(int sym);         /* where one is, or -1 */
-int  gen_bss_used(int at, int bytes); /* whether anything reaches into it */
+void gen_bss_move(int at, int bytes, int to);  /* its uses, into the image */
 void gen_bss_forget(int sym);         /* it is not in the bss after all */
 void gen_bss_fixup(int at);           /* a slot that wants the bss's start */
 int  gen_nbss_fixups(void);

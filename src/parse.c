@@ -6907,20 +6907,20 @@ static void global_variable(Type type, int ext, NameRef name, int count,
 
             /* It was given room in the bss when it was first declared, and
              * now it has a value, so its bytes go in the file instead. The
-             * room is abandoned -- unless something compiled in between was
-             * told to look in it, and then there is nowhere for that to be
-             * put right. */
+             * room is abandoned, and whatever was compiled in between to
+             * find it there is pointed at the bytes. */
             if (sym_in_bss(sym_at(sym)->val)) {
                 int at = sym_bss_at(sym_at(sym)->val);
 
-                if (gen_bss_used(at, global_bytes(sym)))
-                    acc_error_at(line, "'%s' is used above and given a value "
-                                       "here, and what is above it was "
-                                       "compiled to find it where a variable "
-                                       "with no value goes; give it its value "
-                                       "where it is first declared",
-                                 name_text(name));
                 gen_bss_forget(sym);
+                sym_at(sym)->val = -1;
+                redefining = sym;
+                global_emit(type, ext, name, count, line);
+                redefining = SYM_NONE;
+                sym_set_flags(sym, SYMF_DEFINED);
+                gen_bss_move(at, global_bytes(sym), sym_at(sym)->val);
+
+                return;
             }
             redefining = sym;
             global_emit(type, ext, name, count, line);

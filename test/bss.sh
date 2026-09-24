@@ -242,17 +242,31 @@ else
     echo "  [no emulator: the clearing is read, not watched]"
 fi
 
-# And the one shape that cannot be allowed: something compiled between the
-# two was told where in the bss to look, and the value it has been given is
-# somewhere else entirely.
-printf 'int x;\nint peek(void) { return x; }\nint x = 42;\nint main(void) { return peek(); }\n' \
+# Something compiled between the two was told where in the bss to look,
+# and the value it has been given is in the image instead. It used to be
+# refused; what was told is now pointed at the bytes, in a program and in
+# an object linked into one.
+printf 'int x;\nint *px = &x;\nint peek(void) { return x + (px == &x); }\nint x = 41;\nint main(void) { return peek(); }\n' \
     > "$tmp/moved.c"
-err=$("$ACC" "$tmp/moved.c" -o "$tmp/moved.bin" -x 2>&1)
-case $err in
-  *"is used above and given a value here"*) pass=$((pass + 1)) ;;
-  *) printf '  FAIL %-36s %s\n' "used, then given a value" \
-         "$(printf '%s' "$err" | head -1)"; fail=$((fail + 1)) ;;
-esac
+if "$ACC" "$tmp/moved.c" -o "$tmp/moved.bin" -x >/dev/null 2>&1 \
+   && "$ACC" -c "$tmp/moved.c" -o "$tmp/moved.o" >/dev/null 2>&1 \
+   && "$ACC" "$tmp/moved.o" -o "$tmp/moved_o.bin" -x >/dev/null 2>&1; then
+    if emu_available >/dev/null 2>&1; then
+        test/agon.sh "$tmp/moved.bin" >/dev/null 2>&1; a=$?
+        test/agon.sh "$tmp/moved_o.bin" >/dev/null 2>&1; b=$?
+        if [ "$a.$b" = 42.42 ]; then
+            pass=$((pass + 1))
+        else
+            printf '  FAIL %-36s %s\n' "used, then given a value" "ran $a and $b"
+            fail=$((fail + 1))
+        fi
+    else
+        pass=$((pass + 1))
+    fi
+else
+    printf '  FAIL %-36s %s\n' "used, then given a value" "did not build"
+    fail=$((fail + 1))
+fi
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -3902,18 +3902,26 @@ int gen_bss_len(void)
  * compiled to look in the room. The range is closed at both ends on purpose:
  * the address one past the end of an array is a real thing to have taken,
  * and it is not worth being clever about whose it is. */
-int gen_bss_used(int at, int bytes)
+/* A variable that was in the bss, at `at` for `bytes`, and has been given
+ * room in the image at `to` instead -- `int n;`, used, and then `int n =
+ * 30;`. Every slot written so far with an offset into its bytes, or just
+ * past them, is an address of it: each becomes that address in the image,
+ * relocated as the image's are -- which is what a slot not on the bss's
+ * list is -- and is no longer one the bss's start is added to. */
+void gen_bss_move(int at, int bytes, int to)
 {
-    int i;
+    int i, kept = 0;
 
     for (i = 0; i < nbss_fixups; i++) {
-        int to = out_read24(bss_fixups[i]);
+        int slot = bss_fixups[i], was = out_read24(slot);
 
-        if (to >= at && to <= at + bytes)
-            return 1;
-    }
-
-    return 0;
+        if (was < at || was > at + bytes) {
+            bss_fixups[kept++] = slot;
+            continue;
+        }
+        out_patch24(slot, to + was - at);       /* relocated already: see */
+    }                                           /* gen_bss_fixup */
+    nbss_fixups = kept;
 }
 
 /* And that it is no longer there, so that the addresses handed out at the
