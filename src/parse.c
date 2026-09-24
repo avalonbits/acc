@@ -1848,12 +1848,50 @@ typedef char qualifiers_are_adjacent[(TK_KW_VOLATILE == TK_KW_CONST + 1
  * them all: it keeps nothing in a register from one statement to the next,
  * and reads a variable again each time an expression names it. restrict
  * promises something acc makes no use of. So neither changes the code. */
+/* And the rest of a declaration's specifiers after its first, in any
+ * order, as C allows: `const static int`, `int static`, `struct s extern`.
+ * The storage classes and inline follow the qualifiers in the token list,
+ * so one compare covers the nine. C99 6.11.5 calls a storage class that is
+ * not first obsolescent, and obsolescent is still C. */
+#define tok_specifier_word()  ((unsigned char) (tok_low - TK_KW_TYPEDEF) < 9u)
+#define tok_storage()         ((unsigned char) (tok_low - TK_KW_TYPEDEF) < 5u)
+typedef char storage_then_qualifiers[(TK_KW_STATIC == TK_KW_TYPEDEF + 1
+                                      && TK_KW_REGISTER == TK_KW_TYPEDEF + 4
+                                      && TK_KW_CONST == TK_KW_TYPEDEF + 5
+                                      && TK_KW_INLINE == TK_KW_TYPEDEF + 8)
+                                     ? 1 : -1];
+
+/* Whether the specifiers being read are a declaration's, which is the only
+ * place a storage class or inline may be, and the storage class they have
+ * said: the one in front, which the caller read and put here, or one found
+ * among them. A declaration sets storage_ok around its base_type. A struct's
+ * or an enum's body, which reads types of its own inside those specifiers,
+ * clears it for the length of the body -- once a body rather than once a
+ * type, since base_type runs for every declaration in the program. */
+static unsigned char storage_ok;
+static int           decl_storage;
+
 __attribute__((noinline))
 static void qualifiers(void)
 {
-    while (tok_qualifier()) {
-        if (tok == TK_KW_CONST)
+    while (tok_specifier_word()) {
+        if (tok == TK_KW_CONST) {
             base_const = 1;
+        } else if (!tok_qualifier()) {
+            if (!storage_ok)
+                acc_error_at(tok_line, "'%s' belongs at the front of a "
+                                       "declaration, not here",
+                             tok_spelling(tok));
+            if (tok_storage()) {
+                if (decl_storage)
+                    acc_error_at(tok_line, "a declaration can have one "
+                                           "storage class, and this has '%s' "
+                                           "and '%s'",
+                                 tok_spelling(decl_storage),
+                                 tok_spelling(tok));
+                decl_storage = tok;
+            }
+        }
         next();
     }
 }
@@ -1913,7 +1951,7 @@ static Type type_specifier_slow(int first, int line)
         case TK_KW_DOUBLE:   is_float++;    break;
         case TK_KW_BOOL:     is_bool++;     break;
         }
-        if (tok_qualifier())
+        if (tok_specifier_word())
             qualifiers();
         if (!starts_type(tok))
             break;
@@ -1975,7 +2013,7 @@ static Type type_specifier(void)
 
     next();
     if (!starts_type(tok)) {
-        if (!tok_qualifier())
+        if (!tok_specifier_word())
             return (Type) (alone - 1);  /* one keyword, which is most of them */
         qualifiers();                   /* `int const`, `unsigned const int` */
         if (!starts_type(tok))
@@ -2091,8 +2129,13 @@ static Type enum_specifier(void)
         int cline = tok_line;
         NameRef constant = declared_name();
 
-        if (accept(TK_ASSIGN))
+        if (accept(TK_ASSIGN)) {
+            unsigned char outer = storage_ok;
+
+            storage_ok = 0;             /* a cast in it is not a declaration */
             val = constant_int("an enum constant's value", cline);
+            storage_ok = outer;
+        }
         if (val > 0x7fffff)
             acc_error_at(cline, "an enum constant has to fit in an int");
         not_redeclared(constant, cline);
@@ -2378,9 +2421,14 @@ static Type struct_specifier(void)
     }
 
     if (accept(TK_LBRACE)) {
+        unsigned char outer = storage_ok, outer_storage = (unsigned char) decl_storage;
+
         if (ext_complete(x))
             acc_error_at(line, "'%s' is defined twice", record_name(x));
+        storage_ok = 0;
         record_members(x, is_union, line);
+        storage_ok = outer;
+        decl_storage = outer_storage;
         expect(TK_RBRACE, "'}'");
     }
     base_ext = x;
@@ -2408,7 +2456,13 @@ static Type base_type_other(void)
     switch (tok) {
     case TK_KW_CONST:                   /* `const int`, `const struct s` */
     case TK_KW_VOLATILE:
-    case TK_KW_RESTRICT: {
+    case TK_KW_RESTRICT:
+    case TK_KW_TYPEDEF:                 /* and a declaration's storage class, */
+    case TK_KW_STATIC:                  /* in front or anywhere else among */
+    case TK_KW_EXTERN:                  /* its specifiers: see qualifiers */
+    case TK_KW_AUTO:
+    case TK_KW_REGISTER:
+    case TK_KW_INLINE: {
         Type t;
         unsigned char was_const;
 
@@ -4610,16 +4664,9 @@ static unsigned char decl_bottom_const; /* and SQ_CONST, when its type is */
  * the type it would have given a variable. An array type keeps its shape in
  * an extension, so that an object declared with it is that array. */
 __attribute__((noinline))
-static void typedef_declaration(void)
+/* The names a typedef declares, once its specifiers have been read. */
+static void typedef_declarators(Type base, int bx, unsigned char bc)
 {
-    Type base;
-    int bx;
-    unsigned char bc;
-
-    next();
-    base = base_type();
-    bx = base_ext;
-    bc = base_const;
     for (;;) {
         int line = tok_line, count, ext, sym;
         Type type;
@@ -4701,39 +4748,15 @@ static unsigned char decl_quals;
 
 static inline __attribute__((always_inline)) void declaration(void);
 
-/* A declaration in a block that begins with typedef, static or extern.
+/* The names a block's static or extern declaration declares, once its
+ * specifiers have been read.
  *
  * A block's static variable is a file-scope one in all but its name: its
  * bytes are in the image, written here and jumped over, initialised once
  * from constants, and kept from one call to the next. */
-__attribute__((noinline))
-static void storage_declaration(void)
+static void storage_declarators(int storage, Type base, int bx,
+                                unsigned char bc)
 {
-    int storage = tok;
-    Type base;
-    int bx;
-    unsigned char bc;
-
-    if (storage == TK_KW_TYPEDEF) {
-        typedef_declaration();
-
-        return;
-    }
-
-    /* auto is what a block's variable is anyway, and register only forbids
-     * taking its address: both are then an ordinary declaration. */
-    if (storage == TK_KW_AUTO || storage == TK_KW_REGISTER) {
-        next();
-        decl_quals = storage == TK_KW_REGISTER ? SQ_REGISTER : 0;
-        declaration();
-        decl_quals = 0;
-
-        return;
-    }
-    next();
-    base = base_type();
-    bx = base_ext;
-    bc = base_const;
     if (accept(TK_SEMI))
         return;
     for (;;) {
@@ -4763,6 +4786,31 @@ static void storage_declaration(void)
     expect(TK_SEMI, "';'");
 }
 
+/* A block's declaration with a storage class, wherever among its
+ * specifiers it was: `static int x;`, `int static x;`. 0 for auto and
+ * register, whose declarators are the ordinary ones -- auto is what a
+ * block's variable is anyway, and register only forbids taking its
+ * address, which decl_quals marks. */
+__attribute__((noinline))
+static int storage_declaration(Type base, int bx, unsigned char bc)
+{
+    int storage = decl_storage;
+
+    if (storage == TK_KW_TYPEDEF) {
+        typedef_declarators(base, bx, bc);
+
+        return 1;
+    }
+    if (storage == TK_KW_STATIC || storage == TK_KW_EXTERN) {
+        storage_declarators(storage, base, bx, bc);
+
+        return 1;
+    }
+    decl_quals = storage == TK_KW_REGISTER ? SQ_REGISTER : 0;
+
+    return 0;
+}
+
 /* Inlined into both callers, the function body and a for's first clause:
  * it was inlined into the first when it had only that one, and as a call it
  * is one more on every declaration in the program. */
@@ -4779,15 +4827,14 @@ void declaration(void)
         return;
     }
 
-    /* typedef, static, extern, auto and register, one range. */
-    if ((unsigned char) (tok_low - TK_KW_TYPEDEF) < 5u) {
-        storage_declaration();
-
-        return;
-    }
+    storage_ok = 1;
+    decl_storage = 0;
     base = base_type();
+    storage_ok = 0;
     bx = base_ext;
     bc = base_const;
+    if (decl_storage && storage_declaration(base, bx, bc))
+        return;
 
     /* Nothing but the type: `enum e { A, B };`, declaring what is in it. */
     if (accept(TK_SEMI))
@@ -4873,6 +4920,7 @@ void declaration(void)
             break;
     }
     expect(TK_SEMI, "';'");
+    decl_quals = 0;             /* a register given after the type */
 }
 
 static void statement(void);
@@ -6850,30 +6898,28 @@ static void external_declaration(void)
         return;
     }
 
-    if (tok == TK_KW_TYPEDEF) {
-        typedef_declaration();
-
-        return;
-    }
-
-    /* At file scope static changes nothing for a program that is one file,
-     * and extern declares what any declaration here does: storage that the
-     * one that gives the value, if any does, fills in. inline asks that
-     * calls be fast, and a call is what they are: C lets that be the
-     * answer. In any order, as C allows. */
-    decl_extern = decl_static = 0;
-    while (tok == TK_KW_STATIC || tok == TK_KW_EXTERN || tok == TK_KW_INLINE) {
-        decl_extern |= tok == TK_KW_EXTERN;
-        decl_static |= tok == TK_KW_STATIC;
-        next();
-    }
-    if (tok == TK_KW_AUTO || tok == TK_KW_REGISTER)
-        acc_error_at(tok_line, "%s is for a variable in a block, not at file "
-                               "scope", tok_spelling(tok));
+    /* The storage class, wherever among the specifiers it is. At file scope
+     * static keeps a name to this file, and extern declares what any
+     * declaration here does: storage that the one that gives the value, if
+     * any does, fills in. inline asks that calls be fast, and a call is
+     * what they are: C lets that be the answer. */
+    storage_ok = 1;
+    decl_storage = 0;
     base = base_type();
+    storage_ok = 0;
     bx = ext = base_ext;
     bc = base_const;
     line = tok_line;
+    if (decl_storage == TK_KW_TYPEDEF) {
+        typedef_declarators(base, bx, bc);
+
+        return;
+    }
+    if (decl_storage == TK_KW_AUTO || decl_storage == TK_KW_REGISTER)
+        acc_error_at(line, "%s is for a variable in a block, not at file "
+                           "scope", tok_spelling(decl_storage));
+    decl_extern = decl_storage == TK_KW_EXTERN;
+    decl_static = decl_storage == TK_KW_STATIC;
     if (accept(TK_SEMI))
         return;
     /* A name and then '(' is a function -- a prototype, or a definition if
