@@ -38,6 +38,10 @@ int       atoi(const char *s);
 long      atol(const char *s);
 long long atoll(const char *s);
 
+double    atof(const char *s);
+double    strtod(const char *s, char **end);
+float     strtof(const char *s, char **end);
+
 /* Past the type's range, these answer its limit and put ERANGE in errno. */
 long               strtol(const char *s, char **end, int base);
 unsigned long      strtoul(const char *s, char **end, int base);
