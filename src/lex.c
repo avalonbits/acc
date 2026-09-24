@@ -1641,6 +1641,15 @@ static char *build_expansion(Macro *m, char **argv, int argc)
         start = p;
         while (is_alnum((unsigned char) *p))
             p++;
+
+        /* `L'1'` and `L"x"` are one token, a wide literal, and its L is not
+         * a name: a parameter called L is not put in its place. The quote
+         * is copied whole on the next turn. */
+        if (p - start == 1 && *start == 'L' && (*p == '\'' || *p == '"')) {
+            buf_putc(&out, 'L');
+
+            continue;
+        }
         idx = param_index(m, start, (int) (p - start));
         if (idx < 0) {
             buf_put(&out, start, (int) (p - start));
