@@ -2097,15 +2097,21 @@ static void do_include(void)
  * the middle of a directive: asking it for the next token would run it off
  * the end of the line, and putting it back afterwards is more machinery
  * than copying the line is. */
-#define IF_TEXT 512
-
-static char if_text[IF_TEXT];
-static int  if_len;
+static char *if_text;
+static int   if_len, if_cap;
 
 static void if_put(const char *text, int len)
 {
-    if (if_len + len >= IF_TEXT)
-        acc_error_at(line, "the expression in an #if is too long");
+    if (if_len + len > if_cap) {
+        int want = if_cap ? if_cap * 2 : 512;
+
+        while (want < if_len + len)
+            want *= 2;
+        if_text = realloc(if_text, (size_t) want);
+        if (!if_text)
+            acc_error("out of memory expanding a macro");
+        if_cap = want;
+    }
     memcpy(if_text + if_len, text, (size_t) len);
     if_len += len;
 }
