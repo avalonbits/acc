@@ -99,4 +99,11 @@ int vfprintf(FILE *f, const char *fmt, va_list ap);
 int snprintf(char *to, size_t n, const char *fmt, ...);
 int vsnprintf(char *to, size_t n, const char *fmt, va_list ap);
 
+int scanf(const char *fmt, ...);
+int vscanf(const char *fmt, va_list ap);
+int sscanf(const char *s, const char *fmt, ...);
+int vsscanf(const char *s, const char *fmt, va_list ap);
+int fscanf(FILE *f, const char *fmt, ...);
+int vfscanf(FILE *f, const char *fmt, va_list ap);
+
 #endif

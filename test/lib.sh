@@ -511,6 +511,27 @@ else
     pass=$((pass + 1))
 fi
 
+# Where glibc's scanf and C99 part, and test/hosted.sh cannot hold acc to
+# the host: "1e+" and "1e" are not numbers (7.19.6.2p10: the longest
+# prefix that is a matching sequence, and neither is one), so %f fails on
+# them. Nor is "ab" for %3c, which wants three: that too is a matching
+# failure, and the answer is 0 and not EOF -- EOF is for an item with no
+# characters at all because the input had run out (p10). glibc answers
+# 1 for each of the three.
+runs "scanf where C99 and glibc differ" \
+'#include <stdio.h>
+int main(void) {
+    float f = 5;
+    char c[3];
+    int r = 0;
+
+    if (sscanf("1e+", "%f", &f) == 0 && f == 5) r++;
+    if (sscanf("1e", "%f", &f) == 0 && f == 5) r++;
+    if (sscanf("ab", "%3c", c) == 0) r++;
+
+    return r + 39;
+}'
+
 # exit through a pointer. A call to exit by name is written out at the call
 # and never reaches the library, which is why exit had no member and a
 # pointer to it -- gcc's pr54937 keeps one -- did not link. Every way a
