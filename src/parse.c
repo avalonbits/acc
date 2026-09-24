@@ -3796,6 +3796,36 @@ static void param_name_set(int at, NameRef name)
     }
     param_names[at] = name;
 }
+
+/* Where the run a parameter list is being added as starts, from before its
+ * entry `count` is added: `first` while the run is whole, which is nearly
+ * always. A parameter that is a pointer to a function has a list of its
+ * own, read -- and added -- in the middle of this one, and left there the
+ * run had the other's inside it: `int take(double (*f)(double), long k)`
+ * took f's double for take's first parameter and f for its second, so a
+ * call converted the function to a float and k to a pointer. When that has
+ * happened the run so far is added again past the other one, names and
+ * all, and goes on from there; the copy it leaves behind is not used. */
+/* How many lists with parameters in them param_types has begun, which is
+ * how a list being read knows, with a compare and no call, that one was
+ * read inside it and its run may have been broken. */
+static unsigned nested_lists;
+
+__attribute__((noinline))
+static int params_keep_run(int first, int count)
+{
+    int now = sym_params_begin(), i;
+
+    if (now == first + count)
+        return first;
+    for (i = 0; i < count; i++) {
+        param_name_set(now + i, first + i < param_names_cap
+                                ? param_names[first + i] : NAME_NONE);
+        sym_param_add(sym_param_type(first, i), sym_param_ext(first, i));
+    }
+
+    return now;
+}
 static NameRef decl_full(void);
 
 /* A declarator's direct part, from a `(`, a name or nothing: the
@@ -3890,6 +3920,7 @@ static NameRef decl_full(void)
 static int param_types(int *first, int *count)
 {
     int saved_abstract = abstract_ok, saved_params = in_params, variadic = 0;
+    unsigned seen;
 
     *first = sym_params_begin();
     *count = 0;
@@ -3903,6 +3934,7 @@ static int param_types(int *first, int *count)
     }
     abstract_ok = 1;
     in_params = 1;
+    seen = ++nested_lists;
     for (;;) {
         Type base, type;
         int bx, ext, n;
@@ -3922,6 +3954,10 @@ static int param_types(int *first, int *count)
             type = type_ptr_to(type);
         }
         not_void(type, "a parameter", tok_line);
+        if (nested_lists != seen) {
+            *first = params_keep_run(*first, *count);
+            seen = nested_lists;
+        }
         param_name_set(*first + *count, pname);
         sym_param_add(type, ext);
         (*count)++;
@@ -5939,6 +5975,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
 {
     int fn, declared, params = 1, unnamed = 0, mark, variadic = 0;
     int nparams = 0, argoff, params_first;
+    unsigned seen = nested_lists;
 
     expect(TK_LPAREN, "'('");
 
@@ -6020,6 +6057,10 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                     sym_at(psym)->kind = SYM_LOCAL_CONST;
             } else {
                 unnamed = 1;
+            }
+            if (nested_lists != seen) {
+                params_first = params_keep_run(params_first, nparams);
+                seen = nested_lists;
             }
             sym_param_add(ptype, pext);
 
