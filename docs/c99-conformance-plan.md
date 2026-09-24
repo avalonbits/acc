@@ -135,10 +135,10 @@ Without it most of those tests stop at the link.
 
 | of the 1,127 that agondev passes, so that hold on this machine | first measured | now |
 |---|---|---|
-| acc runs and passes, as written | 784 | **804** |
-| acc runs and passes, builtin names mapped | 1,044 (92.6%) | **1,077 (95.6%)** |
+| acc runs and passes, as written | 784 | **812** |
+| acc runs and passes, builtin names mapped | 1,044 (92.6%) | **1,090 (96.7%)** |
 | runs and gives the wrong answer, or hangs | 40 | **5** |
-| does not build | 43 | 45 |
+| does not build | 43 | 32 |
 
 The 46 that agondev fails as well are the data model's -- a 24-bit `int`,
 a four-byte `double` -- or agondev's, and are not acc's to answer for.
@@ -184,8 +184,16 @@ The 45 that do not build, read one by one:
 | the measuring device's own `-D`, which renames a `static strcmp` | 1 |
 | a bug, since fixed: `exit` had no library member, so a pointer to it did not link (`terminate_me = exit`, pr54937) | 1 |
 
-With that fixed and `sprintf`, `vsprintf` and `vprintf` added, acc passes
-**1,089 of the 1,127**.
+With that fixed and `sprintf`, `vsprintf` and `vprintf` added, acc passed
+1,089 of the 1,127, and with the rest of the hosted library it passes
+**1,090**. None of the 32 that still do not build wants anything of C99:
+
+| what it needs | tests |
+|---|---|
+| GNU builtins: `__builtin_expect`, `_alloca`, `_bswap`, the overflow checks and the rest | 25 |
+| GNU's `alias` attribute, `mempcpy`, and gcc's `link_error` idiom | 4 |
+| refused on purpose: a parameter's array size with a side effect | 2 |
+| the measuring device's own `-D`, which renames a `static strcmp` | 1 |
 
 The other way round, acc passes 13 tests that agondev fails.
 
