@@ -13,3 +13,6 @@ old-acc/test/ref/
 
 # The compiler's identity, worked out at build time.
 src/acc_build.h
+
+# Python's byte-compiled caches, from the test scripts' modules.
+__pycache__/
