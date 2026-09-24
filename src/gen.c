@@ -141,6 +141,7 @@ static int far_base(int disp)
 }
 
 static int  spill_slot(void);
+static void vpush_scratch(Type type, int slot);
 static int  force_reg(Value *val);
 static int  reg_owner(int reg, const Value *except);
 
@@ -570,6 +571,13 @@ static void check_reg_free(int reg)
  * the frame size always was. */
 static int locals_size;          /* the declared locals */
 static int spill_used;           /* the scratch in use right now */
+
+/* Slots handed out that the value stack does not point at yet: see
+ * spill_free_from. */
+#define SPILL_PENDING 4
+
+static struct { int disp, end; } spill_pending[SPILL_PENDING];
+static unsigned char nspill_pending;     /* a byte: vpush tests it */
 static int spill_peak;           /* the most it ever held */
 static int spill_locked;         /* held by something not on the value stack */
 static int frame_patch;          /* where the prologue's frame size is written */
@@ -745,7 +753,7 @@ void vconvert(Type to)
         slot = long_scratch(to);
         materialise_long(slot, to);
         vdrop();
-        vpush(VAL_LOCAL, to, slot);
+        vpush_scratch(to, slot);
 
         return;
     }
@@ -1075,6 +1083,7 @@ void gen_stmt_end(void)
 {
     spill_used = 0;
     spill_locked = 0;
+    nspill_pending = 0;
     nwide_consts = 0;
 }
 
@@ -1846,7 +1855,7 @@ void vneg(void)
         ld_a_ix(slot + ACC_LONG_SIZE - 1);
         out_byte2(0xee, 0x80);          /* xor a, 0x80 */
         ld_ix_a(slot + ACC_LONG_SIZE - 1);
-        vpush(VAL_LOCAL, top->type, slot);
+        vpush_scratch(top->type, slot);
 
         return;
     }
@@ -2399,7 +2408,7 @@ static void convert_int_to_float(void)
             rt_call(unsign ? RT_ULLTOF : RT_LLTOF);
         else
             rt_call(unsign ? RT_ULTOF : RT_LTOF);
-        vpush(VAL_LOCAL, TY_FLOAT, slot);
+        vpush_scratch(TY_FLOAT, slot);
 
         return;
     }
@@ -2410,7 +2419,7 @@ static void convert_int_to_float(void)
     lea_rr_ix(R_DE, slot);
     rt_call(unsign ? RT_UITOF : RT_ITOF);
     vdrop();
-    vpush(VAL_LOCAL, TY_FLOAT, slot);
+    vpush_scratch(TY_FLOAT, slot);
 }
 
 static void convert_float_to_int(Type to)
@@ -2432,7 +2441,7 @@ static void convert_float_to_int(Type to)
     /* A long stays in the frame, where the routine rewrites it in place. */
     if (type_wide(to)) {
         rt_call(type_eight(to) ? RT_FTOLL : RT_FTOL);
-        vpush(VAL_LOCAL, to, slot);
+        vpush_scratch(to, slot);
 
         return;
     }
@@ -2586,7 +2595,7 @@ static void wide_to_slot(uint64_t bits, Type type)
     int slot = spill_slot_of(type_wide_bytes(type));
 
     wide_bytes_at(slot, bits, type_wide_bytes(type));
-    vpush(VAL_LOCAL, type, slot);
+    vpush_scratch(type, slot);
 }
 
 /* One scratch slot as wide as the type, for the left operand of an operation
@@ -2880,7 +2889,7 @@ static void vunary_long(int which, Type type)
     lea_rr_ix(R_HL, slot);
     rt_call(which);
 
-    vpush(VAL_LOCAL, type, slot);
+    vpush_scratch(type, slot);
 }
 
 static void vbinop_long(int op, Type result)
@@ -5475,6 +5484,14 @@ void gen_zero_array(int array, int from, int size)
  * stack saying so: the slot a `?:` parks its middle operand in has to
  * survive the compiling of the third operand, and nothing on the stack
  * points at it while that happens. */
+/*
+ * And the slots handed out that the stack does not point at yet. A slot is
+ * taken before the value is built in it, and building it may need a
+ * register that is holding something -- which is spilled, to a slot of its
+ * own, while the stack still has no word of the first one. -inf < x as an
+ * argument after another comparison spilled the first answer into the
+ * float being negated. So such a slot stays reserved until vpush_scratch
+ * puts it on the stack, or the statement ends. */
 static int spill_free_from(void)
 {
     int floor = spill_locked, i, size;
@@ -5485,11 +5502,14 @@ static int spill_free_from(void)
         if (start >= 0 && start + size > floor)
             floor = start + size;
     }
+    for (i = 0; i < nspill_pending; i++)
+        if (spill_pending[i].end > floor)
+            floor = spill_pending[i].end;
 
     return floor;
 }
 
-static int spill_slot_of(int size)
+static int spill_take(int size)
 {
     int start = spill_free_from();
 
@@ -5500,9 +5520,46 @@ static int spill_slot_of(int size)
     return -(locals_size + spill_used);
 }
 
+/* A slot for a value about to be built in it and then pushed. It is
+ * reserved until it is pushed: see vpush_scratch. */
+static int spill_slot_of(int size)
+{
+    int disp = spill_take(size);
+
+    /* Full: the oldest gives way. It has not happened; four is two more
+     * than any operator here holds at once. */
+    if (nspill_pending == SPILL_PENDING) {
+        memmove(spill_pending, spill_pending + 1,
+                (SPILL_PENDING - 1) * sizeof *spill_pending);
+        nspill_pending--;
+    }
+    spill_pending[nspill_pending].disp = disp;
+    spill_pending[nspill_pending].end = spill_used;
+    nspill_pending++;
+
+    return disp;
+}
+
+/* A slot for a register being spilled, whose value is on the stack the
+ * moment it is stored: nothing to reserve. */
 static int spill_slot(void)
 {
-    return spill_slot_of(ACC_INT_SIZE);
+    return spill_take(ACC_INT_SIZE);
+}
+
+/* A scratch slot's value pushed, and so on the stack, which now says the
+ * slot is taken: its reservation is done with. */
+static void vpush_scratch(Type type, int slot)
+{
+    unsigned char i;
+
+    vpush(VAL_LOCAL, type, slot);
+    for (i = 0; i < nspill_pending; i++)
+        if (spill_pending[i].disp == slot) {
+            spill_pending[i] = spill_pending[--nspill_pending];
+
+            return;
+        }
 }
 
 /* What gen_stmt_end frees, but only as far as nothing still wants it: the
@@ -5539,6 +5596,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
     spill_used = 0;
     spill_peak = 0;
     spill_locked = 0;
+    nspill_pending = 0;
     arrays_size = 0;
     narrays = 0;
     narray_patches = 0;
@@ -6094,7 +6152,7 @@ static void call_to(const Callee *callee, int nargs, int params_first,
         ld_ix_a(slot + 2 * ACC_INT_SIZE);
         out_byte(0x78);                         /* ld a, b */
         ld_ix_a(slot + 7);
-        vpush(VAL_LOCAL, callee->type, slot);
+        vpush_scratch(callee->type, slot);
         (vsp - 1)->ext = (unsigned char) callee->ext;
 
         return;
@@ -6110,7 +6168,7 @@ static void call_to(const Callee *callee, int nargs, int params_first,
         ld_ix_rr(slot, R_HL);
         out_byte(0x7b);                          /* ld a, e */
         ld_ix_a(slot + ACC_INT_SIZE);
-        vpush(VAL_LOCAL, callee->type, slot);
+        vpush_scratch(callee->type, slot);
         (vsp - 1)->ext = (unsigned char) callee->ext;
 
         return;
@@ -6524,7 +6582,7 @@ void vderef(void)
                 inc_hl();
         }
         vdrop();
-        vpush(VAL_LOCAL, to, slot);
+        vpush_scratch(to, slot);
 
         return;
     }
@@ -6668,7 +6726,7 @@ void vstore_indirect(void)
                 inc_hl();
         }
         vdrop();
-        vpush(VAL_LOCAL, to, slot);
+        vpush_scratch(to, slot);
 
         return;
     }
@@ -6717,10 +6775,13 @@ static void vpick(int depth)
     Value *from = vsp - 1 - depth;
 
     if (from->kind == VAL_ACC || from->kind == VAL_REG) {
-        int off = spill_slot();
+        int off;
 
+        /* The register first and the slot after: making the register may
+         * spill another, to a slot the stack does not yet know is taken. */
         if (from->kind == VAL_ACC)
             force_reg(from);
+        off = spill_slot();
         ld_ix_rr(off, from->val);
         from->kind = VAL_LOCAL;
         from->val = off;
@@ -6915,7 +6976,7 @@ static void vsnapshot(void)
 
         materialise_long(slot, type);
         vdrop();
-        vpush(VAL_LOCAL, type, slot);
+        vpush_scratch(type, slot);
 
         return;
     }
@@ -7200,7 +7261,7 @@ void gen_cond_end(int to_stub, int slot, int lock, Type middle,
 
     patch_to_here(to_stub);
     if (type_wide(middle))
-        vpush(VAL_LOCAL, middle, slot);
+        vpush_scratch(middle, slot);
     else
         vpush(VAL_REG, type_promote(middle), R_HL);
     vconvert(result);
@@ -7208,7 +7269,7 @@ void gen_cond_end(int to_stub, int slot, int lock, Type middle,
 
     patch_to_here(done);
     if (type_wide(result))
-        vpush(VAL_LOCAL, result, park);
+        vpush_scratch(result, park);
     else
         vpush(VAL_REG, result, R_HL);
     (vsp - 1)->ext = (unsigned char) ext;
