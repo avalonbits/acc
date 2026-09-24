@@ -75,6 +75,14 @@
 	.global _acc_startup_exit
 	.global _acc_args
 
+; When main returns, or exit sends it back to just after the call, the
+; exit hook runs: a call to whatever the cell named __acc_exit_hook points
+; at, with the status kept on the stack. gen.c points it at the `ret` at the
+; end of the stub, so a program that never asked for one calls a return and
+; carries on. The library points it at the routine that runs atexit's
+; functions and closes the files, when a program calls atexit or opens a
+; file -- which is how C99 7.20.4.3 gets done at the end of a program that
+; has no way to name the end.
 _acc_startup_exit:
 	push	iy			; MOS wants it back as it left it
 	push	hl			; and hands over its command line in it
@@ -91,11 +99,18 @@ _acc_startup_exit:
 	call	0			; [hole] main
 	pop	bc			; the caller takes the arguments back
 	pop	bc
+	push	hl			; the status, while the exit hook runs
+	ld	hl, (0)			; [hole] the hook's cell
+	call	exit_jp_hl		; [hole] and into it
+	pop	hl
 	ld	sp, (0)			; [hole] MOS's stack again
 	ld	a, l
 	out	(0), a
 	pop	iy
 	ret
+exit_jp_hl:
+	jp	(hl)
+	ret				; the hook when there is none
 
 _acc_startup_print:
 	push	iy
@@ -113,6 +128,10 @@ _acc_startup_print:
 	call	0			; [hole] main
 	pop	bc
 	pop	bc
+	push	hl
+	ld	hl, (0)			; [hole] the hook's cell
+	call	print_jp_hl		; [hole] and into it
+	pop	hl
 	ld	sp, (0)			; [hole] MOS's stack again
 	push	hl			; the result, so its bytes can be read
 	ld	iy, 0
@@ -147,6 +166,9 @@ hexnib:
 	add	a, 'A' - '0' - 10
 emit:
 	rst.lil	$10
+	ret
+print_jp_hl:
+	jp	(hl)
 	ret
 
 ; hl holds what MOS passed: the command line past the name that was typed.

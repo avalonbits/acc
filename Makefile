@@ -33,7 +33,7 @@ LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c lib/printf_fl
          lib/exp.c lib/log.c lib/pow.c \
          lib/trig.c lib/atan.c lib/mathhyp.c lib/erf.c lib/gamma.c lib/fma.c \
          lib/file.c \
-         lib/stdlib.c lib/strtol.c lib/errno.c lib/fenv.c lib/locale.c lib/signal.c lib/wctype.c lib/inttypes.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c \
+         lib/stdlib.c lib/atexit.c lib/strtol.c lib/errno.c lib/fenv.c lib/locale.c lib/signal.c lib/wctype.c lib/inttypes.c lib/qsort.c lib/mos.c lib/vdp.c lib/keyboard.c \
          lib/time.c
 LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          include/stdbool.h include/stdlib.h include/time.h \

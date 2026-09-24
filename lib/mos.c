@@ -22,6 +22,7 @@ int acc_rt_putch(int c);
 /* Which call is which, as MOS numbers them. */
 #define MOS_GETKEY   0x00
 #define MOS_DEL      0x05
+#define MOS_EDITLINE 0x09
 #define MOS_REN      0x06
 #define MOS_MKDIR    0x07
 #define MOS_SYSVARS  0x08
@@ -49,6 +50,13 @@ char getch(void)
 void mos_puts(const char *buffer, uint24_t size, char delimiter)
 {
     acc_rt_puts((int) buffer, (int) size, delimiter);
+}
+
+/* A line from the keyboard, with MOS's editing, into `buffer`; what comes
+ * back is the key that ended it -- 13 for return, 27 for escape. */
+uint8_t mos_editline(char *buffer, uint24_t size, uint8_t clear)
+{
+    return (uint8_t) acc_rt_mos(MOS_EDITLINE, (int) buffer, clear, (int) size);
 }
 
 uint8_t mos_del(const char *filename)

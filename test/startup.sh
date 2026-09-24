@@ -70,9 +70,11 @@ def call_table(name):
 def holes(name):
     """Where gen.c says it fills an address in, as offsets into the array."""
     if name == 'startup_exit':
-        return defines('STUB_CLEAR_AT', 'STUB_ARGS_AT', 'STUB_MAIN_AT')
+        return defines('STUB_CLEAR_AT', 'STUB_ARGS_AT', 'STUB_MAIN_AT',
+                       'STUB_HOOK_CALL_AT')
     if name == 'startup_print':
-        return (defines('STUB_CLEAR_AT', 'STUB_ARGS_AT', 'STUB_MAIN_AT')
+        return (defines('STUB_CLEAR_AT', 'STUB_ARGS_AT', 'STUB_MAIN_AT',
+                        'STUB_HOOK_CALL_AT')
                 + call_table('print_calls'))
 
     return (call_table('args_calls')

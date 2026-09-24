@@ -133,6 +133,7 @@ typedef struct {
 int      putch(int c);
 char     getch(void);
 void     mos_puts(const char *buffer, uint24_t size, char delimiter);
+uint8_t  mos_editline(char *buffer, uint24_t size, uint8_t clear);
 
 /* Files and directories. */
 uint8_t  mos_del(const char *filename);

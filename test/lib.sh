@@ -432,12 +432,13 @@ fi
 
 # The same program with the abort taken out: what abort costs is abort, and
 # not the heap that shares a header with it -- nor signal(), whose raise it
-# reaches only through a weak reference, so it comes to a few dozen bytes.
+# reaches only through a weak reference. With _Exit, which it ends
+# through, it comes to about 150 bytes; the heap is kilobytes.
 printf 'static int deep(int n) { if (!n) return 0; return deep(n - 1); }\nint main(void) { deep(4); return 7; }\n' > "$tmp/nab.c"
 "$ACC" -c "$tmp/nab.c" -o "$tmp/nab.o" >/dev/null 2>&1
 "$ACC" "$tmp/nab.o" "$LIB" -o "$tmp/nab.bin" -x >/dev/null 2>&1
 with=$(wc -c < "$tmp/ab.bin"); without=$(wc -c < "$tmp/nab.bin")
-if [ "$((with - without))" -lt 128 ]; then
+if [ "$((with - without))" -lt 256 ]; then
     pass=$((pass + 1))
 else
     printf '  FAIL %-36s abort costs %d bytes, so it brought the heap\n' \
@@ -486,6 +487,29 @@ status_is "or if SIGABRT is ignored" 134 \
 '#include <signal.h>
 #include <stdlib.h>
 int main(void) { signal(SIGABRT, SIG_IGN); abort(); return 1; }'
+
+# A file the program never closed is closed when it ends, so that what it
+# wrote is on the card: one program writes and returns, and the next one,
+# run after it from the same card, reads it back. And _Exit, which skips
+# that, leaves what was held unwritten.
+if emu_available >/dev/null 2>&1; then
+    printf '#include <stdio.h>\nint main(void) { FILE *f = fopen("left.txt", "w"); fputs("left open", f); f = fopen("gone.txt", "w"); fputs("never", f); return 0; }\n' > "$tmp/w1.c"
+    printf '#include <stdio.h>\n#include <stdlib.h>\nint main(void) { FILE *f = fopen("quick.txt", "w"); fputs("dropped", f); _Exit(0); }\n' > "$tmp/w2.c"
+    printf '#include <stdio.h>\n#include <string.h>\nint main(void) { char b[16] = ""; FILE *f = fopen("left.txt", "r"); FILE *g = fopen("quick.txt", "r"); int n = 0; if (f && fgets(b, sizeof b, f) && !strcmp(b, "left open")) n++; if (g && fgetc(g) == EOF) n++; return n == 2 ? 42 : n; }\n' > "$tmp/r1.c"
+    "$ACC" -c "$tmp/w1.c" -o "$tmp/w1.o" -Iinclude >/dev/null 2>&1
+    "$ACC" -c "$tmp/w2.c" -o "$tmp/w2.o" -Iinclude >/dev/null 2>&1
+    "$ACC" -c "$tmp/r1.c" -o "$tmp/r1.o" -Iinclude >/dev/null 2>&1
+    sd=$(emu_card)
+    "$ACC" "$tmp/w1.o" "$LIB" -o "$sd/bin/w1.bin" >/dev/null 2>&1
+    "$ACC" "$tmp/w2.o" "$LIB" -o "$sd/bin/w2.bin" >/dev/null 2>&1
+    "$ACC" "$tmp/r1.o" "$LIB" -o "$sd/bin/r1.bin" -x >/dev/null 2>&1
+    printf 'w1\r\nw2\r\nr1\r\n' > "$sd/autoexec.txt"
+    ACC_EMU_TIMEOUT=60 emu_run "$sd" -z -u >/dev/null 2>&1
+    ok "the end of a program closes its files" "$?" 42
+    rm -rf "$sd"
+else
+    pass=$((pass + 1))
+fi
 
 # exit through a pointer. A call to exit by name is written out at the call
 # and never reaches the library, which is why exit had no member and a

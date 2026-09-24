@@ -12,11 +12,13 @@ void  free(void *p);
 void  qsort(void *base, size_t nmemb, size_t size,
             int (*cmp)(const void *, const void *));
 
-/* Neither returns. exit is emitted at the call rather than called, which
- * is why the library has no member for it; abort is a member, and is the
- * one line that gives exit a status saying the program went wrong. */
+/* None of these returns. exit is emitted at the call rather than called;
+ * the end of the program then runs what atexit registered and closes the
+ * files, through the startup stub's exit hook. _Exit and abort skip that. */
 __attribute__((noreturn)) void exit(int status);
+__attribute__((noreturn)) void _Exit(int status);
 __attribute__((noreturn)) void abort(void);
+int atexit(void (*f)(void));
 
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1

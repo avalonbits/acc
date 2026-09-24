@@ -15,10 +15,27 @@
  * A program that only calls exit never refers to the name, so the link
  * leaves it out, as it does every member nothing asks for. gcc's pr54937
  * takes exit's address this way.
+ *
+ * _Exit is here too, since it is exit with the exit hook taken away.
  */
 #include <stdlib.h>
 
 void exit(int status)
 {
+    exit(status);
+}
+
+/* The end without the exit hook: no atexit functions and no files closed,
+ * which is what C99 7.20.4.4 says _Exit skips. The hook is pointed at a
+ * function that does nothing, and then this is exit. */
+extern void (*__acc_exit_hook)(void);
+
+static void nothing(void)
+{
+}
+
+void _Exit(int status)
+{
+    __acc_exit_hook = nothing;
     exit(status);
 }

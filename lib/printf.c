@@ -42,6 +42,7 @@ static int written;
 FILE  *acc_sink_file;
 int  (*acc_sink_putc)(int, FILE *);
 char  *acc_sink_buf;
+extern int (*__acc_stdout_putc)(int c);
 size_t acc_sink_cap, acc_sink_at;
 
 static void emit(int c)
@@ -55,6 +56,8 @@ static void emit(int c)
         acc_sink_at++;
     } else if (acc_sink_file) {
         acc_sink_putc(c, acc_sink_file);
+    } else if (__acc_stdout_putc) {
+        __acc_stdout_putc(c);           /* stdout is a file: see stdio.c */
     } else {
         acc_rt_putch(c);
     }

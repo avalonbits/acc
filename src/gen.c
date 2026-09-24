@@ -5044,10 +5044,16 @@ static const unsigned char startup_exit[] = {
     0x22, 0x00, 0x00, 0x00,                     /* ld (exit_pc), hl */
     0xcd, 0x00, 0x00, 0x00,                     /* call main */
     0xc1, 0xc1,                                 /* pop bc / pop bc */
+    0xe5,                                       /* push hl: the status */
+    0x2a, 0x00, 0x00, 0x00,                     /* ld hl, (exit hook) */
+    0xcd, 0x00, 0x00, 0x00,                     /* call jp (hl) below */
+    0xe1,                                       /* pop hl */
     0xed, 0x7b, 0x00, 0x00, 0x00,               /* ld sp, (mos_sp) */
     0x7d, 0xd3, 0x00,                           /* ld a, l / out (0), a */
     0xfd, 0xe1,                                 /* pop iy */
-    0xc9
+    0xc9,
+    0xe9,                                       /* jp (hl) */
+    0xc9                                        /* the hook if none */
 };
 
 static const unsigned char startup_print[] = {
@@ -5064,6 +5070,10 @@ static const unsigned char startup_print[] = {
     0x22, 0x00, 0x00, 0x00,                     /* ld (exit_pc), hl */
     0xcd, 0x00, 0x00, 0x00,                     /* call main */
     0xc1, 0xc1,                                 /* pop bc / pop bc */
+    0xe5,                                       /* push hl: the status */
+    0x2a, 0x00, 0x00, 0x00,                     /* ld hl, (exit hook) */
+    0xcd, 0x00, 0x00, 0x00,                     /* call jp (hl) below */
+    0xe1,                                       /* pop hl */
     0xed, 0x7b, 0x00, 0x00, 0x00,               /* ld sp, (mos_sp) */
     0xe5,                                       /* push hl */
     0xfd, 0x21, 0x00, 0x00, 0x00, 0xfd, 0x39,   /* ld iy, 0 / add iy, sp */
@@ -5078,7 +5088,9 @@ static const unsigned char startup_print[] = {
     0xf5, 0x1f, 0x1f, 0x1f, 0x1f,               /* hexbyte: push af / rra x4 */
     0xcd, 0x00, 0x00, 0x00, 0xf1,               /* call hexnib / pop af */
     0xe6, 0x0f, 0xc6, 0x30, 0xfe, 0x3a,         /* hexnib: the digit */
-    0x38, 0x02, 0xc6, 0x07, 0x5b, 0xd7, 0xc9
+    0x38, 0x02, 0xc6, 0x07, 0x5b, 0xd7, 0xc9,
+    0xe9,                                       /* jp (hl) */
+    0xc9                                        /* the hook if none */
 };
 
 /* The three holes in either stub, as offsets from its first byte: the call
@@ -5094,20 +5106,24 @@ static const unsigned char startup_print[] = {
 #define STUB_PCSTORE_AT 33
 #define STUB_MAIN_AT   37
 #define STUB_AFTER_MAIN 40
+/* The exit hook: the load of its cell, and the call to the `jp (hl)` that
+ * each stub has as its last two bytes but one. */
+#define STUB_HOOK_AT   44
+#define STUB_HOOK_CALL_AT 48
 
 /* The stack main runs on, which is not MOS's: see src/rt/startup.s. The stub
  * keeps MOS's stack pointer in a cell behind itself, moves to the top of the
  * program's memory, and puts MOS's back before it returns. */
 #define STUB_MOS_SP_AT      14
 #define STUB_TOP_AT         18
-#define STUB_MOS_SP_BACK_AT 44
+#define STUB_MOS_SP_BACK_AT 54
 
 /* Where the print stub calls within itself, as offsets from its first byte.
  * They are absolute calls, so they have to be filled in once the stub's
  * address is known. */
 static const struct { int at, to; } print_calls[] = {
-    { 0x3b, 0x58 }, { 0x42, 0x58 }, { 0x49, 0x58 },   /* hexbyte */
-    { 0x5e, 0x62 }                                    /* hexnib */
+    { 0x45, 0x62 }, { 0x4c, 0x62 }, { 0x53, 0x62 },   /* hexbyte */
+    { 0x68, 0x6c }                                    /* hexnib */
 };
 
 /* The two cells the stub writes. See gen_startup and gen_exit.
@@ -5119,11 +5135,11 @@ static const struct { int at, to; } print_calls[] = {
  * reason.
  *
  * The names are acc's own. A program that spells one of them means this. */
-static const char *const exit_cell_name[2] = {
-    "__acc_exit_sp", "__acc_exit_pc"
+static const char *const exit_cell_name[3] = {
+    "__acc_exit_sp", "__acc_exit_pc", "__acc_exit_hook"
 };
 
-static int exit_cell_syms[2] = { SYM_NONE, SYM_NONE };
+static int exit_cell_syms[3] = { SYM_NONE, SYM_NONE, SYM_NONE };
 
 static int exit_cell(int which)
 {
@@ -5189,6 +5205,19 @@ void gen_startup(int by_exit, const char *program)
     sym_at(exit_cell(0))->val = out_here() - 2 * ACC_INT_SIZE;
     sym_at(exit_cell(1))->val = out_here() - ACC_INT_SIZE;
 
+    /* And the exit hook: what the stub calls on the way out, whether main
+     * returned or exit sent it there -- see src/rt/startup.s. It starts at
+     * the `ret` that ends the stub, and the library's atexit and fopen point
+     * it at the routine that runs atexit's functions and closes the files.
+     * A name, like the other two, so that the library can reach it. */
+    out_reloc(out_here());
+    out_word24(base + n - 1);
+    sym_at(exit_cell(2))->val = out_here() - ACC_INT_SIZE;
+    out_reloc(base + STUB_HOOK_AT);
+    out_patch24(base + STUB_HOOK_AT, out_here() - ACC_INT_SIZE);
+    out_reloc(base + STUB_HOOK_CALL_AT);
+    out_patch24(base + STUB_HOOK_CALL_AT, base + n - 2);
+
     /* And a third, for MOS's stack pointer while main runs on its own at the
      * top of the program's memory -- which is where the heap already leaves
      * room for it. This one only the stub reads, so it needs no name. */
@@ -5211,6 +5240,7 @@ void gen_startup(int by_exit, const char *program)
     }
     sym_set_flags(exit_cell(0), SYMF_DEFINED);
     sym_set_flags(exit_cell(1), SYMF_DEFINED);
+    sym_set_flags(exit_cell(2), SYMF_DEFINED);
     fixup_add(exit_cell(0), base + STUB_SP_AT);
     fixup_add(exit_cell(1), base + STUB_PCSTORE_AT);
     out_reloc(base + STUB_PC_AT);

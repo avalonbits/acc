@@ -20,8 +20,8 @@
  *
  * It ends with 134, which is what a shell reports for a program a SIGABRT
  * ended -- 128 and the signal's six, and what raise does for any signal
- * with no handler. atexit is not run and no stream is flushed, which is
- * what C asks for.
+ * with no handler. It ends through _Exit, so that atexit's functions are
+ * not run, as C asks; nor are the files closed, which C leaves open.
  */
 #include <signal.h>
 #include <stdlib.h>
@@ -38,5 +38,5 @@ void abort(void)
     if (raise_at)
         if (*raise_at)
             (*raise_at)(SIGABRT);
-    exit(134);
+    _Exit(134);
 }

@@ -44,7 +44,7 @@ int raise(int sig)
     if (handler == SIG_IGN)
         return 0;
     if (handler == SIG_DFL)
-        exit(128 + sig);
+        _Exit(128 + sig);
     handlers[sig] = SIG_DFL;
     handler(sig);
 

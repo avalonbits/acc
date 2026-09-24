@@ -44,11 +44,14 @@ for src in "${srcs[@]}"; do
     name=$(basename "$src" .c)
 
     # The reference, from the host.
-    if ! "$CC" -std=c99 -w -o "$tmp/host" "$src" -lm; then
+    if ! "$CC" -std=c99 -w -o "$tmp/host" "$src" -lm 2> "$tmp/ccerr"; then
         printf '  FAIL %-12s the host build failed\n' "$name"
+        sed 's/^/         /' "$tmp/ccerr"
         fail=$((fail + 1)); continue
     fi
-    LC_ALL=C "$tmp/host" > "$tmp/want" 2>&1
+    # In a directory of its own, since some of them make files.
+    mkdir -p "$tmp/run"
+    (cd "$tmp/run" && LC_ALL=C "$tmp/host" > "$tmp/want" 2>&1)
 
     # And the same program on the Agon.
     if ! err=$("$ACC" -c "$src" -o "$tmp/p.o" -Iinclude 2>&1) \
