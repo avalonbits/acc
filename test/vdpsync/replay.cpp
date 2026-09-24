@@ -16,7 +16,9 @@
 //
 // The link is the emulator's: rust_glue.cpp in fab-agon-emulator exposes
 // the eZ80 serial port as a pair of queues, and this drives them as MOS
-// would.
+// would -- including its flow control. The VDP's input queue drops what
+// arrives past its limit without a word, so each byte waits for clear to
+// send, as the eZ80's UART does.
 
 #include <atomic>
 #include <chrono>
@@ -32,12 +34,20 @@
 extern "C" void vdp_setup();
 extern "C" void vdp_shutdown();
 extern "C" void z80_send_to_vdp(uint8_t b);
+extern "C" bool z80_uart0_is_cts();
 extern "C" bool z80_recv_from_vdp(uint8_t *out);
 extern "C" void setVdpDebugLogging(bool state);
 extern "C" void signal_vblank();
 
 static std::atomic<bool> pumping{false};
 static std::thread pump;
+
+static void send(uint8_t b)
+{
+    while (!z80_uart0_is_cts())
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    z80_send_to_vdp(b);
+}
 
 // The general poll's answer carrying n, or -1 when none came in time. Other
 // packets -- a mode change, a pixel read -- are passed over.
@@ -84,10 +94,10 @@ static bool in_step(int timeout_ms)
 {
     int n = (poll_number = (poll_number + 1) % 100) + 1;
 
-    z80_send_to_vdp(23);
-    z80_send_to_vdp(0);
-    z80_send_to_vdp(0x80);
-    z80_send_to_vdp((uint8_t) n);
+    send(23);
+    send(0);
+    send(0x80);
+    send((uint8_t) n);
 
     for (;;) {
         int got = await_poll(timeout_ms);
@@ -127,10 +137,11 @@ int main(int argc, char **argv)
         _exit(1);
     }
 
-    char line[8192];
+    char *line = nullptr;
+    size_t cap = 0;
     int pass = 0, fail = 0;
 
-    while (fgets(line, sizeof line, f)) {
+    while (getline(&line, &cap, f) > 0) {
         if (line[0] == '!')
             continue;           // CALL_UNREPLAYED: see capture.h
         char *colon = strstr(line, "): ");
@@ -145,7 +156,7 @@ int main(int argc, char **argv)
         int used;
 
         while (sscanf(p, " %x%n", &v, &used) == 1) {
-            z80_send_to_vdp((uint8_t) v);
+            send((uint8_t) v);
             p += used;
         }
         if (in_step(5000)) {
@@ -155,7 +166,7 @@ int main(int argc, char **argv)
         printf("  FAIL %s: the VDP was out of step after it\n", name.c_str());
         fail++;
         for (int i = 0; i < 64; i++)
-            z80_send_to_vdp(0);
+            send(0);
         in_step(5000);
     }
 

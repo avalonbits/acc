@@ -1,0 +1,42 @@
+status 1 0
+status 31 255
+volume 1 64
+system volume 255 50
+system volume 255 50
+adsr 1 1
+status 1 8
+stepped 1 1
+status 1 24
+no adsr 1 1
+no stepped 1 1
+status 1 0
+enable 3 1
+status 3 0
+disable 3 1
+enable 40 0
+load 255 1
+sample frequency 255 1
+sample frequency 247 0
+repeat start 255 1
+repeat length 255 1
+from buffer 0 1
+from buffer 0 0
+from buffer rate 1 1
+buffer frequency 2 1
+buffer repeat start 2 1
+buffer repeat length 2 1
+header 254 1
+set sample 1 1
+set sample 1 0
+waveform 2 1
+waveform 2 1
+duty 0 1
+duty 1 0
+rate 0 1
+system rate 255 1
+clear 254 0
+clear 236 1
+play 2 1
+play 2 0
+silence 2 0
+reset 2 1
