@@ -11,6 +11,16 @@ void  free(void *p);
 
 void  qsort(void *base, size_t nmemb, size_t size,
             int (*cmp)(const void *, const void *));
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
+              int (*cmp)(const void *, const void *));
+
+#define RAND_MAX 32767
+
+int   rand(void);
+void  srand(unsigned seed);
+
+char *getenv(const char *name);
+int   system(const char *command);
 
 /* None of these returns. exit is emitted at the call rather than called;
  * the end of the program then runs what atexit registered and closes the

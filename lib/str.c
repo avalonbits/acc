@@ -138,3 +138,76 @@ char *strstr(const char *hay, const char *needle)
 
     return NULL;
 }
+
+/* How many of s's first characters are all in `accept`, and how many are
+ * all not in `reject`. */
+size_t strspn(const char *s, const char *accept)
+{
+    size_t n = 0;
+
+    while (s[n] && strchr(accept, s[n]))
+        n++;
+
+    return n;
+}
+
+size_t strcspn(const char *s, const char *reject)
+{
+    size_t n = 0;
+
+    while (s[n] && !strchr(reject, s[n]))
+        n++;
+
+    return n;
+}
+
+char *strpbrk(const char *s, const char *accept)
+{
+    s += strcspn(s, accept);
+
+    return *s ? (char *) s : NULL;
+}
+
+/* The next token of `s`, or of where the last call stopped when `s` is
+ * null, with the delimiter after it overwritten by a null. */
+char *strtok(char *s, const char *delim)
+{
+    static char *next;
+    char *end;
+
+    if (!s)
+        s = next;
+    if (!s)
+        return NULL;
+    s += strspn(s, delim);
+    if (!*s) {
+        next = NULL;
+
+        return NULL;
+    }
+    end = s + strcspn(s, delim);
+    if (*end)
+        *end++ = 0;
+    else
+        end = NULL;
+    next = end;
+
+    return s;
+}
+
+/* The C locale collates by the values of the bytes, as strcmp does, so a
+ * transformed string is the string itself. */
+int strcoll(const char *a, const char *b)
+{
+    return strcmp(a, b);
+}
+
+size_t strxfrm(char *to, const char *from, size_t n)
+{
+    size_t len = strlen(from);
+
+    if (len < n)
+        memcpy(to, from, len + 1);
+
+    return len;
+}

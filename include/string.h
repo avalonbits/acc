@@ -20,6 +20,12 @@ int    strncmp(const char *a, const char *b, size_t n);
 char  *strncpy(char *to, const char *from, size_t n);
 char  *strrchr(const char *s, int c);
 char  *strstr(const char *hay, const char *needle);
+size_t strspn(const char *s, const char *accept);
+size_t strcspn(const char *s, const char *reject);
+char  *strpbrk(const char *s, const char *accept);
+char  *strtok(char *s, const char *delim);
+int    strcoll(const char *a, const char *b);
+size_t strxfrm(char *to, const char *from, size_t n);
 
 char  *strerror(int n);
 

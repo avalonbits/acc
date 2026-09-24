@@ -532,6 +532,32 @@ int main(void) {
     return r + 39;
 }'
 
+# rand is C99's example generator, whose first numbers from the seed 1 are
+# known; srand starts it again where it says. getenv has no environment to
+# look in; system has MOS's command line to hand a command to.
+runs "rand, srand, getenv and system" \
+'#include <stdlib.h>
+int main(void) {
+    int r = 0, i, a, b, in_range = 1;
+
+    if (rand() == 16838 && rand() == 5758 && rand() == 10113) r++;
+    srand(7);
+    a = rand();
+    srand(7);
+    b = rand();
+    if (a == b) r++;
+    for (i = 0; i < 200; i++) {
+        int v = rand();
+
+        if (v < 0 || v > RAND_MAX) in_range = 0;
+    }
+    if (in_range && RAND_MAX >= 32767) r++;
+    if (getenv("PATH") == NULL) r++;
+    if (system(NULL) != 0 && system("cd /") == 0) r++;
+
+    return r + 37;
+}'
+
 # exit through a pointer. A call to exit by name is written out at the call
 # and never reaches the library, which is why exit had no member and a
 # pointer to it -- gcc's pr54937 keeps one -- did not link. Every way a
