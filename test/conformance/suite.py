@@ -8,6 +8,7 @@
 #   suite.py compare  <manifest> <observed>          strict both ways
 #   suite.py update   <manifest> <observed>          take a run as the manifest
 #   suite.py board    <manifest>                     the scoreboard, by clause
+#   suite.py reclassify <manifest> <tests>           name what `unknown` rows need
 #
 # <work> holds what the import found, a line per test in each file, the
 # test's name first:
@@ -67,6 +68,13 @@ def needs(text, census_line, message):
     if m and re.search(r"takes 0 arguments, and this call gives it", message):
         return 'undefined-call'
     if GNU.search(code) or GNU.search(message):
+        return 'gnu-extensions'
+
+    # gcc's predefined macros -- __SIZE_MAX__, __CHAR16_TYPE__,
+    # __GNUC_STDC_INLINE__ -- which a program that names them expects from
+    # gcc and no C99 compiler has to give.
+    if re.search(r"'__[A-Z][A-Z0-9_]*__' is not declared|#error __GNUC", message) \
+       or re.search(r'\b__[A-Z][A-Z0-9_]*_TYPE__\b', code):
         return 'gnu-extensions'
 
     return 'unknown'
@@ -208,6 +216,25 @@ def update(path, obs_path):
         f.writelines(out)
 
 
+def reclassify(path, tests):
+    """Rows waiting on `unknown`, looked at again with what needs() knows
+    now: their message is kept in the row for this."""
+    with open(path) as f:
+        head = [l for l in f if l.startswith('#')]
+    rows = load_manifest(path)
+    out = list(head)
+    for name, row in rows.items():
+        if row['status'] == 'needs' and row['detail'].startswith('unknown'):
+            message = row['detail'][len('unknown '):]
+            feature = needs(source_text(tests, name), row['census'], message)
+            if feature != 'unknown':
+                row['detail'] = feature
+        out.append('\t'.join([name, row['status'], row['detail'],
+                              row['clauses'], row['census']]) + '\n')
+    with open(path, 'w') as f:
+        f.writelines(out)
+
+
 def board(path):
     rows = load_manifest(path)
     by_clause = {}
@@ -258,6 +285,8 @@ def main():
         update(sys.argv[2], sys.argv[3])
     elif cmd == 'board':
         board(sys.argv[2])
+    elif cmd == 'reclassify':
+        reclassify(sys.argv[2], sys.argv[3])
     elif cmd == 'needs':
         with open(sys.argv[2], errors='replace') as f:
             text = f.read()
