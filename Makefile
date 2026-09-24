@@ -39,7 +39,7 @@ LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          include/stdbool.h include/stdlib.h include/time.h \
          include/ctype.h include/assert.h include/math.h \
          include/errno.h include/limits.h include/fenv.h include/locale.h include/setjmp.h \
-         include/signal.h include/wctype.h include/inttypes.h \
+         include/signal.h include/wctype.h include/inttypes.h include/tgmath.h \
          include/agon/mos.h include/agon/vdp.h include/agon/keyboard.h
 LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 
