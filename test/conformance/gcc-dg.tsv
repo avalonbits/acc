@@ -3291,7 +3291,7 @@ init-bad-7	excluded	not C99: incompatible pointer types initializing 'int *' wit
 init-bad-7a	fail	accepts	6.5.2.1 6.5.5 6.5.16.1 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.2.1:subscript 6.5.5:multiply 6.7.2.1:struct 6.7.2:char 6.7.2:int 6.7.8:braced-initializer
 init-bad-8	pass	rejected	6.5.2.3 6.5.16.1 6.5.17 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.17:comma 6.5.2.3:member 6.7.2.1:struct 6.7.2:int 6.7.2:void 6.7.8:braced-initializer 6.7.8:designator
 init-bad-9	pass	rejected	6.5.5 6.5.16.1 6.7.2 6.7.2.1 6.7.8	6.5.16.1:assign 6.5.5:multiply 6.7.2.1:struct 6.7.2:void 6.7.8:braced-initializer
-init-compare-1	needs	unknown one address not yet known in each initial value, at most	6.5.3.2 6.5.9 6.5.16.1 6.5.17 6.7.1 6.7.2	6.5.16.1:assign 6.5.17:comma 6.5.3.2:address 6.5.9:equality 6.7.1:extern 6.7.2:int
+init-compare-1	needs	constant-initializer	6.5.3.2 6.5.9 6.5.16.1 6.5.17 6.7.1 6.7.2	6.5.16.1:assign 6.5.17:comma 6.5.3.2:address 6.5.9:equality 6.7.1:extern 6.7.2:int
 init-desig-obs-1	excluded	not C99: clang refuses it at line 9, which it does not name	6.5.2.1 6.5.2.3 6.5.16.1 6.7.2 6.7.2.1 6.7.5.2 6.7.8 6.8.1	6.5.16.1:assign 6.5.2.1:subscript 6.5.2.3:member 6.7.2.1:struct 6.7.2:int 6.7.5.2:multidimensional 6.7.8:braced-initializer 6.7.8:designator 6.8.1:label
 init-desig-obs-2	excluded	not C99: use of GNU old-style field designator extension [-Werror,-Wgnu-designator]	6.5.2.1 6.5.2.3 6.5.16.1 6.7.2 6.7.2.1 6.7.8 6.8.1	6.5.16.1:assign 6.5.2.1:subscript 6.5.2.3:member 6.7.2.1:struct 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator 6.8.1:label
 init-desig-obs-3	pass	rejected	6.5.2.1 6.5.2.3 6.5.16.1 6.7.2 6.7.2.1 6.7.8 6.8.1	6.5.16.1:assign 6.5.2.1:subscript 6.5.2.3:member 6.7.2.1:struct 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator 6.8.1:label
