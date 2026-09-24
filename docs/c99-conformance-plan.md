@@ -515,26 +515,50 @@ done, and then what is next.
     divided denormal floats wrongly, a scratch slot could be spilled over
     before it was used, and an object with no text could not be linked.
 
+14. **The language gaps the refusals were hiding**, eleven of them: see
+    "What acc can run today" above.
+
+15. **The suite itself, over gcc.c-torture/execute.** What the sections
+    above describe, built:
+    - `test/conformance/sources.txt` pins gcc at 56de4652dbfc, with the
+      filter flags and the `-D` mapping of builtin spellings.
+    - `test/conformance/import.sh` fetches the tests -- a shallow, sparse
+      fetch of the pinned revision, and of `gcc.dg` beside it, which some of
+      them include -- into a cache git ignores, and then takes them through
+      the filter, agondev's build run on the emulator as the reference
+      (with `refkit/`, which prints the result and returns to MOS), the
+      census (`census.py`) and acc, and writes the manifest,
+      `test/conformance/gcc-torture.tsv`.
+    - `test/conformance.sh` compiles and runs every row that is not
+      excluded, strict both ways, and prints the scoreboard by clause.
+      `--update` takes a run as the manifest; `--check` is what `make test`
+      runs, and it skips where the tests have not been imported.
+    - The programs run a batch to a boot, eight emulators at once
+      (`batch.sh`): MOS 3 stops an autoexec at the first program that
+      fails, so a boot runs until one does, and the next starts after it.
+      A crash or a hang ends a boot early rather than at its timeout.
+
+    The first import: 1,698 files, 1,303 strict C99, 1,207 right under
+    agondev -- more than the 1,127 of the scripts before it, because the
+    reference build now has the builtin mapping too -- and acc passes 1,090
+    of those. The other 117 wait on GNU extensions (63), K&R definitions
+    (26), long double (10), complex (7), a side effect in a parameter's
+    array size (3), the mapping's own collision with a test's static
+    strcmp (1) and an undefined call (1), or give a wrong answer for a GNU
+    attribute acc ignores or an order C leaves unspecified (6). Every
+    clause but 6.9.1 has tests that pass; 6.9.1's 26 are the K&R ones.
+    A run takes about half a minute; an import about twelve.
+
 **Next, in this order:**
 
-1. **gcc.c-torture/execute, all of it that the filter takes.**
-   - Build the importer, filter, census, manifest, runner and scoreboard
-     around it. The filter and the compile pass already exist as a script;
-     what is missing is everything that turns a count into a scoreboard.
-   - Fetched and not vendored: it is GPL-3 and acc is LGPL-2.1.
-   - Expect 1,200 compiling on the first run, and the scoreboard to say
-     which clauses the other 103 were covering.
-   - And how many run and give the right answer, which has so far been
-     measured by scripts outside the repository: 1,090 of the 1,127 that
-     hold on this machine. The runner is what makes that number stay true.
-2. **c-testsuite, all 220.**
+1. **c-testsuite, all 220.**
    - ISC and MIT, so it can be vendored with its notices.
-3. **The rest of `gcc.dg`, not just `c99-*`.**
+2. **The rest of `gcc.dg`, not just `c99-*`.**
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.
-4. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
-5. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
+3. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
+4. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
    `test/fuzz/reduce.py` as the reducer.
 
 **Not being done, and why:**
@@ -623,9 +647,8 @@ board for good rather than putting them on it:
    built, because agondev cannot compile it and a test acc alone can run is
    worth much less than one both compilers answer.
 
-What is still open is the same thing that was open at the start, and it is
-now the only thing between this plan and a scoreboard: **none of the
-machinery exists yet.** The filter, the compile pass and the count are a
-shell script and an awk line. The census, the manifest, the clause mapping,
-the runner and the scoreboard are all still to build, and until they are,
-what this document reports is a number and not a measurement of C99.
+What was open at the start, the machinery, is built for the first source:
+the filter, the census, the manifest, the clause mapping, the runner and
+the scoreboard. What is still open is the rest of the sources, in the
+order above -- and with them the part that no test so far covers, that
+acc refuses what C99 forbids.

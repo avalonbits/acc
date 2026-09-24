@@ -81,9 +81,14 @@ emu_run() {
     # cannot also stop the emulator through port 0, since what it printed
     # is still on its way to the VDP when the emulator goes. Without this
     # such a program runs out the whole timeout.
-    if [ -n "${ACC_EMU_PROMPT:-}" ]; then
+    #
+    # With ACC_EMU_WATCH set to a command, stopped as soon as that command,
+    # given the console so far, succeeds: test/conformance/batch.sh stops a
+    # boot that has crashed or hung rather than waiting out the timeout.
+    if [ -n "${ACC_EMU_PROMPT:-}${ACC_EMU_WATCH:-}" ]; then
         while kill -0 "$emu" 2>/dev/null; do
-            if grep -q '^/ \*' "$cap"; then
+            if { [ -n "${ACC_EMU_PROMPT:-}" ] && grep -q '^/ \*' "$cap"; } \
+               || { [ -n "${ACC_EMU_WATCH:-}" ] && $ACC_EMU_WATCH "$cap"; }; then
                 kill "$emu" 2>/dev/null
                 wait "$emu" 2>/dev/null
                 emu=

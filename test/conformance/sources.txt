@@ -1,0 +1,29 @@
+# The test suites the conformance suite is imported from, each pinned to a
+# revision so that a result can be reproduced: the same revision, filter
+# flags and mapping give the same manifest. See docs/c99-conformance-plan.md.
+#
+# One source per `source` line:
+#
+#   source <name> <git url> <revision> <directory of tests in it>
+#
+# and then the lines that belong to it:
+#
+#   filter  what agondev's clang is given to decide that a test is strict
+#           C99; one that it refuses is excluded, with clang's reason.
+#           C99 permits what it deprecates, so old-style definitions are
+#           in; what it removed -- implicit int, implicit declarations --
+#           is out. Changing these changes every result: see the plan's
+#           section on what "compiles with C99" has to mean.
+#   also    a directory fetched beside the tests without being tests: what
+#           some of them #include from elsewhere in the source.
+#   define  -D options both compilers are given. gcc's tests spell library
+#           calls as builtins -- __builtin_memcpy -- which name functions
+#           C99 has; these map the spelling to the function, and are a
+#           measuring device rather than a change to what is compiled.
+#
+# Fetched, not vendored: gcc's tests are GPL-3 and acc is LGPL-2.1.
+
+source gcc-torture https://github.com/gcc-mirror/gcc.git 56de4652dbfc3a79ee4946f0274aba115bd83ccb gcc/testsuite/gcc.c-torture/execute
+also gcc/testsuite/gcc.dg
+filter -std=c99 -pedantic-errors -Werror=implicit-function-declaration -Wno-deprecated-non-prototype -Wno-strict-prototypes
+define -D__builtin_abort=abort -D__builtin_memset=memset -D__builtin_memcpy=memcpy -D__builtin_memmove=memmove -D__builtin_strcmp=strcmp -D__builtin_memcmp=memcmp -D__builtin_printf=printf -D__builtin_strlen=strlen -D__builtin_malloc=malloc -D__builtin_sprintf=sprintf -D__builtin_strcpy=strcpy -D__builtin_strncpy=strncpy -D__builtin_abs=abs -D__builtin_snprintf=snprintf -D__builtin_copysign=copysign -D__builtin_exit=exit -D__builtin_free=free -D__builtin_strchr=strchr -D__builtin_strrchr=strrchr -D__builtin_strcat=strcat -D__builtin_labs=labs -D__builtin_fabs=fabs

@@ -16,3 +16,6 @@ src/acc_build.h
 
 # Python's byte-compiled caches, from the test scripts' modules.
 __pycache__/
+
+# The conformance suite's imported tests: fetched, never committed.
+test/conformance/cache/
