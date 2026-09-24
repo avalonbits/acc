@@ -39,9 +39,8 @@ of arguments, and the conditionals -- `#if` and `#elif` on an expression,
 with `defined`, as well as `#ifdef`, `#ifndef`, `#else` and `#endif` --
 `#error`, `#pragma` and `#line`, and `__FILE__` and `__LINE__`. That is the
 whole of it. What is not here is `long double`, because libagon has no
-arithmetic for a double at all and half a type is worse than none; nor wide
-characters and strings, `_Complex`, or function definitions written the way
-K&R wrote them.
+arithmetic for a double at all and half a type is worse than none; nor
+`_Complex`, or function definitions written the way K&R wrote them.
 
 One `.c` file in, whatever it includes, a runnable MOS binary out.
 `* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value, and nothing
@@ -65,10 +64,23 @@ source says so and does nothing.
     $ bin/acc t.o bin/libc.a -o t.bin
 
 The library that comes with it is `bin/libc.a`, written in C and compiled by
-acc: `<string.h>`, `<stdlib.h>` with a heap and `qsort`, `<stdio.h>` with
-`printf`, `<stddef.h>`, `<stdint.h>`, `<stdbool.h>`, `<time.h>`, and
-`<agon/mos.h>`, `<agon/vdp.h>` and `<agon/keyboard.h>` for the machine
-itself. A program's `main` is handed the command line as `argc` and `argv`.
+acc. It has every header of C99's hosted library, `<stdio.h>` to `<wchar.h>`
+and `<tgmath.h>`, checked against glibc's answers by `test/hosted.sh`.
+
+For the machine itself it has agondev's headers, name for name and byte for
+byte -- `<agon/mos.h>`, `<agon/vdp.h>`, `<agon/keyboard.h>`, `<agon/gpio.h>`,
+`<agon/joystick.h>`, `<agon/timer.h>` and `<agon/vdp_vdu.h>`, with
+`<ez80f92.h>`'s port numbers read and written through `io_in` and `io_out`
+-- and past them, the rest of what MOS 3.0.2 and VDP 2.16.0
+take that libagon has no call for: the tile engine, every buffered command,
+the audio system's volume and rates, and more. Where libagon sends bytes
+the VDP does not read that way, acc sends what the VDP reads.
+`test/agonlib.sh` compares each call's bytes with libagon's and plays them
+into the VDP's own firmware to check that each command is exactly as long
+as the VDP takes it to be; `test/vdpreal.sh` runs programs against the real
+VDP and reads back what they drew.
+
+A program's `main` is handed the command line as `argc` and `argv`.
 
 ## Why not tinycc
 
