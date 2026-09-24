@@ -72,5 +72,28 @@ int main(void)
     errno = 0;
     printf("ilogbf(0) %d %s\n", ilogbf(va) == FP_ILOGB0, err());
 
+    /* The quiet comparisons, over a NaN, the infinities and numbers, with
+     * an argument that counts how often it is evaluated. */
+    {
+        static const float xs[] = { 1.0f, 2.0f, -1.0f, 0.0f };
+        float vals[6];
+        int i, j, n = 0;
+
+        vals[0] = 1.0f; vals[1] = 2.0f; vals[2] = -0.0f;
+        vals[3] = inf; vals[4] = -inf; vals[5] = nan;
+        for (i = 0; i < 6; i++)
+            for (j = 0; j < 6; j++)
+                printf("%d%d%d%d%d%d ", isgreater(vals[i], vals[j]),
+                       isgreaterequal(vals[i], vals[j]), isless(vals[i], vals[j]),
+                       islessequal(vals[i], vals[j]), islessgreater(vals[i], vals[j]),
+                       isunordered(vals[i], vals[j]));
+        printf("\n");
+        i = 0;
+        printf("once %d", isgreater(xs[i++], xs[n++]));
+        printf(" %d %d\n", i, n);
+        printf("float_t %d double_t %d\n", (int) sizeof (float_t) >= (int) sizeof (float),
+               (int) sizeof (double_t) >= (int) sizeof (float));
+    }
+
     return 0;
 }

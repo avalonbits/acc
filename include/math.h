@@ -17,6 +17,10 @@
  * that needs more than that needs a wider float than this machine has.
  */
 
+/* FLT_EVAL_METHOD is 0: each type is evaluated as itself. */
+typedef float  float_t;
+typedef double double_t;
+
 /* The classification macros, which C99 asks for by these names. Written
  * against functions rather than as bit tests in the macro, so that each is
  * evaluated once and the argument may be any expression. */
@@ -35,6 +39,23 @@ int __acc_signbit(double x);
 #define isinf(x)      (fpclassify(x) == FP_INFINITE)
 #define isfinite(x)   (fpclassify(x) > FP_INFINITE)
 #define isnormal(x)   (fpclassify(x) == FP_NORMAL)
+
+/* The comparisons that are false, and quietly so, when either side is a
+ * NaN. The arithmetic's own comparisons already are; these are functions
+ * so that each argument is evaluated once. */
+int __acc_isgreater(double x, double y);
+int __acc_isgreaterequal(double x, double y);
+int __acc_isless(double x, double y);
+int __acc_islessequal(double x, double y);
+int __acc_islessgreater(double x, double y);
+int __acc_isunordered(double x, double y);
+
+#define isgreater(x, y)      __acc_isgreater(x, y)
+#define isgreaterequal(x, y) __acc_isgreaterequal(x, y)
+#define isless(x, y)         __acc_isless(x, y)
+#define islessequal(x, y)    __acc_islessequal(x, y)
+#define islessgreater(x, y)  __acc_islessgreater(x, y)
+#define isunordered(x, y)    __acc_isunordered(x, y)
 
 /* Infinity and not-a-number, as the bit patterns IEEE 754 gives them.
  *

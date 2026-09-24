@@ -92,6 +92,17 @@ int __acc_signbit(double x)
     return (int) (bits(x) >> 31);
 }
 
+int __acc_isgreater(double x, double y)      { return x > y; }
+int __acc_isgreaterequal(double x, double y) { return x >= y; }
+int __acc_isless(double x, double y)         { return x < y; }
+int __acc_islessequal(double x, double y)    { return x <= y; }
+int __acc_islessgreater(double x, double y)  { return x < y || x > y; }
+
+int __acc_isunordered(double x, double y)
+{
+    return __acc_fpclassify(x) == FP_NAN || __acc_fpclassify(y) == FP_NAN;
+}
+
 double fabs(double x)
 {
     return from_bits(bits(x) & MAG_MASK);
