@@ -48,10 +48,22 @@ a test's first error:
 
 - **Language, required by C99:** everything a freestanding
   implementation must accept has been probed and is there, apart from the
-  deviations below. The last to come in were digraphs (6.4.6), universal
-  character names (6.4.3), wide literals (6.4.4.4, 6.4.5), `_Pragma`
-  (6.10.9), and `__STDC_VERSION__` and `__STDC_HOSTED__` (6.10.8).
-  `__STDC_HOSTED__` is 0; see the hosted library below.
+  deviations below. This said the same once before and was wrong: reading
+  the torture suite's refusals one at a time, rather than by their first
+  error, found eleven more, now built -- a name in scope in its own
+  initialiser (6.2.1p7), a storage class after the type (6.11.5), a
+  subscript after `&` of a compound literal, a parenthesised object that
+  can be assigned to (6.5.1p5), a long constant where an int one is
+  wanted (6.6p6), run-time address arithmetic in a function, a macro
+  parameter called `L` next to `L'1'`, `&(p + 1)->m` as an address
+  constant, a variable used and then given its value, every dimension of
+  a VLA and a typedef of one (6.7.5.2), and a parameter that is a
+  function pointer, whose own parameter list was mixed into the outer
+  function's -- the one of them that was compiled silently wrong. Before
+  those, the last to come in were digraphs (6.4.6), universal character
+  names (6.4.3), wide literals (6.4.4.4, 6.4.5), `_Pragma` (6.10.9), and
+  `__STDC_VERSION__` and `__STDC_HOSTED__` (6.10.8). `__STDC_HOSTED__` is
+  0; see the hosted library below.
 - **Language, out by decision:** old-style function definitions and `long
   double` -- see the decisions at the end. C99 still requires both, so
   while they are out acc is a compiler of C99 programs and not a conforming
@@ -113,12 +125,12 @@ after each piece of it. `gcc.c-torture/execute`, 1,698 files:
 | in the directory | 1,698 |
 | strict C99 for this target, under agondev | **1,303** |
 | acc compiled when this plan was first written | 1,049 (80.5%) |
-| acc compiled at the last measurement | 1,173 (90.0%) |
-| acc compiles now | **1,171** (89.9%) |
-| acc refuses | 132 |
+| acc compiled after the hosted library | 1,178 (90.4%) |
+| acc compiles now, with the language gaps above | **1,200** (92.1%) |
+| acc refuses | 103 |
 
-The two fewer are 970217-1 and pr77767, which acc used to compile wrongly
-and now refuses: a parameter's array size with a side effect.
+970217-1 and pr22061-2 are refused on purpose: a parameter's array size
+with a side effect, which acc would otherwise have compiled wrongly.
 
 ### Compiled is not run
 
@@ -211,41 +223,28 @@ attributed after the fact:
 | the frame-size ceiling, taken off | +6 |
 | `&` of a string literal, and of a byte inside one | +1 |
 
-What is left, by what it actually needs -- which is not the same as what
-its first error message says, and the difference is the subject of a risk
-below:
+What is left, by what each test is made of rather than by its first error
+message -- the difference is the subject of a risk below -- and every one
+of them read:
 
 | what it needs | tests |
 |---|---|
-| GNU extensions: keywords, attributes, builtins, `asm`, statement expressions | 36 |
+| GNU extensions: keywords (`__inline__`, `__restrict__`), attributes, builtins, `asm`, vector types, predefined type macros | 39 |
 | old-style (K&R) function definitions | 27 |
-| `long double` | 26 |
-| wide literals -- `L"..."` and `L'x'` | 8 |
-| `setjmp.h` | 1 |
-| `_Complex` | 1 |
-| everything else, in ones and twos | 31 |
+| `long double` | 27 |
+| `_Complex`, or GNU's `__complex__` | 7 |
+| refused on purpose: a parameter's array size with a side effect | 2 |
+| undefined behaviour: 20051012-1 calls a function defined with `()` with an argument (6.5.2.2p6) | 1 |
 
-Three of those are settled and will not move: GNU extensions are out of
+Four of those are settled and will not move: GNU extensions are out of
 scope, K&R definitions are out by decision (nobody should be writing them
 for this machine, and supporting them would shape the parser around a form
-C99 calls obsolescent), and `long double` is out because agondev's library
-has no arithmetic for one -- so a program that asks for it does not link,
-whichever compiler built it. That is 89 of the 130, and the honest ceiling
-on this suite is therefore about 1,214 of 1,303 rather than all of them.
-
-The remaining 41 are worth reading one by one. The C99 gaps in them that
-have been identified so far:
-
-- **Wide literals.** 6.4.4.4 and 6.4.5. `wchar_t` is `short` here, to match
-  agondev. 8 tests.
-- **Constant expressions at the edges**: a global initialised with
-  `&"X"[0]`, an enum constant that needs a cast folded, an array size that
-  does too, and an address constant with a `+` in it. 4 tests, one each.
-- **`setjmp.h`**, which is a library gap and not a language one. 1 test.
-
-And four of the 41 are not acc gaps at all: `strlen-2`, `strlen-3`,
-`strlen-4` and `memchr-1` fail on `__builtin_printf`, and the `?:` with a
-void side that their error message names works correctly.
+C99 calls obsolescent), `long double` is out because agondev's library has
+no arithmetic for one -- so a program that asks for it does not link,
+whichever compiler built it -- and `_Complex` is optional for a
+freestanding implementation. That is 100 of the 103, and the honest
+ceiling on this suite is therefore 1,203 of 1,303. acc is at 1,200; the
+other three are the two refused on purpose and the one that is undefined.
 
 ## What "compiles with C99" has to mean
 
@@ -282,7 +281,7 @@ which flags produced it is not reproducible.
 
 | source | size | how a test reports | license | fit |
 |---|---|---|---|---|
-| [gcc torture `execute`](https://github.com/gcc-mirror/gcc/tree/master/gcc/testsuite/gcc.c-torture/execute) | 1,698 files; **1,303 are C99 here**, acc compiles **1,171** | `abort()` on failure, `exit(0)` | GPL-3 (part of GCC) | **start here**: measured, and the only source large enough for a scoreboard to mean anything |
+| [gcc torture `execute`](https://github.com/gcc-mirror/gcc/tree/master/gcc/testsuite/gcc.c-torture/execute) | 1,698 files; **1,303 are C99 here**, acc compiles **1,200** | `abort()` on failure, `exit(0)` | GPL-3 (part of GCC) | **start here**: measured, and the only source large enough for a scoreboard to mean anything |
 | [gcc `gcc.dg`](https://gcc.gnu.org/onlinedocs/gccint/C-Tests.html) | 7,562 `.c`, of which 135 are named `c99-*` | DejaGnu: `dg-do run`, or `dg-do compile` with `dg-error` lines | GPL-3 | the `c99-*` ones name their clause; the other 7,427 go through the filter like everything else |
 | [c-testsuite](https://github.com/c-testsuite/c-testsuite) `single-exec` | 220 tests | `main` returns 0, plus a `.expected` stdout file | framework MIT; tests carry their own, per `.otags` | all 220 now: the cpp/libc split it used to be cut on has no meaning |
 | ↳ from [scc](https://www.simple-cc.org/) | 150 of the 220 | returns 0 | ISC | permissive, so it can be vendored |
@@ -325,8 +324,8 @@ run every time the suite does.
 A test acc cannot run is not nothing. It was written because some part of
 C99 was got wrong once, and what it covers is lost the moment it is struck
 off a list. Counting exclusions says how much was lost and never what, so
-the scoreboard would read 1,171 of 1,303 and not say which parts of the
-language the other 132 were the only cover for.
+the scoreboard would read 1,200 of 1,303 and not say which parts of the
+language the other 103 were the only cover for.
 
 So every test carries a **census** of what it is made of, taken at import
 whether or not it can run, and kept in the manifest beside it.
@@ -523,10 +522,10 @@ done, and then what is next.
      around it. The filter and the compile pass already exist as a script;
      what is missing is everything that turns a count into a scoreboard.
    - Fetched and not vendored: it is GPL-3 and acc is LGPL-2.1.
-   - Expect 1,171 compiling on the first run, and the scoreboard to say
-     which clauses the other 132 were covering.
+   - Expect 1,200 compiling on the first run, and the scoreboard to say
+     which clauses the other 103 were covering.
    - And how many run and give the right answer, which has so far been
-     measured by scripts outside the repository: 1,077 of the 1,127 that
+     measured by scripts outside the repository: 1,090 of the 1,127 that
      hold on this machine. The runner is what makes that number stay true.
 2. **c-testsuite, all 220.**
    - ISC and MIT, so it can be vendored with its notices.
@@ -591,17 +590,17 @@ done, and then what is next.
   it wore another gap's message. Nothing since has been counted that way:
   a group is read by what its tests are made of, and the number is checked
   by building the thing and re-running the filter.
-- **Compiling is not passing.** 1,171 of 1,303 is how many acc *compiles*.
+- **Compiling is not passing.** 1,200 of 1,303 is how many acc *compiles*.
   When that was first measured, forty of the tests that compiled ran
   wrongly, and a scoreboard that reported only the compile count would
   have hidden all forty. It has to report both, or it is measuring the
   parser and calling it conformance.
-- **A scoreboard invites a number.** 1,171 of 1,303 is not "90% C99
+- **A scoreboard invites a number.** 1,200 of 1,303 is not "92% C99
   conformant"; it is how many of one suite's tests compile. The clause
-  rows are the answer and the total is a headline. And 89 of the 132 left
-  are settled as out of scope, so the ceiling on this suite is about 1,214
-  -- a scoreboard that reads 1,171 of 1,303 without saying so implies 132
-  tests of work that does not exist.
+  rows are the answer and the total is a headline. And 100 of the 103 left
+  are settled as out of scope, so the ceiling on this suite is 1,203 -- a
+  scoreboard that reads 1,200 of 1,303 without saying so implies 103 tests
+  of work that does not exist.
 
 ## Decisions, and what was decided
 
