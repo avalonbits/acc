@@ -952,8 +952,13 @@ static void joined_room(int len)
 /* Narrow bytes made wide in place, as C99 6.4.5 has a narrow literal joined
  * to a wide one read as though it were wide: its UTF-8 taken apart into
  * characters, one wchar_t each -- two, the halves of a surrogate pair, past
- * 0xffff. `len` bytes at `at`; answers how many bytes they became. */
-static int joined_widen(int at, int len)
+ * 0xffff. `len` bytes at `at`; answers how many bytes they became.
+ *
+ * Unless an escape in them gave a byte past 0x7f: "\343\201\202" L"" is
+ * three wide characters to gcc and clang, as L"\343\201\202" would be, and
+ * not the one their UTF-8 spells. The lexer says only that there was such
+ * an escape, not which bytes it gave, so then every byte is one. */
+static int joined_widen(int at, int len, int bytes)
 {
     unsigned char *narrow = malloc((size_t) len + 1);
     int i = 0, n = at;
@@ -964,7 +969,7 @@ static int joined_widen(int at, int len)
     joined_room(at + 4 * len + 4);
     while (i < len) {
         unsigned long v = narrow[i++];
-        int more = v >= 0xf0 ? 3 : v >= 0xe0 ? 2 : v >= 0xc0 ? 1 : 0;
+        int more = bytes ? 0 : v >= 0xf0 ? 3 : v >= 0xe0 ? 2 : v >= 0xc0 ? 1 : 0;
 
         if (more) {
             v &= 0x3fUL >> more;
@@ -989,9 +994,10 @@ static int joined_widen(int at, int len)
 
 static int string_gather(void)
 {
-    int len = 0;
+    int len = 0, escaped;
 
     str_joined_wide = 0;
+    escaped = 0;
     while (tok == TK_STRING) {
         int at = len;
 
@@ -1006,12 +1012,14 @@ static int string_gather(void)
 
         /* "a" L"b" is as wide as L"a" L"b", whichever side is wide. */
         if (tok_str_wide && !str_joined_wide) {
-            len = joined_widen(0, at) + tok_str_len;
+            len = joined_widen(0, at, escaped) + tok_str_len;
             memcpy(str_joined + len - tok_str_len, tok_str,
                    (size_t) tok_str_len);
             str_joined_wide = 1;
         } else if (!tok_str_wide && str_joined_wide) {
-            len = at + joined_widen(at, tok_str_len);
+            len = at + joined_widen(at, tok_str_len, tok_str_escaped);
+        } else if (!tok_str_wide) {
+            escaped |= tok_str_escaped;
         }
         next();
     }

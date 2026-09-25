@@ -4332,6 +4332,7 @@ static void punct_error(int c)
 const char *tok_str;
 int         tok_str_len;
 int         tok_str_wide;
+int         tok_str_escaped;
 
 static char *str_buf;
 static int   str_cap;
@@ -4476,8 +4477,12 @@ static void lex_quoted(int c)
     if (c != '"')
         punct_error(c);
 
+    tok_str_escaped = 0;
     while (*cursor != '"') {
-        int ch = literal_char(c);
+        int escaped = *cursor == '\\', ch = literal_char(c);
+
+        if (escaped && (ch & 0x80))
+            tok_str_escaped = 1;
 
         if (n + 1 >= str_cap) {
             str_cap = str_cap ? str_cap * 2 : 128;

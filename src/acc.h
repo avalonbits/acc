@@ -424,6 +424,7 @@ extern uint32_t tok_val_hi; /* and its high half, when a long long */
 extern const char *tok_str; /* its bytes, when TK_STRING, escapes undone */
 extern int      tok_str_len; /* and how many, without a terminator */
 extern int      tok_str_wide; /* whether they are wchar_t, two bytes each */
+extern int      tok_str_escaped; /* a narrow one's escape gave a byte past 0x7f */
 extern Type     tok_type;   /* and its type, which C99 fixes by its size */
 extern float    tok_fval;   /* its value, when TK_FLOAT */
 extern NameRef  tok_name;   /* its name, when TK_IDENT */
