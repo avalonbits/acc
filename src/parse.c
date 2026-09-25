@@ -2994,6 +2994,34 @@ static void block_vla_mark(void)
  * `static` and the qualifiers stand inside an array's brackets. */
 static int in_params;
 
+/* A parameter's array size that is not a constant: `int a[][n]`, whose
+ * rows are n ints long. C99 6.9.1p10 works it out each time the function
+ * is entered, and acc reads the parameters before there is a function to
+ * work it out in -- so the size is kept as text, its tokens spelled again
+ * into vla_texts as they are read, each ended by a `;`, and a definition
+ * reads them all again once its frame is made: vla_params_enter. Every one
+ * is worked out there, a first dimension's too, since `int a[n++]`
+ * increments n whatever the parameter is.
+ *
+ * A row made with one -- or made of rows that are -- is an array of unknown
+ * size until then, which is all a prototype's is: vla_param makes it a
+ * type of its own, noted here with the text its length is (or the
+ * constant, for a row of such rows) for vla_params_enter to fill in. The
+ * notes are in the order the rows are made, which is inner rows first. */
+#define VLA_PARAMS 16
+
+static char          vla_texts[256];
+static int           vla_texts_used;
+static unsigned char nvla_texts;
+static unsigned char vla_text_now;      /* the text array_size just kept, +1 */
+static unsigned char vla_marked;        /* array_brackets began keeping one */
+static unsigned char vla_keeping;       /* and array_size is reading it */
+
+static unsigned char vla_param_ext[VLA_PARAMS];
+static signed char   vla_param_text[VLA_PARAMS];    /* -1: the count is it */
+static int           vla_param_count[VLA_PARAMS];
+static unsigned char nvla_params;
+
 /* An array's size from inside its brackets: the number if it is a constant,
  * and -1 with the length left on the value stack if it is not, which is
  * C99's variable-length array.
@@ -3008,18 +3036,27 @@ static int constant_wide(const char *what, int line);
 static int array_size(const char *what, int line, int *variable)
 {
     GenMark mark;
-    int before = out_here(), effects;
+    char *kept = NULL;
+    int before = out_here(), effects, recording;
     Type outer = narrow_dest;
     int val;
     Type type;
 
     *variable = 0;
+    vla_text_now = 0;
+    recording = vla_marked;
+    vla_marked = 0;
+    vla_keeping = (unsigned char) recording;
     gen_mark(&mark);
     effects = gen_effects;
     narrow_dest = 0;
     conditional();              /* `?:` as well, which is how C99 asserts at
                                  * build time: an array of `cond ? 1 : -1` */
     narrow_dest = outer;
+    if (recording) {
+        kept = lex_record_take();
+        vla_keeping = 0;
+    }
 
     if (vconst_top(&val, &type) && out_here() == before
         && !type_pointer(type) && !type_float(type)) {
@@ -3042,15 +3079,23 @@ static int array_size(const char *what, int line, int *variable)
         gen_rollback(&mark);
 
         /* C99 6.9.1 evaluates a parameter's array size on entry to the
-         * function, which only shows when it does something -- `int
-         * a[n++]` increments n. acc reads the size before there is a
-         * function to evaluate it in, and throws it away; that is only
-         * right when there was nothing in it to lose, so an expression
-         * that did something is refused rather than quietly dropped. */
+         * function -- `int a[n++]` increments n -- and acc reads the size
+         * before there is a function to evaluate it in. So its text is
+         * kept, for the definition to read again then: see vla_texts. */
+        if (kept) {
+            memcpy(kept, "\n;", 3);            /* after a `//` comment too */
+            vla_texts_used = (int) (kept + 2 - vla_texts);
+            vla_text_now = ++nvla_texts;
+
+            return -1;
+        }
+        /* One not kept -- too long for vla_texts, or ended inside a
+         * macro it did not begin in -- is thrown away, which is only right
+         * when there was nothing in it to lose. */
         if (in_params && gen_effects != effects)
             acc_error_at(line, "a parameter's array size is evaluated when "
-                               "the function is entered, and acc cannot do "
-                               "that for one with a side effect");
+                               "the function is entered, and acc could not "
+                               "keep this one to do that");
         if (in_params)
             return -1;                  /* `int a[n]` is `int *a` */
         acc_error_at(line, "%s has to be a constant integer", what);
@@ -3082,6 +3127,14 @@ static void array_brackets(int line)
     int had_static = 0, had_qualifier = 0;
 
     for (;;) {
+        /* A parameter's size is kept as the text after the `[` and the
+         * words inside it, for array_size: see vla_texts. */
+        if (in_params && !vla_keeping && nvla_texts < VLA_PARAMS) {
+            lex_record_from(vla_texts + vla_texts_used,
+                            vla_texts + sizeof vla_texts - 2);  /* `{` */
+            vla_marked = 1;
+        }
+        next();
         if (tok == TK_KW_STATIC) {
             if (had_static)
                 acc_error_at(line, "'static' twice inside []");
@@ -3091,7 +3144,10 @@ static void array_brackets(int line)
         } else {
             break;
         }
-        next();
+    }
+    if (tok == TK_RBRACKET) {
+        vla_marked = 0;                 /* no size to keep */
+        lex_record = NULL;
     }
 
     /* `[*]`, `[const *]`: a length that varies and is not said, which C99
@@ -3108,6 +3164,8 @@ static void array_brackets(int line)
                                "at least, and '[*]' says nothing");
         next();
         star_length = 1;
+        vla_marked = 0;
+        lex_record = NULL;
 
         return;
     }
@@ -3138,17 +3196,17 @@ int vla_size_slot(Type type, int x)
  * and its size, that times its element's, each put in a frame slot where
  * the declaration is, which is when C99 says they are worked out. */
 __attribute__((noinline))
-static int vla_type(Type elem, int elem_x, int length, int count)
+static int vla_size(Type elem, int elem_x, int *length, int count)
 {
     int size = gen_local(ACC_INT_SIZE), step = vla_size_slot(elem, elem_x);
 
-    if (!length) {
-        length = gen_local(ACC_INT_SIZE);
+    if (!*length) {
+        *length = gen_local(ACC_INT_SIZE);
         vpush_const(count, TY_INT);
-        vstore_local(length, TY_INT);
+        vstore_local(*length, TY_INT);
         vdrop();
     }
-    vpush_local(length, TY_INT);
+    vpush_local(*length, TY_INT);
     if (step)
         vpush_local(step, TY_INT);
     else
@@ -3157,27 +3215,102 @@ static int vla_type(Type elem, int elem_x, int length, int count)
     vstore_local(size, TY_INT);
     vdrop();
 
+    return size;
+}
+
+static int vla_type(Type elem, int elem_x, int length, int count)
+{
+    int size = vla_size(elem, elem_x, &length, count);
+
     return ext_vla(elem, elem_x, length, size);
+}
+
+/* A parameter's row whose length is the text vla_texts has at `text`, +1,
+ * or -- when that is 0 -- `count`, a row of rows that are: see
+ * vla_texts. */
+__attribute__((noinline))
+static int vla_param(Type elem, int elem_x, int text, int count)
+{
+    int x;
+
+    if (nvla_params == VLA_PARAMS)
+        acc_error_at(tok_line, "more than %d of a function's parameters' "
+                               "rows have lengths worked out on entry",
+                     VLA_PARAMS);
+    x = ext_vla(elem, elem_x, -1, 0);
+    vla_param_ext[nvla_params] = (unsigned char) x;
+    vla_param_text[nvla_params] = (signed char) (text - 1);
+    vla_param_count[nvla_params] = count;
+    nvla_params++;
+
+    return x;
+}
+
+/* A parameter's row: one with a length vla_texts has, or made of rows that
+ * do. */
+static inline __attribute__((always_inline))
+int vla_param_row(Type elem, int elem_x, int text)
+{
+    return text || (type_is_array(elem) && ext_vla_pending(elem_x));
+}
+
+/* Their lengths and sizes, worked out on entry to the function, where C99
+ * 6.9.1p10 says: each text read again, after the parameters and before the
+ * body's `{`, which the current token is and which comes back after them. */
+__attribute__((noinline))
+static void vla_params_enter(void)
+{
+    static int slots[VLA_PARAMS];
+    int i;
+
+    if (nvla_texts) {
+        memcpy(vla_texts + vla_texts_used, "{", 2);
+        lex_push_record(vla_texts, vla_texts_used + 1);
+        next();
+        for (i = 0; i < nvla_texts; i++) {
+            int line = tok_line;
+
+            conditional();
+            if (type_pointer(vtype()) || type_float(vtype()))
+                acc_error_at(line, "an array's length has to be an integer");
+            vconvert(TY_INT);
+            slots[i] = gen_local(ACC_INT_SIZE);
+            vstore_local(slots[i], TY_INT);
+            vdrop();
+            expect(TK_SEMI, "';'");
+        }
+    }
+    for (i = 0; i < nvla_params; i++) {
+        int x = vla_param_ext[i], length = 0, size;
+
+        if (vla_param_text[i] >= 0)
+            length = slots[vla_param_text[i]];
+        size = vla_size(ext_elem(x), ext_elem_x(x), &length,
+                        vla_param_count[i]);
+        ext_vla_fill(x, length, size);
+    }
 }
 
 static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
                       int *count)
 {
     int dims[12], lengths[12], n = 0, i;
+    unsigned char texts[12];
 
     vla_length = 0;
     while (tok == TK_LBRACKET) {
         int line = tok_line, d = -1;
 
-        next();
         array_brackets(line);
         if (n == 12)                    /* C99 5.2.4.1 asks for 12 */
             acc_error_at(line, "an array may have at most 12 dimensions");
         lengths[n] = 0;
+        texts[n] = 0;
         if (tok != TK_RBRACKET) {
             int variable;
 
             d = array_size("an array's size", line, &variable);
+            texts[n] = vla_text_now;
             if (variable) {
                 /* Kept in the frame, since the rows' sizes are worked out
                  * from it once every dimension has been read. */
@@ -3185,13 +3318,11 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
                 vstore_local(lengths[n], TY_INT);
                 vdrop();
             } else if (d < 0) {
-                /* A parameter's `[n]`, which array_size threw away: the
-                 * parameter is a pointer, as `[]` would have made it.
-                 * After the first, `int a[][n]`, the rows are arrays whose
-                 * length is worked out when the function is entered -- C99
-                 * 6.9.1p10 -- which acc does not do; they are arrays of
-                 * unknown size, so a prototype says what C says, and a
-                 * subscript through one is refused as having no step. */
+                /* A parameter's `[n]`: the parameter is a pointer, as `[]`
+                 * would have made it, and after the first, `int a[][n]`,
+                 * the rows are arrays whose length is worked out when the
+                 * function is entered -- C99 6.9.1p10 -- from the text
+                 * array_size kept: see vla_texts. */
             } else if (d == 0) {
                 acc_error_at(line, "an array needs at least one element");
             }
@@ -3219,6 +3350,8 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
     for (i = n - 1; i >= 1; i--) {
         *elem_x = lengths[i] || vla_size_slot(*elem, *elem_x)
                   ? vla_type(*elem, *elem_x, lengths[i], dims[i])
+                  : vla_param_row(*elem, *elem_x, texts[i])
+                  ? vla_param(*elem, *elem_x, texts[i], dims[i])
                   : ext_array(*elem, *elem_x, dims[i]);
         *elem = TY_EXT;
     }
@@ -3971,7 +4104,8 @@ enum { DECL_PTR, DECL_ARRAY, DECL_FUNC };
 
 typedef struct {
     unsigned char op;
-    int a, b, c;        /* an array's count; a function's parameter run,
+    int a, b, c;        /* an array's count, its length's slot, and its
+                         * text in vla_texts; a function's parameter run,
                          * its length, and whether it was given */
 } DeclOp;
 
@@ -4013,6 +4147,7 @@ static void decl_apply(const DeclOp *op, Type *t, int *x)
         if (type_is_struct(*t))
             record_complete(*x, tok_line);
         *x = op->b || vla_size_slot(*t, *x) ? vla_type(*t, *x, op->b, op->a)
+             : vla_param_row(*t, *x, op->c) ? vla_param(*t, *x, op->c, op->a)
                                             : ext_array(*t, *x, op->a);
         *t = TY_EXT;
         break;
@@ -4120,12 +4255,13 @@ static NameRef decl_direct(void)
 
     suffix = ndecl_ops;
     for (;;) {
-        if (accept(TK_LBRACKET)) {
-            int n = -1, line = tok_line, length = 0, variable;
+        if (tok == TK_LBRACKET) {
+            int n = -1, line = tok_line, length = 0, variable, text = 0;
 
             array_brackets(line);
             if (tok != TK_RBRACKET) {
                 n = array_size("an array's size", line, &variable);
+                text = vla_text_now;
 
                 /* `int (*p)[m]`: a length the program works out, kept in
                  * the frame for when the type is put together. */
@@ -4139,7 +4275,7 @@ static NameRef decl_direct(void)
                 }
             }
             expect(TK_RBRACKET, "']'");
-            decl_push(DECL_ARRAY, n, length, 0);
+            decl_push(DECL_ARRAY, n, length, text);
         } else if (accept(TK_LPAREN)) {
             int first, count, given = param_types(&first, &count);
 
@@ -4194,6 +4330,7 @@ static NameRef decl_full(void)
 static int param_types(int *first, int *count)
 {
     int saved_abstract = abstract_ok, saved_params = in_params, variadic = 0;
+    int texts_used, ntexts, nrows, mark;
     unsigned seen;
 
     *first = sym_params_begin();
@@ -4209,6 +4346,13 @@ static int param_types(int *first, int *count)
     abstract_ok = 1;
     in_params = 1;
     seen = ++nested_lists;
+    texts_used = vla_texts_used;
+    ntexts = nvla_texts;
+    nrows = nvla_params;
+
+    /* The parameters named so far are in scope for the ones after, whose
+     * sizes may name them: `int (*f)(int n, int a[][n])`. */
+    mark = sym_scope_begin();
     for (;;) {
         Type base, type;
         int bx, ext, n;
@@ -4234,6 +4378,12 @@ static int param_types(int *first, int *count)
         }
         param_name_set(*first + *count, pname);
         sym_param_add(type, ext);
+        if (pname) {
+            int sym = sym_push(pname, SYM_LOCAL, 0);
+
+            sym_at(sym)->type = type;
+            sym_at(sym)->ext = (unsigned char) ext;
+        }
         (*count)++;
         if (!accept(TK_COMMA))
             break;
@@ -4244,6 +4394,13 @@ static int param_types(int *first, int *count)
     }
     abstract_ok = saved_abstract;
     in_params = saved_params;
+
+    /* A list inside another's is a prototype's, whose sizes nothing works
+     * out: `void (*p)(int n, int x[n])`. */
+    sym_scope_end(mark);
+    vla_texts_used = texts_used;
+    nvla_texts = ntexts;
+    nvla_params = nrows;
     expect(TK_RPAREN, "')'");
 
     return 1 | variadic;
@@ -6397,6 +6554,8 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     if (type_is_struct(ret_type))
         argoff += ACC_PTR_SIZE;
     nstruct_params = 0;
+    vla_texts_used = 0;
+    nvla_texts = nvla_params = 0;
     abstract_ok = 1;
     in_params = 1;
     if (tok == TK_KW_VOID && lex_rparen_follows()) {
@@ -6534,7 +6693,6 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                            "name");
     if (incomplete_line)
         record_complete(incomplete_x, incomplete_line);
-    next();                     /* the body's `{` */
 
     sym_set_params(fn, params_first, nparams);
     sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED | variadic
@@ -6545,6 +6703,9 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     if (nstruct_params)
         struct_params_copy();
     in_body = 1;
+    if (nvla_params | nvla_texts)
+        vla_params_enter();
+    next();                     /* the body's `{` */
     block();
     body_end(fn);
     in_body = 0;

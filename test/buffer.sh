@@ -30,12 +30,21 @@ cap=$(sed -n 's/^#define SRC_CAP  *\([0-9]*\).*/\1/p' src/lex.c)
 # What goes after the padding: one of everything whose scan walks forward
 # over characters, so that each in turn is the thing the edge lands in.
 #
+# A parameter's array size is kept as the text between its brackets, and
+# the edge falling inside it is what says that text survives the refill.
+#
 # The backslash-joined name and string are here for the window in
 # particular. The join is taken out of the window as it is filled, which
 # moves everything after it down; sliding one across the edge is what says
 # the part still to be read moves with it.
 payload() {
     cat <<'EOF'
+static int second_row(int n, int a[][(
+                                      n
+                                      )])
+{
+    return a[1][0];
+}
 /* a block comment
  * that runs over several lines and so is the one thing
  * a window's edge can fall inside
@@ -51,12 +60,15 @@ long long wide_value = 1234567890123LL;
 int shifted = 0;
 
 int main(void) {
+    int grid[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+
     shifted = a_long_identifier_to_straddle_the_edge;
     shifted >>= 1;                  // a line comment at the end of a line
     shifted = shifted == 3 ? 42 : 42;
 
     return number > 0.0 && wide_value > 0 && text_with_escapes[0] == 'a'
            && split_over_two_lines == 11 && joined[5] == 'a'
+           && second_row(3, grid) == 4
            ? shifted : 0;
 }
 EOF

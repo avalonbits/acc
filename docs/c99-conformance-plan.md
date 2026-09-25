@@ -33,8 +33,9 @@ against the compiler rather than remembered:
 - **The language.** Structs, unions, enums, bit-fields (including of
   `long long`, to 64 bits), `typedef`, `sizeof`, `switch`, `do`, `break`,
   `continue`, string and character literals, `void` functions, designated
-  initialisers, compound literals, variable-length arrays, flexible array
-  members, `long long`, `_Bool`, `inline`, `restrict`, `__func__`, the
+  initialisers, compound literals, variable-length arrays -- a
+  parameter's too, `int a[][n]`, its sizes worked out when the function is
+  entered (6.9.1p10) -- flexible array members, `long long`, `_Bool`, `inline`, `restrict`, `__func__`, the
   forty macros that say how wide everything is, `[static n]` in an array
   parameter, hexadecimal floating constants, declarations mixed with
   statements, `#pragma STDC`, and `-D`/`-U` on the command line.
@@ -135,8 +136,10 @@ after each piece of it. `gcc.c-torture/execute`, 1,698 files:
 | acc compiles now, with the language gaps above | **1,200** (92.1%) |
 | acc refuses | 103 |
 
-970217-1 and pr22061-2 are refused on purpose: a parameter's array size
-with a side effect, which acc would otherwise have compiled wrongly.
+970217-1 and pr22061-2 were refused on purpose: a parameter's array size
+with a side effect, which acc would otherwise have compiled wrongly. A
+parameter's sizes are worked out on entry to the function now, as C99
+says, and both pass; the tables below are from before.
 
 ### Compiled is not run
 
@@ -596,7 +599,10 @@ done, and then what is next.
 **Next, in this order:**
 
 1. **What gcc.dg found:** the 87 refusals of valid C99 first, since each
-   is a program acc cannot compile, and then the 144 it accepts.
+   is a program acc cannot compile, and then the 144 it accepts. Of the
+   refusals, the parameters whose rows another parameter sizes (`int
+   a[][n]`, eight tests) are built: the size is kept as the text it was
+   written as and read again after the function's prologue.
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.

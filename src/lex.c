@@ -803,6 +803,81 @@ static void unsplice(char **end)
     *end = w;
 }
 
+static void push_text(NameRef macro, char *text, int len);
+
+/* A parameter's array size, kept as the text it was written as for a
+ * function's definition to read again when it is entered: see vla_texts in
+ * parse.c. lex_record_from starts it after the current token, and the text
+ * is copied out to lex_record when it is about to go -- the window refilled
+ * -- and when it is taken. A macro's expansion is read from a window of its
+ * own and leaves this one where it was, so what is kept is the macro's name
+ * and arguments, which say it again. Only the refill has a test of
+ * lex_record, and the path every token takes has none.
+ *
+ * lex_record is NULL when nothing is being kept, or when this could not
+ * be: it did not fit, or the size ended at another level than it began. */
+char *lex_record, *lex_record_end;
+static char       *record_first;
+static const char *record_start;
+static int         record_depth;
+
+__attribute__((noinline))
+static void record_flush(void)
+{
+    size_t n = (size_t) (cursor - record_start);
+
+    if (depth != record_depth)
+        return;                         /* in an expansion: not kept */
+    if (n >= (size_t) (lex_record_end - lex_record)) {
+        lex_record = NULL;
+
+        return;
+    }
+    memcpy(lex_record, record_start, n);
+    lex_record += n;
+    record_start = cursor;
+}
+
+void lex_record_from(char *text, char *end)
+{
+    lex_record = record_first = text;
+    lex_record_end = end;
+    record_start = cursor;
+    record_depth = depth;
+}
+
+/* The text kept, from lex_record_from to the `]` that is the current
+ * token, which is left out: its end, or NULL if it could not be kept. */
+char *lex_record_take(void)
+{
+    char *end;
+
+    if (!lex_record)
+        return NULL;
+    if (depth == record_depth)
+        record_flush();
+    else
+        lex_record = NULL;
+    end = lex_record;
+    lex_record = NULL;
+    if (!end)
+        return NULL;
+
+    if (end > record_first && end[-1] == ']')
+        return end - 1;
+    if (end - 1 > record_first && end[-1] == '>' && end[-2] == ':')
+        return end - 2;
+
+    return NULL;
+}
+
+/* The kept text read as source, from after the current token: when it
+ * runs out, what follows the current token is read as ever. */
+void lex_push_record(char *text, int len)
+{
+    push_text(NAME_NONE, text, len);
+}
+
 static int refill(void)
 {
     size_t keep, room, got;
@@ -811,11 +886,14 @@ static int refill(void)
     if (!src_file)
         return 0;                       /* the whole file has been read */
 
+    if (lex_record)
+        record_flush();
     *src_end = src_held;                /* put back what the sentinel hid */
     keep = (size_t) (src_raw - cursor);
     if (keep && cursor != src)
         memmove(src, cursor, keep);
     cursor = src;
+    record_start = cursor;              /* where a size being kept goes on */
     src_raw = src + keep;
 
     /* Until the window is full or the file has no more. Reading until it is
@@ -1248,6 +1326,11 @@ static int pop_source(void)
     src_owned = open_files[depth].owned;
     src_macro = open_files[depth].macro;
     src_dep = open_files[depth].dep;
+
+    /* Out of the level a size being kept began at: it ended somewhere its
+     * text cannot be had. */
+    if (lex_record && depth < record_depth)
+        lex_record = NULL;
 
     /* The handle set aside when this level was pushed, back where it was. */
     if (open_files[depth].at >= 0) {

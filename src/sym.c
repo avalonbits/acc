@@ -527,6 +527,21 @@ int ext_vla_length(int x)
     return ext_types[x].count;
 }
 
+/* A parameter's row whose length is worked out when its function is
+ * entered: made by ext_vla with no slots while the parameters are read --
+ * an array of unknown size till then -- and given them by ext_vla_fill
+ * once the function has a frame to put them in. */
+int ext_vla_pending(int x)
+{
+    return (ext_what[x] & EXT_VLA) && !ext_types[x].bytes;
+}
+
+void ext_vla_fill(int x, int length_slot, int size_slot)
+{
+    ext_types[x].count = length_slot;
+    ext_types[x].bytes = size_slot;
+}
+
 /* Whether two extensions are of compatible types, as a function's
  * declarations are held to: the same, or arrays of the same element whose
  * length one of them does not say -- `int (*)[]` and `int (*)[3]`, C99

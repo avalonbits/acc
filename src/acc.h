@@ -201,6 +201,8 @@ int  ext_bytes(int x);
 int  ext_vla(Type elem, int elem_x, int length_slot, int size_slot);
 int  ext_vla_size(int x);       /* the frame slot of a VLA's size, or 0 */
 int  ext_vla_length(int x);     /* and of its length */
+int  ext_vla_pending(int x);    /* a parameter's row, till its function starts */
+void ext_vla_fill(int x, int length_slot, int size_slot);
 int  ext_compatible(int a, int b);  /* the same, or arrays that could be */
 
 int     ext_record(int is_union, NameRef tag);   /* a new, incomplete record */
@@ -452,6 +454,10 @@ int  lex_rbracket_follows(void); /* or `]` */
 int  lex_string_follows(void);   /* or a string */
 extern int lex_trigraphs;       /* -trigraphs: see src/lex.c */
 extern const char *lex_prelude; /* -include: read before the source */
+extern char *lex_record;              /* a size's text, being kept */
+void  lex_record_from(char *text, char *end);  /* from after this token */
+char *lex_record_take(void);         /* to this `]`: its end, or NULL */
+void  lex_push_record(char *text, int len);    /* and read again */
 int  lex_ident_follows(void);    /* and whether a name does */
 int  lex_rbrace_follows(void);   /* and whether `}` does */
 int         accept_next(void);          /* next(), returning 1, for accept */
