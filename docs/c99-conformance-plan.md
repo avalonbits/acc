@@ -602,7 +602,12 @@ done, and then what is next.
    is a program acc cannot compile, and then the 144 it accepts. Of the
    refusals, the parameters whose rows another parameter sizes (`int
    a[][n]`, eight tests) are built: the size is kept as the text it was
-   written as and read again after the function's prologue.
+   written as and read again after the function's prologue. Of the ones
+   it accepted, a name declared twice in one scope is refused now -- two
+   locals, a local and a parameter of the outermost block, two parameters
+   -- and gcc's `__restrict` is read as `restrict`, since headers written
+   for gcc name parameters with it, and a second one read as a name was a
+   parameter declared twice.
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.

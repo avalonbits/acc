@@ -2249,9 +2249,17 @@ static int     constant_int(const char *what, int line);
  * scope. */
 static int scope_mark = -1;
 
+/* Where a function's parameters begin, for its body's block to take as
+ * where its scope does: they are one scope (C99 6.2.1p4). -1 otherwise. */
+static int body_mark = -1;
+
 static int push_here(NameRef name, int kind, int val)
 {
-    return in_body ? sym_push_local(name, kind, val) : sym_push(name, kind, val);
+    if (!in_body)
+        return sym_push(name, kind, val);
+    sym_stamp_name(name);               /* see local_not_redeclared */
+
+    return sym_push_local(name, kind, val);
 }
 
 /* That `name` is not already declared in the scope being declared into. */
@@ -2261,6 +2269,46 @@ static void not_redeclared(NameRef name, int line)
 
     if (sym != SYM_NONE && sym_declared_in(sym, scope_mark))
         acc_error_at(line, "'%s' is already declared", name_text(name));
+}
+
+/* The same for a block's own variable, which has no linkage and so may be
+ * declared once in its scope (C99 6.7p3) -- where a function's outermost
+ * block is the scope its parameters are in too (6.2.1p4): `void f(int x) {
+ * int x; }` declares x twice. A name no local of the function has had
+ * needs no walk to say so, and one that has walks only its block. */
+__attribute__((noinline))
+static void local_redeclared(NameRef name, int line)
+{
+    if (sym_find_in(name, scope_mark) != SYM_NONE)
+        acc_error_at(line, "'%s' is already declared", name_text(name));
+}
+
+/* The name local_not_redeclared asks about, whose low byte is read from
+ * here rather than from a local: read from one, clang put the name back
+ * together around the call with __iand. */
+static NameRef stamp_name;
+
+static inline __attribute__((always_inline))
+void local_not_redeclared(NameRef name, int line)
+{
+    stamp_name = name;
+    if (sym_maybe_local(stamp_name))
+        local_redeclared(name, line);
+    sym_stamp_name(stamp_name);
+}
+
+
+/* Whether `name` is declared in this block already as the file-scope
+ * variable an extern names, which -- having linkage -- it may be again
+ * (6.7p3), to the same type: block_extern holds it to that. */
+static int extern_again(NameRef name)
+{
+    int sym = sym_find(name), g = name_global(name);
+
+    return sym != SYM_NONE && g != SYM_NONE && sym != g
+           && sym_declared_in(sym, scope_mark)
+           && sym_at(sym)->kind == sym_at(g)->kind
+           && sym_at(sym)->val == sym_at(g)->val;
 }
 
 /* A tag, as the name it is looked up by: the tag's text behind a `{`, which
@@ -5447,6 +5495,7 @@ static void block_extern(Type type, int ext, NameRef name, int count,
         global_again(g, type, ext, count, line);
     }
     global = sym_at(g);
+    sym_stamp_name(name);               /* see local_not_redeclared */
     sym = sym_push_local(name, global->kind, global->val);
     global = sym_at(g);
     sym_at(sym)->type = global->type;
@@ -5486,7 +5535,8 @@ static void storage_declarators(int storage, Type base, int bx,
         if (tok == TK_LPAREN) {
             function_declarator(type, ext, name, line);
         } else if (storage == TK_KW_EXTERN) {
-            not_redeclared(name, line);
+            if (!extern_again(name))
+                not_redeclared(name, line);
             block_extern(type, ext, name, count, line);
         } else {
             int hole = gen_jump();
@@ -5575,6 +5625,7 @@ void declaration(void)
                 break;
             continue;
         }
+        local_not_redeclared(name, line);
         if (vla_length) {
             local_vla(type, ext, name, line);
             if (bc)
@@ -6263,6 +6314,10 @@ static void block(void)
     int outer_vla = vla_mark;
 
     scope_mark = mark;
+    if (body_mark != -1) {              /* equal, not less: see sym_find */
+        scope_mark = body_mark;
+        body_mark = -1;
+    }
     vla_mark = NO_VLA_MARK;
     vla_block_open();
     while (tok != TK_RBRACE && tok != TK_EOF) {
@@ -6599,7 +6654,12 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
             not_void(ptype, "a parameter", pline);
 
             if (pname) {
-                psym = sym_push(pname, SYM_LOCAL, argoff);
+                /* Named once, as C99 6.7p3 asks of a prototype as much as
+                 * of a definition. */
+                psym = sym_push_param(pname, argoff, mark);
+                if (psym == SYM_NONE)
+                    acc_error_at(pline, "'%s' is already declared",
+                                 name_text(pname));
                 sym_at(psym)->type = ptype;
                 sym_at(psym)->ext = (unsigned char) pext;
                 sym_at(psym)->quals = pquals;
@@ -6691,6 +6751,8 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     if (unnamed)
         acc_error_at(line, "a parameter of a function's definition needs a "
                            "name");
+    sym_stamp_params(mark);     /* see local_not_redeclared */
+
     if (incomplete_line)
         record_complete(incomplete_x, incomplete_line);
 
@@ -6706,6 +6768,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     if (nvla_params | nvla_texts)
         vla_params_enter();
     next();                     /* the body's `{` */
+    body_mark = mark;
     block();
     body_end(fn);
     in_body = 0;
@@ -6738,6 +6801,8 @@ static int push_global(NameRef name, int kind, int at)
 
         return redefining;
     }
+    if (static_local)
+        sym_stamp_name(name);           /* see local_not_redeclared */
     sym = static_local ? sym_push_local(name, kind, at)
                        : sym_push(name, kind, at);
     sym_at(sym)->quals = decl_bottom_const;

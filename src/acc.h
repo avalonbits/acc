@@ -659,6 +659,25 @@ static inline void sym_scope_end(int mark)
 {
     sym_nbytes = sym_nglobal_bytes + mark;
 }
+int  sym_find_in(NameRef name, int mark);  /* a local in the scope from mark on */
+int  sym_push_param(NameRef name, int val, int mark);  /* SYM_NONE: named twice */
+
+/* Whether a function's body may have declared a name: when not, no scope
+ * in it has the name and sym_find_in has nothing to walk for. What its
+ * body declares is stamped as it is, and its parameters by
+ * sym_stamp_params, which is where a function's body starts -- in a table
+ * by the name's low byte, whose entry is this function's when it holds
+ * this function's stamp.
+ *
+ * The byte is read through a volatile pointer: `(unsigned char) name`, or
+ * the same through a plain one, is a 24-bit load and a call to mask it. */
+extern unsigned char sym_stamps[256], sym_stamp;
+void sym_stamp_params(int mark);
+
+#define sym_stamp_at(name) \
+    (&sym_stamps[*(volatile const unsigned char *) &(name)])
+#define sym_maybe_local(name)   (*sym_stamp_at(name) == sym_stamp)
+#define sym_stamp_name(name)    (*sym_stamp_at(name) = sym_stamp)
 int  sym_declared_in(int sym, int mark);  /* in the scope from mark on; -1 is file scope */
 
 /* ------------------------------------------------------------------ */

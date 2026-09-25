@@ -3955,6 +3955,14 @@ static void keywords_init(void)
     keyword("__builtin_offsetof", 18, TK_KW_OFFSETOF);
     keyword("__attribute__", 13, TK_KW_ATTRIBUTE);
 
+    /* gcc's spellings of restrict, which headers written for it use where
+     * restrict cannot go -- before C99, or in C++ -- and which are the
+     * implementation's to give a meaning to. Read as a name, one was a
+     * parameter's: `void *memcpy(void *__restrict, const void
+     * *__restrict, size_t)` named two parameters the same. */
+    keyword("__restrict", 10, TK_KW_RESTRICT);
+    keyword("__restrict__", 12, TK_KW_RESTRICT);
+
     /* What <stdarg.h> would give, taken as words of the language: acc has
      * no preprocessor to include it with, and a program that reads its
      * variable arguments has no other way to. */

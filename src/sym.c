@@ -120,6 +120,21 @@ int sym_push_local(NameRef name, int kind, int val)
     return push_local(name, kind, val);
 }
 
+/* A parameter, local from `mark` on as each of its list is, and none of
+ * the others' names: SYM_NONE when one before it has its name. The walk
+ * is here, where the push is, because a call of its own for every
+ * parameter of every prototype cost a compile 0.1%. */
+int sym_push_param(NameRef name, int val, int mark)
+{
+    Sym *p = sym_at(sym_nglobal_bytes + mark), *end = sym_at(sym_nbytes);
+
+    for (; p != end; p++)
+        if (p->name == name)
+            return SYM_NONE;
+
+    return push_local(name, SYM_LOCAL, val);
+}
+
 int sym_push(NameRef name, int kind, int val)
 {
     Sym *sym;
@@ -351,6 +366,39 @@ int sym_param_ext(int first, int index)
  * position in the table, because a file-scope symbol pushed inside the scope
  * -- a call to a function not seen yet -- goes in underneath the locals and
  * moves them all along by one. */
+/* See sym_maybe_local. An entry stamped by a function 255 before this one
+ * looks like this one's, and costs sym_find_in a walk that finds nothing,
+ * as a name sharing its low byte with one this function has does. */
+unsigned char sym_stamps[256], sym_stamp;
+
+/* A function's body begins: its parameters, from `mark` on, are stamped
+ * as its first names. */
+void sym_stamp_params(int mark)
+{
+    Sym *p = sym_at(sym_nglobal_bytes + mark), *end = sym_at(sym_nbytes);
+
+    if (!++sym_stamp)
+        sym_stamp = 1;                  /* 0 is every entry's to start with */
+    for (; p != end; p++)
+        sym_stamp_name(p->name);
+}
+
+/* The local `name` in the scope from `mark` on -- a block's, which is
+ * all of it that has to be walked -- or SYM_NONE. */
+int sym_find_in(NameRef name, int mark)
+{
+    unsigned i = (unsigned) sym_nbytes;
+    unsigned stop = (unsigned) (sym_nglobal_bytes + mark);
+
+    while (i > stop) {
+        i -= sizeof(Sym);
+        if (sym_at(i)->name == name)
+            return (int) i;
+    }
+
+    return SYM_NONE;
+}
+
 int sym_declared_in(int sym, int mark)
 {
     if (mark < 0)
