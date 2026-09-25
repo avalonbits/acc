@@ -2535,6 +2535,7 @@ static void record_members(int x, int is_union, int line)
     /* Where the next member goes: a byte, and a bit within it, for a
      * bit-field to continue from. */
     int first = -1, last = -1, size = 0, bit = 0, has_bits = 0, flexible = 0;
+    int holds_flex = 0;
 
     while (tok != TK_RBRACE) {
         Type base = base_type();
@@ -2615,12 +2616,18 @@ static void record_members(int x, int is_union, int line)
             }
             if (type == TY_VOID)
                 acc_error_at(mline, "'void' is not a type a member can have");
+            /* A struct that ends in an array with no size may not be a
+             * struct's member (C99 6.7.2.1p2), but a union may hold one --
+             * and is then held to the same rule itself, as the struct would
+             * be: no member of a struct, no element of an array. */
             if (type_is_struct(type)) {
                 record_complete(ext, mline);
-                if (ext_has_flex(ext))
+                if (ext_has_flex(ext) && !is_union)
                     acc_error_at(mline, "'%s' ends in an array with no size, "
                                         "so it cannot be a member",
                                  record_name(ext));
+                if (ext_has_flex(ext))
+                    holds_flex = 1;
             }
             for (m = first; name && m >= 0; m = member_next(m))
                 if (member_name(m) == name)
@@ -2693,7 +2700,7 @@ static void record_members(int x, int is_union, int line)
     ext_record_done(x, first, size);
     if (has_bits)
         ext_set_bits(x);
-    if (flexible)
+    if (flexible || holds_flex)
         ext_set_flex(x);
 }
 

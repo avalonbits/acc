@@ -2303,13 +2303,13 @@ c99-dupqual-1	pass	compiled	6.5.5 6.7.2 6.7.3 6.7.7	6.5.5:multiply 6.7.2:int 6.7
 c99-enum-comma-1	pass	compiled	6.5.17 6.7.2.2	6.5.17:comma 6.7.2.2:enum
 c99-flex-array-1	pass	rejected	6.5.2.1 6.7.2 6.7.2.1	6.5.2.1:subscript 6.7.2.1:bit-field 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2:int
 c99-flex-array-2	pass	rejected	6.4.5 6.5.2.1 6.5.2.3 6.5.16.1 6.7.2 6.7.2.1	6.4.5:string 6.5.16.1:assign 6.5.2.1:subscript 6.5.2.3:member 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2:char 6.7.2:int 6.7.2:void
-c99-flex-array-3	fail	line 8	6.5.2.1 6.7.2 6.7.2.1	6.5.2.1:subscript 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2.1:union 6.7.2:int 6.7.2:void
+c99-flex-array-3	pass	rejected	6.5.2.1 6.7.2 6.7.2.1	6.5.2.1:subscript 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2.1:union 6.7.2:int 6.7.2:void
 c99-flex-array-5	pass	rejected	6.5.2.1 6.7.2 6.7.2.1	6.5.2.1:subscript 6.7.2.1:flexible-member 6.7.2.1:union 6.7.2:char 6.7.2:int
 c99-flex-array-6	pass	compiled	6.5.2.1 6.5.2.3 6.5.3.2 6.5.16.1 6.7.2 6.7.2.1 6.7.5.1	6.5.16.1:assign 6.5.2.1:subscript 6.5.2.3:member 6.5.3.2:address 6.5.3.2:dereference 6.7.2.1:struct 6.7.2:int 6.7.2:void 6.7.5.1:pointer-to-array
 c99-flex-array-7	pass	rejected	6.4.5 6.5.2.1 6.5.2.3 6.5.16.1 6.5.17 6.7.2 6.7.2.1 6.7.8	6.4.5:string 6.5.16.1:assign 6.5.17:comma 6.5.2.1:subscript 6.5.2.3:member 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2:char 6.7.2:int 6.7.8:braced-initializer 6.7.8:designator
 c99-flex-array-typedef-1	pass	rejected	6.5.2.1 6.7.2 6.7.2.1 6.7.7	6.5.2.1:subscript 6.7.2.1:bit-field 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2:int 6.7.7:typedef
 c99-flex-array-typedef-2	pass	rejected	6.4.5 6.5.2.1 6.5.2.3 6.5.16.1 6.7.2 6.7.2.1 6.7.7	6.4.5:string 6.5.16.1:assign 6.5.2.1:subscript 6.5.2.3:member 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2:char 6.7.2:int 6.7.2:void 6.7.7:typedef
-c99-flex-array-typedef-3	fail	line 8	6.5.2.1 6.7.2 6.7.2.1 6.7.7	6.5.2.1:subscript 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2.1:union 6.7.2:int 6.7.2:void 6.7.7:typedef
+c99-flex-array-typedef-3	pass	rejected	6.5.2.1 6.7.2 6.7.2.1 6.7.7	6.5.2.1:subscript 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2.1:union 6.7.2:int 6.7.2:void 6.7.7:typedef
 c99-flex-array-typedef-5	pass	rejected	6.5.2.1 6.7.2 6.7.2.1 6.7.7	6.5.2.1:subscript 6.7.2.1:flexible-member 6.7.2.1:union 6.7.2:char 6.7.2:int 6.7.7:typedef
 c99-flex-array-typedef-7	pass	rejected	6.4.5 6.5.2.1 6.5.2.3 6.5.16.1 6.5.17 6.7.2 6.7.2.1 6.7.7 6.7.8	6.4.5:string 6.5.16.1:assign 6.5.17:comma 6.5.2.1:subscript 6.5.2.3:member 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2:char 6.7.2:int 6.7.7:typedef 6.7.8:braced-initializer 6.7.8:designator
 c99-flex-array-typedef-8	excluded	not C99: clang refuses it at line 6, which it does not name	6.4.5 6.5.2.1 6.5.16.1 6.5.17 6.7.2 6.7.2.1 6.7.7 6.7.8	6.4.5:string 6.5.16.1:assign 6.5.17:comma 6.5.2.1:subscript 6.7.2.1:flexible-member 6.7.2.1:struct 6.7.2:char 6.7.2:int 6.7.7:typedef 6.7.8:braced-initializer
