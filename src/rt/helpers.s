@@ -1215,126 +1215,84 @@ _acc_rt_lmul:
 	ret
 
 ; iy -> the dividend, which becomes the quotient; de -> the divisor, which is
-; overwritten by the remainder. Both unsigned.
+; overwritten by the remainder. Both unsigned. Every register but af comes
+; back as it went in.
 ;
-; The divisor is copied to a stack buffer and the remainder built beside it,
-; at ix+0..3 and ix+4..7. Neither can live in the caller's frame: the divisor
-; slot is only four bytes wide and what follows it belongs to some other
-; value, so the remainder has nowhere there to go.
+; Shift and subtract, a bit of quotient a turn, with all four numbers in
+; registers -- the quotient in b:ix, the remainder in c:hl, the divisor in
+; iyl:de and the count in iyh -- where it used to keep them in memory and
+; step each a byte at a time: 5,700 cycles a division, which was three
+; quarters of test/perf's crc.c, whose Adler-32 takes two remainders a byte.
+; The alternate registers are left alone: MOS's use of them is its own.
+;
+; The quotient takes the dividend's place a bit at a time: each turn shifts
+; the dividend's top bit out into the remainder and leaves a zero at the
+; bottom, which is the quotient's bit when the divisor does not fit. The
+; remainder never shifts a bit out of its top: before the kth turn it is
+; less than the dividend's top k-1 bits, so below 2^31 even before the
+; last.
 .ludivmod_core:
 	push	bc
 	push	de
 	push	hl
 	push	ix
+	push	iy
+	push	de			; where the remainder goes
+	push	iy			; and the quotient
 
-	ld	hl, -8
-	add	hl, sp
-	ld	sp, hl
-	push	hl
-	pop	ix
+	ex	de, hl			; the divisor: iyl:de
+	ld	de, (hl)
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	a, (hl)
+	ld	b, (iy + 3)		; the dividend: b:ix
+	ld	ix, (iy + 0)
+	ld	iyl, a
 
-	ld	a, (de)			; the divisor, copied
-	ld	(ix + 0), a
-	inc	de
-	ld	a, (de)
-	ld	(ix + 1), a
-	inc	de
-	ld	a, (de)
-	ld	(ix + 2), a
-	inc	de
-	ld	a, (de)
-	ld	(ix + 3), a
-	dec	de
-	dec	de
-	dec	de
-
-	ld	a, (ix + 0)		; a zero divisor is undefined in C
-	or	a, (ix + 1)
-	or	a, (ix + 2)
-	or	a, (ix + 3)
+	or	a, a			; a zero divisor is undefined in C:
+	jr	nz, .ldiv_go		; say zero for both rather than loop
+	sbc	hl, hl
+	sbc	hl, de
 	jr	nz, .ldiv_go
-
-	ld	(iy + 0), 0		; say zero rather than loop
-	ld	(iy + 1), 0
-	ld	(iy + 2), 0
-	ld	(iy + 3), 0
-	jp	.ldiv_store
+	ld	ix, 0
+	ld	b, 0
+	ld	c, 0
+	jr	.ldiv_store
 
 .ldiv_go:
-	ld	(ix + 4), 0		; the remainder
-	ld	(ix + 5), 0
-	ld	(ix + 6), 0
-	ld	(ix + 7), 0
-	ld	c, 32
+	or	a, a
+	sbc	hl, hl			; the remainder: c:hl = 0
+	ld	c, l
+	ld	iyh, 32
 
 .ldiv_loop:
-	; {remainder:quotient} <<= 1, the bit out of the dividend going in at
-	; the bottom of the remainder
-	sla	(iy + 0)
-	rl	(iy + 1)
-	rl	(iy + 2)
-	rl	(iy + 3)
-	rl	(ix + 4)
-	rl	(ix + 5)
-	rl	(ix + 6)
-	rl	(ix + 7)
-	ld	a, 0
-	adc	a, 0			; b = the thirty-third bit
-	ld	b, a
-
-	; remainder - divisor, kept only if it does not borrow
-	ld	a, (ix + 4)
-	sub	a, (ix + 0)
-	ld	(ix + 4), a
-	ld	a, (ix + 5)		; ld leaves the borrow alone
-	sbc	a, (ix + 1)
-	ld	(ix + 5), a
-	ld	a, (ix + 6)
-	sbc	a, (ix + 2)
-	ld	(ix + 6), a
-	ld	a, (ix + 7)
-	sbc	a, (ix + 3)
-	ld	(ix + 7), a
-	jr	nc, .ldiv_fits
-	bit	0, b			; it borrowed, but the bit above the
-	jr	nz, .ldiv_fits		; width says it fitted after all
-
-	ld	a, (ix + 4)		; put the remainder back
-	add	a, (ix + 0)
-	ld	(ix + 4), a
-	ld	a, (ix + 5)
-	adc	a, (ix + 1)
-	ld	(ix + 5), a
-	ld	a, (ix + 6)
-	adc	a, (ix + 2)
-	ld	(ix + 6), a
-	ld	a, (ix + 7)
-	adc	a, (ix + 3)
-	ld	(ix + 7), a
-	jr	.ldiv_next
-
-.ldiv_fits:
-	set	0, (iy + 0)		; the bit the shift left empty
-.ldiv_next:
-	dec	c
+	add	ix, ix			; {remainder:quotient} <<= 1
+	rl	b
+	adc	hl, hl
+	rl	c			; which leaves carry clear
+	sbc	hl, de
+	ld	a, c
+	sbc	a, iyl
+	jr	c, .ldiv_back
+	ld	c, a
+	inc	ix			; the quotient's bit
+	dec	iyh
+	jr	nz, .ldiv_loop
+	jr	.ldiv_store
+.ldiv_back:
+	add	hl, de			; c was never written
+	dec	iyh
 	jr	nz, .ldiv_loop
 
 .ldiv_store:
-	ld	a, (ix + 4)		; the remainder belongs where the
-	ld	(de), a			; divisor was
-	inc	de
-	ld	a, (ix + 5)
-	ld	(de), a
-	inc	de
-	ld	a, (ix + 6)
-	ld	(de), a
-	inc	de
-	ld	a, (ix + 7)
-	ld	(de), a
-
-	ld	hl, 8
-	add	hl, sp
-	ld	sp, hl
+	pop	iy			; the quotient where the dividend was
+	ld	(iy + 0), ix
+	ld	(iy + 3), b
+	pop	iy			; the remainder where the divisor was
+	ld	(iy + 0), hl
+	ld	(iy + 3), c
+	pop	iy
 	pop	ix
 	pop	hl
 	pop	de
