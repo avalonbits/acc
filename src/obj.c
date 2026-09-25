@@ -316,6 +316,38 @@ static int defined_here(int s, const Sym *sym)
     return sym->val >= 0;
 }
 
+/* -map: where to say what each item is, or NULL. */
+const char *obj_map_path;
+
+/* The object's items by name, one line each -- `name offset size`, in the
+ * order they come -- `static` ones too, which the object itself does not
+ * name: see the note on items above, and test/size.sh, which reads this to
+ * set acc's functions beside agondev's. An item no symbol starts, such as
+ * the one at zero before the first function, is `-`. */
+static void map_write(const int *items, int nitems)
+{
+    int nglobals = sym_nglobals(), step = (int) sizeof(Sym);
+    FILE *f = fopen(obj_map_path, "w");
+    int i, s;
+
+    if (!f)
+        acc_error("cannot write '%s'", obj_map_path);
+    for (i = 0; i < nitems; i++) {
+        int end = i + 1 < nitems ? items[i + 1] : out_len();
+        const char *name = "-";
+
+        if (end <= items[i])
+            continue;
+        for (s = 0; s < nglobals; s += step)
+            if (starts_item(s, sym_at(s)) && sym_at(s)->val == items[i]) {
+                name = name_text(sym_at(s)->name);
+                break;
+            }
+        fprintf(f, "%s %d %d\n", name, items[i], end - items[i]);
+    }
+    fclose(f);
+}
+
 void obj_write(const char *path)
 {
     FILE *f;
@@ -363,6 +395,8 @@ void obj_write(const char *path)
     for (i = 0; i < ndeps; i++)
         dep_at[i] = string_add(lex_dep_path(i));
     nitems = items_settle(items, nitems);
+    if (obj_map_path)
+        map_write(items, nitems);
 
     /* And the names it wants and holds no address of, after every symbol a
      * relocation can point at. */

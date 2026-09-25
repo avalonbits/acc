@@ -8128,6 +8128,8 @@ static void usage(void)
         "  -U  undefine one, as #undef would.\n"
         "  -include  read a file before the source, as if it began with an\n"
         "      #include of it.\n"
+        "  -map  with -c, write each function and variable the object holds,\n"
+        "      static ones too, as `name offset size`, to a file.\n"
         "  -trigraphs  read ?\?( as [ and the other eight, as C99 has them.\n"
         "      Off unless asked, as in gcc and clang: nothing uses them.\n"
         "  -I  a directory to look in for an #include, after the one the\n"
@@ -8725,6 +8727,10 @@ int main(int argc, char **argv)
             if (++i == argc)
                 usage();
             lex_prelude = argv[i];
+        } else if (!strcmp(argv[i], "-map")) {
+            if (++i == argc)
+                usage();
+            obj_map_path = argv[i];
         } else if (argv[i][0] == '-') {
             usage();
         } else if (is_object(argv[i]) || is_archive(argv[i])) {

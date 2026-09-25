@@ -1202,6 +1202,7 @@ void        ar_member(const Archive *a, int i, Object *o);
 const char *ar_member_name(const Archive *a, int i);
 
 void obj_write(const char *path);
+extern const char *obj_map_path;  /* -map: the items by name, beside the object */
 int  obj_item(const Object *o, int i);  /* where item i starts in the text */
 int  obj_item_align(const Object *o, int i); /* log2 of its alignment */
 int  obj_nrelocs(const Object *o);      /* both tables of them together */

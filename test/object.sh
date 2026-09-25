@@ -491,5 +491,25 @@ else
     fail=$((fail+1))
 fi
 
+# -map: every function and variable the object holds, static ones too, by
+# name, each at its offset and running to the next -- so that, together,
+# they are the whole of the object's text. test/size.sh reads it to set
+# acc's functions beside agondev's.
+cat > "$tmp/mapped.c" <<'EOF'
+static int counter = 3;
+int shared[4] = { 1, 2, 3, 4 };
+static int helper(int x) { return x * counter; }
+int visible(int x) { return helper(x) + shared[x & 3]; }
+EOF
+if "$ACC" -c "$tmp/mapped.c" -o "$tmp/mapped.o" -map "$tmp/mapped.map" >/dev/null 2>&1; then
+    names=$(awk '{ print $1 }' "$tmp/mapped.map" | sort | tr '\n' ' ')
+    total=$(awk '{ t += $3 } END { print t }' "$tmp/mapped.map")
+    text=$(python3 test/perf/objsize.py acc-text "$tmp/mapped.o")
+    ok "-map names statics too"        "$names" "counter helper shared visible "
+    ok "-map covers the whole text"    "$total" "$text"
+else
+    ok "-map writes a map"             "it failed" "a map"
+fi
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
