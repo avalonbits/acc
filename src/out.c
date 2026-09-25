@@ -395,6 +395,8 @@ void out_relocs_write(const char *path)
     fclose(file);
 }
 
+extern int out_start_cap;
+
 /* `header` is whether MOS's is wanted: a program has one and an object does
  * not, its bytes being something a linker will put after a header of its own
  * making. */
@@ -403,7 +405,19 @@ void out_open(const char *path, int header)
     static const unsigned char hdr[HEADER_SIZE - 4] = { 0 };
     const char *base, *scan;
 
-    cap = 4096;
+    /* 64 KB from the start, which is more than any one file here makes.
+     *
+     * The image grows by doubling, and growing it on the Agon costs both
+     * copies at once: agondev's realloc never extends a block, it mallocs
+     * the new one, copies, and frees the old. Starting at 4 KB, a 38 KB
+     * image went through 4, 8, 16 and 32 KB to 64, the last step asking for
+     * 96 KB at once beside the name and symbol tables, with the smaller
+     * blocks left behind as holes too small to use again. A 53 KB source of
+     * a thousand functions was a few hundred bytes from running out, and a
+     * compiler that much bigger could not build it. Allocated once, an image
+     * of up to 64 KB costs 64 KB and nothing more, and one that is not big
+     * is no worse off: the heap has room to spare for a small program. */
+    cap = out_start_cap;
     out_img = malloc(cap);
     if (!out_img)
         acc_error("out of memory for the output");
@@ -451,11 +465,20 @@ void out_open(const char *path, int header)
  * them was slower. That was before the output became a walking pointer, and
  * it is no longer true: each call opened a frame to do a compare and a store,
  * and doing without the calls took big.c from 871 to 848 cycles a byte. */
+/* Where the image starts: 64 KB, see out_open. test/test_out.c starts it
+ * small to have it grow many times over. */
+int out_start_cap = 65536;
+
+int out_capacity(void)
+{
+    return cap;
+}
+
 void out_grow(void)
 {
     int used = OUT_LEN;
 
-    /* One doubling is always enough: cap starts at 4096 and the largest
+    /* One doubling is always enough: cap starts at 4096 or more and the largest
      * single write is the four bytes of out_opcode24. */
     cap *= 2;
     out_img = realloc(out_img, cap);

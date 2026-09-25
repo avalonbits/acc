@@ -1020,6 +1020,8 @@ void out_relocs_write(const char *path);
  * calls each opened a frame on this target to do a compare and a store. */
 extern unsigned char *out_put, *out_limit;
 void out_grow(void);
+int  out_capacity(void);            /* the image's room, for test_out */
+extern int out_start_cap;           /* and where it starts */
 
 /* The first byte of the image, and the address the next one will have.
  *

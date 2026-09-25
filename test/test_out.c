@@ -116,6 +116,18 @@ int main(void)
     int i, base, wrong = 0;
     FILE *f;
 
+    /* 60 KB without the image growing once: it starts at 64 KB, because on
+     * the Agon every growth holds the old copy and the new one at once. */
+    out_open(path, 1);
+    is("the image starts at 64 KB", out_capacity(), 65536);
+    for (i = 0; i < WORDS; i++)
+        out_word24(i);
+    is("and 60 KB fits it as it is", out_capacity(), 65536);
+    out_free();
+
+    /* Everything after starts it small, so that it grows many times over
+     * and the boundaries below fall at every alignment. */
+    out_start_cap = 4096;
     out_open(path, 1);
     base = out_here();
 
@@ -123,6 +135,7 @@ int main(void)
      * byte written in the wrong place or dropped at a boundary shows up. */
     for (i = 0; i < WORDS; i++)
         out_word24(i * 7 + (i << 12));
+
 
     /* Single bytes after the words, to check len is still where it should be
      * once out_word24 has been the one advancing it. */
