@@ -758,7 +758,7 @@ static void untrigraph(char **end)
 
 static void unsplice(char **end)
 {
-    char *r, *w, *stop = *end;
+    char *r, *w, *q, *nl, *stop = *end;
     int extra = 0, n;
 
     for (r = src;;) {
@@ -785,9 +785,24 @@ static void unsplice(char **end)
                 continue;
             }
             if (r[1] == '\\' && !splice_at(r + 1))
-                *w++ = *r++;            /* and the one it escapes, below */
+                *w++ = *r++;            /* and the one it escapes */
+            *w++ = *r++;
+
+            continue;
         }
-        *w++ = *r++;
+
+        /* A run with no backslash in it goes down in one move, up to the
+         * end of the line when lines were joined and the newlines they
+         * took are owed. A byte at a time, this was the most expensive
+         * thing acc did with a file that joins a line near its start. */
+        q = memchr(r, '\\', (size_t) (stop - r));
+        if (!q)
+            q = stop;
+        if (extra && (nl = memchr(r, '\n', (size_t) (q - r))) != NULL)
+            q = nl + 1;
+        memmove(w, r, (size_t) (q - r));
+        w += q - r;
+        r = q;
         if (w[-1] != '\n')
             continue;
         while (extra) {
