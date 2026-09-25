@@ -4,14 +4,16 @@
 #   test/size.sh              every program, a line each
 #   test/size.sh -f <name>    and that one's functions, side by side
 #
-# The programs: each of test/perf's, one file each; zap, the assembler acc
-# exists to build on the machine, taken from a checkout at a tag as
-# test/bench.sh takes it (ZAP, ZAP_REV); and Tom's vi for the Agon, Busybox
-# vi ported, fetched at a pinned commit into test/perf/cache (VI_REV). None
-# of zap or vi is committed here: both are GPL.
+# The programs: each of test/perf's, one file each; acc itself, from this
+# repository at a fixed revision (ACC_REV); zap, the assembler acc exists to
+# build on the machine, taken from a checkout at a tag as test/bench.sh takes
+# it (ZAP, ZAP_REV); and Tom's vi for the Agon, Busybox vi ported, fetched at
+# a pinned commit into test/perf/cache (VI_REV). None of zap or vi is
+# committed here: both are GPL.
 #
 # Each is built three ways -- acc, and agondev at -Oz and at -O2, with
-# agondev's own flags, startup and link -- and two sizes are given for each.
+# agondev's own flags, startup and link, and -DAGONDEV given to acc as well
+# so that both compile the same C -- and two sizes are given for each.
 # `code` is the program's own objects: what each compiler made of its C,
 # functions, their constants and initialised data. `image` is the whole
 # linked program, library and startup included, which is what goes on the
@@ -49,6 +51,7 @@ CFLAGS="-mllvm -z80-gas-style -mllvm -z80-print-zero-offset -nostdinc
 LDFLAGS="-defsym=RAM_START=0x40000 -defsym=RAM_SIZE=0x70000
          -defsym=_has_exit_handler=0 -T $AGONDEV/config/linker.conf --oformat binary"
 
+ACC_REV=${ACC_REV:-c99-first-milestone}
 ZAP=${ZAP:-$HOME/code/zap}
 ZAP_REV=${ZAP_REV:-v1.1.0}
 VI_URL=https://github.com/tomm/toms-agon-experiments.git
@@ -67,6 +70,19 @@ for src in test/perf/*.c; do
     cp "$src" test/perf/perf.h "$work/src/$name/"
     echo "$name $work/src/$name" >> "$work/programs"
 done
+
+# acc itself, as it is built for the Agon: its sources at a fixed revision,
+# as test/bench.sh takes them, so that the program being measured does not
+# move with every change to the compiler measuring it. Moving it on is a
+# deliberate act, as bumping ZAP_REV is.
+if git rev-parse -q --verify "$ACC_REV^{commit}" >/dev/null 2>&1; then
+    mkdir -p "$work/src/acc"
+    git archive "$ACC_REV" src | tar -x -C "$work/src/acc" --strip-components=1
+    printf '#define ACC_BUILD 0\n' > "$work/src/acc/acc_build.h"
+    echo "acc $work/src/acc" >> "$work/programs"
+else
+    echo "note: no revision $ACC_REV -- acc's own source is left out" >&2
+fi
 
 if git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}" >/dev/null 2>&1; then
     mkdir -p "$work/src/zap"
@@ -111,7 +127,7 @@ build() {
         local o="$dir/$how/$(basename "$f" .c).o"
 
         if [ "$how" = acc ]; then
-            bin/acc -c "$f" -o "$o" -Iinclude -I"$dir" -map "$o.map" \
+            bin/acc -c "$f" -o "$o" -Iinclude -I"$dir" -DAGONDEV -map "$o.map" \
                 >/dev/null 2>&1 || return 1
         else
             $CC $CFLAGS -$how -I"$dir" -c "$f" -o "$o" 2>/dev/null || return 1
@@ -144,15 +160,23 @@ printf '%-10s %8s %8s %8s %6s   %8s %8s %8s %6s\n' program \
 status=0
 logs=
 while read -r name dir; do
-    for how in acc Oz O2; do
+    for how in acc Oz; do
         if ! build "$dir" "$how"; then
             echo "$name: the $how build failed" >&2
             status=1; continue 2
         fi
     done
-    ca=$(code "$dir" acc) cz=$(code "$dir" Oz) co=$(code "$dir" O2)
-    a=$(stat -c%s "$dir/acc.bin") z=$(stat -c%s "$dir/Oz.bin") o=$(stat -c%s "$dir/O2.bin")
-    printf '%-10s %8d %8d %8d %6s   %8d %8d %8d %6s\n' "$name" \
+    ca=$(code "$dir" acc) cz=$(code "$dir" Oz)
+    a=$(stat -c%s "$dir/acc.bin") z=$(stat -c%s "$dir/Oz.bin")
+
+    # -O2 is shown for what agondev makes of a program when asked for
+    # speed, and is not what the ratios are taken against, so one it cannot
+    # build is a dash: acc's own gen.c is assembly its assembler refuses.
+    co=- o=-
+    if build "$dir" O2; then
+        co=$(code "$dir" O2) o=$(stat -c%s "$dir/O2.bin")
+    fi
+    printf '%-10s %8d %8d %8s %6s   %8d %8d %8s %6s\n' "$name" \
         "$ca" "$cz" "$co" "$(ratio "$ca" "$cz")" "$a" "$z" "$o" "$(ratio "$a" "$z")"
     logs="$logs $ca/$cz/$a/$z"
 
