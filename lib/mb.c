@@ -18,6 +18,7 @@
  * rest can come in the next call.
  */
 #include <errno.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>

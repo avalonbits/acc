@@ -8,6 +8,7 @@
  * the wide two, a wchar_t's width.
  */
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 unsigned long long __acc_strtou(const char *s, char **end, int base, int step,

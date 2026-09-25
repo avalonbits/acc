@@ -322,5 +322,23 @@ int main(void) { return only_once + only_once_too; }
 EOF
 compiles "_Pragma(\"once\") read once" "$tmp/src/op_main.c"
 
+# A standard header declares the names C99 gives it and no others (7.1.3):
+# after <stdio.h>, ptrdiff_t, wchar_t and offsetof are still the
+# program's, where the headers used to bring all of <stddef.h> with them.
+# <stdlib.h> and <wchar.h> are given wchar_t, and <stddef.h> itself all
+# of them, so those are left out.
+cat > "$tmp/src/names.c" <<'EOF'
+#include <inttypes.h>
+#include <locale.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+typedef long ptrdiff_t;
+typedef int wchar_t;
+static int offsetof(int x) { return x; }
+int main(void) { return offsetof((int) sizeof(ptrdiff_t) + (int) sizeof(wchar_t)) + (NULL != 0) + (int) sizeof(size_t); }
+EOF
+compiles "headers leave <stddef.h>'s other names" -Iinclude "$tmp/src/names.c"
+
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -11,6 +11,7 @@
  * the one C promises to push back.
  */
 #include <errno.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <wchar.h>
 

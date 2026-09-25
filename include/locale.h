@@ -13,7 +13,11 @@
 #ifndef ACC_LOCALE_H
 #define ACC_LOCALE_H
 
-#include <stddef.h>
+/* The names of <stddef.h> this header is given (C99 7.1.3), and no others:
+ * a program that includes it may define ptrdiff_t or offsetof itself. */
+#ifndef NULL
+#define NULL ((void *) 0)
+#endif
 
 struct lconv {
     char *decimal_point;

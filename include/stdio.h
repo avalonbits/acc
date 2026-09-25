@@ -3,7 +3,15 @@
 #define ACC_STDIO_H
 
 #include <stdarg.h>
-#include <stddef.h>
+/* The names of <stddef.h> this header is given (C99 7.1.3), and no others:
+ * a program that includes it may define ptrdiff_t or offsetof itself. */
+#ifndef ACC_SIZE_T
+#define ACC_SIZE_T
+typedef unsigned int size_t;
+#endif
+#ifndef NULL
+#define NULL ((void *) 0)
+#endif
 
 #define EOF (-1)
 

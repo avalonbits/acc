@@ -13,7 +13,9 @@
 #ifndef ACC_INTTYPES_H
 #define ACC_INTTYPES_H
 
-#include <stddef.h>
+/* wcstoimax takes wide strings, and C99 does not give this header the
+ * name wchar_t: the type under a name of the implementation's. */
+typedef short __acc_wchar;
 #include <stdint.h>
 
 #define PRId8 "d"
@@ -202,7 +204,7 @@ imaxdiv_t imaxdiv(intmax_t numer, intmax_t denom);
 
 intmax_t  strtoimax(const char *s, char **end, int base);
 uintmax_t strtoumax(const char *s, char **end, int base);
-intmax_t  wcstoimax(const wchar_t *s, wchar_t **end, int base);
-uintmax_t wcstoumax(const wchar_t *s, wchar_t **end, int base);
+intmax_t  wcstoimax(const __acc_wchar *s, __acc_wchar **end, int base);
+uintmax_t wcstoumax(const __acc_wchar *s, __acc_wchar **end, int base);
 
 #endif

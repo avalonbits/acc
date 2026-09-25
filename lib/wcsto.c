@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 #include <limits.h>
+#include <stddef.h>
 #include <wchar.h>
 
 unsigned long long __acc_strtou(const char *s, char **end, int base, int step,
