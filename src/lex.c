@@ -4389,6 +4389,8 @@ static int escape(int wide)
                                             : "a '\\x' escape past 0xff does "
                                               "not fit in a char");
         }
+        if (value > 0x7f)
+            tok_str_escaped = 1;        /* see string_gather */
 
         return value;
     }
@@ -4399,6 +4401,8 @@ static int escape(int wide)
         if (value > most)
             acc_error_at(tok_line, "an octal escape past \\377 does not fit "
                                    "in a char");
+        if (value > 0x7f)
+            tok_str_escaped = 1;        /* see string_gather */
 
         return value;
     }
@@ -4477,12 +4481,9 @@ static void lex_quoted(int c)
     if (c != '"')
         punct_error(c);
 
-    tok_str_escaped = 0;
+    tok_str_escaped = 0;                /* escape() sets it */
     while (*cursor != '"') {
-        int escaped = *cursor == '\\', ch = literal_char(c);
-
-        if (escaped && (ch & 0x80))
-            tok_str_escaped = 1;
+        int ch = literal_char(c);
 
         if (n + 1 >= str_cap) {
             str_cap = str_cap ? str_cap * 2 : 128;
