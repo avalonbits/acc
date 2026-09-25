@@ -114,5 +114,25 @@ emits "!(a < b)"                        "$not_test" no \
 emits "!x, of a variable"               "$not_test" yes \
     'int f(int x) { return !x; }'
 
+# An assignment to a narrow local stores the low bytes, which converting to
+# its type does not change, and converts after the store only for a value
+# that is used: as a statement, or a comma's left side, it is not.
+short_narrow=e5fde1                     # push hl; pop iy
+char_narrow=7db7ed626f                  # ld a, l; or a; sbc hl, hl; ld l, a
+emits "c = x + 1, unsigned short"       "$short_narrow" no \
+    'int f(unsigned x) { unsigned short c; c = x + 1; return c; }'
+emits "for (...; c = x + 1)"            "$short_narrow" no \
+    'int f(unsigned x) { unsigned short c = 0; for (; x < 9; c = x + 1) x++; return c; }'
+emits "c = x + 1, x at the comma"       "$short_narrow" no \
+    'int f(unsigned x) { unsigned short c; return c = x + 1, c; }'
+emits "unsigned short c = x + 1"        "$short_narrow" no \
+    'int f(unsigned x) { unsigned short c = x + 1; return c; }'
+emits "b = x + 1, unsigned char"        "$char_narrow" no \
+    'int f(unsigned x) { unsigned char b; b = x + 1; return b; }'
+emits "return c = x + 1, value used"    "$short_narrow" yes \
+    'int f(unsigned x) { unsigned short c; return c = x + 1; }'
+emits "return b = x + 1, value used"    "$char_narrow" yes \
+    'int f(unsigned x) { unsigned char b; return b = x + 1; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

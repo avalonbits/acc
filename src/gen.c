@@ -274,6 +274,7 @@ static int and_a_imm(int v)  { out_byte2(0xe6, v & 0xff); return 0; }
 static int or_a_imm(int v)   { out_byte2(0xf6, v & 0xff); return 0; }
 static int xor_a_imm(int v)  { out_byte2(0xee, v & 0xff); return 0; }
 static void flags_say_nonzero(int from);
+static void jumps_forget(int from);
 static void cmp_value(int op, int is_unsigned);
 
 static int bitwise_const(int op, int value)
@@ -1854,6 +1855,25 @@ static void vbinop(int op)
  * to know whether throwing it away loses anything. */
 int gen_effects;
 
+/* The conversion an assignment to a narrow object leaves on its value,
+ * written after the store, and where it ended. */
+static int conversion_from = -1;
+static int conversion_to;
+
+/* Drop a value that nothing will read: a statement's, or the left side of a
+ * comma. When it is still the one an assignment to a narrow object just
+ * converted, the conversion goes too. */
+void gen_discard(void)
+{
+    if (conversion_from >= 0 && out_here() == conversion_to
+        && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
+        out_rewind(conversion_from);
+        jumps_forget(conversion_from);
+    }
+    conversion_from = -1;
+    vdrop();
+}
+
 void vstore_local(int offset, Type type)
 {
     gen_effects++;
@@ -1885,10 +1905,16 @@ void vstore_local(int offset, Type type)
     }
 
     if (type_size(type) < ACC_INT_SIZE) {
-        /* The narrow stores write out of HL, so the value goes there. */
+        /* The narrow stores write out of HL, so the value goes there. They
+         * write only the low bytes, which the conversion does not change,
+         * so the store comes first and the conversion after, for the value
+         * the assignment has -- which a statement throws away, and
+         * gen_discard with it. */
         force_into(vsp - 1, R_HL);
-        vconvert(type);
         store_narrow(offset, type);
+        conversion_from = out_here();
+        vconvert(type);
+        conversion_to = out_here();
 
         return;
     }
@@ -7516,6 +7542,7 @@ void gen_rollback(GenMark *m)
     /* The image goes back to where it was, so a mark left in what is being
      * forgotten would look like one left just now. */
     cmp_from = -1;
+    conversion_from = -1;
     out_rewind(m->at);
     jumps_forget(m->at);
     nfixups = m->nfixups;

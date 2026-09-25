@@ -1738,7 +1738,7 @@ static void paren_rest(void)
                                "assigned to", tok_spelling(tok));
     while (tok == TK_COMMA) {
         next();
-        vdrop();
+        gen_discard();
         expr();
     }
     expect(TK_RPAREN, "')'");
@@ -1984,7 +1984,7 @@ static void comma_expr(void)
     expr();
     while (tok == TK_COMMA) {
         next();
-        vdrop();
+        gen_discard();
         expr();
     }
 }
@@ -3703,7 +3703,7 @@ static void compound_literal(Type type, int x, int count, Type elem,
         expr();
         narrow_dest = outer;
         vstore_local(off, type);
-        vdrop();
+        gen_discard();
         gen_value_end();
         accept(TK_COMMA);
         expect(TK_RBRACE, "'}'");
@@ -5852,7 +5852,7 @@ void declaration(void)
             } else {
                 vstore_local(off, type);
             }
-            vdrop();            /* a declaration is not an expression */
+            gen_discard();            /* a declaration is not an expression */
         }
 
         if (!accept(TK_COMMA))
@@ -6469,7 +6469,7 @@ static void for_statement(void)
     } else {
         if (tok != TK_SEMI) {
             comma_expr();
-            vdrop();
+            gen_discard();
         }
         expect(TK_SEMI, "';'");
     }
@@ -6488,7 +6488,7 @@ static void for_statement(void)
         again = gen_here();
         gen_stmt_end();
         comma_expr();
-        vdrop();
+        gen_discard();
         gen_jump_to(top);
         gen_label(to_body);
     }
@@ -6682,7 +6682,7 @@ static void statement(void)
             return;
         }
         comma_expr();
-        vdrop();                /* the value of a statement is discarded */
+        gen_discard();                /* the value of a statement is discarded */
         expect(TK_SEMI, "';'");
 
         return;

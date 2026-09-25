@@ -838,6 +838,7 @@ void vneg(void);
 void vnot(void);
 int  vpop_reg(void);                  /* force the top into a register */
 void vdrop(void);
+void gen_discard(void);               /* drop a value nothing will read */
 void gen_stmt_end(void);              /* the scratch area is free again */
 void gen_value_end(void);             /* all of it nothing still holds */
 
