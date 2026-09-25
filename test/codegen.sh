@@ -68,6 +68,18 @@ calls "<< 9"                        _acc_rt_shl yes \
 calls "<< a variable"               _acc_rt_shl yes \
     'unsigned f(unsigned x, int n) { return x << n; }'
 
+# * by a constant: doublings and additions, up to twelve of them, and the
+# helper past that. 13 is zap's; 1030 is 0x406, ten doublings and two
+# additions, exactly twelve, so a count of its bits one too many calls.
+calls "* 13"                        _acc_rt_mul no \
+    'unsigned f(unsigned x) { return x * 13; }'
+calls "* 1030, twelve steps"        _acc_rt_mul no \
+    'unsigned f(unsigned x) { return x * 1030; }'
+calls "* 0x5555, too many steps"    _acc_rt_mul yes \
+    'unsigned f(unsigned x) { return x * 0x5555; }'
+calls "* a variable"                _acc_rt_mul yes \
+    'unsigned f(unsigned x, unsigned y) { return x * y; }'
+
 # emits <name> <hex> <yes|no> <source>: whether the object's bytes hold
 # that sequence, given as hex.
 emits() {

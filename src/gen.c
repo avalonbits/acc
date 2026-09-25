@@ -396,18 +396,38 @@ static void add_hl_hl(void) { out_byte(0x29); }
 #define MUL_MAX_STEPS 12        /* doublings plus additions, before it is
                                  * cheaper to let the helper do it */
 
+/* The powers of two a constant multiplier can hold, lowest first. */
+static const unsigned powers_of_two[16] = {
+    0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80,
+    0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000, 0x8000
+};
+
 static int mul_const(int value)
 {
-    int top, bit, pc = 0, steps;
+    const unsigned *p, *q;
+    unsigned rest;
+    int top, pc = 1, steps;
 
     if (value <= 0 || value > 0xffff)
         return 0;               /* zero and one are folded before this */
 
-    for (top = 23; top > 0 && !(value & (1 << top)); top--)
-        ;
-    for (bit = 0; bit <= top; bit++)
-        if (value & (1 << bit))
+    /* The bits are found by walking down the powers of two and taking
+     * each that still fits, rather than as `value & (1 << bit)`: on this
+     * target a shift and an AND of an int are each a call into the
+     * runtime, and finding the top bit that way, down from 23, cost two
+     * dozen of each for every constant multiply -- which every subscript
+     * of an array of anything wider than a char is. A compare and a
+     * subtract are instructions. */
+    for (p = powers_of_two + 15, top = 15; (unsigned) value < *p; p--)
+        top--;
+    rest = (unsigned) value - *p;
+    for (q = p; q > powers_of_two && rest; ) {
+        q--;
+        if (rest >= *q) {
+            rest -= *q;
             pc++;
+        }
+    }
 
     steps = top + (pc - 1);
     if (steps > MUL_MAX_STEPS)
@@ -423,10 +443,14 @@ static int mul_const(int value)
     push_rr(R_DE);
     push_rr(R_HL);
     pop_rr(R_DE);               /* de = x, whatever de held is under it */
-    for (bit = top - 1; bit >= 0; bit--) {
+    rest = (unsigned) value - *p;
+    for (q = p; q > powers_of_two; ) {
+        q--;
         add_hl_hl();
-        if (value & (1 << bit))
+        if (rest >= *q) {
+            rest -= *q;
             add_hl_rr(R_DE);
+        }
     }
     pop_rr(R_DE);
 

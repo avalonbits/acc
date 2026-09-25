@@ -37,7 +37,9 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 #              not neighbours.
 #   __imulu    a multiply. An extension or a member reached by index into
 #              an array of entries whose width is not a power of two.
-#   __ishl     a shift. An array of two-byte entries, indexed.
+#   __ishl     a shift. An array of two-byte entries, indexed; and the bits
+#              of a constant multiplier, which mul_const, inlined into
+#              vbinop, finds without one.
 #   __llsh     a 64-bit shift, a bit at a time. A wide constant's bytes,
 #              shifted out of it rather than read from where it lies.
 checks=(
@@ -50,6 +52,7 @@ checks=(
            member_type member_offset member_next"
     "sym.c __ishl sym_param_type sym_param_ext"
     "gen.c __llsh wide_bytes_at"
+    "gen.c __ishl vbinop"
     "parse.c - starts_decl"
     "lex.c +next lex_two"
     "parse.c +base_type type_specifier_slow"
