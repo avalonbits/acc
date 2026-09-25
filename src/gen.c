@@ -3829,6 +3829,26 @@ static void rt_call(int which)
     nrt_fixups++;
 }
 
+/* The ways into the blob, for -map on a link: each runs to the next one
+ * in, or to the end of what was laid down. */
+__attribute__((noinline))
+static void rt_map(int len)
+{
+    int i, j;
+
+    for (i = 0; i < RT_COUNT; i++) {
+        int end = len;
+
+        if (rt_entry[i] >= len)
+            continue;
+        for (j = 0; j < RT_COUNT; j++)
+            if (rt_entry[j] > rt_entry[i] && rt_entry[j] < end)
+                end = rt_entry[j];
+        obj_link_map_item(rt_base + rt_entry[i], end - rt_entry[i],
+                          rt_name[i], "(runtime)", rt_entry[i]);
+    }
+}
+
 /* The blob, once, wherever the image has got to -- which is after everything
  * else, since this is the last thing written. Every call to a helper is then
  * pointed at it: the ones this compile emitted directly, and the ones that
@@ -3857,6 +3877,9 @@ static void rt_emit_used(void)
     /* And the calls the compiled program makes to them. */
     for (i = 0; i < nrt_fixups; i++)
         out_patch24(rt_fixups[i].at, rt_base + rt_entry[rt_fixups[i].which]);
+
+    if (obj_link_map_on())
+        rt_map(len);
 
     /* The ones that came in by name have a symbol, and the fixups waiting on
      * it are filled in with the rest of them below. */

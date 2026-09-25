@@ -8129,7 +8129,8 @@ static void usage(void)
         "  -include  read a file before the source, as if it began with an\n"
         "      #include of it.\n"
         "  -map  with -c, write each function and variable the object holds,\n"
-        "      static ones too, as `name offset size`, to a file.\n"
+        "      static ones too, as `name offset size`, to a file. On a link,\n"
+        "      where each went: `address size name object offset`.\n"
         "  -trigraphs  read ?\?( as [ and the other eight, as C99 has them.\n"
         "      Off unless asked, as in gcc and clang: nothing uses them.\n"
         "  -I  a directory to look in for an #include, after the one the\n"
@@ -8393,6 +8394,27 @@ static int item_end(const Object *o, int i)
  * another look at this one. The bss is taken whole, the first time
  * anything taken wants it: it costs the machine room past the image and
  * none in the image itself. */
+/* The line -map gives an item the link has just placed: named by the
+ * global it starts with, if any does. */
+__attribute__((noinline))
+static void link_map_item(const Object *o, int i, int at, const char *path)
+{
+    const char *name = "-";
+    int s;
+
+    for (s = 0; s < o->nsyms; s++) {
+        int flags = obj_sym_flags(o, s);
+
+        if ((flags & OBJ_DEFINED) && !(flags & OBJ_BSS)
+            && obj_sym_value(o, s) == obj_item(o, i)) {
+            name = obj_c_name(obj_sym_name(o, s));
+            break;
+        }
+    }
+    obj_link_map_item(at, item_end(o, i) - obj_item(o, i), name, path,
+                      obj_item(o, i));
+}
+
 static void take_items(Object *op, Taken *t, const char *name, const char *path)
 {
     Object o = *op;
@@ -8458,6 +8480,8 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         t->placed[i] = out_here();
         for (b = obj_item(&o, i); b < item_end(&o, i); b++)
             out_byte(o.text[b]);
+        if (obj_link_map_on())
+            link_map_item(&o, i, t->placed[i], path);
     }
     if (want_bss && t->bss < 0) {
         t->bss = gen_bss_reserve_aligned(o.bss_len, o.bss_align);
@@ -8775,6 +8799,8 @@ int main(int argc, char **argv)
          * other -- which is what makes the objects' own symbols do the work
          * of finding it. */
         out_open(out, 1);
+        if (obj_map_path)
+            obj_link_map_open();
         gen_startup(ending, out);
         for (i = 0; i < nobjs; i++) {
             if (is_archive(objs[i]))
@@ -8783,6 +8809,7 @@ int main(int argc, char **argv)
                 link_object(objs[i]);
         }
         gen_finish();
+        obj_link_map_close();
         out_close();
     } else if (to_object && obj_current(out, in)) {
         /* Nothing to do: the object is there and every file it was made

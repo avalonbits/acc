@@ -348,6 +348,42 @@ static void map_write(const int *items, int nitems)
     fclose(f);
 }
 
+/* -map on a link: where each item the link placed went. A line each --
+ * `address size name object offset`, the address in hex -- in the order
+ * they were placed, which is the order of the image. `name` is the global
+ * the item starts with, or `-` for a static one, which the object's own
+ * map, from -map when it was compiled, names by its offset. The runtime
+ * helpers come last, one line to each way in, from `(runtime)`.
+ *
+ * It is what a profile of a program on the machine is read against: the
+ * cycles are charged to addresses, and this says whose code is at each. */
+static FILE *link_map;
+
+void obj_link_map_open(void)
+{
+    link_map = fopen(obj_map_path, "w");
+    if (!link_map)
+        acc_error("cannot write '%s'", obj_map_path);
+}
+
+int obj_link_map_on(void)
+{
+    return link_map != NULL;
+}
+
+void obj_link_map_item(int at, int size, const char *name, const char *from,
+                       int offset)
+{
+    fprintf(link_map, "%06x %d %s %s %d\n", at, size, name, from, offset);
+}
+
+void obj_link_map_close(void)
+{
+    if (link_map)
+        fclose(link_map);
+    link_map = NULL;
+}
+
 void obj_write(const char *path)
 {
     FILE *f;

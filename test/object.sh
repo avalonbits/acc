@@ -511,5 +511,62 @@ else
     ok "-map writes a map"             "it failed" "a map"
 fi
 
+# -map on a link: where each item went. Checked against the objects: an
+# item is as long in the image as its object's own map says, the items
+# come one after another in the order of the image, and at the address
+# the map gives an item is its object's bytes -- `twice`, which holds no
+# address to be moved. The runtime is listed when the program calls it.
+cat > "$tmp/la.c" <<'EOF2'
+static int sq(int x) { return x * x; }
+int twice(int x);
+int main(void) { return sq(twice(3)) / 7; }
+EOF2
+printf 'int twice(int x) { return x + x; }\n' > "$tmp/lb.c"
+if "$ACC" -c "$tmp/la.c" -o "$tmp/la.o" -map "$tmp/la.map" >/dev/null 2>&1 \
+   && "$ACC" -c "$tmp/lb.c" -o "$tmp/lb.o" -map "$tmp/lb.map" >/dev/null 2>&1 \
+   && "$ACC" "$tmp/la.o" "$tmp/lb.o" -o "$tmp/l.bin" -map "$tmp/l.map" >/dev/null 2>&1; then
+    got=$(python3 - "$tmp" <<'PY'
+import sys
+t = sys.argv[1]
+
+def n3(d, at):
+    return d[at] | d[at + 1] << 8 | d[at + 2] << 16
+
+def text(path):                 # an object's text: see src/obj.c
+    d = open(path, 'rb').read()
+    at = 31 + n3(d, 13) * 7 + n3(d, 16) * 6 + n3(d, 28) * 9 + n3(d, 19) * 12
+    at += n3(d, 25) * 3 + n3(d, 22)
+    return d[at:at + n3(d, 7)]
+
+own = {}
+for stem in ('la', 'lb'):
+    for line in open('%s/%s.map' % (t, stem)):
+        name, off, size = line.split()
+        own[('%s/%s.o' % (t, stem), int(off))] = int(size)
+image = open(t + '/l.bin', 'rb').read()
+rows = [l.split() for l in open(t + '/l.map')]
+out = []
+end = 0
+for at, size, name, obj, off in rows:
+    at, size, off = int(at, 16), int(size), int(off)
+    if at < end:
+        out.append('overlap at %s' % name)
+    end = at + size
+    if obj != '(runtime)' and own.get((obj, off)) != size:
+        out.append('%s is %d, its object says %s' % (name, size, own.get((obj, off))))
+    if name == 'twice':
+        body = image[at - 0x40000:at - 0x40000 + size]
+        out.append('twice ' + ('matches' if body == text(obj)[off:off + size] else 'differs'))
+names = [r[2] for r in rows if r[3] != '(runtime)']
+out.append(' '.join(names))
+out.append('runtime' if any(r[2] == 'acc_rt_mul' for r in rows) else 'no runtime')
+print('; '.join(out))
+PY
+)
+    ok "-map on a link"                "$got" "twice matches; - main twice; runtime"
+else
+    ok "-map on a link writes a map"   "it failed" "a map"
+fi
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
