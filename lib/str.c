@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
+#include <ctype.h>
 #include <string.h>
 
 size_t strlen(const char *s)
@@ -101,6 +102,22 @@ int strncmp(const char *a, const char *b, size_t n)
     return n ? *p - *q : 0;
 }
 
+/* strncmp with the case of letters taken out, as tolower has it: what
+ * the two compare as, in the C locale, is their lowercase. */
+int strncasecmp(const char *a, const char *b, size_t n)
+{
+    const unsigned char *p = (const unsigned char *) a;
+    const unsigned char *q = (const unsigned char *) b;
+
+    while (n && *p && tolower(*p) == tolower(*q)) {
+        p++;
+        q++;
+        n--;
+    }
+
+    return n ? tolower(*p) - tolower(*q) : 0;
+}
+
 /* The terminating zero counts as part of the string, so strchr(s, 0) finds
  * the end of it. */
 char *strchr(const char *s, int c)
@@ -110,6 +127,16 @@ char *strchr(const char *s, int c)
             return (char *) s;
 
     return (char) c ? NULL : (char *) s;
+}
+
+/* As strchr, but a character not there finds the end of the string rather
+ * than nothing. */
+char *strchrnul(const char *s, int c)
+{
+    while (*s && *s != (char) c)
+        s++;
+
+    return (char *) s;
 }
 
 char *strrchr(const char *s, int c)

@@ -37,8 +37,13 @@ size_t strxfrm(char *to, const char *from, size_t n);
 
 char  *strerror(int n);
 
-/* Not C89's, but every C library has it and a compiler that keeps the text
- * it has read wants it. */
+/* Not C99's, but every C library has them, and so has agondev's, which
+ * programs written for the Agon were built with: POSIX's strdup, strndup
+ * and strncasecmp, and GNU's strchrnul. C99 7.26.11 keeps names that begin
+ * `str` and a lowercase letter for this header to add. */
 char  *strdup(const char *s);
+char  *strndup(const char *s, size_t n);
+int    strncasecmp(const char *a, const char *b, size_t n);
+char  *strchrnul(const char *s, int c);
 
 #endif

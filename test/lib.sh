@@ -123,6 +123,28 @@ int main(void) {
 }
 '
 
+runs "the ones that are not C99, which agondev has" \
+'#include <stdlib.h>
+#include <string.h>
+
+int main(void) {
+    int r = 0;
+    char *s = strndup("abcdef", 3), *t = strndup("ab", 9);
+    const char *h = "hello";
+
+    if (s && strcmp(s, "abc") == 0 && t && strcmp(t, "ab") == 0) r++;
+    free(s);
+    free(t);
+    if (strncasecmp("HeLLo there", "hello THERE", 11) == 0) r++;
+    if (strncasecmp("abcX", "ABCY", 3) == 0 && strncasecmp("a", "B", 1) < 0) r++;
+    if (strncasecmp("b", "A", 1) > 0 && strncasecmp("x", "y", 0) == 0) r++;
+    if (strchrnul(h, 108) == h + 2 && strchrnul(h, 122) == h + 5) r++;
+    if (strchrnul(h, 0) == h + 5) r++;
+
+    return r + 36;                      /* 6 checks */
+}
+'
+
 runs "what is in <stdio.h>" \
 '#include <stdio.h>
 
