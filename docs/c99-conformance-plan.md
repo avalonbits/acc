@@ -1,5 +1,8 @@
 # A C99 conformance suite for acc: the plan
 
+Where acc stands now, and what is still open, is in
+[c99-status.md](c99-status.md); this document is how it got there.
+
 acc is written towards C99, and today nothing measures how far it has got.
 The tests in `test/cases` check what their author thought to check, one
 feature at a time; `test/cpp89` measures the preprocessor against a real
