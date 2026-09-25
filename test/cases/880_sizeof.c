@@ -1,6 +1,7 @@
 /* sizeof: of types, of expressions without evaluating them, of arrays whole
  * rather than as pointers, and of structs as agondev lays them out. */
 struct s { char c; int i; long l; };
+int later(void);                        /* defined at the end */
 int g[10];
 char text[] = "hello";
 

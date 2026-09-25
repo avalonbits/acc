@@ -1,6 +1,7 @@
 /* A call to a function defined further down, from inside an assignment.
  *
- * The call creates the symbol for f, and it creates it in the middle of
+ * The declaration in main's body creates the symbol for f -- it was the
+ * call that did, when a call could declare a function -- in the middle of
  * main's body. Pushed as if it were one of main's locals it is dropped at
  * main's closing brace, and the definition below then makes a second, unrelated
  * symbol -- leaving the fixup for the call pointing at whatever later occupied
@@ -11,6 +12,7 @@
  * takes a local in between.
  */
 int main(void) {
+    int f(int);                 /* declared in the block, as C99 asks */
     int s;
     s = f(41);
 

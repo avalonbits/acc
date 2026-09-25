@@ -451,6 +451,7 @@ int  lex_rparen_follows(void);   /* and whether `)` does */
 int  lex_rbracket_follows(void); /* or `]` */
 int  lex_string_follows(void);   /* or a string */
 extern int lex_trigraphs;       /* -trigraphs: see src/lex.c */
+extern const char *lex_prelude; /* -include: read before the source */
 int  lex_ident_follows(void);    /* and whether a name does */
 int  lex_rbrace_follows(void);   /* and whether `}` does */
 int         accept_next(void);          /* next(), returning 1, for accept */

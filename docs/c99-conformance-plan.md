@@ -73,7 +73,9 @@ a test's first error:
   (5.2.1.1) are read only with `-trigraphs`, as gcc and clang have them
   outside their strict modes: looking for them is a scan of every byte of
   every file, which cost 0.57% of a compile, for a form nothing written
-  since C89 uses.
+  since C89 uses. A call to a function not declared is refused (6.5.2.2),
+  as gcc 14 refuses it: C99 took away the implicit declaration C89 gave
+  one, and acc had kept it.
 - **The headers a freestanding implementation must have** (clause 4):
   `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
   `<stddef.h>`, `<stdint.h>`. All seven are there, `<stdint.h>` now the

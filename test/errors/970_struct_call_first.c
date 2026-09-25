@@ -1,4 +1,4 @@
-/* expect: 5: error: 'f' returns a struct, so it has to be declared before it is called */
+/* expect: 4: error: 'f' is called and not declared */
 /* The call took the result to be an int, which cannot be put right after. */
 struct point { int x; };
 int g(void) { return f(); }

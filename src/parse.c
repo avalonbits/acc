@@ -175,10 +175,13 @@ static void call_rest(NameRef name)
     int fn = sym_find(name);
     int nargs, nparams;
 
-    /* Not seen yet: assumed to be a function defined further down the file.
-     * gen_finish reports it if it never is. */
+    /* Not declared: C99 took away the implicit declaration C89 gave such a
+     * call, of a function returning int (6.5.1p2, 6.5.2.2), and a program
+     * that relies on one is refused, as gcc 14 refuses it. */
     if (fn == SYM_NONE) {
-        fn = sym_push(name, SYM_FUNC, 0);
+        acc_error_at(tok_line, "'%s' is called and not declared; C99 needs a "
+                               "declaration of a function before a call to it",
+                     name_text(name));
     } else if (sym_at(fn)->kind != SYM_FUNC) {
         call_variable(fn, name);
 
@@ -6380,12 +6383,6 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                                                     : "declared");
     declared = fn != SYM_NONE && (sym_flags(fn) & SYMF_DECLARED);
 
-    /* A call before any declaration took the result to be an int, which
-     * for a struct is not something that can be put right afterwards. */
-    if (fn != SYM_NONE && !declared && type_is_struct(ret_type))
-        acc_error_at(line, "'%s' returns a struct, so it has to be declared "
-                           "before it is called", name_text(name));
-
     /* Pushed before the parameters: a file-scope symbol goes in below the
      * locals, which would move the parameters along if it came after. */
     if (fn == SYM_NONE)
@@ -7625,6 +7622,7 @@ static void usage(void)
         "                                    [-D <name>[=<value>]]...\n"
         "                                    [-U <name>]...\n"
         "                                    [-r <file>] [-x] [-trigraphs]\n"
+        "                                    [-include <file>]\n"
         "       acc <file.o|lib.a>... -o <out.bin> [-x]\n"
         "       acc -a <lib.a> <file.o>...\n"
         "\n"
@@ -7638,6 +7636,8 @@ static void usage(void)
         "  -D  define a name before the file is read, as #define would:\n"
         "      `-DN` is `-DN=1`, and `-D\'N(a,b)=...\'` takes parameters.\n"
         "  -U  undefine one, as #undef would.\n"
+        "  -include  read a file before the source, as if it began with an\n"
+        "      #include of it.\n"
         "  -trigraphs  read ?\?( as [ and the other eight, as C99 has them.\n"
         "      Off unless asked, as in gcc and clang: nothing uses them.\n"
         "  -I  a directory to look in for an #include, after the one the\n"
@@ -8228,6 +8228,10 @@ int main(int argc, char **argv)
             by_exit = 1;
         } else if (!strcmp(argv[i], "-trigraphs")) {
             lex_trigraphs = 1;
+        } else if (!strcmp(argv[i], "-include")) {
+            if (++i == argc)
+                usage();
+            lex_prelude = argv[i];
         } else if (argv[i][0] == '-') {
             usage();
         } else if (is_object(argv[i]) || is_archive(argv[i])) {

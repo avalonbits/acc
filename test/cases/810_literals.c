@@ -3,6 +3,8 @@
  * sized by the string, with room to spare, filled exactly with no room for
  * the terminator, and as the rows of a 2-D array -- local and global.
  */
+int sizeof_name(void);                  /* defined at the end */
+
 char *greeting = "hello";
 char name[] = "acc";                    /* four elements, the last a zero */
 char exact[3] = "abc";                  /* no room for one, and none added */

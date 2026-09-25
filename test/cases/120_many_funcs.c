@@ -9,6 +9,78 @@
  *
  * Each step adds one, from -28, so the answer is 42 however many there are.
  */
+/* Declared first, as C99 asks; the calls are still forward references. */
+int f0(int);
+int f1(int);
+int f2(int);
+int f3(int);
+int f4(int);
+int f5(int);
+int f6(int);
+int f7(int);
+int f8(int);
+int f9(int);
+int f10(int);
+int f11(int);
+int f12(int);
+int f13(int);
+int f14(int);
+int f15(int);
+int f16(int);
+int f17(int);
+int f18(int);
+int f19(int);
+int f20(int);
+int f21(int);
+int f22(int);
+int f23(int);
+int f24(int);
+int f25(int);
+int f26(int);
+int f27(int);
+int f28(int);
+int f29(int);
+int f30(int);
+int f31(int);
+int f32(int);
+int f33(int);
+int f34(int);
+int f35(int);
+int f36(int);
+int f37(int);
+int f38(int);
+int f39(int);
+int f40(int);
+int f41(int);
+int f42(int);
+int f43(int);
+int f44(int);
+int f45(int);
+int f46(int);
+int f47(int);
+int f48(int);
+int f49(int);
+int f50(int);
+int f51(int);
+int f52(int);
+int f53(int);
+int f54(int);
+int f55(int);
+int f56(int);
+int f57(int);
+int f58(int);
+int f59(int);
+int f60(int);
+int f61(int);
+int f62(int);
+int f63(int);
+int f64(int);
+int f65(int);
+int f66(int);
+int f67(int);
+int f68(int);
+int f69(int);
+
 int main(void) {
     int s = -28;
     s = f0(s);

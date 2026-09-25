@@ -1,4 +1,4 @@
-/* expect: 4: error: 'later' returns void and is called before it is defined, which declares it as returning int; move its definition above the call */
+/* expect: 4: error: 'later' is called and not declared */
 /* Called before its definition, it is taken to return int, as C says. */
 int main(void) {
     later();

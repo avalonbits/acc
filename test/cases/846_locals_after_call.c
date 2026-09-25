@@ -1,4 +1,4 @@
-/* A call to a function not yet declared adds a file-scope symbol, which
+/* A function declared in a block adds a file-scope symbol, which
  * goes in below the function's own and moves them along. What is kept
  * beside each symbol has to move with it: a local array's count, which
  * sizeof and & read, came back as another symbol's. */
@@ -6,6 +6,7 @@ int main(void) {
     int r = 0;
     int a[5];
     char b[7];
+    int later(void);            /* declared among them, as C99 asks */
     int n = later();
     int (*p)[5] = &a;
 

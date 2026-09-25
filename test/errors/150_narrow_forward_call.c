@@ -1,4 +1,4 @@
-/* expect: 3: error: 'later' returns a one-byte type and is called before it is defined */
+/* expect: 3: error: 'later' is called and not declared */
 int main(void) {
     return later(1);
 }

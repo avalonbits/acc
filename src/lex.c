@@ -1261,6 +1261,8 @@ static int pop_source(void)
     return 1;
 }
 
+const char *lex_prelude;
+
 void lex_open(const char *path)
 {
     src_file = fopen(path, "rb");
@@ -1281,6 +1283,11 @@ void lex_open(const char *path)
     line = 1;
     depth = 0;
     refill();
+
+    /* -include: a file read before the source, as if its first line were
+     * an #include of it -- which is what gcc and clang mean by it. */
+    if (lex_prelude)
+        push_source(lex_prelude);
     next();
 }
 

@@ -26,13 +26,14 @@
 #           calls as builtins -- __builtin_memcpy -- which name functions
 #           C99 has; these map the spelling to the function, and are a
 #           measuring device rather than a change to what is compiled.
+#           builtins.h, given with -include, declares what they map to.
 #
 # Fetched, not vendored: gcc's tests are GPL-3 and acc is LGPL-2.1.
 
 source gcc-torture https://github.com/gcc-mirror/gcc.git 56de4652dbfc3a79ee4946f0274aba115bd83ccb gcc/testsuite/gcc.c-torture/execute
 also gcc/testsuite/gcc.dg
 filter -std=c99 -pedantic-errors -Werror=implicit-function-declaration -Wno-deprecated-non-prototype -Wno-strict-prototypes
-define -D__builtin_abort=abort -D__builtin_memset=memset -D__builtin_memcpy=memcpy -D__builtin_memmove=memmove -D__builtin_strcmp=strcmp -D__builtin_memcmp=memcmp -D__builtin_printf=printf -D__builtin_strlen=strlen -D__builtin_malloc=malloc -D__builtin_sprintf=sprintf -D__builtin_strcpy=strcpy -D__builtin_strncpy=strncpy -D__builtin_abs=abs -D__builtin_snprintf=snprintf -D__builtin_copysign=copysign -D__builtin_exit=exit -D__builtin_free=free -D__builtin_strchr=strchr -D__builtin_strrchr=strrchr -D__builtin_strcat=strcat -D__builtin_labs=labs -D__builtin_fabs=fabs
+define -include test/conformance/builtins.h -D__builtin_abort=abort -D__builtin_memset=memset -D__builtin_memcpy=memcpy -D__builtin_memmove=memmove -D__builtin_strcmp=strcmp -D__builtin_memcmp=memcmp -D__builtin_printf=printf -D__builtin_strlen=strlen -D__builtin_malloc=malloc -D__builtin_sprintf=sprintf -D__builtin_strcpy=strcpy -D__builtin_strncpy=strncpy -D__builtin_abs=abs -D__builtin_snprintf=snprintf -D__builtin_copysign=copysign -D__builtin_exit=exit -D__builtin_free=free -D__builtin_strchr=strchr -D__builtin_strrchr=strrchr -D__builtin_strcat=strcat -D__builtin_labs=labs -D__builtin_fabs=fabs
 
 # c-testsuite's single-exec tests: 220, of which 150 are from scc and 69
 # from tinycc's tests2, each returning 0 and printing what its .expected
@@ -48,4 +49,4 @@ filter -std=c99 -pedantic-errors -Werror=implicit-function-declaration -Wno-depr
 source gcc-dg https://github.com/gcc-mirror/gcc.git 56de4652dbfc3a79ee4946f0274aba115bd83ccb gcc/testsuite/gcc.dg
 kinds dg
 filter -std=c99 -pedantic-errors -Werror=implicit-function-declaration -Wno-deprecated-non-prototype -Wno-strict-prototypes
-define -D__builtin_abort=abort -D__builtin_memset=memset -D__builtin_memcpy=memcpy -D__builtin_memmove=memmove -D__builtin_strcmp=strcmp -D__builtin_memcmp=memcmp -D__builtin_printf=printf -D__builtin_strlen=strlen -D__builtin_malloc=malloc -D__builtin_sprintf=sprintf -D__builtin_strcpy=strcpy -D__builtin_strncpy=strncpy -D__builtin_abs=abs -D__builtin_snprintf=snprintf -D__builtin_copysign=copysign -D__builtin_exit=exit -D__builtin_free=free -D__builtin_strchr=strchr -D__builtin_strrchr=strrchr -D__builtin_strcat=strcat -D__builtin_labs=labs -D__builtin_fabs=fabs
+define -include test/conformance/builtins.h -D__builtin_abort=abort -D__builtin_memset=memset -D__builtin_memcpy=memcpy -D__builtin_memmove=memmove -D__builtin_strcmp=strcmp -D__builtin_memcmp=memcmp -D__builtin_printf=printf -D__builtin_strlen=strlen -D__builtin_malloc=malloc -D__builtin_sprintf=sprintf -D__builtin_strcpy=strcpy -D__builtin_strncpy=strncpy -D__builtin_abs=abs -D__builtin_snprintf=snprintf -D__builtin_copysign=copysign -D__builtin_exit=exit -D__builtin_free=free -D__builtin_strchr=strchr -D__builtin_strrchr=strrchr -D__builtin_strcat=strcat -D__builtin_labs=labs -D__builtin_fabs=fabs
