@@ -1240,18 +1240,56 @@ _acc_rt_lmul:
 	push	de			; where the remainder goes
 	push	iy			; and the quotient
 
+	; The dividend: b:ix, from its first byte that is not zero -- the
+	; turns for the bytes above it would shift zeros through a zero
+	; remainder and give zeros -- with c the turns that are left. A
+	; dividend under 2^24 takes 24 turns, under 2^16 16: Adler-32's are
+	; under 2^17. The bytes below the first one read are read from
+	; before the dividend and cleared.
+	ld	c, 32
+	ld	a, (iy + 3)
+	or	a, a
+	jr	nz, .ldiv_32
+	ld	c, 24
+	ld	a, (iy + 2)
+	or	a, a
+	jr	nz, .ldiv_24
+	ld	c, 16
+	ld	a, (iy + 1)
+	or	a, a
+	jr	nz, .ldiv_16
+	ld	c, 8
+	ld	b, (iy + 0)
+	ld	ix, 0
+	jr	.ldiv_divisor
+.ldiv_16:
+	ld	b, a
+	ld	ix, (iy - 2)
+	ld	ixl, 0
+	ld	ixh, 0
+	jr	.ldiv_divisor
+.ldiv_24:
+	ld	b, a
+	ld	ix, (iy - 1)
+	ld	ixl, 0
+	jr	.ldiv_divisor
+.ldiv_32:
+	ld	b, a
+	ld	ix, (iy + 0)
+.ldiv_divisor:
 	ex	de, hl			; the divisor: iyl:de
 	ld	de, (hl)
 	inc	hl
 	inc	hl
 	inc	hl
 	ld	a, (hl)
-	ld	b, (iy + 3)		; the dividend: b:ix
-	ld	ix, (iy + 0)
 	ld	iyl, a
+	ld	a, c
+	ld	iyh, a			; the count
 
-	or	a, a			; a zero divisor is undefined in C:
-	jr	nz, .ldiv_go		; say zero for both rather than loop
+	ld	a, iyl			; a zero divisor is undefined in C:
+	or	a, a			; say zero for both rather than loop
+	jr	nz, .ldiv_go
 	sbc	hl, hl
 	sbc	hl, de
 	jr	nz, .ldiv_go
@@ -1264,7 +1302,6 @@ _acc_rt_lmul:
 	or	a, a
 	sbc	hl, hl			; the remainder: c:hl = 0
 	ld	c, l
-	ld	iyh, 32
 
 .ldiv_loop:
 	add	ix, ix			; {remainder:quotient} <<= 1
