@@ -275,6 +275,7 @@ static int or_a_imm(int v)   { out_byte2(0xf6, v & 0xff); return 0; }
 static int xor_a_imm(int v)  { out_byte2(0xee, v & 0xff); return 0; }
 static void flags_say_nonzero(int from);
 static void jumps_forget(int from);
+static int  widen_again(Type to);
 static void cmp_value(int op, int is_unsigned);
 
 static int bitwise_const(int op, int value)
@@ -877,6 +878,20 @@ void vconvert(Type to)
 
         return;
     }
+
+    /* A narrow local going to a type as wide is read as that type: the
+     * load is the whole of the conversion. And one just read through a
+     * pointer is widened again as `to` wants, if it was not already. */
+    if (top->kind == VAL_LOCAL && !top->bits
+        && type_size(top->type) == type_size(to)) {
+        top->type = to;
+        force_into(vsp - 1, R_HL);
+        (vsp - 1)->type = type_promote(to);
+
+        return;
+    }
+    if (widen_again(to))
+        return;
 
     force_into(vsp - 1, R_HL);
     convert_in_hl(to);
@@ -3529,6 +3544,61 @@ static int jump_on_flags(int op, int is_unsigned)
     return second;
 }
 
+/* The narrow value vderef just read, widened to an int in HL: the high
+ * byte is in A, and the widening is what `to` says. For one byte, that is
+ * all of it; for two, the low byte is still at (iy+0).
+ *
+ * Where the widening begins is kept, as vcmp keeps its mark: a conversion
+ * straight after to a type as wide -- `(unsigned char) *p` of a char, or a
+ * char argument to a char parameter -- needs only the widening that type
+ * wants, and the one here is rewound and written again, or kept if it is
+ * already the one. */
+static int  widen_from = -1;    /* where the widening began */
+static int  widen_to;           /* and where the value was done */
+static Type widen_type;         /* the narrow type it was widened as */
+
+static void widen_as(Type to)
+{
+    if (type_unsigned(to))
+        fill_hl_with_zero();
+    else
+        fill_hl_with_sign_of_a();
+    if (type_size(to) == 1) {
+        ld_l_a();
+    } else {
+        ld_h_a();
+        out_byte3(0xfd, 0x6e, 0x00);    /* ld l, (iy+0) */
+    }
+}
+
+static void widen_loaded(Type to)
+{
+    widen_from = out_here();
+    widen_as(to);
+    widen_to = out_here();
+    widen_type = to;
+}
+
+/* Whether the value on top is that one, and `to` as wide: if so, it is
+ * converted to `to` here. */
+static int widen_again(Type to)
+{
+    Value *top = vsp - 1;
+
+    if (widen_from < 0 || out_here() != widen_to || top->kind != VAL_REG
+        || top->val != R_HL || type_size(widen_type) != type_size(to))
+        return 0;
+    if (type_unsigned(widen_type) != type_unsigned(to)) {
+        out_rewind(widen_from);
+        widen_as(to);
+        widen_to = out_here();
+    }
+    widen_type = to;
+    top->type = type_promote(to);
+
+    return 1;
+}
+
 /* The mark `a && b` and `a || b` leave, as vcmp does: the bytes that make
  * a one or a zero of where the jumps went, which a branch straight after
  * them undoes, to jump on where they went instead. `while (p < e && ok(*p))`
@@ -3594,6 +3664,20 @@ static int jump_on_truth(int when_true)
         patch_to_here(chain);
 
         return over;
+    }
+
+    /* A byte just read or returned, and widened: the whole of it is in A,
+     * so the widening goes and A is tested. `while (*p)` and a branch on a
+     * function returning bool are these. */
+    if (widen_from >= 0 && out_here() == widen_to && vtop == 1
+        && type_size(widen_type) == 1
+        && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
+        out_rewind(widen_from);
+        widen_from = -1;
+        vdrop();
+        or_a_a();
+
+        return jump_op(when_true ? JP_NZ : JP_Z);
     }
 
     if (cmp_from >= 0 && out_here() == cmp_to && vtop == 1
@@ -6523,15 +6607,8 @@ static void call_to(const Callee *callee, int nargs, int params_first,
     }
 
     /* Read the answer from where the callee's type says it is. */
-    if (RETURNS_IN_A(callee->type)) {
-        Type returns = callee->type;
-
-        if (type_unsigned(returns))
-            fill_hl_with_zero();
-        else
-            fill_hl_with_sign_of_a();
-        ld_l_a();
-    }
+    if (RETURNS_IN_A(callee->type))
+        widen_loaded(callee->type);
     vpush_reg(R_HL);
     (vsp - 1)->type = type_promote(callee->type);
     (vsp - 1)->ext = (unsigned char) callee->ext;
@@ -6759,6 +6836,19 @@ void vapply(int op, Type narrow)
     left  = (vsp - 2)->type;
     right = (vsp - 1)->type;
 
+    /* `x != 0` and `x == 0` straight after a comparison or an AND that left
+     * its mark are `!!x` and `!x`: vtruth reads the flags. `(c & 1) != 0`
+     * is how a test of a bit is written, and is every one of zap's
+     * character classes. */
+    if ((op == TK_EQ || op == TK_NE) && (vsp - 1)->kind == VAL_CONST
+        && (vsp - 1)->val == 0 && cmp_from >= 0 && out_here() == cmp_to
+        && (vsp - 2)->kind == VAL_REG && (vsp - 2)->val == R_HL) {
+        vdrop();
+        vtruth(op);
+
+        return;
+    }
+
     if (type_pointer(left) || type_pointer(right)) {
         if (!is_comparison(op)) {
             vbinop_pointer(op, left, right);
@@ -6950,11 +7040,7 @@ void vderef(void)
         ld_hl_ind_hl();
     } else if (type_size(to) == 1) {
         ld_a_hl();
-        if (type_unsigned(to))
-            fill_hl_with_zero();
-        else
-            fill_hl_with_sign_of_a();
-        ld_l_a();
+        widen_loaded(to);
     } else {
         /* Two bytes, read through IY: loading either into H or into L would
          * overwrite the pointer before the other had been read, and keeping
@@ -6962,12 +7048,7 @@ void vderef(void)
          * allocator was holding in DE. IY is the backend's own scratch. */
         out_byte3(0xe5, 0xfd, 0xe1);    /* push hl; pop iy */
         out_byte3(0xfd, 0x7e, 0x01);    /* ld a, (iy+1) */
-        if (type_unsigned(to))
-            fill_hl_with_zero();
-        else
-            fill_hl_with_sign_of_a();
-        ld_h_a();
-        out_byte3(0xfd, 0x6e, 0x00);    /* ld l, (iy+0) */
+        widen_loaded(to);
     }
 
     vdrop();
@@ -7675,6 +7756,7 @@ void gen_rollback(GenMark *m)
     cmp_from = -1;
     conversion_from = -1;
     logic_from = -1;
+    widen_from = -1;
     out_rewind(m->at);
     jumps_forget(m->at);
     nfixups = m->nfixups;

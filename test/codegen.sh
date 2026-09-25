@@ -139,6 +139,29 @@ emits "if (a < b || b < 0), nested"     "$logic_value" no \
 emits "return a && b, a value"          "$logic_value" yes \
     'int f(int a, int b) { return a && b; }'
 
+# `(x & m) != 0` reads the AND's flags rather than comparing with zero.
+emits "(c & 1) != 0"                    "$not_test" no \
+    'int f(unsigned c) { return (c & 1) != 0; }'
+emits "(c & 0x80) == 0"                 "$not_test" no \
+    'int f(unsigned c) { return (c & 0x80) == 0; }'
+
+# A narrow value converted to a type as wide is widened once, the way that
+# type wants: a char read as unsigned char loads zero-filled, with no sign
+# fill -- rlc l; sbc hl, hl -- first.
+sign_fill=cb05ed62
+emits "(unsigned char) of a char local" "$sign_fill" no \
+    'unsigned f(char c) { return (unsigned char) c; }'
+emits "(unsigned char) *p of a char"    "$sign_fill" no \
+    'unsigned f(char *p) { return (unsigned char) *p; }'
+emits "a char, as it is"                "$sign_fill" yes \
+    'int f(char *p) { return *p; }'
+
+# And a byte read or returned, branched on, is tested in A.
+emits "if (b()), a _Bool"               "$zero_test" no \
+    '_Bool b(void); int f(void) { if (b()) return 1; return 2; }'
+emits "while (*p)"                      "$zero_test" no \
+    'char *f(char *p) { while (*p) p++; return p; }'
+
 # An assignment to a narrow local stores the low bytes, which converting to
 # its type does not change, and converts after the store only for a value
 # that is used: as a statement, or a comma's left side, it is not.
