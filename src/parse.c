@@ -675,6 +675,8 @@ static void local_value(NameRef name)
  *
  * Out of line, which it stopped being when it grew: inlined, its locals gave
  * primary() -- which every operand goes through -- a larger frame. */
+static void prefix_operand(int op, const char *spelling);
+
 __attribute__((noinline))
 static void prefix_step(void)
 {
@@ -682,6 +684,28 @@ static void prefix_step(void)
     const char *spelling = tok_spelling(tok);
 
     next();
+    prefix_operand(op, spelling);
+}
+
+/* What `++` or `--` changes: a name, what a pointer points at, or either
+ * in parentheses -- `--(*p)`, which Csmith writes. A postfix after the `)`
+ * would bind to what is inside first, and is refused rather than read the
+ * wrong way round. */
+static void prefix_operand(int op, const char *spelling)
+{
+    if (tok == TK_LPAREN) {
+        int line = tok_line;
+
+        next();
+        prefix_operand(op, spelling);
+        expect(TK_RPAREN, "')'");
+        if (tok_postfix())
+            acc_error_at(line, "%s of a parenthesis with a subscript or a "
+                               "member after it is more than acc reads",
+                         spelling);
+
+        return;
+    }
 
     if (tok == TK_IDENT) {
         NameRef name = tok_name;
@@ -1769,6 +1793,11 @@ static int paren_name(void)
         }
         if (tok_low == TK_IDENT || tok_low == TK_LPAREN) {
             object = paren_name();
+        } else if (tok == TK_STAR) {
+            /* `((*p) = 1)`, `((*p)++)`: what is done to it is done there,
+             * and a value is left. Csmith writes these by the thousand. */
+            paren_deref_step();
+            object = 0;
         } else {
             comma_expr();
             expect(TK_RPAREN, "')'");
