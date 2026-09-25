@@ -861,7 +861,7 @@ Wswitch-enum-2	excluded	not C99: use of GNU case range extension [-Werror,-Wgnu-
 Wswitch-enum-3	pass	compiled	6.5.2.5 6.5.16.1 6.7.2 6.7.2.2 6.7.7 6.8.1 6.8.4.2 6.8.6.3 6.8.6.4	6.5.16.1:assign 6.5.2.5:compound-literal 6.7.2.2:enum 6.7.2:int 6.7.7:typedef 6.8.1:case 6.8.4.2:switch 6.8.6.3:break 6.8.6.4:return
 Wswitch-enum-error	excluded	not C99: an error only under its own options: clang takes it	6.5.2.5 6.5.17 6.7.2 6.7.2.2 6.8.1 6.8.4.2 6.8.6.3 6.8.6.4	6.5.17:comma 6.5.2.5:compound-literal 6.7.2.2:enum 6.7.2:int 6.8.1:case 6.8.1:default 6.8.4.2:switch 6.8.6.3:break 6.8.6.4:return
 Wswitch-error	excluded	not C99: an error only under its own options: clang takes it	6.5.2.5 6.5.17 6.7.2 6.7.2.2 6.8.1 6.8.4.2 6.8.6.3 6.8.6.4	6.5.17:comma 6.5.2.5:compound-literal 6.7.2.2:enum 6.7.2:int 6.8.1:case 6.8.1:default 6.8.4.2:switch 6.8.6.3:break 6.8.6.4:return
-Wswitch-unreachable-1	fail	accepts	6.5.2.1 6.5.2.5 6.5.3.4 6.5.16.1 6.7.1 6.7.2 6.7.2.1 6.8.1 6.8.4.2 6.8.6.3	6.5.16.1:assign 6.5.2.1:subscript 6.5.2.5:compound-literal 6.5.3.4:sizeof 6.7.1:extern 6.7.2.1:struct 6.7.2:int 6.7.2:void 6.8.1:default 6.8.4.2:switch 6.8.6.3:break
+Wswitch-unreachable-1	pass	rejected	6.5.2.1 6.5.2.5 6.5.3.4 6.5.16.1 6.7.1 6.7.2 6.7.2.1 6.8.1 6.8.4.2 6.8.6.3	6.5.16.1:assign 6.5.2.1:subscript 6.5.2.5:compound-literal 6.5.3.4:sizeof 6.7.1:extern 6.7.2.1:struct 6.7.2:int 6.7.2:void 6.8.1:default 6.8.4.2:switch 6.8.6.3:break
 Wswitch-unreachable-2	excluded	not C99: function definition is not allowed here	6.5.2.5 6.7.2 6.8.4.2	6.5.2.5:compound-literal 6.7.2:int 6.7.2:void 6.8.4.2:switch
 Wtraditional-conversion	pass	compiled	6.5.2.1 6.5.17 6.7.2 6.7.2.2 6.7.7 6.8.6.4	6.5.17:comma 6.5.2.1:subscript 6.7.2.2:enum 6.7.2:int 6.7.2:void 6.7.7:typedef 6.8.6.4:return
 Wtraditional-conversion-2	needs	long-double	6.4.4.2 6.5.2.3 6.5.3.2 6.7.2 6.7.2.1 6.7.5.3	6.4.4.2:float 6.5.2.3:member 6.5.3.2:dereference 6.7.2.1:struct 6.7.2:_Complex 6.7.2:char 6.7.2:double 6.7.2:float 6.7.2:int 6.7.2:long 6.7.2:long-long 6.7.2:signed 6.7.2:unsigned 6.7.2:void 6.7.5.3:function-pointer
@@ -2385,11 +2385,11 @@ c99-typespec-1	pass	rejected	6.5.5 6.7.2 6.7.7	6.5.5:multiply 6.7.2:_Bool 6.7.2:
 c99-version-1	pass	compiled	6.7.2 6.10.1 6.10.5	6.10.1:conditional 6.10.5:error 6.7.2:int
 c99-vla-1	pass	compiled	6.5.2.1 6.5.3.2 6.5.5 6.5.16.1 6.7.2 6.7.7	6.5.16.1:assign 6.5.2.1:subscript 6.5.3.2:address 6.5.5:multiply 6.7.2:int 6.7.2:void 6.7.7:typedef
 c99-vla-2	needs	gnu-extensions	6.5.2.1 6.5.3.2 6.5.17 6.7.2 6.7.5.1 6.7.7 6.10.3	6.10.3:define-function 6.5.17:comma 6.5.2.1:subscript 6.5.3.2:dereference 6.7.2:int 6.7.2:void 6.7.5.1:pointer-to-array 6.7.7:typedef
-c99-vla-jump-1	fail	accepts	6.5.2.1 6.7.2 6.8.1 6.8.6.1	6.5.2.1:subscript 6.7.2:int 6.7.2:void 6.8.1:label 6.8.6.1:goto
-c99-vla-jump-2	fail	accepts	6.5.2.1 6.7.2 6.8.1 6.8.6.1	6.5.2.1:subscript 6.7.2:int 6.7.2:void 6.8.1:label 6.8.6.1:goto
+c99-vla-jump-1	pass	rejected	6.5.2.1 6.7.2 6.8.1 6.8.6.1	6.5.2.1:subscript 6.7.2:int 6.7.2:void 6.8.1:label 6.8.6.1:goto
+c99-vla-jump-2	pass	rejected	6.5.2.1 6.7.2 6.8.1 6.8.6.1	6.5.2.1:subscript 6.7.2:int 6.7.2:void 6.8.1:label 6.8.6.1:goto
 c99-vla-jump-3	pass	rejected	6.5.2.1 6.5.3.2 6.7.2 6.7.5.1 6.7.7 6.8.1 6.8.6.1	6.5.2.1:subscript 6.5.3.2:dereference 6.7.2:int 6.7.2:void 6.7.5.1:pointer-to-array 6.7.7:typedef 6.8.1:label 6.8.6.1:goto
 c99-vla-jump-4	pass	rejected	6.5.2.1 6.5.3.2 6.7.2 6.7.5.1 6.7.7 6.8.1 6.8.6.1	6.5.2.1:subscript 6.5.3.2:dereference 6.7.2:int 6.7.2:void 6.7.5.1:pointer-to-array 6.7.7:typedef 6.8.1:label 6.8.6.1:goto
-c99-vla-jump-5	fail	accepts	6.5.2.1 6.5.2.5 6.5.17 6.7.2 6.8.1 6.8.4.2	6.5.17:comma 6.5.2.1:subscript 6.5.2.5:compound-literal 6.7.2:int 6.7.2:void 6.8.1:case 6.8.1:default 6.8.4.2:switch
+c99-vla-jump-5	pass	rejected	6.5.2.1 6.5.2.5 6.5.17 6.7.2 6.8.1 6.8.4.2	6.5.17:comma 6.5.2.1:subscript 6.5.2.5:compound-literal 6.7.2:int 6.7.2:void 6.8.1:case 6.8.1:default 6.8.4.2:switch
 call-diag-1	pass	rejected	6.5.3.2 6.7.2	6.5.3.2:dereference 6.7.2:int 6.7.2:long 6.7.2:void
 call-diag-2	fail	accepts	6.5.3.2 6.5.17 6.7.2 6.7.2.1 6.7.3	6.5.17:comma 6.5.3.2:dereference 6.7.2.1:struct 6.7.2:void 6.7.3:const
 callgraph-info-1	pass	compiled	6.4.5 6.7.2	6.4.5:string 6.7.2:void
@@ -4047,7 +4047,7 @@ pr108308	pass		6.5.2.5 6.5.3.2 6.5.3.3 6.5.5 6.5.7 6.5.11 6.5.12 6.5.16.1 6.5.17
 pr108356	pass	compiled	6.5.2.5 6.5.6 6.5.8 6.5.15 6.5.16.1 6.5.17 6.7.1 6.7.2 6.8.4.1 6.8.5.3 6.8.6.4	6.5.15:conditional 6.5.16.1:assign 6.5.17:comma 6.5.2.5:compound-literal 6.5.6:add 6.5.8:relational 6.7.1:static 6.7.2:char 6.7.2:int 6.7.2:short 6.7.2:unsigned 6.7.2:void 6.8.4.1:else 6.8.4.1:if 6.8.5.3:for 6.8.6.4:return
 pr108359	pass	compiled	6.5.2.5 6.5.5 6.5.6 6.5.7 6.5.8 6.5.9 6.5.13 6.5.14 6.5.15 6.5.16.1 6.5.17 6.7.1 6.7.2 6.8.4.1 6.8.6.4	6.5.13:logical-and 6.5.14:logical-or 6.5.15:conditional 6.5.16.1:assign 6.5.17:comma 6.5.2.5:compound-literal 6.5.5:divide 6.5.5:multiply 6.5.5:remainder 6.5.6:add 6.5.7:shift 6.5.8:relational 6.5.9:equality 6.7.1:static 6.7.2:char 6.7.2:int 6.7.2:short 6.7.2:unsigned 6.7.2:void 6.8.4.1:if 6.8.6.4:return
 pr108375-1	excluded	not C99: clang refuses it at line 10, which it does not name	6.5.2.1 6.5.3.2 6.7.2 6.7.2.1 6.7.5.1 6.8.1 6.8.6.1	6.5.2.1:subscript 6.5.3.2:dereference 6.7.2.1:struct 6.7.2:char 6.7.2:int 6.7.2:void 6.7.5.1:pointer-to-array 6.8.1:label 6.8.6.1:goto
-pr108375-2	fail	accepts	6.5.2.1 6.5.5 6.7.2 6.7.7 6.8.1 6.8.6.1	6.5.2.1:subscript 6.5.5:multiply 6.7.2:int 6.7.2:void 6.7.7:typedef 6.8.1:label 6.8.6.1:goto
+pr108375-2	pass	rejected	6.5.2.1 6.5.5 6.7.2 6.7.7 6.8.1 6.8.6.1	6.5.2.1:subscript 6.5.5:multiply 6.7.2:int 6.7.2:void 6.7.7:typedef 6.8.1:label 6.8.6.1:goto
 pr108385	pass	compiled	6.5.2.5 6.5.5 6.5.6 6.5.9 6.5.16.1 6.5.17 6.7.2 6.8.4.1	6.5.16.1:assign 6.5.17:comma 6.5.2.5:compound-literal 6.5.5:multiply 6.5.6:add 6.5.9:equality 6.7.2:char 6.7.2:int 6.7.2:void 6.8.4.1:else 6.8.4.1:if
 pr108387	pass	compiled	6.5.7 6.5.16.1 6.5.16.2 6.5.17 6.7.2	6.5.16.1:assign 6.5.16.2:compound-assign 6.5.17:comma 6.5.7:shift 6.7.2:char 6.7.2:unsigned 6.7.2:void
 pr108423-1	excluded	not C99: incompatible pointer to integer conversion returning 'int[n]' from a function with result type 'int' [-Wint-con	6.5.2.1 6.5.3.2 6.5.16.1 6.5.17 6.7.2 6.7.5.3 6.8.6.4	6.5.16.1:assign 6.5.17:comma 6.5.2.1:subscript 6.5.3.2:address 6.5.3.2:dereference 6.7.2:int 6.7.2:void 6.7.5.3:function-pointer 6.8.6.4:return
@@ -7476,7 +7476,7 @@ vla-4	needs	gnu-extensions	6.5.2.1 6.5.2.4 6.5.3.1 6.5.3.2 6.5.3.3 6.5.3.4 6.5.5
 vla-5	needs	gnu-extensions	6.5.2.1 6.5.3.2 6.5.3.4 6.5.17 6.7.1 6.7.2 6.7.5.2 6.7.5.3 6.8.6.4	6.5.17:comma 6.5.2.1:subscript 6.5.3.2:dereference 6.5.3.4:sizeof 6.7.1:static 6.7.2:int 6.7.2:void 6.7.5.2:multidimensional 6.7.5.3:function-pointer 6.8.6.4:return
 vla-6	pass	rejected	6.5.2.1 6.5.3.2 6.5.3.4 6.7.1 6.7.2 6.7.2.1 6.7.5.1 6.7.5.2 6.7.7	6.5.2.1:subscript 6.5.3.2:dereference 6.5.3.4:sizeof 6.7.1:extern 6.7.2.1:struct 6.7.2:int 6.7.2:void 6.7.5.1:pointer-to-array 6.7.5.2:multidimensional 6.7.7:typedef
 vla-7	pass	compiled	6.5.2.1 6.5.3.2 6.7.2 6.7.5.1 6.7.5.3	6.5.2.1:subscript 6.5.3.2:dereference 6.7.2:int 6.7.5.1:pointer-to-array 6.7.5.3:function-pointer
-vla-8	fail	accepts	6.5.2.1 6.5.2.4 6.5.3.2 6.7.1 6.7.2 6.7.2.1 6.7.5.2 6.7.5.3 6.8.1 6.8.6.1 6.8.6.4	6.5.2.1:subscript 6.5.2.4:increment 6.5.3.2:dereference 6.7.1:extern 6.7.1:static 6.7.2.1:struct 6.7.2:int 6.7.2:void 6.7.5.2:multidimensional 6.7.5.3:function-pointer 6.8.1:label 6.8.6.1:goto 6.8.6.4:return
+vla-8	pass	rejected	6.5.2.1 6.5.2.4 6.5.3.2 6.7.1 6.7.2 6.7.2.1 6.7.5.2 6.7.5.3 6.8.1 6.8.6.1 6.8.6.4	6.5.2.1:subscript 6.5.2.4:increment 6.5.3.2:dereference 6.7.1:extern 6.7.1:static 6.7.2.1:struct 6.7.2:int 6.7.2:void 6.7.5.2:multidimensional 6.7.5.3:function-pointer 6.8.1:label 6.8.6.1:goto 6.8.6.4:return
 vla-9	needs	gnu-extensions	6.5.2.1 6.5.5 6.5.16.1 6.7.2 6.7.7	6.5.16.1:assign 6.5.2.1:subscript 6.5.5:multiply 6.7.2:int 6.7.2:void 6.7.7:typedef
 vla-init-1	pass	rejected	6.5.2.1 6.5.16.1 6.7.2 6.7.8	6.5.16.1:assign 6.5.2.1:subscript 6.7.2:int 6.7.2:void 6.7.8:braced-initializer
 vla-init-2	pass	rejected	6.4.5 6.5.2.1 6.5.16.1 6.7.2 6.7.3 6.7.5.2 6.7.8	6.4.5:string 6.5.16.1:assign 6.5.2.1:subscript 6.7.2:char 6.7.2:int 6.7.2:void 6.7.3:const 6.7.5.2:multidimensional 6.7.8:braced-initializer

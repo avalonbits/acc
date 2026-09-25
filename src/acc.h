@@ -202,6 +202,7 @@ int  ext_vla(Type elem, int elem_x, int length_slot, int size_slot);
 int  ext_vla_size(int x);       /* the frame slot of a VLA's size, or 0 */
 int  ext_vla_length(int x);     /* and of its length */
 int  ext_vla_pending(int x);    /* a parameter's row, till its function starts */
+int  ext_variably_modified(int x);  /* a VLA, or a type made from one */
 void ext_vla_fill(int x, int length_slot, int size_slot);
 int  ext_compatible(int a, int b);  /* the same, or arrays that could be */
 

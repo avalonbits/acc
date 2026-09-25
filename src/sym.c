@@ -570,6 +570,23 @@ int ext_vla_size(int x)
     return ext_what[x] & EXT_VLA ? ext_types[x].bytes : 0;
 }
 
+/* Whether a type is variably modified (C99 6.7.5p3): a VLA, or made from
+ * one -- an array of them, a pointer to one, a function returning one.
+ * A pointer's levels are in its Type, so only the chain of extensions is
+ * walked. A struct stops it, since a member cannot be one. */
+int ext_variably_modified(int x)
+{
+    while (x) {
+        if (ext_what[x] & EXT_VLA)
+            return 1;
+        if (ext_what[x] & (EXT_STRUCT | EXT_UNION))
+            return 0;
+        x = ext_types[x].elem_x;        /* an element, or a result */
+    }
+
+    return 0;
+}
+
 int ext_vla_length(int x)
 {
     return ext_types[x].count;

@@ -611,7 +611,10 @@ done, and then what is next.
    list `()` cannot agree with (6.7.5.3p15), a `const` result against a
    plain one, and a name declared `static` and not (6.2.2p7). With one
    floating type, `()` against a `float` parameter cannot be told from a
-   `double` one, and is taken.
+   `double` one, and is taken. A goto or a switch that jumps into the scope of a
+   VLA, or of anything else variably modified, is refused (6.8.6.1p1,
+   6.8.4.2p2); all 1,156 functions of gcc's c99-vla-jump-1 to -4, compiled
+   one at a time, are refused or taken as the tests say.
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.

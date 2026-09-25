@@ -2967,8 +2967,17 @@ static int vla_mark = NO_VLA_MARK;
  * each with a serial number that says which block it is: what a goto back
  * to a label reads to find out how much room it is leaving. vla_mark is
  * the last of them. A block is known by its serial because two blocks one
- * after the other can start with the same symbols in scope. */
-typedef struct { int serial, mark; } VlaBlock;
+ * after the other can start with the same symbols in scope.
+ *
+ * And the last variably modified declaration each has made, numbered from
+ * the serials, so that it is later than the block's own: a goto may not
+ * jump into the scope of one (C99 6.8.6.1p1). One no later is an earlier
+ * block's, left in the entry, which opening a block does not clear. */
+typedef struct {
+    int serial, mark;
+    int vm_last;            /* its last variably modified declaration's
+                             * number, if that is more than its serial */
+} VlaBlock;
 
 /* vla_top is one past the innermost open block, and is what every block
  * touches: an entry is six bytes, and `vla_blocks[nvla_blocks]` scales
@@ -2978,16 +2987,26 @@ typedef struct { int serial, mark; } VlaBlock;
 static VlaBlock *vla_blocks, *vla_top;
 static int       nvla_blocks, vla_blocks_cap, vla_serial;
 
+/* Room for more blocks, out of the way of every block's opening. */
+__attribute__((noinline))
+static void vla_blocks_grow(void)
+{
+    vla_blocks_cap = vla_blocks_cap ? vla_blocks_cap * 2 : 16;
+    vla_blocks = realloc(vla_blocks,
+                         (size_t) vla_blocks_cap * sizeof *vla_blocks);
+    if (!vla_blocks)
+        acc_error("out of memory for blocks");
+
+    /* No block has declared anything yet: see VlaBlock's vm_last. */
+    memset(vla_blocks + nvla_blocks, 0,
+           (size_t) (vla_blocks_cap - nvla_blocks) * sizeof *vla_blocks);
+    vla_top = vla_blocks + nvla_blocks;
+}
+
 static void vla_block_open(void)
 {
-    if (nvla_blocks == vla_blocks_cap) {
-        vla_blocks_cap = vla_blocks_cap ? vla_blocks_cap * 2 : 16;
-        vla_blocks = realloc(vla_blocks,
-                             (size_t) vla_blocks_cap * sizeof *vla_blocks);
-        if (!vla_blocks)
-            acc_error("out of memory for blocks");
-        vla_top = vla_blocks + nvla_blocks;
-    }
+    if (nvla_blocks == vla_blocks_cap)
+        vla_blocks_grow();
     vla_top->serial = ++vla_serial;
     vla_top->mark = NO_VLA_MARK;
     vla_top++;
@@ -3025,6 +3044,66 @@ static int vla_back_to(const VlaBlock *then, int nthen)
             return vla_blocks[i].mark;
 
     return NO_VLA_MARK;
+}
+
+/* A variably modified declaration in the innermost block: an array whose
+ * length is worked out, a pointer to one, a typedef of one. */
+static void vm_declared(void)
+{
+    if (nvla_blocks)
+        vla_top[-1].vm_last = ++vla_serial;
+}
+
+/* Whether a block has declared one since `then`, a serial. */
+#define vm_since(b, then) \
+    ((b)->vm_last > (then) && (b)->vm_last > (b)->serial)
+
+/* The same for one whose type may be: asked only of a declaration with an
+ * extension, which a plain int has not. */
+__attribute__((noinline))
+static void vm_maybe(int ext)
+{
+    if (ext_variably_modified(ext))
+        vm_declared();
+}
+
+/* Whether a jump reaching the blocks open now goes into the scope of a
+ * variably modified declaration, from a goto made when vla_serial was
+ * `then`. A block open at both whose last one is newer was declared
+ * between the two, and so was any in a block opened since. */
+static int vm_forward_in(int then)
+{
+    VlaBlock *b;
+
+    for (b = vla_blocks; b < vla_top; b++)
+        if (vm_since(b, then))
+            return 1;
+
+    return 0;
+}
+
+/* And whether a jump back to a label, whose blocks were `to`, does: one
+ * those blocks had declared by then is out of scope here only if its block
+ * is not open now. */
+static int vm_back_in(const VlaBlock *to, int nto)
+{
+    int i;
+
+    for (i = 0; i < nvla_blocks && i < nto
+                && vla_blocks[i].serial == to[i].serial; i++)
+        ;
+    for (; i < nto; i++)
+        if (vm_since(&to[i], 0))
+            return 1;
+
+    return 0;
+}
+
+static void vm_jump_refused(int line)
+{
+    acc_error_at(line, "this goto jumps past the declaration of an array "
+                       "whose length is worked out as it runs, into its "
+                       "scope");
 }
 
 /* The block's mark, made if this is the first array in it to need one. */
@@ -5357,6 +5436,7 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
 __attribute__((noinline))
 static void local_vla(Type elem, int elem_x, NameRef name, int line)
 {
+    vm_declared();
     int step = type_bytes(elem, elem_x);
     int ptr = gen_local(ACC_PTR_SIZE);
     int size = gen_local(ACC_INT_SIZE);
@@ -5391,6 +5471,8 @@ static void local_vla(Type elem, int elem_x, NameRef name, int line)
 static void local_array(Type elem, int elem_x, NameRef name, int count,
                         int line)
 {
+    if (elem_x)
+        vm_maybe(elem_x);               /* `int (*a[2])[n]` */
     decl_name = name;
     local_array_object(elem, elem_x, &count, line, 0);
 }
@@ -5461,6 +5543,8 @@ static void typedef_declarators(Type base, int bx, unsigned char bc)
             continue;
         }
         not_redeclared(name, line);
+        if (in_body && ext)
+            vm_maybe(ext);              /* `typedef int row[n];` */
         sym = push_here(name, SYM_TYPEDEF, 0);
         sym_at(sym)->type = type;
         sym_at(sym)->ext = (unsigned char) ext;
@@ -5665,6 +5749,8 @@ void declaration(void)
         sym = sym_push(name, far ? SYM_LOCAL_FAR : SYM_LOCAL, off);
         sym_at(sym)->type = type;
         sym_at(sym)->ext = (unsigned char) ext;
+        if (ext)
+            vm_maybe(ext);              /* `int (*p)[n]` */
         sym_at(sym)->quals = decl_quals | (bc ? SQ_CONST : 0);
         if (stars != base ? stars_const : bc)
             sym_at(sym)->kind = far ? SYM_LOCAL_FAR : SYM_LOCAL_CONST;
@@ -5768,9 +5854,27 @@ typedef struct {
     int  case_mark;     /* its cases are the ones from here up; -1: none */
     int  default_at;    /* where `default:` is, -1 if there is none yet */
     Type type;          /* what the cases are converted to */
+    int  blocks;        /* the blocks open at the switch, in bytes: an
+                         * entry's index is a multiply by its size */
 } Switch;
 
-static Switch in_switch = { -1, -1, TY_INT };
+static Switch in_switch = { -1, -1, TY_INT, 0 };
+
+/* That a case label is not in the scope of a variably modified declaration
+ * the switch is not (C99 6.8.4.2p2): every block opened since the switch
+ * is inside it, so none of them may have made one yet. */
+__attribute__((noinline))
+static void case_in_scope(int line)
+{
+    VlaBlock *b;
+
+    for (b = (VlaBlock *) ((char *) vla_blocks + in_switch.blocks);
+         b < vla_top; b++)
+        if (vm_since(b, 0))
+            acc_error_at(line, "the switch would jump to this label past the "
+                               "declaration of an array whose length is "
+                               "worked out as it runs, into its scope");
+}
 
 static long     *case_value;
 static uint32_t *case_high;     /* the top four bytes, for a long long */
@@ -5983,6 +6087,7 @@ static void case_label(void)
         acc_error_at(line, "'case' is not inside a switch");
     value = case_constant(&high);
     expect(TK_COLON, "':' after a case");
+    case_in_scope(line);
 
     for (i = in_switch.case_mark; i < ncases; i++)
         if (case_value[i] == value && case_high[i] == high)
@@ -6015,6 +6120,7 @@ static void default_label(void)
         acc_error_at(line, "'default' is not inside a switch");
     if (in_switch.default_at >= 0)
         acc_error_at(line, "this switch already has a default");
+    case_in_scope(line);
     in_switch.default_at = gen_here();
 }
 
@@ -6062,6 +6168,7 @@ static void switch_statement(void)
     in_switch.case_mark = ncases;
     in_switch.default_at = -1;
     in_switch.type = type;
+    in_switch.blocks = (int) ((char *) vla_top - (char *) vla_blocks);
     jumps_push();
     jumps.break_mark = breaks.count;
 
@@ -6106,9 +6213,29 @@ typedef struct {
 static Label *labels;
 static int    nlabels, labels_cap;
 
-/* The gotos still waiting for their label: the hole, and which label. */
-static int *goto_hole, *goto_label;
-static int  ngotos, gotos_cap;
+/* The gotos still waiting for their label: the hole, which label, and --
+ * for vm_forward_in, once the label is reached -- the goto's line and
+ * vla_serial then. */
+typedef struct {
+    int hole, label, line, vm;
+} Goto;
+
+static Goto *gotos;
+static int   ngotos, gotos_cap;
+
+/* The blocks open now, as bytes rather than a count of entries, which
+ * would be a multiply by the entry's size. */
+static VlaBlock *vla_blocks_copy(void)
+{
+    size_t bytes = (size_t) ((char *) vla_top - (char *) vla_blocks);
+    VlaBlock *copy = malloc(bytes + 1);
+
+    if (!copy)
+        acc_error("out of memory for labels");
+    memcpy(copy, vla_blocks, bytes);
+
+    return copy;
+}
 
 static int label_find(NameRef name, int line)
 {
@@ -6153,6 +6280,9 @@ static void goto_statement(void)
     if (labels[label].at >= 0) {
         int back = vla_back_to(labels[label].blocks, labels[label].nblocks);
 
+        if (vm_back_in(labels[label].blocks, labels[label].nblocks))
+            vm_jump_refused(line);
+
         if (back != NO_VLA_MARK)
             gen_stack_back(back);
         gen_jump_to(labels[label].at);
@@ -6161,13 +6291,14 @@ static void goto_statement(void)
     }
     if (ngotos == gotos_cap) {
         gotos_cap = gotos_cap ? gotos_cap * 2 : 8;
-        goto_hole = realloc(goto_hole, (size_t) gotos_cap * sizeof *goto_hole);
-        goto_label = realloc(goto_label, (size_t) gotos_cap * sizeof *goto_label);
-        if (!goto_hole || !goto_label)
+        gotos = realloc(gotos, (size_t) gotos_cap * sizeof *gotos);
+        if (!gotos)
             acc_error("out of memory for gotos");
     }
-    goto_hole[ngotos] = gen_jump();
-    goto_label[ngotos] = label;
+    gotos[ngotos].hole = gen_jump();
+    gotos[ngotos].label = label;
+    gotos[ngotos].line = line;
+    gotos[ngotos].vm = vla_serial;
     ngotos++;
 }
 
@@ -6183,28 +6314,20 @@ static void label_statement(void)
                      name_text(tok_name));
     next();
     expect(TK_COLON, "':'");
-    {
-        /* The blocks open here, as bytes rather than a count of entries,
-         * which would be a multiply by six at every label. */
-        Label *l = labels + label;
-        size_t bytes = (size_t) ((char *) vla_top - (char *) vla_blocks);
-
-        l->at = gen_here();
-        l->blocks = malloc(bytes + 1);
-        if (!l->blocks)
-            acc_error("out of memory for labels");
-        memcpy(l->blocks, vla_blocks, bytes);
-        l->nblocks = nvla_blocks;
-    }
+    labels[label].at = gen_here();
+    labels[label].blocks = vla_blocks_copy();
+    labels[label].nblocks = nvla_blocks;
 
     for (i = 0; i < ngotos; i++) {
-        if (goto_label[i] == label) {
-            gen_label(goto_hole[i]);
+        Goto *g = gotos + i;
+
+        if (g->label == label) {
+            if (vm_forward_in(g->vm))
+                vm_jump_refused(g->line);
+            gen_label(g->hole);
             continue;
         }
-        goto_hole[kept] = goto_hole[i];
-        goto_label[kept] = goto_label[i];
-        kept++;
+        gotos[kept++] = *g;
     }
     ngotos = kept;
 
@@ -6215,8 +6338,9 @@ static void label_statement(void)
 static void labels_end(void)
 {
     if (ngotos)
-        acc_error_at(labels[goto_label[0]].line, "the label '%s' is used but "
-                     "never defined", name_text(labels[goto_label[0]].name));
+        acc_error_at(labels[gotos[0].label].line, "the label '%s' is used "
+                     "but never defined",
+                     name_text(labels[gotos[0].label].name));
     {
         Label *l, *end = labels + nlabels;
 
