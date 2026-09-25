@@ -1081,6 +1081,7 @@ static void string_value(void)
 }
 
 static void cast_rest(void);
+static int  cast_rest_as(int statement);
 static void cast_operand(Type to, int x, int quals);
 static void sizeof_value(void);
 static void offsetof_value(void);
@@ -1554,14 +1555,29 @@ static void object_rest(int what, NameRef name)
 __attribute__((noinline))
 static void postfix_statement(void);
 
+/* A statement that starts with a cast or a compound literal. The literal
+ * is an object, and what follows may assign to it or step it. Out of line,
+ * where it costs the statements that start with a parenthesis nothing. */
+__attribute__((noinline))
+static void cast_statement(void)
+{
+    if (!cast_rest_as(1)) {
+        binary_rest(PREC_LOWEST);
+    } else if (tok == TK_INC || tok == TK_DEC) {
+        object_value();                 /* `(int){3}++` */
+        binary_rest(PREC_LOWEST);
+    } else {
+        deref_rest();                   /* `(int){3} = 5` */
+    }
+}
+
 static void paren_statement(void)
 {
     Type outer = narrow_dest;
 
     next();
     if (starts_decl()) {
-        cast_rest();
-        binary_rest(PREC_LOWEST);
+        cast_statement();
 
         return;
     }
@@ -3760,7 +3776,7 @@ static int address_of_literal(int line)
  * apart. A cast binds as the unary operators do, so its operand is one of
  * those or a postfix expression, which is what primary() reads. */
 __attribute__((noinline))
-static void cast_rest(void)
+static int cast_rest_as(int statement)
 {
     int x, line = tok_line, count, elem_x;
     Type elem;
@@ -3768,6 +3784,17 @@ static void cast_rest(void)
     int quals = base_const ? VQ_CONST : 0;
 
     expect(TK_RPAREN, "')'");
+
+    /* At the start of a statement a literal that is not an array is left
+     * as its address: it is an object (C99 6.5.2.5p4), and `(int){3} = 5`
+     * assigns to it. */
+    if (tok == TK_LBRACE && statement && !count) {
+        narrow_dest = 0;
+        compound_literal(to, x, count, elem, elem_x, line, 1, NULL);
+        narrow_dest = outer;
+
+        return !tok_postfix() || postfix_chain(POST_OBJECT) == POST_OBJECT;
+    }
     if (tok == TK_LBRACE) {
         narrow_dest = 0;
         compound_literal(to, x, count, elem, elem_x, line, 0, NULL);
@@ -3775,13 +3802,20 @@ static void cast_rest(void)
         if (tok_postfix())
             subscript_value();
 
-        return;
+        return 0;
     }
     if (count < 0)
         acc_error_at(line, "an array type here needs its size");
     if (type_is_array(to))
         acc_error_at(line, "a cast cannot make an array");
     cast_operand(to, x, quals);
+
+    return 0;
+}
+
+static void cast_rest(void)
+{
+    cast_rest_as(0);
 }
 
 /* The operand of a cast whose type has been read, and the conversion. */
