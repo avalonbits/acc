@@ -73,6 +73,11 @@ calls "int | uchar"                 _acc_rt_or yes \
 calls "schar | uchar"               _acc_rt_or yes \
     'int f(signed char a, unsigned char b) { return a | b; }'
 
+# A constant on the left of a commutative operator is taken as the right
+# one, so `3 * x` is the doublings and additions that `x * 3` is.
+calls "3 * x"                       _acc_rt_mul no \
+    'unsigned f(unsigned x) { return 3 * x; }'
+
 # << by a constant of up to eight: add hl, hl a bit at a time, a byte each,
 # which is no bigger than loading the count and calling. Past eight, and
 # by a variable, the helper.
@@ -191,6 +196,19 @@ emits "a body of two statements"        "$call_zero" yes \
     'static inline int twice(int x) { x++; return x + x; } int f(int y) { return twice(y); }'
 emits "a name the caller shadows"       "$call_zero" yes \
     'int k; static inline int addk(int x) { return x + k; } int f(int y) { int k = 2; return addk(y) + k; }'
+
+# An unsigned narrow local goes straight into DE or BC, rather than
+# through HL and the stack (push hl; pop de; pop hl) when HL is holding
+# something: the table's address, in `t[c]`.
+emits "t[c], c into DE directly"        e5d1e1 no \
+    'extern const unsigned char t[256]; int f(unsigned char c) { return t[c]; }'
+
+# A function with no frame to make has no ld hl, 0; add hl, sp; ld sp, hl.
+no_frame=2100000039f9
+emits "no locals, no frame set up"      "$no_frame" no \
+    'int f(int x) { return x + 1; }'
+emits "an array, a frame"               39f9 yes \
+    'int f(int x) { int a[4]; a[x & 3] = x; return a[0]; }'
 
 # An assignment to a narrow local stores the low bytes, which converting to
 # its type does not change, and converts after the store only for a value

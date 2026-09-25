@@ -501,6 +501,23 @@ static void load_narrow_into(int reg, int disp, Type type)
 
         return;
     }
+
+    /* An unsigned one goes straight in: the pair cleared, and the bytes
+     * loaded into its low halves, which have names in DE and BC as they
+     * do in HL. Only the sign fill needs HL. `t[c]` with the table's
+     * address in HL loaded c into DE this way where it went through HL and
+     * the stack. */
+    if (type_unsigned(type)) {
+        static const unsigned char low[] = { 0, 0x5e, 0x4e };   /* ld e / c */
+        static const unsigned char high[] = { 0, 0x56, 0x46 };  /* ld d / b */
+
+        ld_rr_imm(reg, 0);
+        out_byte3(0xdd, low[reg], disp);
+        if (type_size(type) == 2)
+            out_byte3(0xdd, high[reg], disp + 1);
+
+        return;
+    }
     push_rr(R_HL);
     load_narrow(disp, type);
     push_rr(R_HL);
@@ -1837,6 +1854,20 @@ static void vbinop(int op)
             force_reg(lhs);
         if (val_pending(rhs->kind))
             force_reg(rhs);
+    }
+
+    /* A constant on the left of an operator that does not care which side
+     * is which goes to the right, where what follows takes it as an
+     * immediate -- and the other side, which is often in HL already, stays
+     * there. `table[i]` is the table's address plus the index: loaded the
+     * other way round, the index was moved out of HL to make room for the
+     * address, and moved back to be added to it. */
+    if (val_const(lhs->kind) && !val_const(rhs->kind)
+        && (op == TK_PLUS || op == TK_STAR || op == TK_AMP
+            || op == TK_PIPE || op == TK_CARET)) {
+        vswap();
+        lhs = vsp - 2;
+        rhs = vsp - 1;
     }
 
     /* Adding or subtracting nothing is nothing. Worth the two lines: it is
@@ -5254,20 +5285,26 @@ static int           *relax_target, *relax_slot;
 static unsigned char *relax_short;
 static int            relax_cap;
 
-static void relax_function(const Mark *from)
+static void relax_function(const Mark *from, int frame_at)
 {
     Cut *cuts;
     int *target, *slot, *put;
     unsigned char *shrink;
     int n = njumps - from->jump, ncuts = 0, nslots = 0, i;
 
-    if (n <= 0)
+    if (n <= 0) {
+        if (frame_at >= 0) {            /* see below: jumped over, not cut */
+            out_img[frame_at - out_base] = 0x18;
+            out_img[frame_at + 1 - out_base] = 4;
+        }
+
         return;
+    }
 
     /* Grown and kept, as everything on this path is: a function is a handful
      * of jumps and there are hundreds of functions. */
-    if (n > relax_cap) {
-        relax_cap = n * 2;
+    if (n + 1 > relax_cap) {
+        relax_cap = (n + 1) * 2;
         relax_cuts = realloc(relax_cuts, (size_t) relax_cap * sizeof *relax_cuts);
         relax_target = realloc(relax_target,
                                (size_t) relax_cap * sizeof *relax_target);
@@ -5295,6 +5332,17 @@ static void relax_function(const Mark *from)
         unsigned char *fits = shrink;
         Cut *cut = cuts;
 
+        /* A frame of no bytes, which the prologue made room to set up before
+         * it knew: the six bytes that would, taken out with the jumps'
+         * operands. They come before every jump in the function, so the
+         * runs are still in order, and nothing jumps into them. */
+        if (frame_at >= 0) {
+            cut->at = frame_at;
+            cut->len = 6;
+            cut++;
+            ncuts++;
+        }
+
         put = target;
         for (i = 0; i < n; i++, at++, cc++) {
             int to = get24(out_img + (*at + 1 - out_base));
@@ -5309,6 +5357,19 @@ static void relax_function(const Mark *from)
             cut++;
             ncuts++;
         }
+    }
+
+    /* The frame alone is not worth a cut: taking bytes out is a pass over
+     * the function's relocations and fixups, and a function with no jump
+     * to shorten did not have one. Its six bytes are jumped over instead,
+     * which is most of the time they took and none of the room. */
+    if (ncuts == 1 && frame_at >= 0) {
+        unsigned char *at = out_img + (frame_at - out_base);
+
+        at[0] = 0x18;                   /* jr past the other four */
+        at[1] = 4;
+        cuts++;
+        ncuts = 0;
     }
 
     if (ncuts)
@@ -6218,7 +6279,7 @@ void gen_func_end(void)
 
     /* Last, so that everything written into the function is written before
      * any of it moves -- and before static_end measures how long it is. */
-    relax_function(&func_mark);
+    relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
     static_end();
 }
 
