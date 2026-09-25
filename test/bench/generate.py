@@ -3,7 +3,8 @@
 
     test/bench/generate.py            # rewrites pointers.c, operators.c,
                                       # data.c, jumps.c, matrix.c, text.c,
-                                      # records.c and linkage.c
+                                      # records.c, linkage.c, features.c,
+                                      # preproc.c, declare.c and numeric.c
 
 The eight older inputs were written before acc had pointers, the logical
 operators, ++ and --, ?:, compound assignment, hex and octal constants,
@@ -1009,6 +1010,360 @@ int span_{noun}(int base) {{
     return parts, main_head, calls, "total"
 
 
+def preproc(fn_count):
+    """Each function with macros of its own: constants, function-like ones
+    nested in each other, # and ##, a variadic one, one spread over lines
+    with a backslash, one taken back with #undef and given again, and
+    #if/#elif/#ifdef/#ifndef over them -- the preprocessor, which no
+    generated input had a line of."""
+    parts = []
+    calls = []
+    for i, noun in enumerate(names(fn_count)):
+        k = i % 7
+        kind = i % 6
+        up = noun.upper() + str(i)
+        if kind == 0:
+            parts.append(f"""#define LIMIT_{up} ({k} + 12)
+#define SQUARE_{up}(x) ((x) * (x))
+#define CLAMP_{up}(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
+
+int scale_{noun}(int value) {{
+    int squared = SQUARE_{up}(value % 7);
+
+    return CLAMP_{up}(squared, 1, LIMIT_{up}) + LIMIT_{up} / 2;
+}}
+""")
+            calls.append(f"    total = total + scale_{noun}({k + 4});")
+        elif kind == 1:
+            parts.append(f"""#define MODE_{up} {k % 3}
+#if MODE_{up} == 0
+# define STEP_{up} 1
+#elif MODE_{up} == 1
+# define STEP_{up} 2
+#else
+# define STEP_{up} 3
+#endif
+#ifndef UNUSED_{up}
+# define UNUSED_{up} 0
+#endif
+
+#ifdef STEP_{up}
+int walk_{noun}(int count) {{
+    int total = UNUSED_{up};
+
+    while (count-- > 0)
+        total = total + STEP_{up};
+#if defined(MODE_{up}) && MODE_{up} > 1
+    total = total + 1;
+#endif
+
+    return total;
+}}
+#else
+int walk_{noun}(int count) {{ return -count; }}
+#endif
+""")
+            calls.append(f"    total = total + walk_{noun}({k + 2});")
+        elif kind == 2:
+            parts.append(f"""#define FIELD_{up}(name) field_{noun}_##name
+#define TEXT_{up}(x) #x
+
+struct holder_{noun} {{
+    int FIELD_{up}(low);
+    int FIELD_{up}(high);
+}};
+
+int paste_{noun}(int base) {{
+    struct holder_{noun} held;
+
+    held.FIELD_{up}(low) = base;
+    held.FIELD_{up}(high) = base + {k};
+
+    return held.FIELD_{up}(high) - held.FIELD_{up}(low)
+           + (int) sizeof TEXT_{up}(base + 1);
+}}
+""")
+            calls.append(f"    total = total + paste_{noun}({k});")
+        elif kind == 3:
+            parts.append(f"""#define SWAP_{up}(a, b) do {{ \\
+        int swapped_ = (a); \\
+        (a) = (b); \\
+        (b) = swapped_; \\
+    }} while (0)
+#define FIRST_{up}(first, ...) (first)
+#define COUNT_{up}(...) (sizeof((int[]){{ __VA_ARGS__ }}) / sizeof(int))
+
+int order_{noun}(int low, int high) {{
+    if (low > high)
+        SWAP_{up}(low, high);
+
+    return high - low + FIRST_{up}({k}, 9, 8) + (int) COUNT_{up}(1, 2, 3);
+}}
+""")
+            calls.append(f"    total = total + order_{noun}({k + 5}, {k});")
+        elif kind == 4:
+            parts.append(f"""#define ADD_{up}(a, b) ((a) + (b))
+#define TWICE_{up}(a) ADD_{up}(a, a)
+#define QUAD_{up}(a) TWICE_{up}(TWICE_{up}(a))
+
+int nest_{noun}(int value) {{
+    int result = QUAD_{up}(value) - ADD_{up}(value, {k});
+
+#undef ADD_{up}
+#define ADD_{up}(a, b) ((a) - (b))
+    return result + ADD_{up}(value, 1);
+}}
+""")
+            calls.append(f"    total = total + nest_{noun}({k + 1});")
+        else:
+            parts.append(f"""#define ODD_{up}(v) ((v) & 1)
+#define PICK_{up}(v) (ODD_{up}(v) ? (v) * 3 + 1 : (v) / 2)
+#if (PICK_{up}(6) == 3) && !defined(NOWHERE_{up})
+# define STEPS_{up} 4
+#else
+# define STEPS_{up} 0
+#endif
+
+int collatz_{noun}(int value) {{
+    int steps = 0;
+
+    while (value != 1 && steps < STEPS_{up} * 10) {{
+        value = PICK_{up}(value);
+        steps++;
+    }}
+
+    return steps + __LINE__ % 3;
+}}
+""")
+            calls.append(f"    total = total + collatz_{noun}({k + 6});")
+
+    main_head = """int main(void) {
+    int total = 0;
+"""
+    return parts, main_head, calls, "total"
+
+
+def declare(fn_count):
+    """C99's ways to declare and initialise: designators for members and
+    elements, compound literals, arrays whose length the program works out
+    -- local and as parameters -- declarations after statements and in a
+    for, _Bool, inline, restrict, auto, an enum's own values and a struct
+    that ends in an array with no size."""
+    parts = []
+    calls = []
+    for i, noun in enumerate(names(fn_count)):
+        k = i % 7
+        kind = i % 6
+        up = noun.upper() + str(i)
+        if kind == 0:
+            parts.append(f"""struct point_{noun} {{ int x, y, z; }};
+
+static const int table_{noun}[8] = {{ [2] = {k}, [5] = 7, [7] = 1 }};
+
+int design_{noun}(int base) {{
+    struct point_{noun} point = {{ .z = base, .x = {k} }};
+    struct point_{noun} list[3] = {{ [1] = {{ .y = 4 }}, [0].x = 2 }};
+
+    return point.x + point.y + point.z + list[1].y + list[0].x
+           + table_{noun}[2] + table_{noun}[5];
+}}
+""")
+            calls.append(f"    total = total + design_{noun}({k});")
+        elif kind == 1:
+            parts.append(f"""struct pair_{noun} {{ int first, second; }};
+
+static int sum_{noun}(const struct pair_{noun} *pair) {{
+    return pair->first + pair->second;
+}}
+
+int literal_{noun}(int base) {{
+    int *row = (int[]){{ base, base + 1, base + {k} }};
+    struct pair_{noun} copy = (struct pair_{noun}){{ .second = row[2], .first = 3 }};
+
+    return sum_{noun}(&(struct pair_{noun}){{ base, 2 }}) + copy.first
+           + copy.second + row[1];
+}}
+""")
+            calls.append(f"    total = total + literal_{noun}({k});")
+        elif kind == 2:
+            parts.append(f"""int grid_{noun}(int size) {{
+    int grid[size][size + 1];
+    int total = 0;
+
+    for (int row = 0; row < size; row++)
+        for (int column = 0; column <= size; column++)
+            grid[row][column] = row + column;
+    for (int row = 0; row < size; row++)
+        total += grid[row][size - row];
+
+    return total + (int) (sizeof grid / sizeof grid[0][0]);
+}}
+""")
+            calls.append(f"    total = total + grid_{noun}({k % 4 + 2});")
+        elif kind == 3:
+            parts.append(f"""static void fill_{noun}(int rows, int columns, int cells[rows][columns],
+                   int *restrict last) {{
+    for (int row = 0; row < rows; row++)
+        for (int column = 0; column < columns; column++)
+            cells[row][column] = row * columns + column;
+    *last = cells[rows - 1][columns - 1];
+}}
+
+int shape_{noun}(int rows) {{
+    int cells[rows][3];
+    int last = 0;
+
+    fill_{noun}(rows, 3, cells, &last);
+
+    return last + cells[0][1];
+}}
+""")
+            calls.append(f"    total = total + shape_{noun}({k % 3 + 2});")
+        elif kind == 4:
+            parts.append(f"""static inline _Bool even_{noun}(int value) {{ return !(value & 1); }}
+
+int count_{noun}(int limit) {{
+    auto int seen = 0;
+
+    for (int value = 0; value < limit; value++) {{
+        _Bool even = even_{noun}(value);
+
+        if (!even)
+            continue;
+        seen++;
+        int bonus = value > {k} ? 1 : 0;
+        seen += bonus;
+    }}
+    const _Bool many = seen > 2;
+
+    return seen + many;
+}}
+""")
+            calls.append(f"    total = total + count_{noun}({k + 3});")
+        else:
+            parts.append(f"""enum level_{noun} {{ LOW_{up} = 1, MIDDLE_{up} = 4, HIGH_{up} = MIDDLE_{up} * 2 }};
+
+struct packet_{noun} {{
+    int size;
+    unsigned char data[];
+}};
+
+int grade_{noun}(int value) {{
+    static union {{
+        struct packet_{noun} packet;
+        unsigned char bytes[sizeof(struct packet_{noun}) + 4];
+    }} storage;
+    struct packet_{noun} *packet = &storage.packet;
+
+    packet->size = 4;
+    for (int i = 0; i < packet->size; i++)
+        packet->data[i] = (unsigned char) (value + i);
+    enum level_{noun} level = value > 5 ? HIGH_{up} : value > 2 ? MIDDLE_{up} : LOW_{up};
+    switch (level) {{
+    case LOW_{up}:
+        return packet->data[0];
+    case MIDDLE_{up}:
+        return packet->data[1] + 1;
+    default:
+        return packet->data[3] + HIGH_{up};
+    }}
+}}
+""")
+            calls.append(f"    total = total + grade_{noun}({k});")
+
+    main_head = """int main(void) {
+    int total = 0;
+"""
+    return parts, main_head, calls, "total"
+
+
+def numeric(fn_count):
+    """long long and unsigned long long multiplied, divided, shifted and
+    compared; float and double added, multiplied, divided and compared; and
+    conversions among them and int. Every floating value is one a four-byte
+    float holds exactly -- the Agon's double is its float, and the host's is
+    not -- so the host's answer is the Agon's."""
+    parts = []
+    calls = []
+    for i, noun in enumerate(names(fn_count)):
+        k = i % 7
+        kind = i % 6
+        if kind == 0:
+            parts.append(f"""long long product_{noun}(long long left, long long right) {{
+    long long product = left * right;
+
+    return product / 7 + product % 7 - (left << 3) + (right >> 2);
+}}
+""")
+            calls.append(f"    total = total + (int) (product_{noun}({k + 1}23456LL, "
+                         f"{k + 2}001LL) % 1000);")
+        elif kind == 1:
+            parts.append(f"""unsigned long long mix_{noun}(unsigned long long seed, int rounds) {{
+    for (int round = 0; round < rounds; round++) {{
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+    }}
+
+    return seed > 0xffffffffULL ? seed >> 32 : seed;
+}}
+""")
+            calls.append(f"    total = total + (int) (mix_{noun}({k + 1}ULL, 3) % 997);")
+        elif kind == 2:
+            parts.append(f"""float blend_{noun}(float left, float right, int steps) {{
+    float sum = 0.0f;
+
+    for (int step = 0; step < steps; step++)
+        sum = sum + left * 0.5f - right / 4.0f;
+
+    return sum;
+}}
+""")
+            calls.append(f"    total = total + (int) (blend_{noun}({k + 2}, 2.0f, "
+                         f"{k + 1}) * 2.0f);")
+        elif kind == 3:
+            parts.append(f"""double ratio_{noun}(int numerator, int denominator) {{
+    double ratio = (double) numerator / denominator;
+
+    if (ratio > 1.5)
+        ratio -= 1.0;
+    else if (ratio <= 0.25)
+        ratio = ratio * 4.0;
+
+    return ratio * 8.0;
+}}
+""")
+            calls.append(f"    total = total + (int) ratio_{noun}({k + 3}, {1 << (k % 4)});")
+        elif kind == 4:
+            parts.append(f"""int convert_{noun}(int value) {{
+    float scaled = (float) value * 1.5f;
+    long long wide = (long long) scaled * 1000LL;
+    unsigned char low = (unsigned char) (wide % 256);
+    double half = (double) low / 2.0;
+
+    return (int) half + (scaled > 10.0f) + (value < 0 ? -1 : 1);
+}}
+""")
+            calls.append(f"    total = total + convert_{noun}({k - 2});")
+        else:
+            parts.append(f"""long long squares_{noun}(const int *values, int count) {{
+    long long sum = 0;
+
+    for (int i = 0; i < count; i++)
+        sum += (long long) values[i] * values[i];
+
+    return sum > {k}000LL ? sum - {k}000LL : sum;
+}}
+""")
+            calls.append(f"    total = total + (int) squares_{noun}((int[]){{ {k}, {k + 1}, "
+                         f"{k + 2}, 100, 200 }}, 5);")
+
+    main_head = """int main(void) {
+    int total = 0;
+"""
+    return parts, main_head, calls, "total"
+
+
 HEADERS = {
     "pointers.c": """/* The pointer benchmark input.
  *
@@ -1099,6 +1454,45 @@ HEADERS = {
  * be compared with one from last week. Returns 42.
  */
 """,
+    "preproc.c": """/* The preprocessor benchmark input.
+ *
+ * Macros defined as each function needs them: constants, function-like
+ * ones nested three deep, # and ##, one with __VA_ARGS__, one spread over
+ * lines with backslashes, one taken back with #undef and given again; and
+ * #if, #elif, #else, #ifdef, #ifndef and defined() over them. A real C file
+ * is full of these, and no generated input had one: the preprocessor's
+ * time went in unmeasured.
+ *
+ * Generated by generate.py and committed, so that a number from today can
+ * be compared with one from last week. Returns 42.
+ */
+""",
+    "declare.c": """/* The C99 declarations benchmark input.
+ *
+ * Designated initialisers for members and elements, compound literals,
+ * arrays whose length the program works out -- local, and as parameters
+ * with restrict beside them -- declarations after statements and in for,
+ * _Bool, inline, auto, an enum with values of its own, and a struct that
+ * ends in an array with no size. What C99 added to declaring things, which
+ * the older inputs have little or none of.
+ *
+ * Generated by generate.py and committed, so that a number from today can
+ * be compared with one from last week. Returns 42.
+ */
+""",
+    "numeric.c": """/* The numeric benchmark input.
+ *
+ * long long and unsigned long long multiplied, divided, shifted and
+ * compared; float and double added, multiplied, divided and compared; and
+ * conversions among them, int and unsigned char. wide.c only passes floats
+ * around, from before acc had their arithmetic, so none of it was
+ * measured. Every floating value is one a four-byte float holds exactly,
+ * so the host's answer is the Agon's.
+ *
+ * Generated by generate.py and committed, so that a number from today can
+ * be compared with one from last week. Returns 42.
+ */
+""",
     "data.c": """/* The data benchmark input.
  *
  * Globals and global arrays declared between the functions that use them,
@@ -1131,7 +1525,9 @@ def host_result(source):
             # acc has va_list as a keyword and no preprocessor, so the input
             # says `va_list` with nothing included; the host needs the
             # header, which goes in here and not in what is written out.
-            f.write("#include <stdarg.h>\n"
+            # And #line, so that __LINE__ -- which preproc.c reads -- counts
+            # from the input's first line and not from the header's.
+            f.write("#include <stdarg.h>\n#line 1\n"
                     + source.replace("int main(void)", "int bench_main(void)")
                     + '\n#include <stdio.h>\nint main(void) '
                       '{ printf("%d\\n", bench_main()); return 0; }\n')
@@ -1170,3 +1566,6 @@ if __name__ == "__main__":
     write("records.c", records)
     write("linkage.c", linkage, after=True)
     write("features.c", features)
+    write("preproc.c", preproc)
+    write("declare.c", declare)
+    write("numeric.c", numeric)

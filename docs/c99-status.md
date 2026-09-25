@@ -21,7 +21,7 @@ Agon; the rest are excluded, each with its reason recorded. Of what is left:
 |---|---|---|---|---|
 | gcc.c-torture/execute | 1,235 | **1,129** | 6 | 100 |
 | c-testsuite single-exec | 198 | **197** | 1 | 0 |
-| gcc.dg (run, compile, must-refuse) | 4,516 | **3,708** | 174 | 634 |
+| gcc.dg (run, compile, must-refuse) | 4,516 | **3,710** | 172 | 634 |
 | chibicc, an ASSERT per program | 311 | **289** | 1 | 21 |
 
 The check is strict both ways: a test that stops passing fails
@@ -55,9 +55,9 @@ unclassified are in the open list.
 - **chibicc, 1.** unicode-51 compares four bytes of `L""`, which is two
   bytes here, so it reads past the object; agondev's layout happens to
   forgive it.
-- **gcc.dg, 174.**
+- **gcc.dg, 172.**
   - 97 invalid programs acc accepts.
-  - 64 it refuses, but at a line the test does not name.
+  - 62 it refuses, but at a line the test does not name.
   - 12 that abort: mostly GNU attributes and sibling-call tests
     (`cleanup`, `constructor`, `ms_struct`, `sibcall-*`, `-fwrapv`),
     and c99-hexfloat-2, which is a real bug (below).
@@ -83,9 +83,13 @@ found that a call could have 64 arguments pending at most, where C99
 
 ## Compile speed
 
-584.8 cycles per byte of source on the Agon (`test/bench.sh` with the
-cycle-counting build), against a goal of under 600. The redeclaration
-checks added during the conformance work cost about 0.3%.
+617.3 cycles per byte of source on the Agon (`test/bench.sh` with the
+cycle-counting build). That is over the goal of 600, and not because acc
+got slower: at the milestone it was 584.3 over inputs that measured no
+floating arithmetic, no preprocessing and little of C99's declarations.
+Three inputs added since cover them -- numeric.c at 1,060 cycles a byte
+and preproc.c at 913 are the dearest there are -- and the same compiler
+measures 617.3 over all of them.
 
 ## Out by decision
 
@@ -106,7 +110,7 @@ Each is also in the plan's decisions:
 ### Bugs and gaps that are acc's
 
 - **Invalid programs accepted.** 97 gcc.dg must-refuse tests compile, and
-  64 more are refused at a line the test does not name. The largest open
+  62 more are refused at a line the test does not name. The largest open
   item, and none has been read one by one.
 - **`0x1p+f` is not one preprocessing number.** C99 6.4.8 makes a
   pp-number take `p+` and `p-`, so `0x1p+f` is a single token and
