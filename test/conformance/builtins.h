@@ -7,7 +7,11 @@
  * Declared without their parameters, which C99 still allows (6.11.6): a
  * declaration that says nothing of them agrees with whatever prototype a
  * test gives the function itself, where the standard headers' prototypes
- * disagreed with some and brought typedefs -- FILE, div_t -- others define. */
+ * disagreed with some and brought typedefs -- FILE, div_t -- others define.
+ *
+ * Except the ones that take `...`, which `()` does not agree with (C99
+ * 6.7.5.3p15): those have their prototypes, as a test that declares one
+ * itself has to give it. */
 void abort();
 void exit();
 void free();
@@ -23,9 +27,9 @@ char *strncpy();
 char *strcat();
 char *strchr();
 char *strrchr();
-int printf();
-int sprintf();
-int snprintf();
+int printf(const char *, ...);
+int sprintf(char *, const char *, ...);
+int snprintf(char *, __SIZE_TYPE__, const char *, ...);
 int abs();
 long labs();
 double fabs();

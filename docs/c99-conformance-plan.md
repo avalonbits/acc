@@ -607,7 +607,11 @@ done, and then what is next.
    locals, a local and a parameter of the outermost block, two parameters
    -- and gcc's `__restrict` is read as `restrict`, since headers written
    for gcc name parameters with it, and a second one read as a name was a
-   parameter declared twice.
+   parameter declared twice. So are a function declared with `()` and with a
+   list `()` cannot agree with (6.7.5.3p15), a `const` result against a
+   plain one, and a name declared `static` and not (6.2.2p7). With one
+   floating type, `()` against a `float` parameter cannot be told from a
+   `double` one, and is taken.
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.

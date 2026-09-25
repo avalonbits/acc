@@ -67,6 +67,15 @@ def needs(text, census_line, message):
     if m and '__builtin_' + m.group(1) in code:
         return 'builtin-mapping'
 
+    # And builtins.h, the device's own declarations, which give printf,
+    # sprintf and snprintf their prototypes -- `()` cannot agree with `...`
+    # -- where a test declares one with `()` itself.
+    m = re.search(r"'(\w+)' is declared with '\(\)' and with '\.\.\.'",
+                  message)
+    if m and m.group(1) in ('printf', 'sprintf', 'snprintf') \
+       and re.search(r'\b' + m.group(1) + r'\s*\(\s*\)', code):
+        return 'builtin-mapping'
+
     # A struct that ends in an array with no size, as another's member:
     # C99 6.7.2.1p2 forbids it and gcc takes it (pr15749-1).
     if "ends in an array with no size, so it cannot be a member" in message:

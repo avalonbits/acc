@@ -6569,6 +6569,52 @@ static void same_signature(int fn, Type ret_type, int ret_ext, int first,
                                "another type", name_text(name), i + 1);
 }
 
+/* `()` against a list of parameters, which C99 6.7.5.3p15 lets agree only
+ * where a call through `()` would pass what the list takes: no `...`, and
+ * no parameter the default promotions would change -- a char, a short. A
+ * definition's `()` has no parameters, and agrees with a list of none:
+ * `unlisted` says this declaration is the one with `()`. */
+__attribute__((noinline))
+static void unlisted_agrees(int first, int count, int variadic, int unlisted,
+                            NameRef name, int line)
+{
+    int i;
+
+    if (variadic)
+        acc_error_at(line, "'%s' is declared with '()' and with '...', "
+                           "which do not agree", name_text(name));
+    if (unlisted && tok == TK_LBRACE && !in_body && count)
+        acc_error_at(line, "'%s' is defined with no parameters, and was "
+                           "declared with %d", name_text(name), count);
+    for (i = 0; i < count; i++) {
+        Type t = sym_param_type(first, i);
+
+        if (!type_pointer(t) && !type_is_struct(t) && !type_float(t)
+            && type_promote(t) != t)
+            acc_error_at(line, "'%s' is declared with '()', which passes "
+                               "parameter %d promoted, and with a type for "
+                               "it that is not", name_text(name), i + 1);
+    }
+}
+
+/* That a name declared again at file scope keeps its linkage (C99
+ * 6.2.2p7 leaves both at once undefined): `static` after a declaration
+ * that was not, or a variable with no storage class after one that was.
+ * `extern`, and a function with no storage class, take the linkage it
+ * already has. */
+__attribute__((noinline))
+static void same_linkage(int sym, int is_static, int takes, int line)
+{
+    int was = sym_flags(sym) & SYMF_STATIC;
+
+    if (is_static && !was)
+        acc_error_at(line, "'%s' is declared static after a declaration "
+                           "that was not", name_text(sym_at(sym)->name));
+    if (!is_static && !takes && was)
+        acc_error_at(line, "'%s' was declared static, and this declaration "
+                           "is not", name_text(sym_at(sym)->name));
+}
+
 /* A function's declarator, from just past its name: its parameters, and
  * then either its body -- a definition -- or nothing more, which makes it a
  * prototype. Returns whether it was a definition.
@@ -6719,6 +6765,20 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
     if (declared) {
         same_signature(fn, ret_type, ret_ext, params_first, nparams, params,
                        name, line);
+        if ((sym_at(fn)->quals ^ decl_bottom_const) & SQ_CONST)
+            acc_error_at(line, "'%s' is declared again with another result "
+                               "type", name_text(name));
+        if (!params != !(sym_flags(fn) & SYMF_PARAMS)) {
+            if (params)
+                unlisted_agrees(params_first, nparams, variadic, 0, name,
+                                line);
+            else
+                unlisted_agrees(sym_params_first(fn), sym_nparams(fn),
+                                sym_flags(fn) & SYMF_VARIADIC, 1, name,
+                                line);
+        }
+        if (!in_body)
+            same_linkage(fn, decl_static, 1, line);
         if (params && (sym_flags(fn) & SYMF_PARAMS)
             && (sym_flags(fn) & SYMF_VARIADIC) != variadic)
             acc_error_at(line, "'%s' is declared again with%s '...'",
@@ -7511,6 +7571,8 @@ static void global_variable(Type type, int ext, NameRef name, int count,
 
     if (!static_local && (sym = name_global(name)) != SYM_NONE) {
         int saved, again = global_again(sym, type, ext, count, line);
+
+        same_linkage(sym, decl_static, decl_extern, line);
 
         if (count < 0)
             count = sym_count(sym);
