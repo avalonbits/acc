@@ -38,6 +38,8 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 #   __imulu    a multiply. An extension or a member reached by index into
 #              an array of entries whose width is not a power of two.
 #   __ishl     a shift. An array of two-byte entries, indexed.
+#   __llsh     a 64-bit shift, a bit at a time. A wide constant's bytes,
+#              shifted out of it rather than read from where it lies.
 checks=(
     "gen.c __setflag vpush_const vpush_local vpush_reg vdrop vtype vtype_at
            vconst_top vdup ld_ix_rr push_rr pop_rr add_hl_rr sbc_hl_rr"
@@ -47,6 +49,7 @@ checks=(
     "sym.c __imulu ext_bytes ext_elem ext_elem_x ext_count member_find
            member_type member_offset member_next"
     "sym.c __ishl sym_param_type sym_param_ext"
+    "gen.c __llsh wide_bytes_at"
     "parse.c - starts_decl"
     "lex.c +next lex_two"
     "parse.c +base_type type_specifier_slow"

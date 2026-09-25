@@ -2721,14 +2721,27 @@ void vpush_const_wide(uint32_t low, uint32_t high, Type type)
 }
 
 /* The bytes of a wide constant written into a frame slot: `ld a, n` and a
- * store, a byte at a time. */
+ * store, a byte at a time.
+ *
+ * The bytes are read out of `bits` where it lies, lowest first, as get24
+ * reads a value: shifted out, each was a call to the runtime's 64-bit
+ * shift, which goes a bit at a time -- over a thousand cycles a byte, and
+ * an eighth of the time acc took over test/bench's numeric.c. */
 static void wide_bytes_at(int disp, uint64_t bits, int n)
 {
     int i;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    unsigned char bytes[8];
+
+    for (i = 0; i < 8; i++)
+        bytes[i] = (unsigned char) (bits >> (i * 8));
+#else
+    const unsigned char *bytes = (const unsigned char *) &bits;
+#endif
 
     for (i = 0; i < n; i++) {
         out_byte(0x3e);                         /* ld a, n */
-        out_byte((int) (bits >> (i * 8)) & 0xff);
+        out_byte(bytes[i]);
         ld_ix_a(disp + i);
     }
 }
