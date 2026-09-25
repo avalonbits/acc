@@ -838,7 +838,7 @@ void vstore_local(int offset, Type type); /* pop the top into a local */
  * truncate as it goes. It is the parser's to answer because it is a fact
  * about the text after the operator, not about the values.
  */
-void vapply(int op, Type narrow);
+void vapply(unsigned char op, Type narrow);
 void vaddr_local(int offset, Type type);  /* &local */
 void vderef(void);                    /* *p, replacing the pointer */
 void vmember(int offset, Type type, int ext, int quals);  /* p->m, from p */

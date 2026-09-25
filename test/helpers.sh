@@ -40,6 +40,10 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 #   __ishl     a shift. An array of two-byte entries, indexed; and the bits
 #              of a constant multiplier, which mul_const, inlined into
 #              vbinop, finds without one.
+#   (+)        binary_rest runs for every operator, and logical_rest
+#              inlined into it gave it a 54-byte frame; next() runs for
+#              every token, and the directive test inlined into it gave it
+#              one too. Its operator is a byte, so its tests are no AND.
 #   __llsh     a 64-bit shift, a bit at a time. A wide constant's bytes,
 #              shifted out of it rather than read from where it lies.
 checks=(
@@ -53,6 +57,10 @@ checks=(
     "sym.c __ishl sym_param_type sym_param_ext"
     "gen.c __llsh wide_bytes_at"
     "gen.c __ishl vbinop"
+    "parse.c __iand binary_rest"
+    "parse.c __setflag binary_rest"
+    "parse.c +binary_rest logical_rest"
+    "lex.c +next not_punct"
     "parse.c - starts_decl"
     "lex.c +next lex_two"
     "parse.c +base_type type_specifier_slow"

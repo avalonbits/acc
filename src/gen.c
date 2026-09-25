@@ -5242,18 +5242,18 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
  * is asked twice for every jump the compiler writes. */
 #define JR_REACHES(d) ((unsigned) ((d) + 128) <= 255u)
 
-static int jr_of(int op)
-{
-    switch (op) {
-    case JP_ANY: return 0x18;
-    case JP_Z:   return 0x28;
-    case JP_NZ:  return 0x20;
-    case JP_C:   return 0x38;
-    case JP_NC:  return 0x30;
-    }
+/* A table from JP_NZ, the lowest, to JP_M, the highest, rather than a
+ * switch: this is asked twice of every jump in every function, and the
+ * switch was a call and a chain of compares each time. */
+static const unsigned char jr_table[JP_M - JP_NZ + 1] = {
+    [JP_ANY - JP_NZ] = 0x18,
+    [JP_Z - JP_NZ]   = 0x28,
+    [JP_NZ - JP_NZ]  = 0x20,
+    [JP_C - JP_NZ]   = 0x38,
+    [JP_NC - JP_NZ]  = 0x30
+};
 
-    return 0;
-}
+#define jr_of(op)  (jr_table[(unsigned char) (op) - JP_NZ])
 
 /* The jumps of the function just compiled whose target is near enough,
  * written again in two bytes.
@@ -7053,7 +7053,7 @@ static int is_comparison(int op)
  * facts are, and the pieces of it fold into each other because they are no
  * longer separately reachable.
  */
-void vapply(int op, Type narrow)
+void vapply(unsigned char op, Type narrow)
 {
     Type left, right;
 

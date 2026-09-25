@@ -4810,6 +4810,26 @@ static void skip_attribute(void)
     }
 }
 
+/* What next() does with a character that is no punctuator: a directive, if
+ * it is a `#` first on its line, and otherwise the quoted literal it must
+ * begin. Out of line: inlined, the walk back over the line in at_line_start
+ * wanted a frame slot of its own, which next() then built on every token.
+ * Returns whether a directive was read, and the next token is still to
+ * find. */
+__attribute__((noinline))
+static int not_punct(int c)
+{
+    if (c == '#' && src_macro == NAME_NONE && at_line_start(cursor - 1)) {
+        cursor--;
+        directives();
+
+        return 1;
+    }
+    lex_quoted(c);
+
+    return 0;
+}
+
 void next(void)
 {
     int c;
@@ -4919,13 +4939,8 @@ restart:
          *
          * Not inside a macro, whose text has no lines of its own and whose
          * '#' will mean something else once there is a '#' to mean. */
-        if (c == '#' && src_macro == NAME_NONE && at_line_start(cursor - 1)) {
-            cursor--;
-            directives();
-
+        if (not_punct(c))
             goto restart;
-        }
-        lex_quoted(c);
 
         return;
     }

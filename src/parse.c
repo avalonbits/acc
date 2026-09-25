@@ -1692,6 +1692,9 @@ static int expression_ends_here(void)
  */
 static void binary_rest(int min_prec);
 
+/* Out of line: inlined, it gave binary_rest a frame of 54 bytes, built
+ * for every operator in the program. */
+__attribute__((noinline))
 static void logical_rest(int op, int op_prec)
 {
     int settles = (op == TK_OROR);      /* the truth that decides it early */
@@ -1759,10 +1762,12 @@ static void logical_rest(int op, int op_prec)
 static void binary_rest(int min_prec)
 {
     for (;;) {
-        int op = tok;
-        int op_prec = prec[op];
+        unsigned char op = tok_low;     /* a byte: tok_pair on an int held */
+        int op_prec = prec[op];         /* in a register was a 24-bit AND */
 
-        if (op_prec < min_prec)         /* PREC_NONE included: not an operator */
+        /* PREC_NONE included: not an operator. Unsigned, since neither is
+         * ever negative and a signed compare is a call on this chip. */
+        if ((unsigned) op_prec < (unsigned) min_prec)
             return;
         next();
 
