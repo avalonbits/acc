@@ -126,6 +126,19 @@ emits "!(a < b)"                        "$not_test" no \
 emits "!x, of a variable"               "$not_test" yes \
     'int f(int x) { return !x; }'
 
+# `&&` and `||` in a branch jump from each side rather than making a one
+# or a zero -- ld hl, 1 and a jump over the zero -- and testing that. As a
+# value they still make it.
+logic_value='21010000\(18\|c3\)'
+emits "if (a && b)"                     "$logic_value" no \
+    'int f(int a, int b) { if (a && b) return 3; return 4; }'
+emits "while (p < e && *p)"             "$logic_value" no \
+    'char *f(char *p, char *e) { while (p < e && *p) p++; return p; }'
+emits "if (a < b || b < 0), nested"     "$logic_value" no \
+    'int f(int a, int b) { if ((a < b || b < 0) && a) return 3; return 4; }'
+emits "return a && b, a value"          "$logic_value" yes \
+    'int f(int a, int b) { return a && b; }'
+
 # An assignment to a narrow local stores the low bytes, which converting to
 # its type does not change, and converts after the store only for a value
 # that is used: as a statement, or a comma's left side, it is not.

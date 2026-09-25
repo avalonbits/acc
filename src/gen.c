@@ -3529,9 +3529,72 @@ static int jump_on_flags(int op, int is_unsigned)
     return second;
 }
 
+/* The mark `a && b` and `a || b` leave, as vcmp does: the bytes that make
+ * a one or a zero of where the jumps went, which a branch straight after
+ * them undoes, to jump on where they went instead. `while (p < e && ok(*p))`
+ * then jumps out from each side, rather than making a one or a zero and
+ * testing it against zero.
+ *
+ * The jumps that settled it are taken back into a chain -- patching them
+ * wrote over the links that made them one -- so the holes are kept here as
+ * they were. A condition with more of them than there is room for is left
+ * as it is. */
+#define LOGIC_HOLES_MAX 32
+
+static int logic_from = -1;     /* where the one or zero began */
+static int logic_to;            /* and where it ended */
+static int logic_settles;       /* the answer the jumps mean */
+static int logic_holes[LOGIC_HOLES_MAX];
+static int nlogic_holes;
+
+/* The holes in a chain, onto the end of the ones kept; 0 when there is no
+ * room for them all. */
+static int logic_keep(int hole)
+{
+    while (hole) {
+        if (nlogic_holes == LOGIC_HOLES_MAX)
+            return 0;
+        logic_holes[nlogic_holes++] = hole;
+        hole = get24(out_img + (hole - out_base));
+    }
+
+    return 1;
+}
+
+/* The kept holes as one chain again, and its first. */
+static int logic_chain(void)
+{
+    int i;
+
+    for (i = 0; i < nlogic_holes; i++)
+        put24(out_img + (logic_holes[i] - out_base),
+              i + 1 < nlogic_holes ? logic_holes[i + 1] : 0);
+
+    return nlogic_holes ? logic_holes[0] : 0;
+}
+
 static int jump_on_truth(int when_true)
 {
     int reg;
+
+    if (logic_from >= 0 && out_here() == logic_to && vtop == 1
+        && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
+        int chain = logic_chain(), over;
+
+        out_rewind(logic_from);
+        jumps_forget(logic_from);
+        logic_from = -1;
+        vdrop();
+
+        /* The chain is taken exactly when the answer is `settles`, and
+         * falling through is the other answer. */
+        if (when_true == logic_settles)
+            return chain;
+        over = jump_op(JP_ANY);
+        patch_to_here(chain);
+
+        return over;
+    }
 
     if (cmp_from >= 0 && out_here() == cmp_to && vtop == 1
         && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
@@ -3683,10 +3746,14 @@ int gen_logic_left(int settles)
 
 void gen_logic_right(int settles, int early)
 {
-    int late, done;
+    int late, done, from, kept;
 
     save_regs_below(1);
     late = jump_on_truth(settles);
+
+    nlogic_holes = 0;
+    kept = logic_keep(early) && logic_keep(late);
+    from = out_here();
 
     ld_rr_imm(R_HL, !settles);          /* neither side settled it */
     done = jump_op(JP_ANY);
@@ -3697,6 +3764,10 @@ void gen_logic_right(int settles, int early)
 
     patch_to_here(done);
     vpush_reg(R_HL);
+
+    logic_from = kept ? from : -1;
+    logic_to = out_here();
+    logic_settles = settles;
 }
 
 void gen_label(int hole)
@@ -7603,6 +7674,7 @@ void gen_rollback(GenMark *m)
      * forgotten would look like one left just now. */
     cmp_from = -1;
     conversion_from = -1;
+    logic_from = -1;
     out_rewind(m->at);
     jumps_forget(m->at);
     nfixups = m->nfixups;
