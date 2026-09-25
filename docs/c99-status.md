@@ -21,7 +21,7 @@ Agon; the rest are excluded, each with its reason recorded. Of what is left:
 |---|---|---|---|---|
 | gcc.c-torture/execute | 1,235 | **1,129** | 6 | 100 |
 | c-testsuite single-exec | 198 | **197** | 1 | 0 |
-| gcc.dg (run, compile, must-refuse) | 4,516 | **3,707** | 174 | 635 |
+| gcc.dg (run, compile, must-refuse) | 4,516 | **3,708** | 174 | 634 |
 | chibicc, an ASSERT per program | 311 | **289** | 1 | 21 |
 
 The check is strict both ways: a test that stops passing fails
@@ -40,9 +40,9 @@ updated.
 | a call with arguments to a function defined with `()` | 1 | 3 | |
 | the measuring device's builtin mapping | 1 | 1 | |
 | C11's headers | | | 1 |
-| not yet classified | | 8 | |
+| not yet classified | | 7 | |
 
-All but the last row are out of scope or out by decision (below). The eight
+All but the last row are out of scope or out by decision (below). The seven
 unclassified are in the open list.
 
 ### What the failures are
@@ -72,6 +72,14 @@ window, past C99's 4,095-character minimum, and are skipped now. Most of
 the rest were skipped because they compare pointers to types C99 does not
 let them, which clang only warns about and acc refuses. `test/fuzz.sh`
 covers narrow expressions the same way.
+
+`test/yarpgen.sh` does the same with YARPGen, which writes only C that is
+valid by its own model -- a 32-bit int. Of 150 programs, 107 ran and 104
+agreed. The three that did not are undefined here and not in YARPGen's
+model: a `long` addition that overflows once a 32-bit constant has been
+put in a 24-bit int, and two shifts of an int by 25 and 27 bits. It also
+found that a call could have 64 arguments pending at most, where C99
+5.2.4.1 asks for 127 -- YARPGen's drivers pass 70 to 90 -- since fixed.
 
 ## Compile speed
 
@@ -115,7 +123,7 @@ Each is also in the plan's decisions:
   give bytes past 0x7f with UTF-8 written in the source, is widened a byte
   at a time: the lexer records only that such an escape was there.
 - **pr103222** crashes the machine, not yet looked at.
-- **Eight gcc.dg refusals not yet classified**, each of which may be a
+- **Seven gcc.dg refusals not yet classified**, each of which may be a
   program acc should take:
   - c99-complit-1: an address kept in one byte.
   - lvalue-5: an assignment whose target it does not recognise.
@@ -123,7 +131,7 @@ Each is also in the plan's decisions:
   - pr89211: a struct used before its members are given.
   - typedef-var-1: a name declared again that may be legal.
   - vla-21: the file-scope VLA type name above.
-  - pr59992, pr119183: translation limits -- 8,191 names, and nesting.
+  - pr59992: a translation limit, 8,191 names.
 
 ### What would find more
 

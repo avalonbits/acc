@@ -505,7 +505,11 @@ static int  return_ext;         /* the struct it returns, when it does */
 /* ------------------------------------------------------------------ */
 /* the value stack                                                     */
 
-#define VSTACK_MAX 64
+/* How many values an expression may have pending at once. A call's
+ * arguments are all pending until the call is made, and C99 5.2.4.1 asks
+ * for 127 of them -- 64 here refused YARPGen's drivers, which pass a test
+ * function 70 to 90 -- with room above them for what the last one nests. */
+#define VSTACK_MAX 256
 
 static Value vstack[VSTACK_MAX];
 /* Never negative, and compared as if unsigned -- `vtop == 0`, `(unsigned)
@@ -623,7 +627,7 @@ static void vcheck(void)
         acc_error("internal: the value stack pointer and its count disagree");
 #endif
     if ((unsigned) vtop >= VSTACK_MAX)
-        acc_error("expression is nested too deeply");
+        acc_error_at(tok_line, "expression is nested too deeply");
 }
 
 /* The one place that writes an entry and moves the top, so that the pointer
