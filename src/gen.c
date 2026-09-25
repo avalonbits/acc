@@ -298,6 +298,36 @@ static int bitwise_const(int op, int value)
         return 1;
     }
 
+    /* A mask that keeps something of the middle byte and nothing above it:
+     * `& 0x8000`, `& 0xffff`. The third byte is cleared the same way, with
+     * sbc hl, hl after the AND that leaves the carry clear -- which would
+     * clear the low byte too, so a low byte that is kept waits in IY, the
+     * backend's own scratch, as the narrowing to a short keeps its low byte.
+     * A mask with nothing in the low byte needs no waiting, and is six
+     * bytes against the eight of loading BC and calling. crc16 in
+     * test/perf's crc.c tests `c & 0x8000` eight times a byte. */
+    if (op == TK_AMP && c2 == 0x00) {
+        if (c0 != 0x00) {
+            ld_a_l();
+            if (c0 != 0xff)
+                and_a_imm(c0);
+            out_byte2(0xfd, 0x6f);      /* ld iyl, a */
+        }
+        ld_a_h();
+        if (c1 == 0xff)
+            or_a_a();                   /* the carry, cleared in a byte */
+        else
+            and_a_imm(c1);              /* which clears it too */
+        sbc_hl_hl();
+        ld_h_a();
+        if (c0 != 0x00) {
+            out_byte2(0xfd, 0x7d);      /* ld a, iyl */
+            ld_l_a();
+        }
+
+        return 1;
+    }
+
     /* Otherwise the third byte has to be left alone, because there is no way
      * to name it: what the operator would do to it must be nothing. */
     if (c2 != identity)

@@ -148,6 +148,7 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/bss.sh
 	@ACC=$(BIN)/acc-asan test/dead.sh
 	@ACC=$(BIN)/acc-asan test/branch.sh
+	@ACC=$(BIN)/acc-asan test/codegen.sh
 	@ACC=$(BIN)/acc-asan test/relax.sh
 	@ACC=$(BIN)/acc-asan test/mos.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/args.sh || [ $$? -eq 77 ]
