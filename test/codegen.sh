@@ -68,5 +68,51 @@ calls "<< 9"                        _acc_rt_shl yes \
 calls "<< a variable"               _acc_rt_shl yes \
     'unsigned f(unsigned x, int n) { return x << n; }'
 
+# emits <name> <hex> <yes|no> <source>: whether the object's bytes hold
+# that sequence, given as hex.
+emits() {
+    local what=$1 want=$3 got
+
+    printf '%s\n' "$4" > "$tmp/c.c"
+    if ! "$ACC" -c "$tmp/c.c" -o "$tmp/c.o" >/dev/null 2>&1; then
+        printf '  FAIL %-40s acc could not compile it\n' "$what"
+        fail=$((fail + 1)); return
+    fi
+    got=no
+    od -An -v -tx1 "$tmp/c.o" | tr -d ' \n' | grep -q "$2" && got=yes
+    if [ "$got" = "$want" ]; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-40s emits %s: want %s, got %s\n' "$what" "$2" "$want" "$got"
+        fail=$((fail + 1))
+    fi
+}
+
+# A branch on an AND that keeps one byte jumps on the flags the AND left,
+# rather than rebuilding the value and testing it against zero with
+# ld bc, 0; or a; sbc hl, bc. A mask of two bytes still tests.
+zero_test=01000000b7ed42
+emits "if (x & 0x8000)"                 "$zero_test" no \
+    'int f(unsigned x) { if (x & 0x8000) return 1; return 2; }'
+emits "if (x & 0xff00)"                 "$zero_test" no \
+    'int f(unsigned x) { if (x & 0xff00) return 1; return 2; }'
+emits "if (x & 0x0ff0), two bytes"      "$zero_test" yes \
+    'int f(unsigned x) { if (x & 0x0ff0) return 1; return 2; }'
+emits "if (x & 0x8000) with the value kept" "$zero_test" yes \
+    'int f(unsigned x) { int y; if (y = x & 0x8000) return y; return 2; }'
+
+# And `!` straight after such an AND, or after a comparison, reads the same
+# flags the other way round, rather than comparing the value with zero with
+# ld de, 0; or a; sbc hl, de.
+not_test=11000000b7ed52
+emits "!(x & 0x40)"                     "$not_test" no \
+    'int f(unsigned x) { return !(x & 0x40); }'
+emits "while (!(x & 0x40))"             "$not_test" no \
+    'int f(unsigned x) { while (!(x & 0x40)) x++; return x; }'
+emits "!(a < b)"                        "$not_test" no \
+    'int f(int a, int b) { if (!(a < b)) return 1; return 2; }'
+emits "!x, of a variable"               "$not_test" yes \
+    'int f(int x) { return !x; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

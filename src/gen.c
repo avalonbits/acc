@@ -273,12 +273,14 @@ static void fill_hl_with_zero(void)
 static int and_a_imm(int v)  { out_byte2(0xe6, v & 0xff); return 0; }
 static int or_a_imm(int v)   { out_byte2(0xf6, v & 0xff); return 0; }
 static int xor_a_imm(int v)  { out_byte2(0xee, v & 0xff); return 0; }
+static void flags_say_nonzero(int from);
+static void cmp_value(int op, int is_unsigned);
 
 static int bitwise_const(int op, int value)
 {
     int c0 = value & 0xff, c1 = (value >> 8) & 0xff, c2 = (value >> 16) & 0xff;
     int identity = op == TK_AMP ? 0xff : 0x00;
-    int low, high;
+    int low, high, at;
 
     /* A mask that keeps nothing above the low byte, which is what nearly
      * every AND in a program is: whatever the two bytes above held, the
@@ -292,8 +294,10 @@ static int bitwise_const(int op, int value)
         }
         ld_a_l();
         and_a_imm(c0);
+        at = out_here();
         sbc_hl_hl();            /* and cleared the carry, so this is 0 */
         ld_l_a();
+        flags_say_nonzero(at);
 
         return 1;
     }
@@ -318,11 +322,14 @@ static int bitwise_const(int op, int value)
             or_a_a();                   /* the carry, cleared in a byte */
         else
             and_a_imm(c1);              /* which clears it too */
+        at = out_here();
         sbc_hl_hl();
         ld_h_a();
         if (c0 != 0x00) {
             out_byte2(0xfd, 0x7d);      /* ld a, iyl */
             ld_l_a();
+        } else {
+            flags_say_nonzero(at);
         }
 
         return 1;
@@ -2258,6 +2265,19 @@ static int cmp_to;              /* and where it ended */
 static int cmp_op;              /* the comparison it was */
 static int cmp_was_unsigned;
 
+/* The same mark for an AND with a mask that keeps one byte of the value and
+ * nothing else: the flags the AND left say whether that byte, and so the
+ * whole answer, is zero -- until the sbc hl, hl that clears the rest, which
+ * is where `from` stands. `if (c & 0x8000)` then comes to the AND and a
+ * jump on its zero flag. */
+static void flags_say_nonzero(int from)
+{
+    cmp_from = from;
+    cmp_to = out_here();
+    cmp_op = TK_NE;
+    cmp_was_unsigned = 1;
+}
+
 
 /* The equality half: Z is the whole answer. `when_equal` is what to leave
  * when the two were equal, which is 1 for `==` and 0 for `!=`. */
@@ -2361,6 +2381,13 @@ static void vcmp(int op)
     vdrop();
     vdrop();
 
+    cmp_value(op, is_unsigned);
+}
+
+/* HL = 1 or 0 from the flags a comparison left, and the mark that lets a
+ * branch undo it. */
+static void cmp_value(int op, int is_unsigned)
+{
     cmp_from = out_here();
     cmp_op = op;
     cmp_was_unsigned = is_unsigned;
@@ -3552,6 +3579,21 @@ static void bool_from(void)
 
 void vtruth(int op)
 {
+    /* Straight after a comparison, or an AND that left its mark, the flags
+     * are still there to be read: `!(a < b)` is a >= b, and `!(c & 0x80)`
+     * is the AND's zero flag, with no compare against zero in between. */
+    if (cmp_from >= 0 && out_here() == cmp_to
+        && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
+        int now = op == TK_EQ ? cmp_opposite(cmp_op) : cmp_op;
+
+        out_rewind(cmp_from);
+        jumps_forget(cmp_from);
+        vdrop();
+        cmp_value(now, cmp_was_unsigned);
+
+        return;
+    }
+
     if (type_float(vtype()))
         vpush_const_float(0.0f);
     else
