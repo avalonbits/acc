@@ -459,6 +459,8 @@ extern const char *lex_prelude; /* -include: read before the source */
 extern char *lex_record;              /* a size's text, being kept */
 void  lex_record_from(char *text, char *end);  /* from after this token */
 char *lex_record_take(void);         /* to this `]`: its end, or NULL */
+char *lex_record_take_semi(void);    /* to this `;`: its end, or NULL */
+int  lex_macro_def(NameRef name);     /* which definition, or 0 */
 void  lex_push_record(char *text, int len);    /* and read again */
 int  lex_ident_follows(void);    /* and whether a name does */
 int  lex_rbrace_follows(void);   /* and whether `}` does */
@@ -603,6 +605,9 @@ enum {
     SYMF_USED     = 64,         /* a function: something outside the file's
                                  * own functions holds its address, so it
                                  * stays whatever else goes */
+    SYMF_INLINE   = 128,        /* a function: static inline, and its body
+                                 * one return that a call can be compiled
+                                 * as, in place: see inline_keep */
     SYMF_EXTERN   = 16          /* a variable: a declaration said extern, so
                                  * some other file defines it. What tells it
                                  * apart from one this file declared and
@@ -838,6 +843,8 @@ void vneg(void);
 void vnot(void);
 int  vpop_reg(void);                  /* force the top into a register */
 void vdrop(void);
+int  gen_inline_begin(int size, int *lock);  /* room for inlined parameters */
+void gen_inline_end(int lock);
 void gen_discard(void);               /* drop a value nothing will read */
 void gen_stmt_end(void);              /* the scratch area is free again */
 void gen_value_end(void);             /* all of it nothing still holds */

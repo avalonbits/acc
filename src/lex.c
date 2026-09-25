@@ -886,6 +886,25 @@ char *lex_record_take(void)
     return NULL;
 }
 
+/* The same, to the `;` that is the current token: a function's return
+ * expression, kept to be read again where the function is called (see
+ * inline_keep in parse.c). The end, or NULL. */
+char *lex_record_take_semi(void)
+{
+    char *start = record_first, *end;
+
+    if (!lex_record)
+        return NULL;
+    if (depth == record_depth)
+        record_flush();
+    else
+        lex_record = NULL;
+    end = lex_record;
+    lex_record = NULL;
+
+    return end && end > start && end[-1] == ';' ? end - 1 : NULL;
+}
+
 /* The kept text read as source, from after the current token: when it
  * runs out, what follows the current token is read as ever. */
 void lex_push_record(char *text, int len)
@@ -970,7 +989,10 @@ typedef struct {
     NameRef *params;            /* null when the macro takes none */
     short    nparams;           /* -1 when it is a name and not a call */
     short    variadic;          /* whether the last parameter is `...` */
+    int      serial;            /* which definition: see lex_macro_def */
 } Macro;
+
+static int macro_serials;
 
 /* A buffer that grows, for the text an expansion is built into. On the
  * heap rather than in a frame: the Agon's stack and heap grow towards each
@@ -1071,6 +1093,17 @@ static Macro *macro_find(NameRef name)
     return m->name == NAME_NONE ? NULL : m;
 }
 
+/* Which definition a name has as a macro now, or 0: the same name defined
+ * again is a different definition. Numbered, rather than told apart by where
+ * the text is, because a definition freed by #undef and one made after it
+ * can be given the same memory. */
+int lex_macro_def(NameRef name)
+{
+    Macro *m = macro_find(name);
+
+    return m ? m->serial : 0;
+}
+
 static void macros_grow(void)
 {
     Macro   *old = macros;
@@ -1115,6 +1148,7 @@ static void macro_define(NameRef name, const char *text, int len,
     }
     m->name = name;
     m->text = keep;
+    m->serial = ++macro_serials;
     m->params = params;
     m->nparams = (short) nparams;
     m->variadic = (short) variadic;

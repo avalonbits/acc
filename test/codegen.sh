@@ -162,6 +162,19 @@ emits "if (b()), a _Bool"               "$zero_test" no \
 emits "while (*p)"                      "$zero_test" no \
     'char *f(char *p) { while (*p) p++; return p; }'
 
+# A call to a static inline function whose body is one return is compiled
+# in place. The function is the object's first, at offset zero, so a call
+# to it is call 0.
+call_zero=cd000000
+emits "static inline, one return"       "$call_zero" no \
+    'static inline int twice(int x) { return x + x; } int f(int y) { return twice(y) + 1; }'
+emits "static, not inline"              "$call_zero" yes \
+    'static int twice(int x) { return x + x; } int f(int y) { return twice(y) + 1; }'
+emits "a body of two statements"        "$call_zero" yes \
+    'static inline int twice(int x) { x++; return x + x; } int f(int y) { return twice(y); }'
+emits "a name the caller shadows"       "$call_zero" yes \
+    'int k; static inline int addk(int x) { return x + k; } int f(int y) { int k = 2; return addk(y) + k; }'
+
 # An assignment to a narrow local stores the low bytes, which converting to
 # its type does not change, and converts after the store only for a value
 # that is used: as a statement, or a comma's left side, it is not.

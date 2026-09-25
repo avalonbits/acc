@@ -5935,6 +5935,28 @@ static int spill_take(int size)
     return -(locals_size + spill_used);
 }
 
+/* Room in the scratch area for the parameters of a call being inlined,
+ * held for as long as the body is compiled: the value stack does not point
+ * at it, the parameters' names do, so it is locked as a `?:` locks its
+ * middle operand's slot. Returns where it starts; `*lock` is what
+ * gen_inline_end puts back. */
+int gen_inline_begin(int size, int *lock)
+{
+    int disp;
+
+    *lock = spill_locked;
+    disp = spill_take(size);
+    spill_locked = spill_used;
+    gen_effects++;                      /* it is still a call */
+
+    return disp;
+}
+
+void gen_inline_end(int lock)
+{
+    spill_locked = lock;
+}
+
 /* A slot for a value about to be built in it and then pushed. It is
  * reserved until it is pushed: see vpush_scratch. */
 static int spill_slot_of(int size)
