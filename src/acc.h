@@ -761,6 +761,10 @@ typedef struct {
 } Value;
 
 enum {
+    VQ_BYTE  = 0x40,            /* an int whose upper two bytes are zero */
+    VQ_WORD  = 0x80,            /* one whose top byte is: see vwidth. Clear
+                                 * of the SQ_* bits, which a local's value
+                                 * takes as they are */
     VQ_CONST = 1                /* what the value leads to is const: a store
                                  * through it is refused */
 };
@@ -1027,6 +1031,7 @@ void out_relocs_write(const char *path);
  * calls each opened a frame on this target to do a compare and a store. */
 extern unsigned char *out_put, *out_limit;
 void out_grow(void);
+extern unsigned out_rewinds;        /* see out_rewind */
 int  out_capacity(void);            /* the image's room, for test_out */
 extern int out_start_cap;           /* and where it starts */
 

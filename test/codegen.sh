@@ -56,6 +56,23 @@ calls "& 0x7fffff, into the top byte" _acc_rt_and yes \
 calls "& a variable"                _acc_rt_and yes \
     'unsigned f(unsigned x, unsigned y) { return x & y; }'
 
+# &, | and ^ of values known to fit in a byte or two -- unsigned chars and
+# shorts, as C promotes them -- are written out a byte at a time. An AND
+# needs only one side narrow; the others need both. A signed char's sign
+# fills the upper bytes, so it is not narrow.
+calls "uchar ^ uchar"               _acc_rt_xor no \
+    'int f(unsigned char a, unsigned char b) { return a ^ b; }'
+calls "int & uchar"                 _acc_rt_and no \
+    'int f(int a, unsigned char b) { return a & b; }'
+calls "ushort | uchar"              _acc_rt_or no \
+    'int f(unsigned short a, unsigned char b) { return a | b; }'
+calls "*p & mask, bytes read"       _acc_rt_and no \
+    'int f(const unsigned char *p, unsigned char m) { return (p[0] & m) | (p[1] & m); }'
+calls "int | uchar"                 _acc_rt_or yes \
+    'int f(int a, unsigned char b) { return a | b; }'
+calls "schar | uchar"               _acc_rt_or yes \
+    'int f(signed char a, unsigned char b) { return a | b; }'
+
 # << by a constant of up to eight: add hl, hl a bit at a time, a byte each,
 # which is no bigger than loading the count and calling. Past eight, and
 # by a variable, the helper.

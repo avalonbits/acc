@@ -511,8 +511,16 @@ void out_word24(int value)
 }
 
 
+/* How many times the image has been taken back. A mark something has left
+ * on bytes it wrote -- see vcmp's -- is good only while this is what it was
+ * when the mark was made: taken back past the mark and written again, the
+ * image can come back to the very place the mark ends, with other bytes
+ * before it. */
+unsigned out_rewinds;
+
 void out_rewind(int here)
 {
+    out_rewinds++;
     /* The slots recorded in what is being undone go with it. The table is
      * in increasing order, so the ones to drop are the last ones. */
     while (out_reloc_put > out_relocs + 1 && out_reloc_put[-1] >= here - out_base)

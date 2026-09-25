@@ -711,6 +711,40 @@ void vpush(int kind, Type type, int val)
     vtop++;
 }
 
+/* How many of an int's bytes can be other than zero: 1, 2 or 3.
+ *
+ * On this chip an AND, OR or XOR of two ints is a call, since the top byte
+ * of a register has no name to do it with. But a byte that is zero is zero
+ * whatever the operator does to it and to another zero -- and the ints
+ * that are made of an unsigned char, which is what C promotes every one
+ * to, have two of them: zap's register masks are `uint8_t`, and every
+ * operator on them was a call. So a value can say what it is known to fit
+ * in, in two bits of its quals, set where it is made -- a load of an
+ * unsigned narrow type, an AND with something narrow -- and cleared by
+ * everything else, since a push starts with none. A constant says it by
+ * being the number it is. */
+static inline __attribute__((always_inline)) int vwidth(const Value *v)
+{
+    if (val_number(v->kind))
+        return v->val >= 0 && v->val <= 0xff ? 1
+             : v->val >= 0 && v->val <= 0xffff ? 2 : 3;
+
+    return v->quals & VQ_BYTE ? 1 : v->quals & VQ_WORD ? 2 : 3;
+}
+
+static void vset_width(Value *v, int width)
+{
+    v->quals = (unsigned char) ((v->quals & ~(VQ_BYTE | VQ_WORD))
+                                | (width == 1 ? VQ_BYTE | VQ_WORD
+                                   : width == 2 ? VQ_WORD : 0));
+}
+
+/* The bits vwidth reads, for an unsigned narrow value being widened into a
+ * register: the load fills with zeros above it. Asked where a value is
+ * loaded, which is what the time goes on, so it is a byte test and no call. */
+#define NARROW_QUALS(t) (!type_unsigned(t) ? 0 \
+                         : type_size(t) == 1 ? VQ_BYTE | VQ_WORD : VQ_WORD)
+
 void vpush_const(int val, Type type)
 {
     vpush(VAL_CONST, type, val);
@@ -893,9 +927,21 @@ void vconvert(Type to)
     if (widen_again(to))
         return;
 
+    /* A value in a register that already fits: zero above the bytes `to`
+     * keeps, and short of its sign bit if it has one -- or all of its
+     * bytes, if it has none. There is nothing to convert. */
+    if (top->kind == VAL_REG
+        && (vwidth(top) < type_size(to)
+            || (vwidth(top) == type_size(to) && type_unsigned(to)))) {
+        top->type = type_promote(to);
+
+        return;
+    }
+
     force_into(vsp - 1, R_HL);
     convert_in_hl(to);
     top->type = type_promote(to);
+    vset_width(top, type_unsigned(to) ? type_size(to) : 3);
 }
 
 Type vtype(void)
@@ -1323,6 +1369,7 @@ static int force_reg(Value *val)
         else
             fill_hl_with_sign_of_a();
         ld_l_a();
+        val->quals |= NARROW_QUALS(val->type);
         val->kind = VAL_REG;
         val->type = type_promote(val->type);
         val->val = reg;
@@ -1342,10 +1389,12 @@ static int force_reg(Value *val)
     } else {
         if (val->kind == VAL_VOID)
             void_used();
-        if (type_size(val->type) < ACC_INT_SIZE)
+        if (type_size(val->type) < ACC_INT_SIZE) {
             load_narrow_into(reg, val->val, val->type);
-        else
+            val->quals |= NARROW_QUALS(val->type);
+        } else {
             ld_rr_ix(reg, val->val);
+        }
     }
     val->kind = VAL_REG;
     val->type = type_promote(val->type);
@@ -1450,6 +1499,7 @@ static void force_into(Value *target, int want)
         else
             fill_hl_with_sign_of_a();
         ld_l_a();
+        target->quals |= NARROW_QUALS(target->type);
         if (want != R_HL)
             mov_rr(want, R_HL);
         if (keep)
@@ -1468,10 +1518,12 @@ static void force_into(Value *target, int want)
     } else {
         if (target->kind == VAL_VOID)
             void_used();
-        if (type_size(target->type) < ACC_INT_SIZE)
+        if (type_size(target->type) < ACC_INT_SIZE) {
             load_narrow_into(want, target->val, target->type);
-        else
+            target->quals |= NARROW_QUALS(target->type);
+        } else {
             ld_rr_ix(want, target->val);
+        }
     }
     target->kind = VAL_REG;
     target->type = type_promote(target->type);
@@ -1694,11 +1746,60 @@ static int foldable(int op, const Value *lhs, const Value *rhs)
     return pending == 2 && lhs->kind == rhs->kind;
 }
 
+/* HL = HL OP BC, a byte or two at a time in A, when the widths say the
+ * bytes above those are zero in the answer -- see vwidth. Returns the
+ * answer's width, or 0 for one this cannot do, which the helper then does.
+ *
+ * An AND is as wide as the narrower side, and the bytes of the wider side
+ * above that are cleared: with sbc hl, hl after an `and`, which clears the
+ * carry, or through IY for the low byte when the middle one is kept, as
+ * bitwise_const does. An OR or an XOR is as wide as the wider side, and
+ * both have to be narrow, so that the top byte of HL is zero already and
+ * stays so. */
+static int bitwise_narrow(int op, int lw, int rw)
+{
+    int alu = op == TK_AMP ? 0xa0 : op == TK_PIPE ? 0xb0 : 0xa8;
+    int width = op == TK_AMP ? (lw < rw ? lw : rw) : (lw > rw ? lw : rw);
+
+    if (width == 3)
+        return 0;
+    if (width == 1) {
+        ld_a_l();
+        out_byte(alu + 1);                      /* op c */
+        if (lw > 1)
+            sbc_hl_hl();                        /* an AND: its carry is clear */
+        ld_l_a();
+
+        return 1;
+    }
+    if (lw <= 2) {
+        ld_a_l();
+        out_byte(alu + 1);                      /* op c */
+        ld_l_a();
+        ld_a_h();
+        out_byte(alu);                          /* op b */
+        ld_h_a();
+
+        return 2;
+    }
+    ld_a_l();                                   /* an AND, of three by two */
+    out_byte(alu + 1);                          /* and c */
+    out_byte2(0xfd, 0x6f);                      /* ld iyl, a */
+    ld_a_h();
+    out_byte(alu);                              /* and b */
+    sbc_hl_hl();
+    ld_h_a();
+    out_byte2(0xfd, 0x7d);                      /* ld a, iyl */
+    ld_l_a();
+
+    return 2;
+}
+
 static void vbinop(int op)
 {
     Value *lhs = vsp - 2;
     Value *rhs = vsp - 1;
-    int folded, right;
+    int folded, right, lw, rw, narrow = 0;
     Type result, lhs_type;
 
     if ((unsigned) vtop < 2)
@@ -1854,9 +1955,15 @@ static void vbinop(int op)
     /* No instruction does any of these on a 24-bit value, so they go to a
      * helper acc emits into the image. The helper takes its right operand in
      * BC, which is where force_into has just put it. */
-    case TK_AMP:   rt_call(RT_AND); break;
-    case TK_PIPE:  rt_call(RT_OR);  break;
-    case TK_CARET: rt_call(RT_XOR); break;
+    case TK_AMP:
+    case TK_PIPE:
+    case TK_CARET:
+        lw = vwidth(vsp - 2);           /* loaded, so each says what it is */
+        rw = vwidth(vsp - 1);
+        narrow = bitwise_narrow(op, lw, rw);
+        if (!narrow)
+            rt_call(op == TK_AMP ? RT_AND : op == TK_PIPE ? RT_OR : RT_XOR);
+        break;
     case TK_SHL:   rt_call(RT_SHL); break;
     case TK_SHR:
         rt_call(type_unsigned(lhs_type) ? RT_SHRU : RT_SHRS);
@@ -1884,6 +1991,8 @@ static void vbinop(int op)
     vdrop();
     vpush_reg(R_HL);
     (vsp - 1)->type = result;
+    if (narrow)
+        vset_width(vsp - 1, narrow);
 }
 
 /* Assignment in C has a value, so the stored value stays on the stack. The
@@ -1898,6 +2007,7 @@ int gen_effects;
  * written after the store, and where it ended. */
 static int conversion_from = -1;
 static int conversion_to;
+static unsigned conversion_epoch;
 
 /* Drop a value that nothing will read: a statement's, or the left side of a
  * comma. When it is still the one an assignment to a narrow object just
@@ -1905,6 +2015,7 @@ static int conversion_to;
 void gen_discard(void)
 {
     if (conversion_from >= 0 && out_here() == conversion_to
+        && conversion_epoch == out_rewinds
         && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
         out_rewind(conversion_from);
         jumps_forget(conversion_from);
@@ -1954,6 +2065,7 @@ void vstore_local(int offset, Type type)
         conversion_from = out_here();
         vconvert(type);
         conversion_to = out_here();
+        conversion_epoch = out_rewinds;
 
         return;
     }
@@ -2329,6 +2441,7 @@ static int cmp_from = -1;       /* where the making of the value began */
 static int cmp_to;              /* and where it ended */
 static int cmp_op;              /* the comparison it was */
 static int cmp_was_unsigned;
+static unsigned cmp_epoch;       /* out_rewinds when it was made */
 
 /* The same mark for an AND with a mask that keeps one byte of the value and
  * nothing else: the flags the AND left say whether that byte, and so the
@@ -2339,6 +2452,7 @@ static void flags_say_nonzero(int from)
 {
     cmp_from = from;
     cmp_to = out_here();
+    cmp_epoch = out_rewinds;
     cmp_op = TK_NE;
     cmp_was_unsigned = 1;
 }
@@ -2467,6 +2581,7 @@ static void cmp_value(int op, int is_unsigned)
     }
 
     cmp_to = out_here();
+    cmp_epoch = out_rewinds;
     vpush_reg(R_HL);
 }
 
@@ -3556,6 +3671,7 @@ static int jump_on_flags(int op, int is_unsigned)
 static int  widen_from = -1;    /* where the widening began */
 static int  widen_to;           /* and where the value was done */
 static Type widen_type;         /* the narrow type it was widened as */
+static unsigned widen_epoch;
 
 static void widen_as(Type to)
 {
@@ -3576,6 +3692,7 @@ static void widen_loaded(Type to)
     widen_from = out_here();
     widen_as(to);
     widen_to = out_here();
+    widen_epoch = out_rewinds;
     widen_type = to;
 }
 
@@ -3585,16 +3702,19 @@ static int widen_again(Type to)
 {
     Value *top = vsp - 1;
 
-    if (widen_from < 0 || out_here() != widen_to || top->kind != VAL_REG
+    if (widen_from < 0 || out_here() != widen_to || widen_epoch != out_rewinds
+        || top->kind != VAL_REG
         || top->val != R_HL || type_size(widen_type) != type_size(to))
         return 0;
     if (type_unsigned(widen_type) != type_unsigned(to)) {
         out_rewind(widen_from);
         widen_as(to);
         widen_to = out_here();
+        widen_epoch = out_rewinds;
     }
     widen_type = to;
     top->type = type_promote(to);
+    vset_width(top, type_unsigned(to) ? type_size(to) : 3);
 
     return 1;
 }
@@ -3616,6 +3736,7 @@ static int logic_to;            /* and where it ended */
 static int logic_settles;       /* the answer the jumps mean */
 static int logic_holes[LOGIC_HOLES_MAX];
 static int nlogic_holes;
+static unsigned logic_epoch;
 
 /* The holes in a chain, onto the end of the ones kept; 0 when there is no
  * room for them all. */
@@ -3647,7 +3768,8 @@ static int jump_on_truth(int when_true)
 {
     int reg;
 
-    if (logic_from >= 0 && out_here() == logic_to && vtop == 1
+    if (logic_from >= 0 && out_here() == logic_to && logic_epoch == out_rewinds
+        && vtop == 1
         && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
         int chain = logic_chain(), over;
 
@@ -3669,7 +3791,8 @@ static int jump_on_truth(int when_true)
     /* A byte just read or returned, and widened: the whole of it is in A,
      * so the widening goes and A is tested. `while (*p)` and a branch on a
      * function returning bool are these. */
-    if (widen_from >= 0 && out_here() == widen_to && vtop == 1
+    if (widen_from >= 0 && out_here() == widen_to && widen_epoch == out_rewinds
+        && vtop == 1
         && type_size(widen_type) == 1
         && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
         out_rewind(widen_from);
@@ -3680,7 +3803,7 @@ static int jump_on_truth(int when_true)
         return jump_op(when_true ? JP_NZ : JP_Z);
     }
 
-    if (cmp_from >= 0 && out_here() == cmp_to && vtop == 1
+    if (cmp_from >= 0 && out_here() == cmp_to && cmp_epoch == out_rewinds && vtop == 1
         && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
         int op = when_true ? cmp_op : cmp_opposite(cmp_op);
 
@@ -3694,6 +3817,23 @@ static int jump_on_truth(int when_true)
 
     if (type_wide(vtype()))
         vtruth(TK_NE);
+
+    /* One whose top byte, or top two, are known to be zero: those that are
+     * left are tested in A. */
+    if (vwidth(vsp - 1) < 3 && (vsp - 1)->kind == VAL_REG) {
+        int width = vwidth(vsp - 1);
+
+        reg = vpop_reg();
+        if (reg != R_HL)
+            mov_rr(R_HL, reg);
+        ld_a_l();
+        if (width == 2)
+            out_byte(0xb4);                     /* or h */
+        else
+            or_a_a();
+
+        return jump_op(when_true ? JP_NZ : JP_Z);
+    }
 
     reg = vpop_reg();
     if (reg != R_HL)
@@ -3792,7 +3932,7 @@ void vtruth(int op)
     /* Straight after a comparison, or an AND that left its mark, the flags
      * are still there to be read: `!(a < b)` is a >= b, and `!(c & 0x80)`
      * is the AND's zero flag, with no compare against zero in between. */
-    if (cmp_from >= 0 && out_here() == cmp_to
+    if (cmp_from >= 0 && out_here() == cmp_to && cmp_epoch == out_rewinds
         && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
         int now = op == TK_EQ ? cmp_opposite(cmp_op) : cmp_op;
 
@@ -3851,6 +3991,7 @@ void gen_logic_right(int settles, int early)
 
     logic_from = kept ? from : -1;
     logic_to = out_here();
+    logic_epoch = out_rewinds;
     logic_settles = settles;
 }
 
@@ -6635,6 +6776,9 @@ static void call_to(const Callee *callee, int nargs, int params_first,
     (vsp - 1)->type = type_promote(callee->type);
     (vsp - 1)->ext = (unsigned char) callee->ext;
     (vsp - 1)->quals = (unsigned char) callee->quals;
+    if (type_unsigned(callee->type) && type_size(callee->type) < ACC_INT_SIZE
+        && !type_pointer(callee->type))
+        vset_width(vsp - 1, type_size(callee->type));
 }
 
 /* The call itself, through the pointer now on top of the stack -- the
@@ -6863,9 +7007,28 @@ void vapply(int op, Type narrow)
      * is how a test of a bit is written, and is every one of zap's
      * character classes. */
     if ((op == TK_EQ || op == TK_NE) && (vsp - 1)->kind == VAL_CONST
-        && (vsp - 1)->val == 0 && cmp_from >= 0 && out_here() == cmp_to
+        && (vsp - 1)->val == 0 && cmp_from >= 0 && out_here() == cmp_to && cmp_epoch == out_rewinds
         && (vsp - 2)->kind == VAL_REG && (vsp - 2)->val == R_HL) {
         vdrop();
+        vtruth(op);
+
+        return;
+    }
+
+    /* And of a value in HL whose upper bytes are known to be zero: the rest
+     * are tested in A, and the flags that leaves are a mark like the AND's. */
+    if ((op == TK_EQ || op == TK_NE) && (vsp - 1)->kind == VAL_CONST
+        && (vsp - 1)->val == 0 && (vsp - 2)->kind == VAL_REG
+        && (vsp - 2)->val == R_HL && vwidth(vsp - 2) < 3) {
+        int width = vwidth(vsp - 2);
+
+        vdrop();
+        ld_a_l();
+        if (width == 2)
+            out_byte(0xb4);                     /* or h */
+        else
+            or_a_a();
+        flags_say_nonzero(out_here());
         vtruth(op);
 
         return;
@@ -7076,6 +7239,8 @@ void vderef(void)
     vdrop();
     vpush_reg(R_HL);
     (vsp - 1)->type = type_promote(to);
+    if (type_unsigned(to) && type_size(to) < ACC_INT_SIZE && !type_pointer(to))
+        vset_width(vsp - 1, type_size(to));
     if (type_pointer(to)) {
         (vsp - 1)->ext = (unsigned char) deref_ext;
         (vsp - 1)->quals = (unsigned char) deref_quals;
@@ -7716,7 +7881,9 @@ void gen_cond_end(int to_stub, int slot, int lock, Type middle,
     third_null = (val_const(top->kind) && top->val == 0);
     Type result = cond_type(middle, middle_null, top->type, third_null);
     int ext = third_null ? middle_ext & 0xff : top->ext; /* the side not 0 */
-    int quals = (middle_ext >> 8 | top->quals) & 0xff;
+    /* Const if either side is; as narrow as both sides are, and no more. */
+    int quals = ((middle_ext >> 8 | top->quals) & 0xff & ~(VQ_BYTE | VQ_WORD))
+                | (middle_ext >> 8 & top->quals & (VQ_BYTE | VQ_WORD));
     int done, park = slot;
 
     /* A long long answer from a middle that was not one: where the middle
