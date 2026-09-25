@@ -56,5 +56,17 @@ calls "& 0x7fffff, into the top byte" _acc_rt_and yes \
 calls "& a variable"                _acc_rt_and yes \
     'unsigned f(unsigned x, unsigned y) { return x & y; }'
 
+# << by a constant of up to eight: add hl, hl a bit at a time, a byte each,
+# which is no bigger than loading the count and calling. Past eight, and
+# by a variable, the helper.
+calls "<< 1"                        _acc_rt_shl no \
+    'unsigned f(unsigned x) { return x << 1; }'
+calls "<< 8"                        _acc_rt_shl no \
+    'int f(int x) { return x << 8; }'
+calls "<< 9"                        _acc_rt_shl yes \
+    'unsigned f(unsigned x) { return x << 9; }'
+calls "<< a variable"               _acc_rt_shl yes \
+    'unsigned f(unsigned x, int n) { return x << n; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

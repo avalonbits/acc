@@ -1739,6 +1739,27 @@ static void vbinop(int op)
      * how `f(a,b,c) + f(1,2,3)` lost an argument. */
     force_into(vsp - 2, R_HL);
 
+    /* A left shift by a constant of up to eight is add hl, hl a bit at a
+     * time, a byte each: no bigger than loading the count into BC and
+     * calling, and without the helper's loop. crc16 in test/perf's crc.c
+     * shifts by 1 eight times a byte and by 8 once, and those two calls
+     * were a third of its inner loop. A right shift cannot be done this
+     * way: nothing shifts the third byte of HL right. */
+    if (op == TK_SHL && val_number(rhs->kind)
+        && rhs->val >= 0 && rhs->val <= 8) {
+        int count = rhs->val;
+
+        result = type_unsigned(type_promote(lhs->type)) ? TY_UINT : TY_INT;
+        while (count-- > 0)
+            add_hl_hl();
+        vdrop();
+        vdrop();
+        vpush_reg(R_HL);
+        (vsp - 1)->type = result;
+
+        return;
+    }
+
     /* A bitwise operator with a constant on the right is written out here
      * rather than called for: see bitwise_const. */
     if (val_const(rhs->kind)
