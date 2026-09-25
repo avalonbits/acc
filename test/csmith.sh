@@ -89,6 +89,13 @@ for i in $(seq "$count"); do
     "$CSMITH" --seed $((seed * 1000 + i)) $CSMITH_OPTIONS -o "$work/$n.c" \
         >/dev/null 2>&1 || { echo "  csmith failed for $n" >&2; exit 2; }
 
+    # C99 5.2.4.1 promises 4,095 characters in a logical line, and acc
+    # takes a window's worth, 16 KB; Csmith's expressions sometimes run
+    # past both.
+    if awk 'length > 4095 { found = 1 } END { exit !found }' "$work/$n.c"; then
+        echo "  SKIP $n  a line longer than C99's 4,095 characters"
+        continue
+    fi
     if ! err=$($CC $CFLAGS $STRICT -I"$work/rt" -c "$work/$n.c" -o "$work/$n.r.o" 2>&1) ||
        ! err=$("$AGONDEV/bin/ez80-none-elf-ld" --oformat binary -Ttext=0x40000 \
                -e _start --defsym __stack=0xB0000 --defsym ___heaptop=0xAC000 \
