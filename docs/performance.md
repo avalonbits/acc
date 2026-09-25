@@ -53,6 +53,11 @@ the one `*p++` names in the hash, and its `-O2` comes to the same wrong
 table. acc's answer is the one a model of the program with this machine's
 widths gives. Its times are shown in brackets and left out of the mean.
 
+Since this baseline, `words` hashes with `p[i]` rather than `*p++`, which
+agondev compiles correctly: all three builds give the answer, and it is
+in the mean. agondev's time for it then was for different work -- a wrong
+table has other collisions -- so the 0.79 above is not a comparison.
+
 ## Size
 
 | program | acc code | -Oz | -O2 | acc / -Oz | acc image | -Oz | -O2 | acc / -Oz |

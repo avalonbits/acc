@@ -6,9 +6,10 @@
  * expect: 2228348029
  *
  * Checked against a model of the program in Python, with an int of 24 bits
- * and a long of 32: agondev's builds give 976538813. Its -Oz reads the byte
- * after the one `*p++` names in hash() -- 't' for the 'e' of "etao" -- and
- * its -O2 comes to the same wrong table. */
+ * and a long of 32. hash() reads p[i] rather than *p++: written that way,
+ * agondev's -Oz read the byte after the one `*p++` names -- 't' for the 'e'
+ * of "etao" -- and its -O2 came to the same wrong table, 976538813. Its
+ * times were then for different work, and left out of the mean. */
 #include "perf.h"
 
 #define TEXT 6144
@@ -32,8 +33,8 @@ static unsigned hash(const char *p, int n)
 {
     unsigned h = 5381;
 
-    while (n-- > 0)
-        h = (h << 5) + h + (unsigned char) *p++;
+    for (int i = 0; i < n; i++)
+        h = (h << 5) + h + (unsigned char) p[i];
 
     return h;
 }
