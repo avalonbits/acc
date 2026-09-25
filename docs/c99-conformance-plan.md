@@ -596,6 +596,27 @@ done, and then what is next.
     An import of it takes about an hour, most of it the reference runs; a
     check about three minutes.
 
+18. **chibicc's tests**, pinned at 90d1f7f199cc. They are files of
+    `ASSERT(expected, expression)` in a main, which the filter would take
+    or leave whole -- and over six hundred of the 1,396 are GNU statement
+    expressions. So `split chibicc_split.py` in sources.txt writes each
+    ASSERT out as a program of its own, with the file's declarations and
+    main's other statements, and the filter and agondev judge each one:
+    1,323 programs, 398 strict C99, 311 right on this machine. What
+    chibicc's `test.h` declares is declared with this machine's types --
+    its own has a long for every size -- in `chibicc.h`, and its
+    `test/common` goes after a test that uses it.
+
+    acc passes 289 of the 311. It found three things wrong, now fixed:
+    the standard headers brought all of <stddef.h> with them, so a program
+    could not name its own wchar_t; an escape in a narrow string joined to
+    a wide one was taken apart as UTF-8 rather than read as one character,
+    which gave four wrong answers; and a statement could not assign to a
+    compound literal, `(int){3} = 5`. What is left: 18 GNU, 2 constant
+    initialisers gcc takes and C99 does not, 1 that includes C11's headers,
+    and unicode-51, which compares four bytes of `L""` -- two here -- and so
+    reads past it, which agondev's layout happens to forgive.
+
 **Next, in this order:**
 
 1. **What gcc.dg found:** the 87 refusals of valid C99 first, since each
@@ -618,8 +639,7 @@ done, and then what is next.
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.
-2. **chibicc's tests.** MIT, about 40 files, denser than anything else here.
-3. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
+2. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
    `test/fuzz/reduce.py` as the reducer.
 
 **Not being done, and why:**

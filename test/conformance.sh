@@ -30,6 +30,9 @@ while read -r word name url rev dir; do
     [ "$word" = source ] || continue
     manifest=test/conformance/$name.tsv
     tests=test/conformance/cache/$name/$dir
+    awk -v n="$name" '$1 == "source" { on = ($2 == n) }
+                      on && $1 == "split" { found = 1 } END { exit !found }' \
+        test/conformance/sources.txt && tests=test/conformance/cache/$name/split
     [ -f "$manifest" ] || { echo "  [no $manifest: run test/conformance/import.sh]"; exit 77; }
 
     echo "[$name at ${rev:0:12}]"

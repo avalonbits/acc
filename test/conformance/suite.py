@@ -60,6 +60,13 @@ def needs(text, census_line, message):
     if "parameter's array size is evaluated" in message:
         return 'array-size-side-effect'
 
+    # A header C11 added, which a C99 implementation does not have and
+    # which agondev's clang, being newer, does: chibicc's stdhdr.c
+    # includes every one.
+    if re.search(r"cannot find '(stdalign|stdatomic|stdnoreturn|threads|"
+                 r"uchar)\.h'", message):
+        return 'c11-headers'
+
     # The measuring device's own doing: a `define` in sources.txt maps
     # __builtin_strcmp to strcmp, and 921007-1 defines a static strcmp of
     # its own that takes nothing, and then spells the call as the builtin.

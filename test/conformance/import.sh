@@ -49,7 +49,7 @@ CFLAGS="-mllvm -z80-gas-style -mllvm -z80-print-zero-offset -nostdinc
 
 import_source() {
     local name=$1 url=$2 rev=$3 dir=$4 filter=$5 defines=$6 also=$7 expect=$8
-    local kinds=$9
+    local kinds=$9 split=${10}
     local cache=test/conformance/cache/$name work tests have d paths
 
     echo "[$name at ${rev:0:12}]"
@@ -63,6 +63,7 @@ import_source() {
         paths="$paths /$d/*.c /$d/*.h"
     done
     [ -n "$expect" ] && paths="$paths /$dir/*.c$expect"
+    [ -n "$split" ] && paths="/$dir/*"          # all of it, for the script
     have=$(git -C "$cache" rev-parse HEAD 2>/dev/null || true)
     if [ "$have" != "$rev" ] && [ ! -f "$cache/.from-$rev" ]; then
         rm -rf "$cache"
@@ -73,6 +74,7 @@ import_source() {
                 mkdir -p "$cache/$d"
                 cp "$from/$d"/*.[ch] "$cache/$d/" 2>/dev/null
             done
+            [ -n "$split" ] && cp "$from/$dir"/* "$cache/$dir/" 2>/dev/null
             [ -n "$expect" ] && cp "$from/$dir"/*.c"$expect" "$tests/"
             touch "$cache/.from-$rev"
         else
@@ -83,6 +85,13 @@ import_source() {
                 return 2
             git -C "$cache" checkout -q FETCH_HEAD || return 2
         fi
+    fi
+
+    # A source whose files are not its tests as they stand: its script
+    # writes the tests, into split/ beside them.
+    if [ -n "$split" ]; then
+        python3 "test/conformance/$split" "$tests" "$cache/split" || return 2
+        tests=$cache/split
     fi
 
     work=$(mktemp -d)
@@ -198,7 +207,7 @@ name=
 flush() {
     if [ -n "$name" ] && { [ -z "$only" ] || [ "$name" = "$only" ]; }; then
         import_source "$name" "$url" "$rev" "$dir" "$filter" "$defines" "$also" \
-            "$expect" "$kinds"
+            "$expect" "$kinds" "$split"
     fi
 }
 while read -r word rest; do
@@ -206,8 +215,9 @@ while read -r word rest; do
       source)
         flush || exit $?
         read -r name url rev dir <<< "$rest"
-        filter= defines= also= expect= kinds= ;;
+        filter= defines= also= expect= kinds= split= ;;
       kinds) kinds=$rest ;;
+      split) split=$rest ;;
       also) also="$also $rest" ;;
       expect) expect=$rest ;;
       filter) filter=$rest ;;

@@ -22,6 +22,9 @@
 #   expect  the suffix of the file beside each test that holds what it has
 #           to print, as well as return 0: `.expected` makes 00001.c's
 #           00001.c.expected. A test with no such file prints nothing.
+#   split   a script in test/conformance that writes the tests from the
+#           source's directory, into split/ beside it, when its files are
+#           not tests as they stand.
 #   define  -D options both compilers are given. gcc's tests spell library
 #           calls as builtins -- __builtin_memcpy -- which name functions
 #           C99 has; these map the spelling to the function, and are a
@@ -50,3 +53,11 @@ source gcc-dg https://github.com/gcc-mirror/gcc.git 56de4652dbfc3a79ee4946f0274a
 kinds dg
 filter -std=c99 -pedantic-errors -Werror=implicit-function-declaration -Wno-deprecated-non-prototype -Wno-strict-prototypes
 define -include test/conformance/builtins.h -D__builtin_abort=abort -D__builtin_memset=memset -D__builtin_memcpy=memcpy -D__builtin_memmove=memmove -D__builtin_strcmp=strcmp -D__builtin_memcmp=memcmp -D__builtin_printf=printf -D__builtin_strlen=strlen -D__builtin_malloc=malloc -D__builtin_sprintf=sprintf -D__builtin_strcpy=strcpy -D__builtin_strncpy=strncpy -D__builtin_abs=abs -D__builtin_snprintf=snprintf -D__builtin_copysign=copysign -D__builtin_exit=exit -D__builtin_free=free -D__builtin_strchr=strchr -D__builtin_strrchr=strrchr -D__builtin_strcat=strcat -D__builtin_labs=labs -D__builtin_fabs=fabs
+
+# chibicc's tests: files of ASSERTs, which the filter would take or leave
+# whole, and many of whose ASSERTs are GNU C. chibicc_split.py writes each
+# ASSERT out as a program of its own, with chibicc.h for their test.h.
+# MIT.
+source chibicc https://github.com/rui314/chibicc.git 90d1f7f199cc55b13c7fdb5839d1409806633fdb test
+split chibicc_split.py
+filter -std=c99 -pedantic-errors -Werror=implicit-function-declaration -Wno-deprecated-non-prototype -Wno-strict-prototypes
