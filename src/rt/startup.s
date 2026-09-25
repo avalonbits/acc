@@ -31,11 +31,15 @@
 ;
 ; MOS lands on the first byte after the header, so this is what runs. It saves
 ; what MOS wants back, clears what starts at zero, turns the command line into
-; arguments, calls main and then says what came back, in one of two ways:
+; arguments, calls main and then does something with what came back, in one
+; of three ways:
 ;
-;   printing   the result as six hex digits and returning to MOS. This is the
-;              default, because it is the one that works on a real Agon and at
-;              a command prompt.
+;   returning  it to MOS in hl, as agondev's startup does, and printing
+;              nothing. The default: a program written for the Agon leaves
+;              the screen as it left it.
+;   printing   it as six hex digits and then returning to MOS, which is how
+;              the tests read an answer on a real Agon or at a command
+;              prompt. acc emits it for -p.
 ;   reporting  it to IO port 0, which stops the emulator with the low byte as
 ;              its exit status. That is how the test suite reads an answer
 ;              without a C library, and acc emits it for -x.
@@ -71,6 +75,7 @@
 ;
 	.assume adl=1
 	.section .text,"ax",@progbits
+	.global _acc_startup_return
 	.global _acc_startup_print
 	.global _acc_startup_exit
 	.global _acc_args
@@ -168,6 +173,35 @@ emit:
 	rst.lil	$10
 	ret
 print_jp_hl:
+	jp	(hl)
+	ret
+
+; The same as the others up to MOS's stack, and then only the return: the
+; status is in hl, where MOS looks for it.
+_acc_startup_return:
+	push	iy
+	push	hl
+	call	0			; [hole] clear what starts at zero
+	pop	hl
+	call	0			; [hole] argc and argv
+	ld	(0), sp			; [hole] MOS's stack, given back at the end
+	ld	sp, 0			; [hole] the program's own: the top of its memory
+	push	hl
+	push	de
+	ld	(0), sp			; [hole] the stack main is called on
+	ld	hl, 0			; [hole] where main returns to
+	ld	(0), hl			; [hole] the cell that remembers it
+	call	0			; [hole] main
+	pop	bc
+	pop	bc
+	push	hl
+	ld	hl, (0)			; [hole] the hook's cell
+	call	return_jp_hl		; [hole] and into it
+	pop	hl
+	ld	sp, (0)			; [hole] MOS's stack again
+	pop	iy
+	ret
+return_jp_hl:
 	jp	(hl)
 	ret
 

@@ -72,6 +72,9 @@ def holes(name):
     if name == 'startup_exit':
         return defines('STUB_CLEAR_AT', 'STUB_ARGS_AT', 'STUB_MAIN_AT',
                        'STUB_HOOK_CALL_AT')
+    if name == 'startup_return':
+        return defines('STUB_CLEAR_AT', 'STUB_ARGS_AT', 'STUB_MAIN_AT',
+                       'STUB_HOOK_CALL_AT')
     if name == 'startup_print':
         return (defines('STUB_CLEAR_AT', 'STUB_ARGS_AT', 'STUB_MAIN_AT',
                         'STUB_HOOK_CALL_AT')
@@ -83,7 +86,8 @@ def holes(name):
 end = max(img) + 1
 spans = {
     'startup_exit':  (syms['_acc_startup_exit'], syms['_acc_startup_print']),
-    'startup_print': (syms['_acc_startup_print'], syms['_acc_args']),
+    'startup_print': (syms['_acc_startup_print'], syms['_acc_startup_return']),
+    'startup_return': (syms['_acc_startup_return'], syms['_acc_args']),
     'args_code':     (syms['_acc_args'], end),
 }
 

@@ -5,7 +5,7 @@
 #
 # <list> has a line per program, `name path-to-image`. Each image is one
 # built to print its result as six hex digits and return to MOS: acc's
-# startup without -x does, and so does test/conformance/refkit/start.s for
+# startup does with -p, and so does test/conformance/refkit/start.s for
 # agondev's. <results> gets a line per program, `name status`: the status
 # is the low byte of the result, as two hex digits -- what an exit status
 # is, and all acc's -x sends; the rest of the register is whatever main

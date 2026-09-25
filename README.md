@@ -51,9 +51,15 @@ the ones a program uses into that program's image.
     int add(int a, int b) { return a + b; }
     int main(void) { int x = 3; return add(x, 4) + 35; }
 
-    $ bin/acc t.c -o t.bin
+    $ bin/acc t.c -o t.bin -x
     $ test/agon.sh t.bin ; echo $?
     42
+
+What `main` returns goes back to MOS, as it does from a program agondev
+built, and nothing is printed. `-p` prints it first, as six hex digits --
+`00002A` -- which is how to read an answer at the Agon's prompt; `-x`
+writes its low byte to IO port 0 instead, which stops the emulator with it
+as the exit status, and is what the tests use.
 
 Or in pieces: `-c` compiles one file to an object, `-a` puts objects into a
 library, and naming objects and libraries instead of a source links them. An

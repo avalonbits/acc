@@ -5062,16 +5062,19 @@ void gen_init(void)
  *
  * The bytes come from src/rt/startup.s, assembled and copied in rather than
  * hand-encoded, so that the source of truth is assembly anyone can read and
- * reassemble. Two versions:
+ * reassemble. Three versions:
  *
- *   print  calls main, writes the result as six hex digits and returns to
- *          MOS. The default, because it is the one that works at a command
- *          prompt and on a real Agon.
- *   exit   calls main and hands the low byte to IO port 0, which stops the
- *          emulator with that byte as its exit status. That is how the tests
- *          read an answer with no C library and nothing to print with.
+ *   return  calls main and returns its result to MOS in hl, printing
+ *           nothing, as agondev's startup does. The default: a program
+ *           leaves the screen as it found it.
+ *   print   calls main, writes the result as six hex digits and returns to
+ *           MOS: -p, for reading an answer at a command prompt or on a real
+ *           Agon.
+ *   exit    calls main and hands the low byte to IO port 0, which stops the
+ *           emulator with that byte as its exit status: -x, which is how the
+ *           tests read an answer with no C library and nothing to print with.
  */
-/* IY is saved and put back around the whole of the program, in both stubs.
+/* IY is saved and put back around the whole of the program, in every stub.
  *
  * MOS wants it as it left it: a program that returns having changed it takes
  * the machine down, and takes it down after the program has run and printed
@@ -5106,6 +5109,31 @@ static const unsigned char startup_exit[] = {
     0x7d, 0xd3, 0x00,                           /* ld a, l / out (0), a */
     0xfd, 0xe1,                                 /* pop iy */
     0xc9,
+    0xe9,                                       /* jp (hl) */
+    0xc9                                        /* the hook if none */
+};
+
+static const unsigned char startup_return[] = {
+    0xfd, 0xe5,                                 /* push iy */
+    0xe5,                                       /* push hl: MOS's line */
+    0xcd, 0x00, 0x00, 0x00,                     /* call the clearing */
+    0xe1,                                       /* pop hl */
+    0xcd, 0x00, 0x00, 0x00,                     /* call the arguments */
+    0xed, 0x73, 0x00, 0x00, 0x00,               /* ld (mos_sp), sp */
+    0x31, 0x00, 0x00, 0x00,                     /* ld sp, the top */
+    0xe5, 0xd5,                                 /* push hl / push de */
+    0xed, 0x73, 0x00, 0x00, 0x00,               /* ld (exit_sp), sp */
+    0x21, 0x00, 0x00, 0x00,                     /* ld hl, after main */
+    0x22, 0x00, 0x00, 0x00,                     /* ld (exit_pc), hl */
+    0xcd, 0x00, 0x00, 0x00,                     /* call main */
+    0xc1, 0xc1,                                 /* pop bc / pop bc */
+    0xe5,                                       /* push hl: the status */
+    0x2a, 0x00, 0x00, 0x00,                     /* ld hl, (exit hook) */
+    0xcd, 0x00, 0x00, 0x00,                     /* call jp (hl) below */
+    0xe1,                                       /* pop hl */
+    0xed, 0x7b, 0x00, 0x00, 0x00,               /* ld sp, (mos_sp) */
+    0xfd, 0xe1,                                 /* pop iy */
+    0xc9,                                       /* ret, the status in hl */
     0xe9,                                       /* jp (hl) */
     0xc9                                        /* the hook if none */
 };
@@ -5213,11 +5241,15 @@ static int exit_cell(int which)
     return exit_cell_syms[which];
 }
 
-void gen_startup(int by_exit, const char *program)
+void gen_startup(int ending, const char *program)
 {
     int m = sym_push(name_intern("main", 4), SYM_FUNC, 0);
-    const unsigned char *stub = by_exit ? startup_exit : startup_print;
-    int n = by_exit ? (int) sizeof startup_exit : (int) sizeof startup_print;
+    const unsigned char *stub = ending == END_EXIT ? startup_exit
+                                : ending == END_PRINT ? startup_print
+                                : startup_return;
+    int n = ending == END_EXIT ? (int) sizeof startup_exit
+            : ending == END_PRINT ? (int) sizeof startup_print
+            : (int) sizeof startup_return;
     int base;
     int i;
 
@@ -5302,7 +5334,7 @@ void gen_startup(int by_exit, const char *program)
 
     fixup_add(m, base + STUB_MAIN_AT);
 
-    if (!by_exit)
+    if (ending == END_PRINT)
         for (i = 0; i < (int) (sizeof print_calls / sizeof *print_calls); i++) {
             out_reloc(base + print_calls[i].at);
             out_patch24(base + print_calls[i].at, base + print_calls[i].to);

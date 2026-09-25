@@ -70,7 +70,7 @@ observe() {
                                | sed "s/.*error: //")" > "$d/$n.out"
         elif [ "$kind" = compile ]; then
             echo "$n pass compiled" > "$d/$n.out"
-        elif ! err=$(bin/acc "$d/$n.o" bin/libc.a -o "$d/$n.bin" 2>&1 >/dev/null); then
+        elif ! err=$(bin/acc "$d/$n.o" bin/libc.a -o "$d/$n.bin" -p 2>&1 >/dev/null); then
             echo "$n needs ? $(printf "%s" "$err" | grep -m1 "error:" \
                                | sed "s/.*error: //")" > "$d/$n.out"
         fi' _ < "$names"

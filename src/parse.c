@@ -8129,7 +8129,8 @@ static void usage(void)
         "      default is 40000, where MOS loads a program.\n"
         "  -r  write the addresses inside the image that -b moved, one\n"
         "      hexadecimal offset a line.\n"
-        "  The program prints what main returned, as six hex digits.\n"
+        "  The program returns what main returned to MOS, as agondev's do.\n"
+        "  -p  print it as six hex digits too, before returning.\n"
         "  -x  report it to IO port 0 instead, which stops an emulator\n"
         "      with the low byte as its exit status.\n");
     exit(2);
@@ -8634,7 +8635,7 @@ int main(int argc, char **argv)
     const char *in = NULL, *out = NULL, *relocs = NULL;
     const char **objs;
     int nobjs = 0, to_object = 0, to_archive = 0;
-    int by_exit = 0;
+    int ending = END_RETURN;
     int i;
     clock_t begin;
     unsigned cs;
@@ -8708,7 +8709,9 @@ int main(int argc, char **argv)
                 usage();
             to_archive = 1;
         } else if (argv[i][0] == '-' && argv[i][1] == 'x' && !argv[i][2]) {
-            by_exit = 1;
+            ending = END_EXIT;
+        } else if (argv[i][0] == '-' && argv[i][1] == 'p' && !argv[i][2]) {
+            ending = END_PRINT;
         } else if (!strcmp(argv[i], "-trigraphs")) {
             lex_trigraphs = 1;
         } else if (!strcmp(argv[i], "-include")) {
@@ -8759,7 +8762,7 @@ int main(int argc, char **argv)
          * other -- which is what makes the objects' own symbols do the work
          * of finding it. */
         out_open(out, 1);
-        gen_startup(by_exit, out);
+        gen_startup(ending, out);
         for (i = 0; i < nobjs; i++) {
             if (is_archive(objs[i]))
                 link_archive(objs[i]);
@@ -8794,7 +8797,7 @@ int main(int argc, char **argv)
         out_free();
     } else {
         out_open(out, 1);
-        gen_startup(by_exit, out);
+        gen_startup(ending, out);
         lex_open(in);
         translation_unit();
         lex_end();

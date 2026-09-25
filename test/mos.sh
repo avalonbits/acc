@@ -12,7 +12,8 @@
 # did, and does.
 #
 # Every other test runs programs built with -x, which stop the machine rather
-# than returning to MOS, so none of them goes near this.
+# than returning to MOS, or with -p, whose answer it reads, so none of them
+# goes near the stub a program gets by default.
 set -u
 
 cd "$(dirname "$0")/.."
@@ -28,11 +29,15 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 pass=0; fail=0
 
 # returns <name> <six hex digits it should print> <source>
+#
+# Built with -p, the stub that prints the result before it returns. The one
+# a program gets without -p returns it and prints nothing: see returns_quietly
+# at the end.
 returns() {
     local what=$1 want=$2 sd out banners printed
 
     printf '%s' "$3" > "$tmp/p.c"
-    if ! err=$("$ACC" "$tmp/p.c" -o "$tmp/p.bin" 2>&1); then
+    if ! err=$("$ACC" "$tmp/p.c" -o "$tmp/p.bin" -p 2>&1); then
         printf '  FAIL %-34s %s\n' "$what" "$(printf '%s' "$err" | head -1)"
         fail=$((fail + 1)); return
     fi
@@ -150,6 +155,56 @@ int main(void) {
     exit(7);
 
     return 9;
+}
+'
+
+# Without -p, the stub a program gets unless it asks: main's result goes
+# back to MOS in hl, as agondev's startup gives it, and nothing is printed --
+# a program written for the Agon leaves the screen as it found it. It owes
+# MOS its IY all the same.
+returns_quietly() {
+    local what=$1 sd out banners
+
+    printf '%s' "$2" > "$tmp/q.c"
+    if ! err=$("$ACC" "$tmp/q.c" -o "$tmp/q.bin" 2>&1); then
+        printf '  FAIL %-34s %s\n' "$what" "$(printf '%s' "$err" | head -1)"
+        fail=$((fail + 1)); return
+    fi
+
+    sd=$(emu_card)
+    cp "$tmp/q.bin" "$sd/bin/q.bin"
+    printf 'bin/q\r\n' > "$sd/autoexec.txt"
+    out=$(ACC_EMU_PROMPT=1 ACC_EMU_TIMEOUT=${ACC_EMU_TIMEOUT:-30} emu_run "$sd" -z -u 2>&1)
+    rm -rf "$sd"
+
+    banners=$(printf '%s' "$out" | grep -c 'MOS Version')
+    if [ "$banners" != 1 ]; then
+        printf '  FAIL %-34s the machine booted %s times\n' "$what" "$banners"
+        fail=$((fail + 1))
+    elif printf '%s' "$out" | grep -qE '^[0-9a-fA-F]{6}'; then
+        printf '  FAIL %-34s printed %s\n' "$what" \
+            "$(printf '%s' "$out" | grep -oE '^[0-9a-fA-F]{6}' | head -1)"
+        fail=$((fail + 1))
+    elif ! printf '%s' "$out" | grep -q '^/ \*'; then
+        printf '  FAIL %-34s MOS did not get its prompt back\n' "$what"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+
+returns_quietly "without -p, nothing is printed" \
+'int main(void) { return 0; }
+'
+returns_quietly "and IY is still given back" \
+'short values[3] = { 20, 21, 0 };
+int twice(int n) { return n + n; }
+
+int main(void) {
+    short *p = values;
+    int (*f)(int) = twice;
+
+    return f(p[0] + p[1]) - 82;
 }
 '
 

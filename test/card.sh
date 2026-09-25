@@ -72,17 +72,20 @@ acc -- a C compiler that runs on the Agon
 =========================================
 
   acc <source.c> -o <out.bin>      compile, then run out.bin
+  acc <source.c> -o <out.bin> -p   and have it print what main returned
   acc <source.c> -o <out.bin> -x   report through IO port 0 instead
 
-acc says how long it took. A compiled program prints what main returned, as
-six hex digits, and comes back to MOS:
+acc says how long it took. A compiled program gives what main returned back
+to MOS, as a program agondev built does, and prints nothing of its own.
+With -p it prints it first, as six hex digits:
 
-  acc testc/add.c -o add.bin
+  acc testc/add.c -o add.bin -p
   Done in 0.00 seconds
   add
   00002A
 
-That 2A is 42.
+That 2A is 42. Each demo in testc/ says in its first lines what it prints
+so.
 
 What acc can do today
 ---------------------
@@ -179,7 +182,7 @@ for src in test/cases/*.c; do
     bin/acc "$src" -o "$tmp/t.bin" -x >/dev/null 2>&1 || { echo "  $name -- acc could not compile it"; continue; }
     test/agon.sh "$tmp/t.bin" >/dev/null 2>&1; v=$?
     [ "$v" -eq 77 ] && { echo "  $name -- no emulator, value unknown"; continue; }
-    printf '  acc testc/cases/%-24s -o t.bin    t    %06X\n' "$name" "$v"
+    printf '  acc testc/cases/%-24s -o t.bin -p    t    %06X\n' "$name" "$v"
 done
 
 cat <<EOF

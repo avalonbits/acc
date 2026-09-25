@@ -945,7 +945,11 @@ extern int gen_objects;
 int gen_nexterns(void);
 int gen_extern_at(int i);
 int gen_extern_sym(int i);
-void gen_startup(int by_exit, const char *program); /* the entry stub */
+/* What the entry stub does with main's result: returns it to MOS, as
+ * agondev's does; prints it as six hex digits first (-p); or reports its low
+ * byte to IO port 0, which stops the emulator (-x). */
+enum { END_RETURN, END_PRINT, END_EXIT };
+void gen_startup(int ending, const char *program); /* the entry stub */
 
 /* ------------------------------------------------------------------ */
 /* output                                                              */

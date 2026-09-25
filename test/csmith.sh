@@ -105,7 +105,7 @@ for i in $(seq "$count"); do
         continue
     fi
     if ! err=$(bin/acc -c "$work/$n.c" -o "$work/$n.o" -Iinclude -I"$work/rt" 2>&1) ||
-       ! err=$(bin/acc "$work/$n.o" bin/libc.a -o "$work/$n.bin" 2>&1); then
+       ! err=$(bin/acc "$work/$n.o" bin/libc.a -o "$work/$n.bin" -p 2>&1); then
         echo "  FAIL $n  acc could not build it: $(printf '%s' "$err" | grep -m1 error)"
         cp "$work/$n.c" "$keep/"; bad=$((bad + 1)); continue
     fi

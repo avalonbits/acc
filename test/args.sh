@@ -40,7 +40,7 @@ runs() {
     local what=$1 want=$2 tail=$3 sd out banners printed
 
     printf '%s%s' "$PRELUDE" "$4" > "$tmp/p.c"
-    if ! err=$("$ACC" "$tmp/p.c" -o "$tmp/p.bin" 2>&1); then
+    if ! err=$("$ACC" "$tmp/p.c" -o "$tmp/p.bin" -p 2>&1); then
         printf '  FAIL %-34s %s\n' "$what" "$(printf '%s' "$err" | head -1)"
         fail=$((fail + 1)); return
     fi
