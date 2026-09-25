@@ -639,8 +639,15 @@ done, and then what is next.
    - 7,562 files of which 135 are named for C99. The filter decides.
    - The `dg-error` ones become must-reject checks. These are the tests
      that say acc refuses what C99 forbids, which nothing above does.
-2. **Random differential beyond `test/fuzz.sh`.** Csmith or YARPGen, with
-   `test/fuzz/reduce.py` as the reducer.
+2. **Random differential beyond `test/fuzz.sh`.** `test/csmith.sh` runs
+   Csmith's programs through both compilers and compares the checksum
+   each prints, agondev's built with the suite's strict C99 flags. Most
+   of Csmith's programs compare pointers to types C99 does not let them
+   -- `uint32_t *` with `int32_t *`, `T **` with `const T **` -- which
+   clang only warns about and acc refuses, so they are skipped: about one
+   in four is run. Its first runs found two expression forms acc refused,
+   `((*p) &= x)` and `--(*p)`, and every program run since has agreed.
+   YARPGen, which writes only valid C, is the next to try.
 
 **Not being done, and why:**
 
