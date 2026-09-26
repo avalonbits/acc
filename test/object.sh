@@ -572,5 +572,24 @@ else
     ok "-map on a link writes a map"   "it failed" "a map"
 fi
 
+# The runtime goes in by the groups a program reaches: one that only
+# multiplies carries acc_rt_mul and the prologue it calls, and none of the
+# floating-point or long long routines, which a prefix of the blob that
+# reached as far as the multiply carried as well.
+cat > "$tmp/rm.c" <<'EOF2'
+int f(int a, int b) { return a * b; }
+int main(void) { return f(6, 7); }
+EOF2
+if "$ACC" -c "$tmp/rm.c" -o "$tmp/rm.o" >/dev/null 2>&1 \
+   && "$ACC" "$tmp/rm.o" -o "$tmp/rm.bin" -map "$tmp/rm.map" >/dev/null 2>&1; then
+    got=$(awk '$4 == "(runtime)" { print $3 }' "$tmp/rm.map" | sort | tr '\n' ' ')
+    ok "only the runtime it reaches"    "$got" "acc_rt_frameset0 acc_rt_mul "
+    rt=$(awk '$4 == "(runtime)" { s += $2 } END { print s + 0 }' "$tmp/rm.map")
+    [ "$rt" -lt 400 ] && rt=small
+    ok "a small runtime"                "$rt" "small"
+else
+    ok "a multiply links"               "it failed" "it linked"
+fi
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

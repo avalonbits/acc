@@ -4393,21 +4393,31 @@ void gen_label(int hole)
  *
  * It goes in whole rather than a routine at a time, because the routines
  * share code -- the four ways of dividing are one loop with four ways in --
- * and splitting them would mean four copies of that loop. A program that uses
- * any of them carries all of them, which at a few hundred bytes against the
- * Agon's 448 KB is the cheaper trade.
+ * and splitting them would mean four copies of that loop.
  *
- * With one cut, at RT_SPLIT: the eight-byte routines are another 800 bytes
- * and nothing above the cut calls anything below it, so a program that never
- * uses a long long does not carry them. */
+ * So it goes in by groups, which src/rt/embed.py finds: runs of the blob
+ * that nothing outside jumps into relatively and that fall into nothing
+ * after them, each with the groups its calls reach. A program carries the
+ * groups it uses and the ones those need, laid down in the blob's order,
+ * and the calls between them are relocated to where they went. Carried as
+ * a prefix of the blob, as it was, a program that multiplied once carried
+ * every floating-point routine, which sat before the long long ones: more
+ * than a third of a small program's image. */
 static int rt_base = 0;                 /* where the blob landed */
 
-/* How much of the blob a program wants: 1 for the prologue every function
- * calls, 2 for what talks to the machine as well, 3 for the arithmetic, 4
- * for the long long routines too. The blob is laid out in that order and
- * nothing above a cut calls below it, so what is emitted is always a run
- * from its first byte. */
-static int rt_any_used;
+/* The groups something has wanted, as flags and as the order they were
+ * first wanted in, so that gen_restore can take back the ones wanted since
+ * a mark: the log is cut back to the length the mark saw. */
+static unsigned char rt_group_used[RT_NGROUPS];
+static unsigned char rt_used_log[RT_NGROUPS];
+static int           rt_nused;
+static int           rt_new_at[RT_NGROUPS];   /* where each landed, or -1 */
+
+static void rt_unwant_to(int n)
+{
+    while (rt_nused > n)
+        rt_group_used[rt_used_log[--rt_nused]] = 0;
+}
 
 typedef struct {
     unsigned char which;
@@ -4452,12 +4462,12 @@ static int rt_which(const char *name)
  * emitted here, or a name that came in from an object. */
 static void rt_wanted(int which)
 {
-    int want = rt_entry[which] >= RT_SPLIT   ? 4
-             : rt_entry[which] >= RT_OPS     ? 3
-             : rt_entry[which] >= RT_MACHINE ? 2 : 1;
+    int g = rt_entry_group[which];
 
-    if (want > rt_any_used)
-        rt_any_used = want;
+    if (!rt_group_used[g]) {
+        rt_group_used[g] = 1;
+        rt_used_log[rt_nused++] = (unsigned char) g;
+    }
 }
 
 /* Its symbol, made the first time one is asked for. Only at the end of a
@@ -4506,22 +4516,37 @@ static void rt_call(int which)
     nrt_fixups++;
 }
 
-/* The ways into the blob, for -map on a link: each runs to the next one
- * in, or to the end of what was laid down. */
+/* Where a place in rt_code, in group g, went in the image: the group's new
+ * start, and as far into it as it was into the group. The group is always
+ * known from a table, the entry's or the call's: every function's prologue
+ * is a call into the runtime, and walking the groups for each was more
+ * than a twentieth of a compile. */
+static int rt_moved(int g, int at)
+{
+    return rt_base + rt_new_at[g] + (at - rt_group_start[g]);
+}
+
+static int rt_entry_moved(int which)
+{
+    return rt_moved(rt_entry_group[which], rt_entry[which]);
+}
+
+/* The ways into the blob that were laid down, for -map on a link: each runs
+ * to the next one in its group, or to the group's end. */
 __attribute__((noinline))
-static void rt_map(int len)
+static void rt_map(void)
 {
     int i, j;
 
     for (i = 0; i < RT_COUNT; i++) {
-        int end = len;
+        int g = rt_entry_group[i], end = rt_group_start[g + 1];
 
-        if (rt_entry[i] >= len)
+        if (rt_new_at[g] < 0)
             continue;
         for (j = 0; j < RT_COUNT; j++)
             if (rt_entry[j] > rt_entry[i] && rt_entry[j] < end)
                 end = rt_entry[j];
-        obj_link_map_item(rt_base + rt_entry[i], end - rt_entry[i],
+        obj_link_map_item(rt_entry_moved(i), end - rt_entry[i],
                           rt_name[i], "(runtime)", rt_entry[i]);
     }
 }
@@ -4532,38 +4557,63 @@ static void rt_map(int len)
  * arrived as a name from an object. */
 static void rt_emit_used(void)
 {
-    int i, len;
+    unsigned char need[RT_NEED_BYTES];
+    int i, g, len = 0;
 
-    if (!rt_any_used)
+    /* What is wanted, asked of the calls as they stand now: a function's
+     * prologue is retargeted to acc_rt_frameset0 once it is known to have no
+     * frame, and a function taken out calls nothing. And the helpers an
+     * object named, which have a symbol. */
+    rt_unwant_to(0);
+    for (i = 0; i < nrt_fixups; i++)
+        rt_wanted(rt_fixups[i].which);
+    for (i = 0; i < RT_COUNT; i++)
+        if (rt_syms[i] != SYM_NONE)
+            rt_wanted(i);
+    if (!rt_nused)
         return;
 
-    len = rt_any_used == 4 ? (int) sizeof rt_code
-        : rt_any_used == 3 ? RT_SPLIT
-        : rt_any_used == 2 ? RT_OPS : RT_MACHINE;
+    /* The groups wanted and everything they need, in the blob's order. */
+    memset(need, 0, sizeof need);
+    for (i = 0; i < rt_nused; i++)
+        for (g = 0; g < RT_NEED_BYTES; g++)
+            need[g] |= rt_group_needs[rt_used_log[i]][g];
     rt_base = out_here();
-    for (i = 0; i < len; i++)
-        out_byte(rt_code[i]);
+    for (g = 0; g < RT_NGROUPS; g++) {
+        rt_new_at[g] = -1;
+        if (!(need[g >> 3] & (1 << (g & 7))))
+            continue;
+        rt_new_at[g] = len;
+        for (i = rt_group_start[g]; i < rt_group_start[g + 1]; i++)
+            out_byte(rt_code[i]);
+        len += rt_group_start[g + 1] - rt_group_start[g];
+    }
 
-    /* The calls the routines make to each other, now that the blob has an
-     * address -- those in the part that was laid down. */
-    for (i = 0; i < RT_NFIX; i++)
-        if (rt_fix[i].at < len) {
-            out_reloc(rt_base + rt_fix[i].at);
-            out_patch24(rt_base + rt_fix[i].at, rt_base + rt_fix[i].to);
-        }
+    /* The calls the routines make to each other, now that each has an
+     * address -- those in the groups that were laid down, whose targets
+     * were laid down with them. */
+    for (i = 0; i < RT_NFIX; i++) {
+        int at;
+
+        if (rt_new_at[rt_fix_group_at[i]] < 0)
+            continue;
+        at = rt_moved(rt_fix_group_at[i], rt_fix[i].at);
+        out_reloc(at);
+        out_patch24(at, rt_moved(rt_fix_group_to[i], rt_fix[i].to));
+    }
 
     /* And the calls the compiled program makes to them. */
     for (i = 0; i < nrt_fixups; i++)
-        out_patch24(rt_fixups[i].at, rt_base + rt_entry[rt_fixups[i].which]);
+        out_patch24(rt_fixups[i].at, rt_entry_moved(rt_fixups[i].which));
 
     if (obj_link_map_on())
-        rt_map(len);
+        rt_map();
 
     /* The ones that came in by name have a symbol, and the fixups waiting on
      * it are filled in with the rest of them below. */
     for (i = 0; i < RT_COUNT; i++)
-        if (rt_syms[i] != SYM_NONE) {
-            sym_at(rt_syms[i])->val = rt_base + rt_entry[i];
+        if (rt_syms[i] != SYM_NONE && rt_new_at[rt_entry_group[i]] >= 0) {
+            sym_at(rt_syms[i])->val = rt_entry_moved(i);
             sym_set_flags(rt_syms[i], SYMF_DEFINED);
         }
 }
@@ -5555,11 +5605,9 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
     if (holes)
         return;                 /* a jump shortened moves nothing outside it */
 
-    /* How much of the runtime blob is wanted, asked again of what is left:
-     * a function that has gone is not multiplying anything, and the blob is
-     * laid down in one piece up to the furthest routine any call in the
-     * program reaches. */
-    rt_any_used = 0;
+    /* Which of the runtime blob's groups are wanted, asked again of what
+     * is left: a function that has gone is not multiplying anything. */
+    rt_unwant_to(0);
     for (i = 0; i < nrt_fixups; i++)
         rt_wanted(rt_fixups[i].which);
 
@@ -8503,7 +8551,7 @@ void gen_mark(GenMark *m)
     m->spill_locked = spill_locked;
     m->nwide_consts = nwide_consts;
     m->vtop = vtop;
-    m->rt_any_used = rt_any_used;
+    m->rt_nused = rt_nused;
     m->saved = NULL;
     if (vtop) {
         m->saved = malloc((size_t) vtop * sizeof *m->saved);
@@ -8532,7 +8580,7 @@ void gen_rollback(GenMark *m)
     nwide_consts = m->nwide_consts;
     vtop = m->vtop;
     vsp = vstack + vtop;
-    rt_any_used = m->rt_any_used;
+    rt_unwant_to(m->rt_nused);
     if (m->saved) {
         memcpy(vstack, m->saved, (size_t) vtop * sizeof *m->saved);
         free(m->saved);

@@ -19,6 +19,7 @@ too and acc applies them when it drops the blob in. Anything that is not a
 call within the blob is rejected here: there is nothing else for acc to
 resolve against.
 """
+import os
 import re
 import subprocess
 import sys
@@ -60,6 +61,7 @@ def main(asm, out, tools):
     # function calls, acc_rt_ops before the arithmetic, and acc_rt_split
     # before the long long routines.
     entries = []
+    pieces = []
     cuts = {'acc_rt_machine': len(text), 'acc_rt_ops': len(text),
             'acc_rt_split': len(text)}
     for line in run(tools + '/ez80-none-elf-nm', obj).splitlines():
@@ -67,6 +69,8 @@ def main(asm, out, tools):
         if len(parts) != 3:
             continue                    # undefined or absolute; not an entry
         addr, kind, name = parts
+        if kind == 't' and not name.startswith('.'):
+            pieces.append(int(addr, 16))    # shared code: a unit of its own
         if kind == 'T' and name.startswith('_acc_rt_'):
             entries.append((int(addr, 16), name[1:]))
         elif kind == 'T' and name in C_NAMES:
@@ -83,6 +87,9 @@ def main(asm, out, tools):
             if at < cut and to >= cut:
                 sys.exit('%s: a helper above %s calls one below it, which '
                          'may not have been emitted' % (asm, name))
+
+    groups = group_units(text, [a for a, _ in entries], pieces, fixups, tools,
+                         asm)
 
     with open(out, 'w') as f:
         f.write('/* Generated from %s by %s. Do not edit.\n'
@@ -128,16 +135,159 @@ def main(asm, out, tools):
         f.write('#define RT_MACHINE %d\n' % cuts['acc_rt_machine'])
         f.write('#define RT_OPS %d\n' % cuts['acc_rt_ops'])
         f.write('#define RT_SPLIT %d\n\n' % cuts['acc_rt_split'])
+        # The pieces the blob is laid down in: see group_units.
+        starts, entry_group, needs = groups
+        ng = len(starts)
+        nbytes = (ng + 7) // 8
+        f.write('/* The groups the blob is laid down in, a program carrying only\n'
+                ' * the ones it reaches: each is a run of the blob that nothing\n'
+                ' * outside it jumps into relatively and that falls into nothing\n'
+                ' * after it, from rt_group_start[g] to the next one\'s start. A\n'
+                ' * group needs the ones its calls and addresses name, and those\n'
+                ' * theirs: rt_group_needs is that, closed, as a set of bits. */\n')
+        f.write('#define RT_NGROUPS %d\n' % ng)
+        f.write('#define RT_NEED_BYTES %d\n\n' % nbytes)
+        f.write('static const short rt_group_start[RT_NGROUPS + 1] = {\n')
+        for st in starts + [len(text)]:
+            f.write('    %d,\n' % st)
+        f.write('};\n\n')
+        f.write('static const unsigned char rt_entry_group[RT_COUNT] = {\n')
+        for g in entry_group:
+            f.write('    %d,\n' % g)
+        f.write('};\n\n')
+        f.write('static const unsigned char rt_group_needs[RT_NGROUPS][RT_NEED_BYTES] = {\n')
+        for g in range(ng):
+            bits = [0] * nbytes
+            for h in needs[g]:
+                bits[h // 8] |= 1 << (h % 8)
+            f.write('    { ' + ', '.join('0x%02x' % b for b in bits) + ' },\n')
+        f.write('};\n\n')
         f.write('#define RT_NFIX %d\n\n' % len(fixups))
         if fixups:
             f.write('static const RtFix rt_fix[RT_NFIX] = {\n')
             for at, to in sorted(fixups):
                 f.write('    { %d, %d },\n' % (at, to))
             f.write('};\n\n')
+            # And the group each end of each is in, so that placing them
+            # is a lookup rather than a walk of the groups.
+            gstart = starts + [len(text)]
+
+            def group_at(a):
+                g = 0
+                while gstart[g + 1] <= a:
+                    g += 1
+                return g
+            for which, pick in (('at', 0), ('to', 1)):
+                f.write('static const unsigned char rt_fix_group_%s[RT_NFIX] = {\n'
+                        % which)
+                for fx in sorted(fixups):
+                    f.write('    %d,\n' % group_at(fx[pick]))
+                f.write('};\n\n')
         f.write('#endif /* ACC_RT_HELPERS_H */\n')
 
     print('[%s: %d bytes, %d entry points, %d internal calls]'
           % (out, len(text), len(entries), len(fixups)))
+
+
+# Instructions after which nothing falls through into what follows.
+ENDS = re.compile(r'^(ret|reti|retn|jp 0x[0-9a-f]+|jr 0x[0-9a-f]+|jp \((hl|ix|iy)\))$')
+RELATIVE = re.compile(r'^(jr|djnz)\b.*?(0x[0-9a-f]+)$')
+
+
+def group_units(text, entry_at, pieces, fixups, tools, asm):
+    """The blob cut into groups a program can carry separately.
+
+    Each entry point starts a unit, which runs to the next, and so does
+    each piece of shared code with a label of its own -- the division loop
+    the four ways of dividing call, the test of BC for zero. A unit that can
+    fall into the next is one group with it; so is one that a relative jump
+    goes between, with every unit in between, since the distance is in the
+    jump. What is left is a run of groups that each stand alone but for
+    their calls and absolute addresses, which are relocations and can go
+    wherever the group they name is put.
+
+    Read from a disassembly, so bytes that are data are read as
+    instructions too: that can only join more units than need be, never
+    fewer, except by ending a unit on something that looks like a return --
+    and a unit that ends in data does not fall through."""
+    starts = sorted(set([0] + entry_at + pieces))
+    n = len(starts)
+    bounds = starts + [len(text)]
+
+    def unit_of(at):
+        lo, hi = 0, n
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if starts[mid] <= at:
+                lo = mid
+            else:
+                hi = mid
+        return lo
+
+    tmp = asm + '.bin'
+    open(tmp, 'wb').write(text)
+    dis = run(tools + '/ez80-none-elf-objdump', '-D', '-b', 'binary',
+              '-m', 'ez80-adl', tmp)
+    os.remove(tmp)
+    ins = []
+    for line in dis.splitlines():
+        m = re.match(r'^\s*([0-9a-f]+):\t([0-9a-f ]+)\t(.*)$', line)
+        if m:
+            ins.append((int(m.group(1), 16), len(m.group(2).split()),
+                        ' '.join(m.group(3).split()).replace(', ', ',')))
+
+    parent = list(range(n))
+
+    def find(u):
+        while parent[u] != u:
+            parent[u] = parent[parent[u]]
+            u = parent[u]
+        return u
+
+    def join(a, b):
+        for u in range(min(a, b), max(a, b)):
+            parent[find(u + 1)] = find(u)
+
+    last = {}
+    for at, size, text_ in ins:
+        u = unit_of(at)
+        if at + size > bounds[u + 1]:
+            join(u, u + 1)                      # an instruction across the line
+        m = RELATIVE.match(text_)
+        if m:
+            join(u, unit_of(int(m.group(2), 16)))
+        last[u] = text_
+    for u in range(n - 1):
+        if not ENDS.match(last.get(u, '')):
+            join(u, u + 1)                      # falls into the next
+
+    # Contiguous by construction: every join takes in everything between.
+    roots = []
+    group_of_unit = []
+    for u in range(n):
+        r = find(u)
+        if not roots or roots[-1] != r:
+            roots.append(r)
+        group_of_unit.append(len(roots) - 1)
+    ng = len(roots)
+    gstarts = [starts[group_of_unit.index(g)] for g in range(ng)]
+
+    direct = [set([g]) for g in range(ng)]
+    for at, to in fixups:
+        direct[group_of_unit[unit_of(at)]].add(group_of_unit[unit_of(to)])
+    needs = []
+    for g in range(ng):
+        seen, todo = set(), [g]
+        while todo:
+            h = todo.pop()
+            if h not in seen:
+                seen.add(h)
+                todo.extend(direct[h])
+        needs.append(sorted(seen))
+
+    entry_group = [group_of_unit[unit_of(a)] for a in entry_at]
+
+    return gstarts, entry_group, needs
 
 
 if __name__ == '__main__':

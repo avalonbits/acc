@@ -878,7 +878,7 @@ typedef struct {
     int    at, nfixups, nrt_fixups, nbss_fixups, narray_patches, spill_used;
     int    spill_locked, vtop;
     int    nwide_consts;
-    int    rt_any_used;
+    int    rt_nused;         /* how many runtime groups were wanted */
     Value *saved;
 } GenMark;
 
