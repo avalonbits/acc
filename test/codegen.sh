@@ -303,5 +303,16 @@ emits "**pp = *q"                       ebed1feb no \
 emits "**pp = *q, no BC through the stack" e5c1 no \
     'void f(int **pp, int *q) { **pp = *q; }'
 
+# Every return goes to the one epilogue -- ld sp, ix; pop ix; ret -- at
+# the end, and one that is the last thing in the function falls into it,
+# with no jr +0. A function whose frame is empty has the room its
+# prologue kept for setting one up taken out: no jr +4; nop; nop.
+emits "three returns, one epilogue"     'ddf9dde1c9.*ddf9dde1c9' no \
+    'int f(int x) { if (x < 0) return 1; if (x == 5) return 2; return 3; }'
+emits "return x; last, no jr +0"        1800ddf9 no \
+    'int f(int x) { if (x) x++; return x; }'
+emits "no frame, no room kept for one"  18040000 no \
+    'void g(int *p) { *p = 1; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

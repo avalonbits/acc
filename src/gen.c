@@ -5479,14 +5479,8 @@ static void relax_function(const Mark *from, int frame_at)
     unsigned char *shrink;
     int n = njumps - from->jump, ncuts = 0, nslots = 0, i;
 
-    if (n <= 0) {
-        if (frame_at >= 0) {            /* see below: jumped over, not cut */
-            out_img[frame_at - out_base] = 0x18;
-            out_img[frame_at + 1 - out_base] = 4;
-        }
-
+    if (n <= 0 && frame_at < 0)
         return;
-    }
 
     /* Grown and kept, as everything on this path is: a function is a handful
      * of jumps and there are hundreds of functions. */
@@ -5546,19 +5540,9 @@ static void relax_function(const Mark *from, int frame_at)
         }
     }
 
-    /* The frame alone is not worth a cut: taking bytes out is a pass over
-     * the function's relocations and fixups, and a function with no jump
-     * to shorten did not have one. Its six bytes are jumped over instead,
-     * which is most of the time they took and none of the room. */
-    if (ncuts == 1 && frame_at >= 0) {
-        unsigned char *at = out_img + (frame_at - out_base);
-
-        at[0] = 0x18;                   /* jr past the other four */
-        at[1] = 4;
-        cuts++;
-        ncuts = 0;
-    }
-
+    /* The frame is cut even alone, when there is no jump to shorten: it is
+     * a pass over the function's relocations and fixups, for six bytes, and
+     * the bytes are what is short. */
     if (ncuts)
         cut_out(cuts, ncuts, 1, from);
 
@@ -6410,6 +6394,23 @@ void gen_value_end(void)
             nwide_consts = v->val + 1;
 }
 
+/* Every return jumps to the one epilogue at the function's end, rather
+ * than each writing its own: a jump is two bytes once it is shortened, and
+ * ld sp, ix; pop ix; ret is five -- a function has four and a half
+ * returns, on zap. The jumps are chained through their holes, as patch_to
+ * reads them, and the chain is patched when the end is reached. */
+static int      return_chain;
+static unsigned return_epoch;           /* out_rewinds at the last one */
+
+static void return_jump(void)
+{
+    int hole = jump_op(JP_ANY);
+
+    put24(out_img + (hole - out_base), return_chain);
+    return_chain = hole;
+    return_epoch = out_rewinds;
+}
+
 void gen_func_begin(int fn, int nparams, Type returns)
 {
     return_type = returns;
@@ -6451,6 +6452,20 @@ void gen_func_begin(int fn, int nparams, Type returns)
 
 void gen_func_end(void)
 {
+    /* A return that is the last thing in the function jumps to the next
+     * byte: taken back, it falls into the epilogue instead. Whatever jumps
+     * to where it was lands on the epilogue, where it went through it. */
+    if (return_chain && out_here() == return_chain + ACC_INT_SIZE
+        && out_rewinds == return_epoch) {
+        int next = get24(out_img + (return_chain - out_base));
+
+        out_rewind(return_chain - 1);
+        jumps_forget(return_chain - 1);
+        return_chain = next;
+    }
+    patch_to_here(return_chain);
+    return_chain = 0;
+
     /* Restoring sp from ix unconditionally costs two bytes in a function with
      * no locals and saves the epilogue having to know the frame size. */
     out_byte2(0xdd, 0xf9);              /* ld sp, ix */
@@ -6501,9 +6516,7 @@ void gen_return(int line)
         out_byte2(0xed, 0xb0);          /* ldir */
         ld_rr_ix(R_HL, 2 * ACC_PTR_SIZE);
         vdrop();
-        out_byte2(0xdd, 0xf9);          /* ld sp, ix */
-        out_byte2(0xdd, 0xe1);          /* pop ix */
-        out_byte(0xc9);                 /* ret */
+        return_jump();
 
         return;
     }
@@ -6534,9 +6547,7 @@ void gen_return(int line)
                 ld_e_ix(at + ACC_INT_SIZE);
             }
             vdrop();
-            out_byte2(0xdd, 0xf9);      /* ld sp, ix */
-            out_byte2(0xdd, 0xe1);      /* pop ix */
-            out_byte(0xc9);                      /* ret */
+            return_jump();
 
             return;
         }
@@ -6553,9 +6564,7 @@ void gen_return(int line)
         if (RETURNS_IN_A(return_type))
             ld_a_l();
     }
-    out_byte2(0xdd, 0xf9);              /* ld sp, ix */
-    out_byte2(0xdd, 0xe1);              /* pop ix */
-    out_byte(0xc9);                              /* ret */
+    return_jump();
 }
 
 /* That a struct argument and its parameter are the same struct: a struct
