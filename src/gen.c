@@ -3654,8 +3654,14 @@ static void pool_emit(void)
 /* A rewind to `here` takes back the uses of the pool at or past it. */
 static void gen_rewound(int here)
 {
-    while (npool_sites && pool_site_at[npool_sites - 1] >= here)
-        npool_sites--;
+    const int *last;
+
+    if (!npool_sites)
+        return;                 /* nearly every rewind: nothing to look at */
+    last = pool_site_at + npool_sites;
+    while (last > pool_site_at && last[-1] >= here)
+        last--;
+    npool_sites = (int) (last - pool_site_at);
 }
 
 /* Whether the value on top is a wide constant, and the bits it is at
@@ -3860,8 +3866,8 @@ typedef struct {
     Value    left;
 } LongOp;
 
-static LongOp lops[LOPS];
-static int    nlops;
+static LongOp  lops[LOPS];
+static LongOp *lop_top;                 /* past the last, or NULL: none */
 
 /* See lops: 1 if the value on top, going into the wide variable at
  * `offset`, was made again there. Not if a right operand is read from where
@@ -3869,32 +3875,32 @@ static int    nlops;
 static int long_into(int offset, Type type)
 {
     Value *top = vsp - 1;
-    LongOp *last, *first;
-    int i;
+    LongOp *last, *first, *op;
 
-    if (!nlops)
+    if (!lop_top)
         return 0;
-    last = &lops[nlops - 1];
+    last = lop_top - 1;
     if (last->end != out_here() || last->epoch != out_rewinds
         || top->kind != VAL_LOCAL || top->val != last->slot || top->bits
         || type_wide_bytes(type) != last->n
         || type_float(type) != type_float(last->result))
         return 0;
 
-    /* Back along the chain, as far as it goes. */
-    for (i = nlops - 1; i > 0; i--) {
-        LongOp *prev = &lops[i - 1], *op = &lops[i];
+    /* Back along the chain, as far as it goes. By pointer, as everything
+     * here is: an index into these is a multiply on the Agon, and this is
+     * asked at every store of a wide value. */
+    for (first = last; first > lops; first--) {
+        const LongOp *prev = first - 1;
 
-        if (prev->end != op->at || prev->epoch != op->epoch
-            || op->left.kind != VAL_LOCAL || op->left.val != prev->slot
-            || prev->n != op->n)
+        if (prev->end != first->at || prev->epoch != first->epoch
+            || first->left.kind != VAL_LOCAL || first->left.val != prev->slot
+            || prev->n != first->n)
             break;
     }
-    first = &lops[i];
-    for (; i < nlops; i++)
-        if (offset == lops[i].slot
-            || (!lops[i].pooled && offset < lops[i].right + lops[i].n
-                && lops[i].right < offset + lops[i].n))
+    for (op = first; op <= last; op++)
+        if (offset == op->slot
+            || (!op->pooled && offset < op->right + op->n
+                && op->right < offset + op->n))
             return 0;
 
     vdrop();
@@ -3903,17 +3909,17 @@ static int long_into(int offset, Type type)
     spill_used = first->spill_used;
     *vsp++ = first->left;
     vtop++;
+    lop_top = NULL;
     materialise_long(offset, first->result);
     vdrop();
-    for (i = (int) (first - lops); i < nlops; i++) {
+    for (op = first; op <= last; op++) {
         lea_rr_ix(R_HL, offset);
-        if (lops[i].pooled)
-            ld_rr_pool(R_DE, lops[i].bits, lops[i].n);
+        if (op->pooled)
+            ld_rr_pool(R_DE, op->bits, op->n);
         else
-            lea_rr_ix(R_DE, lops[i].right);
-        rt_call(lops[i].which);
+            lea_rr_ix(R_DE, op->right);
+        rt_call(op->which);
     }
-    nlops = 0;
     vpush(VAL_LOCAL, type, offset);
 
     return 1;
@@ -4027,11 +4033,13 @@ static void vbinop_long(int op, Type result)
         vdrop();
     }
 
-    if (nlops == LOPS) {
+    if (!lop_top)
+        lop_top = lops;
+    if (lop_top == lops + LOPS) {
         memmove(lops, lops + 1, (LOPS - 1) * sizeof *lops);
-        nlops--;
+        lop_top--;
     }
-    lop = &lops[nlops++];
+    lop = lop_top++;
     lop->at = out_here();
     lop->nrt = nrt_fixups;
     lop->spill_used = spill_used;
@@ -4881,7 +4889,7 @@ static int rt_base = 0;                 /* where the blob landed */
 static unsigned char rt_group_used[RT_NGROUPS];
 static unsigned char rt_used_log[RT_NGROUPS];
 static int           rt_nused;
-static int           rt_new_at[RT_NGROUPS];   /* where each landed, or -1 */
+static short         rt_new_at[RT_NGROUPS];   /* where each landed, or -1 */
 
 static void rt_unwant_to(int n)
 {
@@ -5053,7 +5061,7 @@ static void rt_emit_used(void)
         rt_new_at[g] = -1;
         if (!(need[g >> 3] & (1 << (g & 7))))
             continue;
-        rt_new_at[g] = len;
+        rt_new_at[g] = (short) len;
         for (i = rt_group_start[g]; i < rt_group_start[g + 1]; i++)
             out_byte(rt_code[i]);
         len += rt_group_start[g + 1] - rt_group_start[g];
@@ -7197,10 +7205,12 @@ void gen_func_end(void)
     {
         int above = locals_size + spill_peak, i;
 
+        const ArrayPatch *ap = array_patches;
+
         narr_cuts = 0;
-        for (i = 0; i < narray_patches; i++) {
-            int at = array_patches[i].at;
-            int d = -(above + array_end[array_patches[i].array]);
+        for (i = 0; i < narray_patches; i++, ap++) {
+            int at = ap->at;
+            int d = -(above + array_end[ap->array]);
             unsigned char *p = out_img + (at - 2 - out_base);
 
             if (!disp_fits(d)) {
