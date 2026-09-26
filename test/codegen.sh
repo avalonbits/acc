@@ -314,5 +314,15 @@ emits "return x; last, no jr +0"        1800ddf9 no \
 emits "no frame, no room kept for one"  18040000 no \
     'void g(int *p) { *p = 1; }'
 
+# A constant added to an address the link fills in goes into the slot it
+# fills: arr[3] of an extern int array is ld hl, arr+9, not ld de, 9 and
+# an add after it.
+emits "arr[3] of an extern"             1109000019 no \
+    'extern int arr[10]; int f(void) { return arr[3]; }'
+emits "g.b of an extern struct"         232323 no \
+    'extern struct st { int a, b; } g; int f(void) { return g.b; }'
+emits "g.b: the slot says 3"            21030000ed27 yes \
+    'extern struct st { int a, b; } g; int f(void) { return g.b; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

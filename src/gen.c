@@ -1856,6 +1856,11 @@ static int bitwise_narrow(int op, int lw, int rw)
     return 2;
 }
 
+/* Where the last load of an address the link fills in ended, and into
+ * which register: see vpush_global_addr and vbinop. */
+static int      gaddr_end = -1, gaddr_reg;
+static unsigned gaddr_epoch;
+
 static void vbinop(int op)
 {
     Value *lhs = vsp - 2;
@@ -1919,6 +1924,24 @@ static void vbinop(int op)
     if (val_number(rhs->kind) && rhs->val == 0
         && (op == TK_PLUS || op == TK_MINUS)) {
         vdrop();
+
+        return;
+    }
+
+    /* An address the link fills in, just loaded, and a constant added to
+     * it or taken from it: the constant goes into the slot, which the link
+     * adds the address to -- `g.b` or `arr[3]` of an extern is one ld hl,
+     * not an ld hl, an ld de and an add. */
+    if ((op == TK_PLUS || op == TK_MINUS) && val_number(rhs->kind)
+        && lhs->kind == VAL_REG && lhs->val == gaddr_reg
+        && out_here() == gaddr_end && gaddr_epoch == out_rewinds) {
+        int at = gaddr_end - ACC_INT_SIZE;
+        Type type = lhs->type;
+
+        out_patch24(at, out_read24(at)
+                        + (op == TK_PLUS ? rhs->val : -rhs->val));
+        vdrop();
+        (vsp - 1)->type = type;
 
         return;
     }
@@ -6765,6 +6788,9 @@ void vpush_global_addr(int sym)
     force_reg(vsp - 1);
     fixup_add(sym, out_here() - ACC_INT_SIZE);
     fixups[nfixups - 1].declared = 1;   /* an address: the type is no matter */
+    gaddr_end = out_here();             /* see vbinop */
+    gaddr_reg = (vsp - 1)->val;
+    gaddr_epoch = out_rewinds;
 }
 
 void vpush_function(int fn)
