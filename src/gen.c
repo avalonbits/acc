@@ -2689,6 +2689,21 @@ static int cmp_byte_const(int op)
     return 1;
 }
 
+/* Z set when HL is zero, and HL as it was.
+ *
+ * There is no "is this register zero" instruction for a 24-bit value. The
+ * upper byte of HL is not addressable, so the 16-bit idiom -- `ld a,l` then
+ * `or a,h` -- would test two thirds of the value and call 0x010000 false.
+ * Adding BC and taking it away again, with the carry cleared between, gives
+ * back HL whatever BC holds, and the flags of a result that is HL: four
+ * bytes, where loading a zero to subtract was six and wanted a register. */
+static void hl_zero_test(void)
+{
+    add_hl_rr(R_BC);
+    or_a_a();
+    sbc_hl_rr(R_BC);
+}
+
 static void vcmp(int op)
 {
     Value *lhs = vsp - 2;
@@ -2717,6 +2732,18 @@ static void vcmp(int op)
 
     if (cmp_byte_const(op))
         return;
+
+    /* Equal to zero, or not: HL tested where it is. */
+    if ((op == TK_EQ || op == TK_NE) && val_number(rhs->kind) && rhs->val == 0
+        && !val_const(lhs->kind)) {
+        force_into(lhs, R_HL);
+        hl_zero_test();
+        vdrop();
+        vdrop();
+        cmp_value(op, is_unsigned);
+
+        return;
+    }
 
     /* `a > b` is `b < a`, and `a <= b` is `b >= a`. Swapping costs nothing
      * here: both sides are still descriptions on a stack, not registers. */
@@ -4111,13 +4138,7 @@ static int jump_on_truth(int when_true)
     if (reg != R_HL)
         mov_rr(R_HL, reg);
 
-    /* There is no "is this register zero" instruction for a 24-bit value.
-     * The upper byte of HL is not addressable, so the 16-bit idiom -- `ld a,l`
-     * then `or a,h` -- would test two thirds of the value and call 0x010000
-     * false. Subtracting zero tests all of it. */
-    ld_rr_imm(R_BC, 0);
-    or_a_a();
-    sbc_hl_rr(R_BC);
+    hl_zero_test();
 
     return jump_op(when_true ? JP_NZ : JP_Z);
 }

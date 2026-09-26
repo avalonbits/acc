@@ -124,8 +124,8 @@ emits() {
 
 # A branch on an AND that keeps one byte jumps on the flags the AND left,
 # rather than rebuilding the value and testing it against zero with
-# ld bc, 0; or a; sbc hl, bc. A mask of two bytes still tests.
-zero_test=01000000b7ed42
+# add hl, bc; or a; sbc hl, bc. A mask of two bytes still tests.
+zero_test=09b7ed42
 emits "if (x & 0x8000)"                 "$zero_test" no \
     'int f(unsigned x) { if (x & 0x8000) return 1; return 2; }'
 emits "if (x & 0xff00)"                 "$zero_test" no \
@@ -137,8 +137,8 @@ emits "if (x & 0x8000) with the value kept" "$zero_test" yes \
 
 # And `!` straight after such an AND, or after a comparison, reads the same
 # flags the other way round, rather than comparing the value with zero with
-# ld de, 0; or a; sbc hl, de.
-not_test=11000000b7ed52
+# the same add hl, bc; or a; sbc hl, bc.
+not_test=09b7ed42
 emits "!(x & 0x40)"                     "$not_test" no \
     'int f(unsigned x) { return !(x & 0x40); }'
 emits "while (!(x & 0x40))"             "$not_test" no \
@@ -333,6 +333,16 @@ emits "long x = a, no byte through A"   dd7e06dd77 no \
     'long f(long a) { long x = a; return x; }'
 emits "long y = 100000, through IY"     fd21a08601dd3e yes \
     'long f(void) { long y = 100000L; return y; }'
+
+# A test of a whole 24-bit value against zero adds BC and takes it away
+# again, which leaves HL as it was and the flags of HL -- not a zero
+# loaded into a register to subtract: ld bc, 0 or ld de, 0.
+emits "if (p), a pointer"               01000000b7ed42 no \
+    'int f(char *p) { if (p) return 1; return 2; }'
+emits "p == 0, as a value"              11000000b7ed52 no \
+    'int f(char *p) { return p == 0; }'
+emits "p != 0, as a value, tested"      09b7ed42 yes \
+    'int f(char *p) { return p != 0; }'
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
