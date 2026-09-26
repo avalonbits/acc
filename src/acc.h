@@ -1050,6 +1050,7 @@ extern unsigned char *out_put, *out_limit;
 void out_grow(void);
 extern unsigned out_rewinds;        /* see out_rewind */
 extern int out_rewind_floor;        /* see out_rewind */
+extern void (*out_on_rewind)(int here); /* told of each rewind */
 int  out_capacity(void);            /* the image's room, for test_out */
 extern int out_start_cap;           /* and where it starts */
 

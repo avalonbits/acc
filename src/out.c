@@ -524,11 +524,18 @@ unsigned out_rewinds;
  * says only that there was one. */
 int out_rewind_floor = INT_MAX;
 
+/* Told of every rewind, if set: what the code generator keeps that a
+ * rewind can take back. A pointer rather than a call, so that out.c stands
+ * on its own. */
+void (*out_on_rewind)(int here);
+
 void out_rewind(int here)
 {
     out_rewinds++;
     if (here < out_rewind_floor)
         out_rewind_floor = here;
+    if (out_on_rewind)
+        out_on_rewind(here);
     /* The slots recorded in what is being undone go with it. The table is
      * in increasing order, so the ones to drop are the last ones. */
     while (out_reloc_put > out_relocs + 1 && out_reloc_put[-1] >= here - out_base)

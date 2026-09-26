@@ -3567,6 +3567,99 @@ static void vunary_long(int which, Type type)
     vpush_scratch(type, slot);
 }
 
+/* The wide constants a function's routines read, laid down once after its
+ * code: an operand that is a constant is ld de, its address, four bytes,
+ * where writing it into a scratch slot was sixteen for a long, and was done
+ * again at every use. Each use is recorded, and its address filled in when
+ * the pool is laid down at the function's end; jumps shortened before
+ * that move the uses, and a rewind takes back the ones it passes. */
+#define POOL_MAX 32
+static uint64_t pool_val[POOL_MAX];
+static int      pool_n[POOL_MAX], pool_addr[POOL_MAX], npool;
+static int     *pool_site_at, *pool_site_entry, npool_sites, pool_sites_cap;
+
+/* ld de or ld hl, the constant's address. The pool has room: whoever asks
+ * has seen npool below POOL_MAX, and a constant already in it takes none. */
+static void ld_rr_pool(int reg, uint64_t v, int n)
+{
+    int e;
+
+    for (e = 0; e < npool; e++)
+        if (pool_val[e] == v && pool_n[e] == n)
+            break;
+    if (e == npool) {
+        if (npool == POOL_MAX)
+            acc_error("internal: a function's constants overflowed");
+        pool_val[npool] = v;
+        pool_n[npool++] = n;
+    }
+    if (npool_sites == pool_sites_cap) {
+        pool_sites_cap = pool_sites_cap ? pool_sites_cap * 2 : 16;
+        pool_site_at = realloc(pool_site_at,
+                               (size_t) pool_sites_cap * sizeof *pool_site_at);
+        pool_site_entry = realloc(pool_site_entry, (size_t) pool_sites_cap
+                                                   * sizeof *pool_site_entry);
+        if (!pool_site_at || !pool_site_entry)
+            acc_error("out of memory for a function's constants");
+    }
+    out_byte(reg == R_HL ? 0x21 : 0x11);        /* ld hl or de, nn */
+    pool_site_at[npool_sites] = out_here();
+    pool_site_entry[npool_sites++] = e;
+    out_reloc(out_here());
+    out_word24(0);
+}
+
+/* The pool, after the function's code and its jumps shortened, and each
+ * use pointed at its constant. Only the constants still used: a rewind may
+ * have taken back every use of one. */
+static void pool_emit(void)
+{
+    int e, i;
+
+    for (e = 0; e < npool; e++)
+        pool_addr[e] = -1;
+    for (i = 0; i < npool_sites; i++) {
+        e = pool_site_entry[i];
+        if (pool_addr[e] < 0) {
+            unsigned char b[8];
+
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+            int j;
+
+            for (j = 0; j < 8; j++)
+                b[j] = (unsigned char) (pool_val[e] >> (j * 8));
+#else
+            memcpy(b, &pool_val[e], sizeof b);
+#endif
+            pool_addr[e] = out_here();
+            for (int j2 = 0; j2 < pool_n[e]; j2++)
+                out_byte(b[j2]);
+        }
+        out_patch24(pool_site_at[i], pool_addr[e]);
+    }
+    npool = npool_sites = 0;
+}
+
+/* A rewind to `here` takes back the uses of the pool at or past it. */
+static void gen_rewound(int here)
+{
+    while (npool_sites && pool_site_at[npool_sites - 1] >= here)
+        npool_sites--;
+}
+
+/* Whether the value on top is a wide constant, and the bits it is at
+ * `type`: what the pool can hold. */
+static int wide_const_top(Type type, uint64_t *bits)
+{
+    Value *v = vsp - 1;
+
+    if (v->kind != VAL_WIDE && !val_number(v->kind))
+        return 0;
+    *bits = const_as(v, type);
+
+    return 1;
+}
+
 /* A four-byte integer operator with a constant on the right, done on the
  * left's bytes in its scratch slot when that is shorter than the call: the
  * call wants the constant in a slot of its own, sixteen bytes, and the two
@@ -3748,7 +3841,8 @@ static void vbinop_long(int op, Type result)
      * the first comparison. The top two are the operands and are exempt:
      * they are about to be copied into the frame and dropped. */
     int n = type_wide_bytes(result);
-    int low, rstart, in_place;
+    int low, rstart, in_place, pooled;
+    uint64_t bits = 0;
 
     /* Both constants: worked out here, and nothing emitted. */
     if (vconst_pair()) {
@@ -3809,7 +3903,14 @@ static void vbinop_long(int op, Type result)
      * left goes where the answer is to be, which is at or below where the
      * operands are. */
     left = slot_at(low, n);
-    if (in_place) {
+    pooled = !in_place && !helper_writes_right(which)
+             && wide_const_top(result, &bits) && npool < POOL_MAX;
+    if (pooled) {
+        vdrop();                        /* read from the pool, below */
+        right = 0;
+        if (low + n > spill_used)
+            spill_used = low + n;
+    } else if (in_place) {
         right = (vsp - 1)->val;
         vdrop();
         if (low + n > spill_used)
@@ -3825,7 +3926,10 @@ static void vbinop_long(int op, Type result)
     vdrop();
 
     lea_rr_ix(R_HL, left);
-    lea_rr_ix(R_DE, right);
+    if (pooled)
+        ld_rr_pool(R_DE, bits, n);
+    else
+        lea_rr_ix(R_DE, right);
     rt_call(which);
 
     spill_used = low + n;               /* the answer, and nothing else */
@@ -3895,8 +3999,9 @@ static void vcmp_wide(int op, Type operand)
 {
     int floating = type_float(operand);
     int n = type_wide_bytes(operand);
-    int low, rstart, in_place;
+    int low, rstart, in_place, pooled;
     int left, right;
+    uint64_t bits = 0;
 
     /* Anything else live in a register has to come out first. The two lea
      * instructions below load HL and DE with addresses, behind the register
@@ -3949,7 +4054,14 @@ static void vcmp_wide(int op, Type operand)
     rstart = spill_used > low + n ? spill_used : low + n;
 
     left = slot_at(low, n);
-    if (in_place) {
+    pooled = !floating && !in_place && wide_const_top(operand, &bits)
+             && npool < POOL_MAX;
+    if (pooled) {
+        vdrop();                        /* read from the pool, below */
+        right = 0;
+        if (low + n > spill_used)
+            spill_used = low + n;
+    } else if (in_place) {
         right = (vsp - 1)->val;
         vdrop();
         if (low + n > spill_used)
@@ -3986,9 +4098,18 @@ static void vcmp_wide(int op, Type operand)
         left = right;
         right = swap;
         op = (op == TK_GT) ? TK_LT : TK_GE;
+        if (pooled) {
+            ld_rr_pool(R_HL, bits, n);  /* the constant is on the left now */
+            lea_rr_ix(R_DE, right);
+        }
+    } else if (pooled) {
+        lea_rr_ix(R_HL, left);
+        ld_rr_pool(R_DE, bits, n);
     }
-    lea_rr_ix(R_HL, left);
-    lea_rr_ix(R_DE, right);
+    if (!pooled) {
+        lea_rr_ix(R_HL, left);
+        lea_rr_ix(R_DE, right);
+    }
 
     if (tok_pair(op, TK_EQ)) {
         rt_call(type_eight(operand) ? RT_LLCMPEQ : RT_LCMPEQ);
@@ -5821,6 +5942,12 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
     nbss_fixups = from->bss
                 + cut_positions(bss_fixups + from->bss, nbss_fixups - from->bss);
 
+    /* The function's uses of its constants' pool, which is laid down after
+     * this: none of them is inside a run, a run being a jump's operand or
+     * the frame's load, so the list keeps its length. */
+    if (holes && cut_positions(pool_site_at, npool_sites) != npool_sites)
+        acc_error("internal: a use of a function's constants was cut out");
+
     /* The jumps are not brought along here. relax_function is the only
      * caller that has any, and it works out where each one landed from the
      * runs directly -- they and the jumps are both in rising order, so that
@@ -6867,6 +6994,8 @@ void gen_func_begin(int fn, int nparams, Type returns)
 
     sym_at(fn)->val = out_here();
     nconst_rets = 0;
+    npool = npool_sites = 0;
+    out_on_rewind = gen_rewound;
     static_begin(fn);
     mark_here(&func_mark);
     vtop = 0;
@@ -6934,6 +7063,7 @@ void gen_func_end(void)
     if (!frame_size())
         rt_fixups[frame_call].which = RT_FRAMESET0;
     relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
+    pool_emit();
     static_end();
 }
 
