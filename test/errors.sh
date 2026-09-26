@@ -50,14 +50,64 @@ for src in test/errors/*.c; do
         fail=$((fail+1)); continue
     fi
 
-    if [[ "$got" == *"$want"* ]]; then
+    if [[ "$got" != *"$want"* ]]; then
+        printf '  FAIL %-18s want %s\n                        got  %s\n' "$name" "$want" "$got"
+        fail=$((fail+1)); continue
+    fi
+
+    # And again with -errors, as a program running acc would: the same
+    # error in the file, as `file:line:0: error: text`, and 100 for failure.
+    # The line number gets a column after it; an expectation that starts
+    # without one is found in the text.
+    rm -f "$tmp/err.txt"
+    "$ACC" "$src" -o "$tmp/out.bin" -x -errors "$tmp/err.txt" > /dev/null 2>&1
+    rc=$?
+    file=$(cat "$tmp/err.txt" 2>/dev/null)
+    if [[ "$want" =~ ^([0-9]+):\ (.*)$ ]]; then
+        infile="$src:${BASH_REMATCH[1]}:0: ${BASH_REMATCH[2]}"
+    else
+        infile="$want"
+    fi
+    if [ "$rc" -ne 100 ]; then
+        printf '  FAIL %-18s -errors: returned %d, not 100\n' "$name" "$rc"
+        fail=$((fail+1))
+    elif [ "$(printf '%s\n' "$file" | wc -l)" -ne 1 ] \
+         || ! [[ "$file" =~ ^[^:]+:[0-9]+:0:\ error:\  ]] \
+         || [[ "$file" != *"$infile"* ]]; then
+        printf '  FAIL %-18s -errors: want %s\n                        file %s\n' \
+            "$name" "$infile" "$file"
+        fail=$((fail+1))
+    else
         printf '  ok   %-18s %s\n' "$name" "$want"
         pass=$((pass+1))
-    else
-        printf '  FAIL %-18s want %s\n                        got  %s\n' "$name" "$want" "$got"
-        fail=$((fail+1))
     fi
 done
+
+# -errors on a compile that works: 0, and no file left behind, even one
+# a failed compile wrote before it.
+printf 'int main(void) { return 0; }\n' > "$tmp/ok.c"
+echo stale > "$tmp/err.txt"
+"$ACC" "$tmp/ok.c" -o "$tmp/ok.bin" -errors "$tmp/err.txt" > /dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$tmp/err.txt" ]; then
+    printf '  ok   %-18s %s\n' "-errors, success" "returns 0 and removes the file"
+    pass=$((pass+1))
+else
+    printf '  FAIL %-18s returned %d, file %s\n' "-errors, success" "$rc" \
+        "$([ -e "$tmp/err.txt" ] && echo left || echo removed)"
+    fail=$((fail+1))
+fi
+
+# Without -errors nothing changes: a failure is still 1.
+"$ACC" test/errors/030_missing_semi.c -o "$tmp/out.bin" > /dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 1 ]; then
+    printf '  ok   %-18s %s\n' "no -errors" "a failure still returns 1"
+    pass=$((pass+1))
+else
+    printf '  FAIL %-18s a failure returned %d, not 1\n' "no -errors" "$rc"
+    fail=$((fail+1))
+fi
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

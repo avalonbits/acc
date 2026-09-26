@@ -22,28 +22,62 @@ const char *lex_path(void);
 /* ------------------------------------------------------------------ */
 /* diagnostics                                                         */
 
+/* -errors: where to write the error as well, for a program that runs acc
+ * and needs to know what went wrong -- an editor that jumps to the line. It
+ * can't read what acc prints: MOS has no output redirection, and one program
+ * can't capture another's console. So the error goes to this file too, as
+ *
+ *     file:line:0: error: text
+ *
+ * the column 0 because acc doesn't track one. An error with no line -- a
+ * link that can't find a symbol, say -- is `acc:0:0: error: text`. A compile
+ * that works removes the file, so a reader never finds a stale error.
+ *
+ * It also changes how acc fails: with 100 rather than 1 (or 2 for usage).
+ * On the Agon MOS reads a program's result as one of its own errors and
+ * rewrites 1, 4 and 5 into "Invalid command" -- a failed compile then looks
+ * like acc isn't there at all. 100 is past MOS's table: MOS hands it back
+ * unchanged and prints nothing for it. */
+static const char *errors_path;
+static int errors_asked;
+#define ERRORS_EXIT 100
+
+__attribute__((noreturn)) static void fail(const char *file, int line, const char *msg)
+{
+    if (errors_path) {
+        FILE *f = fopen(errors_path, "w");
+
+        if (f) {
+            fprintf(f, "%s:%d:0: error: %s\n", file, line, msg);
+            fclose(f);
+        }
+    }
+    exit(errors_asked ? ERRORS_EXIT : 1);
+}
+
 void acc_error_at(int line, const char *fmt, ...)
 {
+    char msg[256];
+    const char *file = lex_path() ? lex_path() : "acc";
     va_list ap;
 
-    fprintf(stderr, "%s:%d: error: ", lex_path() ? lex_path() : "acc", line);
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    fputc('\n', stderr);
-    exit(1);
+    fprintf(stderr, "%s:%d: error: %s\n", file, line, msg);
+    fail(file, line, msg);
 }
 
 void acc_error(const char *fmt, ...)
 {
+    char msg[256];
     va_list ap;
 
-    fprintf(stderr, "acc: error: ");
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    fputc('\n', stderr);
-    exit(1);
+    fprintf(stderr, "acc: error: %s\n", msg);
+    fail("acc", 0, msg);
 }
 
 /* ------------------------------------------------------------------ */
@@ -8476,8 +8510,12 @@ static void usage(void)
         "  The program returns what main returned to MOS, as agondev's do.\n"
         "  -p  print it as six hex digits too, before returning.\n"
         "  -x  report it to IO port 0 instead, which stops an emulator\n"
-        "      with the low byte as its exit status.\n");
-    exit(2);
+        "      with the low byte as its exit status.\n"
+        "  -errors  write an error to that file too, as\n"
+        "      `file:line:0: error: text`, and fail with 100 rather than 1:\n"
+        "      for a program that runs acc and reads what went wrong. A\n"
+        "      compile that works removes the file.\n");
+    exit(errors_asked ? ERRORS_EXIT : 2);
 }
 
 #if defined(AGONDEV) && defined(ACC_CYCLES)
@@ -9089,6 +9127,11 @@ int main(int argc, char **argv)
             if (++i == argc)
                 usage();
             obj_map_path = argv[i];
+        } else if (!strcmp(argv[i], "-errors")) {
+            errors_asked = 1;
+            if (++i == argc)
+                usage();
+            errors_path = argv[i];
         } else if (argv[i][0] == '-') {
             usage();
         } else if (is_object(argv[i]) || is_archive(argv[i])) {
@@ -9207,6 +9250,10 @@ int main(int argc, char **argv)
      * under the sanitizer, so every comparison in the file failed and the
      * leak it was watching for could not have been seen. */
     free(objs);
+
+    /* It worked: no error to read, and none left from a run before. */
+    if (errors_path)
+        remove(errors_path);
 
     return 0;
 }
