@@ -63,7 +63,7 @@ SRCS = src/obj.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c
 # did, about a runtime one of them had not been told about.
 HDRS = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h
 
-OBJS = $(patsubst src/%.c,$(OBJ)/%.o,$(SRCS))
+OBJS = $(patsubst src/%.c,$(OBJ)/%.o,$(SRCS)) $(OBJ)/marks.o
 
 .PHONY: all clean size
 all: $(BIN)/$(NAME).bin
@@ -86,6 +86,12 @@ src/acc_build.h: $(SRCS) src/acc.h src/rt_helpers.h src/build_id.sh
 $(OBJ)/%.o: src/%.c $(HDRS) | $(OBJ)
 	@echo [compiling $<]
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# The loop lex.c folds every byte it reads through, written by hand for the
+# Agon: see the file.
+$(OBJ)/marks.o: src/marks.s | $(OBJ)
+	@echo [assembling $<]
+	$(TOOLS)/ez80-none-elf-as -march=ez80+full $< -o $@
 
 # Only the one file that reads it, so that editing the lexer does not rebuild
 # the whole compiler for the Agon.

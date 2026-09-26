@@ -458,20 +458,33 @@ static int dep_add(const char *path)
     return ndeps++;
 }
 
-/* `n` bytes folded into the two running sums. */
+/* `n` bytes folded into the two running sums.
+ *
+ * The sums are kept to 24 bits, and masked once at the end rather than at
+ * every byte: a sum of sums taken mod 2^24 is the same whenever the mask is
+ * applied, and on the host, where unsigned is 32 bits, it wraps at a
+ * multiple of 2^24.
+ *
+ * On the Agon this is src/marks.s instead. Every byte of every file read
+ * passes through here, and agondev made this loop 93 cycles a byte, a
+ * quarter of a compile -- and miscompiled the pointer form of it. */
+#ifdef AGONDEV
+void marks_fold(unsigned *sump, unsigned *weightedp, const char *bytes, int n);
+#else
 static void marks_fold(unsigned *sump, unsigned *weightedp, const char *bytes,
                        int n)
 {
+    const unsigned char *p = (const unsigned char *) bytes, *end = p + n;
     unsigned sum = *sump, weighted = *weightedp;
-    int i;
 
-    for (i = 0; i < n; i++) {
-        sum = (sum + (unsigned char) bytes[i]) & 0xffffffu;
-        weighted = (weighted + sum) & 0xffffffu;
+    while (p != end) {
+        sum += *p++;
+        weighted += sum;
     }
-    *sump = sum;
-    *weightedp = weighted;
+    *sump = sum & 0xffffffu;
+    *weightedp = weighted & 0xffffffu;
 }
+#endif
 
 /* The options that change what a compile reads: -D, -U and -I, in the
  * order they were given, folded into marks of their own as they arrive. An
