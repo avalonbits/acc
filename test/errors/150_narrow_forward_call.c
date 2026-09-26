@@ -1,4 +1,4 @@
-/* expect: 3: error: 'later' is called and not declared */
+/* expect: 3:12: error: 'later' is called and not declared */
 int main(void) {
     return later(1);
 }

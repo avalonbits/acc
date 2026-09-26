@@ -1,4 +1,4 @@
-/* expect: 2: error: a parameter of a function's definition needs a name */
+/* expect: 2:5: error: a parameter of a function's definition needs a name */
 int f(int) {
     return 0;
 }

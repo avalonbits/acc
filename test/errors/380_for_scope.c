@@ -1,4 +1,4 @@
-/* expect: 9: error: 'i' is not declared */
+/* expect: 9:12: error: 'i' is not declared */
 /* A variable declared in a for loop's first clause ends with the loop.
  */
 int main(void) {

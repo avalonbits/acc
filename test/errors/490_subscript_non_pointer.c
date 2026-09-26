@@ -1,4 +1,4 @@
-/* expect: 5: error: '[' needs an array or a pointer, and this is an integer */
+/* expect: 5:13: error: '[' needs an array or a pointer, and this is an integer */
 /* Only something that points at elements can be subscripted. */
 int main(void) {
     int x = 3;

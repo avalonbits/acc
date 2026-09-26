@@ -57,6 +57,13 @@ void acc_error_at(int line, const char *fmt, ...)
     exit(2);
 }
 
+void acc_error_pos(int line, int col, const char *fmt, ...)
+{
+    (void) line; (void) col; (void) fmt;
+    fprintf(stderr, "  FAIL  acc_error_pos during the test\n");
+    exit(2);
+}
+
 #define N 2000
 
 static NameRef refs[N];

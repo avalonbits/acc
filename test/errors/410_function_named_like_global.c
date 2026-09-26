@@ -1,4 +1,4 @@
-/* expect: 6: error: 'total' is already a variable */
+/* expect: 6:5: error: 'total' is already a variable */
 /* A function may not take a name a global already has.
  */
 int total;

@@ -446,7 +446,7 @@ int main(void) { char *s = __FILE__; return s[0] == 103 ? 42 : 0; }
 '
 
 # And what it renumbers is what a diagnostic says, which is the point of it.
-refuses "#line moves the diagnostics" ":50: error:" \
+refuses "#line moves the diagnostics" ":50:25: error:" \
 '#line 50
 int main(void) { return @; }
 '

@@ -1,4 +1,4 @@
-/* expect: 10: error: this goto jumps past the declaration of an array whose length is worked out as it runs, into its scope */
+/* expect: 10:5: error: this goto jumps past the declaration of an array whose length is worked out as it runs, into its scope */
 /* Backwards too, and a pointer to such an array counts. */
 int f(int n) {
     int k = 0;

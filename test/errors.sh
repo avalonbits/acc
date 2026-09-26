@@ -1,6 +1,9 @@
 #!/bin/bash
 # Every program in test/errors is one acc must reject. The first line says
-# what it must say about it.
+# what it must say about it: `expect: LINE:COLUMN: error: text`, or
+# `expect: LINE: error: text` where the column is not pinned down -- though
+# there has to be one -- or anything else, found as it is in what acc says,
+# which is how an error in a header is named: `x.h:2:5: error: text`.
 #
 # The differential runner cannot cover these: agondev compiles most of them
 # happily, so there is nothing to compare against. What is being checked is
@@ -50,30 +53,48 @@ for src in test/errors/*.c; do
         fail=$((fail+1)); continue
     fi
 
-    if [[ "$got" != *"$want"* ]]; then
+    # A line and no column says the column is not pinned down, and not that
+    # there is none: an error at a line is at a column in it, printed as
+    # gcc prints one, `file:line:column: error: text`. The column is taken
+    # out of what acc said before the text is looked for.
+    if [[ "$want" =~ ^[0-9]+:\ (.*)$ ]]; then
+        if ! [[ "$got" =~ ^[^:]+:[0-9]+:[1-9][0-9]*:\ error:\  ]]; then
+            printf '  FAIL %-18s no column in %s\n' "$name" "$got"
+            fail=$((fail+1)); continue
+        fi
+        seen=$(printf '%s' "$got" | sed -E '1s/^([^:]+:[0-9]+):[0-9]+:/\1:/')
+    else
+        seen=$got
+    fi
+    if [[ "$seen" != *"$want"* ]]; then
         printf '  FAIL %-18s want %s\n                        got  %s\n' "$name" "$want" "$got"
         fail=$((fail+1)); continue
     fi
 
     # And again with -errors, as a program running acc would: the same
-    # error in the file, as `file:line:0: error: text`, and 100 for failure.
-    # The line number gets a column after it; an expectation that starts
-    # without one is found in the text.
+    # error in the file, as `file:line:column: error: text`, and 100 for
+    # failure. An expectation with no column is held to the rest of it. The
+    # one error with no line, a link's, is `acc:0:0`; any other has both.
     rm -f "$tmp/err.txt"
     "$ACC" "$src" -o "$tmp/out.bin" -x -errors "$tmp/err.txt" > /dev/null 2>&1
     rc=$?
     file=$(cat "$tmp/err.txt" 2>/dev/null)
-    if [[ "$want" =~ ^([0-9]+):\ (.*)$ ]]; then
-        infile="$src:${BASH_REMATCH[1]}:0: ${BASH_REMATCH[2]}"
+    if [[ "$want" =~ ^([0-9]+:[0-9]+):\ (.*)$ ]]; then
+        infile="$src:${BASH_REMATCH[1]}: ${BASH_REMATCH[2]}"
+        fseen=$file
+    elif [[ "$want" =~ ^([0-9]+):\ (.*)$ ]]; then
+        infile="$src:${BASH_REMATCH[1]}: ${BASH_REMATCH[2]}"
+        fseen=$(printf '%s' "$file" | sed -E '1s/^([^:]+:[0-9]+):[0-9]+:/\1:/')
     else
         infile="$want"
+        fseen=$file
     fi
     if [ "$rc" -ne 100 ]; then
         printf '  FAIL %-18s -errors: returned %d, not 100\n' "$name" "$rc"
         fail=$((fail+1))
     elif [ "$(printf '%s\n' "$file" | wc -l)" -ne 1 ] \
-         || ! [[ "$file" =~ ^[^:]+:[0-9]+:0:\ error:\  ]] \
-         || [[ "$file" != *"$infile"* ]]; then
+         || ! [[ "$file" =~ ^(acc:0:0|[^:]+:[1-9][0-9]*:[1-9][0-9]*):\ error:\  ]] \
+         || [[ "$fseen" != *"$infile"* ]]; then
         printf '  FAIL %-18s -errors: want %s\n                        file %s\n' \
             "$name" "$infile" "$file"
         fail=$((fail+1))

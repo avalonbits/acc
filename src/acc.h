@@ -269,6 +269,15 @@ int     member_offset(int member);
  * every token to hold values only an error path would have gone on to use. */
 __attribute__((noreturn)) void acc_error(const char *fmt, ...);
 __attribute__((noreturn)) void acc_error_at(int line, const char *fmt, ...);
+__attribute__((noreturn)) void acc_error_pos(int line, int col,
+                                             const char *fmt, ...);
+/* At the token the parser kept tok_at of, as `spot`, on `line`. */
+__attribute__((noreturn)) void acc_error_spot(int line, const char *spot,
+                                              const char *fmt, ...);
+/* At the name before the current token, that the parser has stepped past
+ * to see what follows it -- or at the current token, when the one before
+ * it is not a name. */
+__attribute__((noreturn)) void acc_error_prev(const char *fmt, ...);
 
 /* ------------------------------------------------------------------ */
 /* names                                                               */
@@ -430,6 +439,11 @@ extern float    tok_fval;   /* its value, when TK_FLOAT */
 extern NameRef  tok_name;   /* its name, when TK_IDENT */
 extern int      tok_line;   /* the line it started on */
 extern int      tok_prev_line; /* where the token before it ended */
+extern const char *tok_at;      /* where it starts, for its column */
+int lex_col(void);              /* the column it starts at, 0 if not known */
+int lex_col_at(const char *at); /* the column of a tok_at kept, or 0 */
+int lex_prev_col(void);         /* the column just past the token before it */
+int lex_name_col(const char *at, int *line); /* of the name before `at` */
 
 void lex_init(void);
 void lex_open(const char *path);
@@ -917,7 +931,7 @@ void gen_label(int hole);             /* fill a hole in with here */
 void gen_cond_same(Type middle, int middle_ext);  /* the two sides agree */
 int  gen_cond_middle_void(void);      /* `c ? f() : g()`, both of them void */
 void gen_cond_end_void(int to_stub, int lock);
-void gen_return(int line);            /* `return`, at the line it is on */
+void gen_return(int line, const char *spot); /* `return`, where it is */
 /* What a program has of the Agon's memory: the image, what it leaves at
  * zero, and then its heap and its stack. */
 #define ACC_RAM_BYTES 458752

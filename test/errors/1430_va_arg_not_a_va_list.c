@@ -1,4 +1,4 @@
-/* expect: 5: error: this has to be a va_list, and it is not */
+/* expect: 5:19: error: this has to be a va_list, and it is not */
 int f(int n, ...) {
     int notalist = 0;
 

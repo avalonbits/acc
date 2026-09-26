@@ -1,4 +1,4 @@
-/* expect: 3: error: 'T' is already declared */
+/* expect: 3:14: error: 'T' is already declared */
 typedef int T;
 typedef char T;
 int main(void) {

@@ -1,4 +1,4 @@
-/* expect: 3: error: 'f' is declared again without '...' */
+/* expect: 3:5: error: 'f' is declared again without '...' */
 int f(int a, ...);
 int f(int a) {
     return a;

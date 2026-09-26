@@ -365,6 +365,7 @@ typedef struct {
     NameRef     macro;          /* the macro whose text this level is */
     int         conds;          /* conditionals open when this was pushed */
     int         dep;            /* which file of dep_files this is, or -1 */
+    const char *use;            /* src_use, below */
 } Source;
 
 /* What this level allocated, and which macro it is the expansion of.
@@ -381,6 +382,15 @@ typedef struct {
 
 static int     src_owned;
 static NameRef src_macro;
+
+/* In a macro's text, or a kept text read again (lex_push_record), where in
+ * the file under it the text was used: the name of the outermost macro, or
+ * the token the kept text was read after. Null in a file. A token read from
+ * the text has that for its column, as it has that place's line: the text
+ * has no lines of its own, and the place in the file is what the reader
+ * can go to. `nowhere` when the place was not known. */
+static const char *src_use;
+static const char  nowhere[1];
 
 /* ------------------------------------------------------------------ */
 /* what the compile read                                               */
@@ -584,6 +594,7 @@ float    tok_fval;
 typedef char float_is_four_bytes[sizeof(float) == 4 ? 1 : -1];
 NameRef  tok_name;
 int      tok_line;
+const char *tok_at;
 Type     tok_type;
 int      tok_prev_line;
 
@@ -920,6 +931,9 @@ static int refill(void)
     if (!src_file)
         return 0;                       /* the whole file has been read */
 
+    /* What is behind the cursor goes, and the tokens there with it: their
+     * columns are no longer known. */
+    tok_at = NULL;
     if (lex_record)
         record_flush();
     *src_end = src_held;                /* put back what the sentinel hid */
@@ -1248,6 +1262,7 @@ static void push_source(const char *path)
     open_files[depth].macro = src_macro;
     open_files[depth].conds = nconds;
     open_files[depth].dep = src_dep;
+    open_files[depth].use = src_use;
 
     /* The handle this level was reading through is closed while the file
      * below it runs, and opened again on the way back at the byte it had
@@ -1280,6 +1295,7 @@ static void push_source(const char *path)
     src_cap = INCLUDE_CAP;
     src_owned = OWN_BUF | OWN_PATH;
     src_macro = NAME_NONE;
+    src_use = NULL;
     cursor = src_end = src_raw = src;
     src_held = '\0';
     *src = '\0';
@@ -1312,8 +1328,11 @@ static void push_text(NameRef macro, char *text, int len)
     open_files[depth].conds = nconds;
     open_files[depth].at = -1;          /* no handle of its own to set aside */
     open_files[depth].dep = src_dep;
+    open_files[depth].use = src_use;
     depth++;
     src_dep = -1;                       /* text in memory, not a file */
+    if (!src_use)
+        src_use = tok_at ? tok_at : nowhere;
 
     src = NULL;
     src_file = NULL;
@@ -1375,6 +1394,7 @@ static int pop_source(void)
     src_owned = open_files[depth].owned;
     src_macro = open_files[depth].macro;
     src_dep = open_files[depth].dep;
+    src_use = open_files[depth].use;
 
     /* Out of the level a size being kept began at: it ended somewhere its
      * text cannot be had. */
@@ -1436,6 +1456,194 @@ void lex_close(void)
 
 const char *lex_path(void) { return src_path; }
 int lex_line(void)         { return line; }
+
+/* Columns, for diagnostics.
+ *
+ * Nothing is counted as the source is read: a column is worked out only
+ * when it is asked for, by walking back from the token to the start of its
+ * line. The walk is always inside the window, because a window only ever
+ * begins where a line does -- the start of the line is a newline behind the
+ * token or the window's own start. Keeping a count instead would cost a
+ * store at every newline, or every token, of a compile that has no error.
+ *
+ * A column counts bytes from 1, so a tab is one column, as are each of the
+ * bytes of a UTF-8 character: it is the offset an editor needs to put its
+ * cursor on the character. AED, which reads the column to move there, keeps
+ * a tab as one character in its buffer and widens it only on the screen, so
+ * a tab counted as one is the right place in the buffer. It is gcc's
+ * -fdiagnostics-column-unit=byte, which was its default before gcc 11; gcc
+ * now counts a tab to the next multiple of 8 unless told otherwise. 0 is a
+ * column that is not known.
+ *
+ * Lines joined by a backslash are one line by the time they are read, so a
+ * token on the second half of one is counted from the start of the first,
+ * which is also the line it is reported on. */
+static int column_in(const char *p, const char *start, const char *end)
+{
+    const char *q = p;
+
+    if (!p || !start || p < start || p > end)
+        return 0;                       /* not in this window, or gone */
+    while (q > start && q[-1] != '\n')
+        q--;
+
+    return (int) (p - q) + 1;
+}
+
+/* The column of p, which is in the window being read or, in a macro's
+ * text, in the file the macro was used in; in a macro's text the answer is
+ * where the macro was used, the place the line is also taken from. p in
+ * text that has since been popped is 0. So is the current token once the
+ * window has moved past it; a token the parser kept for longer, across the
+ * move -- once per 16 KB of source -- can come out in the wrong place, which
+ * is what keeping a pointer rather than a count costs. */
+static int column_of(const char *p)
+{
+    const Source *f;
+    int i;
+
+    if (!src_use)
+        return column_in(p, src, src_end);
+
+    /* The file under the text: the level it was pushed over, which is the
+     * first one down that was not text itself. */
+    for (i = depth - 1; open_files[i].use; i--)
+        ;
+    f = &open_files[i];
+    if (p >= f->src && p <= f->src_end)
+        return column_in(p, f->src, f->src_end);
+
+    return column_in(src_use, f->src, f->src_end);
+}
+
+/* The column the current token starts at. */
+int lex_col(void)
+{
+    return column_of(tok_at);
+}
+
+/* The column of a token the parser kept tok_at of, to report an error
+ * about it once it has read on past it. Kept is all that is needed: what it
+ * costs is a copy of a pointer, and the column is only worked out if there
+ * is an error. */
+int lex_col_at(const char *at)
+{
+    return column_of(at);
+}
+
+/* The token before the one at `at`, which is in the window being read:
+ * just past its end, with *lines the lines between the two. Null when that
+ * cannot be read back.
+ *
+ * The lexer keeps where the current token starts and nothing about the one
+ * before: keeping that was two more stores on the path every token takes,
+ * and 1% of a compile, for the sake of an error. So it is found here by
+ * walking back from the current token over what is not a token -- blanks,
+ * comments, lines that are blank or a directive -- counting the lines it
+ * crosses, which the caller holds against the line it knows the token
+ * before is on. What it cannot read back over, such as a group an #if
+ * skipped, comes out on the wrong line and is caught there. */
+static const char *token_before(const char *at, int *lines)
+{
+    const char *p = at, *start = src, *q, *cut;
+    int n = 0;
+
+    if (!column_in(p, start, src_end))
+        return NULL;
+
+    for (;;) {
+        while (p > start && p[-1] != '\n' && is_space(p[-1]))
+            p--;
+        if (p <= start + 1) {
+            if (p == start)
+                return NULL;
+        } else if (p[-1] == '/' && p[-2] == '*') {
+            /* A block comment ends here: back to where it opened. */
+            for (p -= 2;; p--) {
+                if (p < start + 2)
+                    return NULL;
+                if (p[-2] == '/' && p[-1] == '*')
+                    break;
+                if (p[-1] == '\n')
+                    n++;
+            }
+            p -= 2;
+            continue;
+        }
+        if (p[-1] != '\n')
+            break;                      /* just past a token */
+
+        /* The line before: its end, or where a `//` comment on it starts,
+         * and nothing of it at all if it is a directive. */
+        n++;
+        cut = --p;
+        for (q = p; q > start && q[-1] != '\n'; q--)
+            ;
+        while (q < cut && is_space(*q))
+            q++;
+        if (*q == '#') {
+            p = q;
+            continue;
+        }
+        for (; q < cut; q++) {
+            if (*q == '"' || *q == '\'') {
+                char quote = *q;
+
+                while (++q < cut && *q != quote)
+                    if (*q == '\\')
+                        q++;
+            } else if (*q == '/' && q[1] == '/') {
+                cut = q;
+            }
+        }
+        p = cut;
+    }
+    *lines = n;
+
+    return p;
+}
+
+/* The column just past the token before the current one, where something
+ * missing from the end of it would have gone: a ';' left off a line is
+ * missing at the end of that line, not at the '}' on the next that shows
+ * it. In a macro's text, where the macro was used. */
+int lex_prev_col(void)
+{
+    const char *p;
+    int lines;
+
+    if (src_use)
+        return column_of(tok_at);
+    p = token_before(tok_at, &lines);
+    if (!p || tok_line - lines != tok_prev_line)
+        return 0;
+
+    return column_in(p, src, src_end);
+}
+
+/* The column of the name just before the token at `at`, which was on
+ * *line: the one a parser that has stepped past a name to see what follows
+ * it is talking about. *line becomes the name's. 0, and *line left alone,
+ * when the token before is not a name. In a macro's text it is where the
+ * macro was used. */
+int lex_name_col(const char *at, int *line)
+{
+    const char *p, *q;
+    int lines;
+
+    if (src_use)
+        return column_of(at);
+    p = token_before(at, &lines);
+    if (!p)
+        return 0;
+    for (q = p; q > src && is_alnum((unsigned char) q[-1]); q--)
+        ;
+    if (q == p || !is_alpha((unsigned char) *q))
+        return 0;
+    *line -= lines;
+
+    return column_in(q, src, src_end);
+}
 
 /* Whether the next character that is not white space is a colon. That is all
  * that tells a label from an expression statement -- `done:` and `done = 1;`
@@ -1524,6 +1732,7 @@ static void skip_comment(void)
      * scan gave up on points at the end of the file, which is the one place
      * the reader already knows is not the problem. */
     int opened = line;
+    const char *open_at = cursor;       /* gone once the window moves */
 
     cursor += 2;
     for (;;) {
@@ -1539,7 +1748,8 @@ static void skip_comment(void)
          * one cannot have a newline between them and a window always ends
          * after a newline, so a `*<slash>` is never split by this. */
         if (!refill())
-            acc_error_at(opened, "unterminated comment");
+            acc_error_pos(opened, column_of(open_at), "unterminated comment");
+        open_at = NULL;
     }
     cursor += 2;
 }
@@ -4834,6 +5044,10 @@ void next(void)
 {
     int c;
 
+    /* Before the label: a directive, an attribute or a macro read on the way
+     * to the next token is not the token before it. */
+    tok_prev_line = tok_line;
+
     /* A macro comes back here rather than calling next() again. The two say
      * the same thing -- the call would re-run everything below the label --
      * but a function that calls itself is one clang gives a frame and spills
@@ -4848,8 +5062,8 @@ restart:
     if (!*cursor)
         window_more();
 
-    tok_prev_line = tok_line;
     tok_line = line;
+    tok_at = cursor;
     c = (unsigned char) *cursor;
 
     if (c == '\0') {
@@ -5079,7 +5293,8 @@ int accept_next(void)
  * reveals it is on line 5. */
 void expect_failed(const char *what)
 {
-    acc_error_at(tok_prev_line, "expected %s, found %s", what, tok_spelling(tok));
+    acc_error_pos(tok_prev_line, lex_prev_col(), "expected %s, found %s", what,
+                  tok_spelling(tok));
 }
 
 void lex_init(void)

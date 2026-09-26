@@ -1,4 +1,4 @@
-/* expect: 8: error: '&&=' is not an operator in C; `a = a && b` is what it would mean */
+/* expect: 8:7: error: '&&=' is not an operator in C; `a = a && b` is what it would mean */
 /* C has a compound form of every binary operator except the two logical
  * ones. acc names the mistake rather than parsing `&&` and then tripping over
  * an `=` with nothing to its left. */

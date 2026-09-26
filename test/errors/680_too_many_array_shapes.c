@@ -1,4 +1,4 @@
-/* expect: 258: error: this program has more than 255 different array shapes and structs, which acc cannot tell apart yet */
+/* expect: 258:21: error: this program has more than 255 different array shapes and structs, which acc cannot tell apart yet */
 /* Row shapes are held in a table that the type's extension byte indexes, and there are 255 entries. */
 int shape1[2][1];
 int shape2[2][2];
