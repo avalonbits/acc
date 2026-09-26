@@ -324,7 +324,7 @@ emits "arr[3] of an extern"             1109000019 no \
     'extern int arr[10]; int f(void) { return arr[3]; }'
 emits "g.b of an extern struct"         232323 no \
     'extern struct st { int a, b; } g; int f(void) { return g.b; }'
-emits "g.b: the slot says 3"            21030000ed27 yes \
+emits "g.b: the slot says 3"            2a030000 yes \
     'extern struct st { int a, b; } g; int f(void) { return g.b; }'
 
 # A long moves between near frame slots three bytes at a time through IY
@@ -368,6 +368,19 @@ emits "x < n, signed, branch"           ea......f2 no \
     'int f(int x, int n) { if (x < n) return 1; return 2; }'
 emits "x > 5, as x >= 6, moved"         01060080 yes \
     'int f(int x) { if (x > 5) return 1; return 2; }'
+
+# A read through an address loaded as a constant is one instruction:
+# ld hl, (nn) for three bytes, ld a, (nn) for one -- not the address in
+# HL and ld hl, (hl) or ld a, (hl) after it. Unless something jumps in
+# between: the end of a ?: that chose one of two addresses.
+emits "gi, an int global"               2a000000 yes \
+    'int gi; int f(void) { return gi; }'
+emits "gi, not through HL"              21000000ed27 no \
+    'int gi; int f(void) { return gi; }'
+emits "gc, a char global"               3a000000 yes \
+    'char gc; int f(void) { return gc; }'
+emits "*(k ? &a : &b), read after"      1800ed27 yes \
+    'int a, b; int f(int k) { return *(k ? &a : &b); }'
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -37,9 +37,19 @@ static const unsigned char reg_code[NREGS] = { 0x20, 0x10, 0x00 };
 #define disp_fits(d)  ((unsigned) ((d) + 128) <= 255u)
 
 
+/* Where the last ld hl, nn ended: a read through that address straight
+ * after it is that instruction made into ld hl, (nn) or ld a, (nn), the
+ * operand -- and whatever relocation or fixup names it -- where it was. */
+static int      imm_hl_end = -1;
+static unsigned imm_hl_epoch;
+
 static void ld_rr_imm(int reg, int imm)    /* ld rr, nn */
 {
     out_opcode24(0x01 + reg_code[reg], imm);
+    if (reg == R_HL) {
+        imm_hl_end = out_here();
+        imm_hl_epoch = out_rewinds;
+    }
 }
 
 static int far_base(int disp);
@@ -7682,7 +7692,19 @@ void vderef(void)
         return;
     }
 
-    if (type_size(to) == ACC_INT_SIZE) {
+    /* The address just loaded as a constant: read through it directly, by
+     * turning the load into ld hl, (nn) or ld a, (nn) -- six bytes, or
+     * five, into four. Not where something jumps in after the load, which
+     * would skip the read. */
+    if (type_size(to) != 2 && imm_hl_end == out_here()
+        && imm_hl_epoch == out_rewinds && join_at != out_here()) {
+        out_img[out_here() - ACC_INT_SIZE - 1 - out_base] =
+            type_size(to) == 1 ? 0x3a : 0x2a;   /* ld a, (nn); ld hl, (nn) */
+        imm_hl_end = -1;
+        gaddr_end = -1;         /* HL holds what is there, not the address */
+        if (type_size(to) == 1)
+            widen_loaded(to);
+    } else if (type_size(to) == ACC_INT_SIZE) {
         ld_hl_ind_hl();
     } else if (type_size(to) == 1) {
         ld_a_hl();
