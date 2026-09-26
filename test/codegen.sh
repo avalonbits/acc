@@ -284,5 +284,24 @@ emits "uchar < uchar, unsigned"         "$signed_cmp" no \
 emits "uchar < int, signed"             "$signed_cmp" yes \
     'int f(unsigned char a, int b) { return a < b; }'
 
+# A constant stored through a pointer is written through the address in
+# HL -- ld (hl), n, or ld de, n; ld (hl), de -- not made in HL and moved.
+emits "*p = 0, a char"                  dd27063600 yes \
+    'void f(char *p) { *p = 0; }'
+emits "*q = 0, an int"                  11000000ed1f yes \
+    'void f(int *q) { *q = 0; }'
+emits "*r = 0x1234, a short"            3634233612 yes \
+    'void f(short *r) { *r = 0x1234; }'
+
+# And a three-byte value from DE through HL, not between two exchanges.
+emits "*q = a + 1"                      ebed1feb no \
+    'void f(int *q, int a) { *q = a + 1; }'
+emits "*q = a + 1, from DE"             dd2706ed1f yes \
+    'void f(int *q, int a) { *q = a + 1; }'
+emits "**pp = *q"                       ebed1feb no \
+    'void f(int **pp, int *q) { **pp = *q; }'
+emits "**pp = *q, no BC through the stack" e5c1 no \
+    'void f(int **pp, int *q) { **pp = *q; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

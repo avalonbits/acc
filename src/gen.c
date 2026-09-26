@@ -6228,12 +6228,15 @@ int gen_data(const char *bytes, int len)
 }
 
 /* `count` bytes from address `from` to a local array at `offset`: a string
- * copied into the char array it initialises. Only at a declaration, where no
- * value is being held anywhere.
+ * copied into the char array it initialises. HL, DE and BC are all written,
+ * so whatever they hold goes to the frame first: an initialiser is at a
+ * declaration, but a compound literal's is inside an expression -- `t =
+ * (T) { ... }` -- where one of them may hold t's address.
  *
  *   (the array's address in HL) / ex de, hl / ld hl, from / ld bc, count / ldir */
 void gen_copy_to_array(int array, int offset, int from, int count)
 {
+    save_regs_below(0);
     vaddr_array(array, TY_CHAR);
     vdrop();
     if (offset) {
@@ -6252,10 +6255,11 @@ void gen_copy_to_array(int array, int offset, int from, int count)
 
 /* Bytes [from, from + size) of a local array set to zero, which is what the
  * elements an initialiser does not mention start as: the first byte cleared,
- * and ldir copying it along the rest. Only at a declaration, where no value
- * is being held anywhere. */
+ * and ldir copying it along the rest. The registers go to the frame first,
+ * for gen_copy_to_array's reason. */
 void gen_zero_array(int array, int from, int size)
 {
+    save_regs_below(0);
     vaddr_array(array, TY_CHAR);
     vdrop();
     if (from) {
@@ -7545,6 +7549,18 @@ static void vcopy_struct(void)
     (vsp - 1)->ext = (unsigned char) x;
 }
 
+/* The value is the answer; the address has done its work. */
+static void vstore_leave_value(void)
+{
+    Value kept = *(vsp - 1);
+
+    vdrop();
+    vdrop();
+    vpush(kept.kind, kept.type, kept.val);
+    (vsp - 1)->ext = kept.ext;
+    (vsp - 1)->quals = kept.quals;
+}
+
 /* *p = v, with the pointer under the value on the stack. The value is left
  * behind, because an assignment is an expression and what it comes to is
  * what was assigned. */
@@ -7606,8 +7622,52 @@ void vstore_indirect(void)
         return;
     }
 
+    /* A constant is written through the address in HL: `*p = 0` is
+     * ld (hl), 0 rather than the 0 made in HL and moved through A to (de),
+     * and a three-byte one is ld de, n; ld (hl), de. The constant stays the
+     * answer. */
+    if (val_number((vsp - 1)->kind)) {
+        int v = (vsp - 1)->val;
+
+        force_into(vsp - 2, R_HL);
+        if (type_size(to) == ACC_INT_SIZE) {
+            evict_reg(R_DE);
+            ld_rr_imm(R_DE, v);
+            ld_ind_hl_de();
+        } else {
+            out_byte2(0x36, v);                 /* ld (hl), n */
+            if (type_size(to) == 2) {
+                inc_hl();
+                out_byte2(0x36, v >> 8);
+            }
+        }
+        vstore_leave_value();
+
+        return;
+    }
+
+    /* Three bytes go from any register but HL through the address in HL:
+     * ld (hl), de or ld (hl), bc, and the register keeps the answer. */
+    if (type_size(to) == ACC_INT_SIZE) {
+        Value *val = vsp - 1, *at = vsp - 2;
+        int reg;
+
+        if (val->kind == VAL_REG && val->val == R_HL
+            && at->kind == VAL_REG && at->val == R_DE) {
+            ex_de_hl();                 /* the two swap places */
+            val->val = R_DE;
+            at->val = R_HL;
+        }
+        force_into(at, R_HL);
+        reg = force_reg(val);
+        out_byte2(0xed, reg == R_DE ? 0x1f : 0x0f);    /* ld (hl), rr */
+        vstore_leave_value();
+
+        return;
+    }
+
     /* The value in HL and the address in DE, which is the way round that
-     * makes a three-byte store one instruction between two exchanges. */
+     * makes a narrow store the two instructions through A. */
     force_into(vsp - 1, R_HL);
     addr = force_reg(vsp - 2);
     if (addr != R_DE) {
@@ -7616,11 +7676,7 @@ void vstore_indirect(void)
         (vsp - 2)->val = R_DE;
     }
 
-    if (type_size(to) == ACC_INT_SIZE) {
-        ex_de_hl();
-        ld_ind_hl_de();
-        ex_de_hl();
-    } else if (type_size(to) == 1) {
+    if (type_size(to) == 1) {
         ld_a_l();
         ld_de_a();
     } else {
@@ -7631,16 +7687,7 @@ void vstore_indirect(void)
         ld_de_a();
     }
 
-    /* The value is the answer; the address has done its work. */
-    {
-        Value kept = *(vsp - 1);
-
-        vdrop();
-        vdrop();
-        vpush(kept.kind, kept.type, kept.val);
-        (vsp - 1)->ext = kept.ext;
-        (vsp - 1)->quals = kept.quals;
-    }
+    vstore_leave_value();
 }
 
 /* A copy of the value `depth` below the top, pushed: vdup, from further
