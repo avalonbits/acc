@@ -164,6 +164,7 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/errors.sh
 	@ACC=$(BIN)/acc-asan test/run.sh
 	@ACC=$(BIN)/acc-asan test/self.sh
+	@ACC=$(BIN)/acc-asan test/selfbuild.sh
 	@if [ -f $(BIN)/acc.bin ]; then test/target.sh || [ $$? -eq 77 ]; \
 	 else echo "  [no Agon build: the target test is skipped]"; fi
 

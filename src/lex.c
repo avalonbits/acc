@@ -467,8 +467,10 @@ static int dep_add(const char *path)
  *
  * On the Agon this is src/marks.s instead. Every byte of every file read
  * passes through here, and agondev made this loop 93 cycles a byte, a
- * quarter of a compile -- and miscompiled the pointer form of it. */
-#ifdef AGONDEV
+ * quarter of a compile -- and miscompiled the pointer form of it. Only
+ * when agondev's clang is the compiler: acc builds these sources for the
+ * Agon too, and takes no assembly, so it keeps the C (test/selfbuild.sh). */
+#if defined(AGONDEV) && defined(__clang__)
 void marks_fold(unsigned *sump, unsigned *weightedp, const char *bytes, int n);
 #else
 static void marks_fold(unsigned *sump, unsigned *weightedp, const char *bytes,
