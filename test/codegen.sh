@@ -102,7 +102,21 @@ calls "* 0x5555, too many steps"    _acc_rt_mul yes \
 calls "* a variable"                _acc_rt_mul yes \
     'unsigned f(unsigned x, unsigned y) { return x * y; }'
 
-# emits <name> <hex> <yes|no> <source>: whether the object's bytes hold
+# An object's text, as hex: its code and nothing else. The header and the
+# tables around it carry the compiler's build id, a checksum of its own
+# source, which changes with every edit to it -- and a short pattern found
+# there once read as code acc had emitted. See src/obj.c for the layout.
+text_hex() {
+    python3 - "$1" <<'PY2'
+import sys
+d = open(sys.argv[1], 'rb').read()
+n3 = lambda at: d[at] | d[at + 1] << 8 | d[at + 2] << 16
+at = 31 + n3(13) * 7 + n3(16) * 6 + n3(28) * 9 + n3(19) * 12 + n3(25) * 3 + n3(22)
+sys.stdout.write(d[at:at + n3(7)].hex())
+PY2
+}
+
+# emits <name> <hex> <yes|no> <source>: whether the object's code holds
 # that sequence, given as hex.
 emits() {
     local what=$1 want=$3 got
@@ -113,7 +127,7 @@ emits() {
         fail=$((fail + 1)); return
     fi
     got=no
-    od -An -v -tx1 "$tmp/c.o" | tr -d ' \n' | grep -q "$2" && got=yes
+    text_hex "$tmp/c.o" | grep -q "$2" && got=yes
     if [ "$got" = "$want" ]; then
         pass=$((pass + 1))
     else
@@ -303,7 +317,7 @@ emits "*q = a + 1, from DE"             dd2706ed1f yes \
     'void f(int *q, int a) { *q = a + 1; }'
 emits "**pp = *q"                       ebed1feb no \
     'void f(int **pp, int *q) { **pp = *q; }'
-emits "**pp = *q, no BC through the stack" e5c1 no \
+emits "**pp = *q, no BC through the stack" e5c1ebed0f no \
     'void f(int **pp, int *q) { **pp = *q; }'
 
 # Every return goes to the one epilogue -- ld sp, ix; pop ix; ret -- at
@@ -391,6 +405,11 @@ emits "gi = k, not through HL"          21000000 no \
     'int gi; void f(int k) { gi = k; }'
 emits "gc = c, ld a, (ix+9); ld (nn), a" dd7e0932 yes \
     'char gc; void f(int k, char c) { gc = c; }'
+
+# A for loop is its condition, its body, its step and one jump back: no
+# jump over the step into the body straight after the condition's.
+emits "for loop, no jump into the body" '30..18' no \
+    'unsigned f(unsigned n) { unsigned s = 0, i; for (i = 0; i < n; i++) s += i; return s; }'
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -834,6 +834,7 @@ static void unsplice(char **end)
 }
 
 static void push_text(NameRef macro, char *text, int len);
+static void push_owned_text(NameRef macro, char *text);
 
 /* A parameter's array size, kept as the text it was written as for a
  * function's definition to read again when it is entered: see vla_texts in
@@ -920,11 +921,84 @@ char *lex_record_take_semi(void)
     return end && end > start && end[-1] == ';' ? end - 1 : NULL;
 }
 
+/* The same, to the `)` that is the current token: a for loop's step, kept
+ * to be read again after the body (see for_statement in parse.c). */
+char *lex_record_take_paren(void)
+{
+    char *start = record_first, *end;
+
+    if (!lex_record)
+        return NULL;
+    if (depth == record_depth)
+        record_flush();
+    else
+        lex_record = NULL;
+    end = lex_record;
+    lex_record = NULL;
+
+    return end && end > start && end[-1] == ')' ? end - 1 : NULL;
+}
+
+/* The current token, set aside and put back: a for loop reads its step
+ * again after the body, when the token after the body is the current one,
+ * and has it back afterwards. Every field a token has is here, so that one
+ * added to it is added in one place. */
+void lex_token_save(LexToken *t)
+{
+    t->tok = tok;
+    t->val = tok_val;
+    t->val_hi = tok_val_hi;
+    t->fval = tok_fval;
+    t->name = tok_name;
+    t->line = tok_line;
+    t->type = tok_type;
+    t->prev_line = tok_prev_line;
+    t->str = tok_str;
+    t->str_len = tok_str_len;
+    t->str_wide = tok_str_wide;
+    t->str_escaped = tok_str_escaped;
+}
+
+void lex_token_restore(const LexToken *t)
+{
+    tok = t->tok;
+    tok_val = t->val;
+    tok_val_hi = t->val_hi;
+    tok_fval = t->fval;
+    tok_name = t->name;
+    tok_line = t->line;
+    tok_type = t->type;
+    tok_prev_line = t->prev_line;
+    tok_str = t->str;
+    tok_str_len = t->str_len;
+    tok_str_wide = t->str_wide;
+    tok_str_escaped = t->str_escaped;
+}
+
 /* The kept text read as source, from after the current token: when it
  * runs out, what follows the current token is read as ever. */
 void lex_push_record(char *text, int len)
 {
     push_text(NAME_NONE, text, len);
+}
+
+/* The same over text this level frees when it is done with it, which is
+ * not known to whoever pushed it: a for loop's step, read again after the
+ * body, can be under the next loop's when that loop is the body. */
+void lex_push_record_owned(char *text)
+{
+    push_owned_text(NAME_NONE, text);
+}
+
+/* The window pushed last, read to its end, closed: the one after it is
+ * read from where it left off, and a look at the next character -- which
+ * is how a label is told from a name -- sees that one's. */
+static int pop_source(void);
+
+void lex_pop_record(void)
+{
+    if (cursor == src_end)
+        pop_source();
 }
 
 static int refill(void)

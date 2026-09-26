@@ -6752,6 +6752,80 @@ static void labels_end(void)
     nlabels = 0;
 }
 
+/* A for loop's step, as text: see for_statement. */
+#define STEP_TEXT_MAX 160
+static char step_buf[STEP_TEXT_MAX];
+
+/* The step's text, now that it has been read and the `)` after it is the
+ * current token: a copy with a `;` after it, which the lexer frees, or NULL
+ * if the loop is to be compiled the old way -- the text could not be kept
+ * whole, or the body could make it mean something else, or it declares
+ * something: a struct in the step is in scope in the body, and read in its
+ * place it has been declared already. A macro could be
+ * defined again in the body, and would then be expanded differently read
+ * again after it; a string or character literal's bytes go where the
+ * saved token after the body keeps its own. */
+static char *step_kept(int *len)
+{
+    int n, i;
+    char *end, *text;
+
+    end = lex_record_take_paren();
+    if (!end)
+        return NULL;
+    n = (int) (end - step_buf);
+    for (i = 0; i < n; i++) {
+        int c = (unsigned char) step_buf[i], j = i;
+
+        if (c == '"' || c == '\'' || c == '#')
+            return NULL;
+        if (!(c == '_' || ((c | 0x20) >= 'a' && (c | 0x20) <= 'z')))
+            continue;
+        while (j < n && (step_buf[j] == '_'
+                         || ((step_buf[j] | 0x20) >= 'a'
+                             && (step_buf[j] | 0x20) <= 'z')
+                         || (step_buf[j] >= '0' && step_buf[j] <= '9')))
+            j++;
+        if (lex_macro_def(name_intern(step_buf + i, j - i)))
+            return NULL;
+        if ((j - i == 6 && (!memcmp(step_buf + i, "struct", 6)))
+            || (j - i == 5 && !memcmp(step_buf + i, "union", 5))
+            || (j - i == 4 && !memcmp(step_buf + i, "enum", 4)))
+            return NULL;                /* a type the body can see */
+        i = j - 1;
+    }
+    text = malloc((size_t) n + 2);
+    if (!text)
+        acc_error("out of memory for a loop's step");
+    memcpy(text, step_buf, (size_t) n);
+    text[n] = ';';
+    text[n + 1] = '\0';                 /* the end a window is read to */
+    *len = n + 1;
+
+    return text;
+}
+
+/* The step read again, as a statement of its own, and the token that was
+ * current when it began -- the one after the body -- put back after it,
+ * with its window closed, which frees the text. */
+static void step_again(char *text, int len)
+{
+    LexToken saved;
+
+    (void) len;
+    lex_token_save(&saved);
+    lex_push_record_owned(text);
+    next();
+    gen_stmt_end();
+    comma_expr();
+    gen_discard();
+    if (tok != TK_SEMI)
+        acc_error_at(tok_line, "internal: a loop's step read again did not "
+                               "end where it was kept");
+    lex_pop_record();
+    lex_token_restore(&saved);
+}
+
 /* `for (init; condition; step) body`.
  *
  * One pass, so the code comes out in the order it is read, and the step --
@@ -6782,7 +6856,8 @@ __attribute__((noinline))
 static void for_statement(void)
 {
     int mark = sym_scope_begin(), outer = scope_mark;
-    int top, to_end = -1, to_body, again;
+    int top, to_end = -1, to_body, again, step_len;
+    char *step;
 
     scope_mark = mark;
     next();
@@ -6804,18 +6879,56 @@ static void for_statement(void)
         comma_expr();
         to_end = gen_jump_if_false();
     }
+
+    /* The step is kept as text and read again after the body, so that the
+     * loop is the condition, the body, the step and one jump back -- where
+     * compiled in its place it had to be jumped over on the way in, and
+     * jumped to from the body and back from itself: three jumps where one
+     * will do, two of them taken every time round. */
+    lex_record_from(step_buf, step_buf + STEP_TEXT_MAX);
     expect(TK_SEMI, "';'");
 
+    /* Compiled in its place as ever, and kept as text as it is read: if the
+     * text will do, the code is taken back and the loop laid out the other
+     * way; if not -- it could not be kept, or it says something the body
+     * could change -- the code stays. */
     again = top;
+    to_body = -1;
+    step = NULL;
     if (tok != TK_RPAREN) {
+        GenMark before;
+
+        gen_mark(&before);
         to_body = gen_jump();
         again = gen_here();
         gen_stmt_end();
         comma_expr();
         gen_discard();
         gen_jump_to(top);
-        gen_label(to_body);
+        step = step_kept(&step_len);
+        if (step)
+            gen_rollback(&before);
+    } else {
+        lex_record_take_paren();        /* nothing to keep */
     }
+    if (step) {
+        expect(TK_RPAREN, "')'");
+        loop_begin(-1);
+        substatement();
+        holes_land(&continues, jumps.continue_mark);
+        step_again(step, step_len);
+        gen_jump_to(top);
+        if (to_end >= 0)
+            gen_label(to_end);
+        loop_end();
+        sym_scope_end(mark);
+        scope_mark = outer;
+
+        return;
+    }
+
+    if (to_body >= 0)
+        gen_label(to_body);
     expect(TK_RPAREN, "')'");
 
     loop_begin(again);

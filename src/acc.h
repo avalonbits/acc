@@ -460,8 +460,25 @@ extern char *lex_record;              /* a size's text, being kept */
 void  lex_record_from(char *text, char *end);  /* from after this token */
 char *lex_record_take(void);         /* to this `]`: its end, or NULL */
 char *lex_record_take_semi(void);    /* to this `;`: its end, or NULL */
+char *lex_record_take_paren(void);   /* to this `)`: its end, or NULL */
+
+/* The current token, as lex_token_save sets it aside. */
+typedef struct {
+    int         tok, line, prev_line, str_len, str_wide, str_escaped;
+    long        val;
+    uint32_t    val_hi;
+    float       fval;
+    NameRef     name;
+    Type        type;
+    const char *str;
+} LexToken;
+
+void lex_token_save(LexToken *t);
+void lex_token_restore(const LexToken *t);
 int  lex_macro_def(NameRef name);     /* which definition, or 0 */
 void  lex_push_record(char *text, int len);    /* and read again */
+void  lex_push_record_owned(char *text);   /* and freed when read */
+void  lex_pop_record(void);               /* read to its end: closed */
 int  lex_ident_follows(void);    /* and whether a name does */
 int  lex_rbrace_follows(void);   /* and whether `}` does */
 int         accept_next(void);          /* next(), returning 1, for accept */
