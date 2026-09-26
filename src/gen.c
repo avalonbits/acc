@@ -296,6 +296,7 @@ static void jumps_forget(int from);
 static int  widen_again(Type to);
 static int  store_byte_widened(int offset, Type type);
 static int  widen_undo(const Value *v);
+static int  widen_holds(const Value *v, Type *type);
 static int  widen_undo_left(void);
 static void cmp_value(int op, int is_unsigned);
 
@@ -1694,6 +1695,26 @@ static int either_unsigned(const Value *lhs, const Value *rhs)
     return type_unsigned(lhs->type) || type_unsigned(rhs->type);
 }
 
+/* Whether a value is known not to be negative: an unsigned type narrower
+ * than int, which promotes to a non-negative int, or a constant >= 0. */
+static int never_negative(const Value *v)
+{
+    return (type_unsigned(v->type) && type_size(v->type) < ACC_INT_SIZE)
+           || (val_number(v->kind) && v->val >= 0);
+}
+
+/* Whether a comparison is unsigned. The two sides may not have been
+ * loaded yet, so their types are not yet promoted: an unsigned char
+ * promotes to int, and `u < -1` is false for every u. But two sides that
+ * are neither of them negative order the same either way, and the
+ * unsigned comparison is the shorter. */
+static int cmp_is_unsigned(const Value *lhs, const Value *rhs)
+{
+    return type_unsigned(type_promote(lhs->type))
+           || type_unsigned(type_promote(rhs->type))
+           || (never_negative(lhs) && never_negative(rhs));
+}
+
 /* Whether an operator's operands are read as unsigned: either of them for
  * arithmetic, and only the left for a shift, whose count's type C99 6.5.7
  * says nothing about the result's. */
@@ -2587,6 +2608,64 @@ static void cmp_signed(int when_negative)
     patch_to_here(to_done_from_overflow);
 }
 
+/* A byte -- a char local, or one just read and widened -- against a
+ * constant in its range, compared in A: `*p == '\n'` is ld a, (hl) and
+ * cp 10, not the byte widened into HL, 10 loaded into DE and the two
+ * subtracted. A signed byte is ordered as an unsigned one with its top bit
+ * flipped, which keeps the order, so the carry says `<` for either.
+ * `a > c` is `a >= c + 1` and `a <= c` is `a < c + 1`, so a constant one
+ * past the top of the range is not taken for those. Returns 0 if the two
+ * are not such a pair, having emitted nothing. */
+static int cmp_byte_const(int op)
+{
+    Value *lhs = vsp - 2;
+    Value *rhs = vsp - 1;
+    Type type;
+    int c, lo;
+
+    if (val_number(lhs->kind)) {
+        lhs = vsp - 1;                  /* 10 == c is c == 10 */
+        rhs = vsp - 2;
+        if (op == TK_LT || op == TK_LE)
+            op = op == TK_LT ? TK_GT : TK_GE;
+        else if (op == TK_GT || op == TK_GE)
+            op = op == TK_GT ? TK_LT : TK_LE;
+    }
+    if (!val_number(rhs->kind))
+        return 0;
+    if (lhs->kind == VAL_LOCAL && !lhs->bits && type_size(lhs->type) == 1)
+        type = lhs->type;
+    else if (!widen_holds(lhs, &type))
+        return 0;
+
+    c = rhs->val;
+    if (tok_pair(op, TK_GT)) {
+        c++;
+        op = op == TK_GT ? TK_GE : TK_LT;
+    }
+    lo = type_unsigned(type) ? 0 : -128;
+    if (c < lo || c > lo + 255)
+        return 0;
+
+    if (lhs->kind == VAL_LOCAL) {
+        evict_reg(R_HL);                /* the answer is made there */
+        ld_a_ix(lhs->val);
+    } else {
+        widen_undo(lhs);
+    }
+    if (!type_unsigned(type) && op != TK_EQ && op != TK_NE) {
+        xor_a_imm(0x80);
+        c ^= 0x80;
+    }
+    out_byte2(0xfe, c & 0xff);          /* cp c */
+
+    vdrop();
+    vdrop();
+    cmp_value(op, 1);
+
+    return 1;
+}
+
 static void vcmp(int op)
 {
     Value *lhs = vsp - 2;
@@ -2596,7 +2675,7 @@ static void vcmp(int op)
     if ((unsigned) vtop < 2)
         acc_error("internal: a comparison with nothing to compare");
 
-    is_unsigned = either_unsigned(lhs, rhs);
+    is_unsigned = cmp_is_unsigned(lhs, rhs);
 
     /* An unsigned comparison folds too, as long as neither side has its top
      * bit set: below that the two orderings are the same one, and above it
@@ -2612,6 +2691,9 @@ static void vcmp(int op)
 
         return;
     }
+
+    if (cmp_byte_const(op))
+        return;
 
     /* `a > b` is `b < a`, and `a <= b` is `b >= a`. Swapping costs nothing
      * here: both sides are still descriptions on a stack, not registers. */
@@ -3777,11 +3859,23 @@ static void widen_loaded(Type to)
  * -- for a caller about to make all of HL itself from A. */
 static int widen_undo(const Value *v)
 {
-    if (widen_from < 0 || out_here() != widen_to || widen_epoch != out_rewinds
-        || v->kind != VAL_REG || v->val != R_HL || type_size(widen_type) != 1)
+    Type type;
+
+    if (!widen_holds(v, &type))
         return 0;
     out_rewind(widen_from);
     widen_from = -1;
+
+    return 1;
+}
+
+/* Whether widen_undo would: and if so, the byte's type in *type. */
+static int widen_holds(const Value *v, Type *type)
+{
+    if (widen_from < 0 || out_here() != widen_to || widen_epoch != out_rewinds
+        || v->kind != VAL_REG || v->val != R_HL || type_size(widen_type) != 1)
+        return 0;
+    *type = widen_type;
 
     return 1;
 }

@@ -261,5 +261,28 @@ emits "x = a + 1; g(x), no reload"      dd2ffddd27fd no \
 emits "t[(unsigned char)c], c a local"  ebb7ed62 no \
     'extern const unsigned char t[256]; int f(char *p) { char c = *p; return t[(unsigned char)c] + c; }'
 
+# A byte compared with a constant it could equal is compared in A: cp 10,
+# not widened into HL and 10 subtracted from it. A signed one ordered has
+# its top bit flipped first, xor 0x80, and the constant with it.
+emits "*p == '\\n'"                     fe0a yes \
+    'int f(const char *p) { return *p == 10; }'
+emits "c == 10, c a char local"         fe0a yes \
+    'int g(void); int f(void) { char c = g(); return c == 10; }'
+emits "c < 10, signed, flipped"         ee80fe8a yes \
+    'int g(void); int f(void) { signed char c = g(); if (c < 10) return 1; return 2; }'
+emits "10 < *q, the constant left"      fe0b yes \
+    'int f(const unsigned char *q) { return 10 < *q; }'
+emits "*q == 300, out of its range"     fe2c no \
+    'int f(const unsigned char *q) { return *q == 300; }'
+
+# Two sides that cannot be negative -- unsigned chars, which promote to
+# int -- are compared unsigned, which gives the same answer without the
+# overflow test a signed comparison needs: ld hl, 1; jp pe.
+signed_cmp=21010000ea
+emits "uchar < uchar, unsigned"         "$signed_cmp" no \
+    'int f(unsigned char a, unsigned char b) { return a < b; }'
+emits "uchar < int, signed"             "$signed_cmp" yes \
+    'int f(unsigned char a, int b) { return a < b; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
