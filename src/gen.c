@@ -7853,6 +7853,49 @@ void vstore_indirect(void)
         return;
     }
 
+    /* To an address known as a constant -- a global of this file -- the
+     * store names it: ld (nn), hl, de or bc for three bytes, ld (nn), a
+     * for one, where it was the address loaded into HL and a store through
+     * it. The operand is relocated, or pointed at the bss, as a load of the
+     * address would have been. */
+    if (val_pending((vsp - 2)->kind) && type_size(to) != 2) {
+        Value *at = vsp - 2, *val = vsp - 1;
+        int reg;
+
+        if (type_size(to) == ACC_INT_SIZE) {
+            if (val_number(val->kind))
+                force_into(val, R_HL);
+            reg = force_reg(val);
+            if (reg == R_HL)
+                out_byte(0x22);                         /* ld (nn), hl */
+            else
+                out_byte2(0xed, reg == R_DE ? 0x53 : 0x43); /* ld (nn), rr */
+        } else {
+            if (val_number(val->kind)) {
+                out_byte2(0x3e, val->val);              /* ld a, n */
+            } else if (val->kind == VAL_ACC) {
+                ;                                       /* in A already */
+            } else if (val->kind == VAL_LOCAL && !val->bits
+                       && type_size(val->type) == 1) {
+                ld_a_ix(val->val);                      /* no widening */
+            } else {
+                static const unsigned char low_of[NREGS] = { 0x7d, 0x7b, 0x79 };
+
+                reg = force_reg(val);
+                out_byte(low_of[reg]);                  /* ld a, l, e or c */
+            }
+            out_byte(0x32);                             /* ld (nn), a */
+        }
+        if (at->kind == VAL_ADDR)
+            out_reloc(out_here());
+        else
+            gen_bss_fixup(out_here());
+        out_word24(at->val);
+        vstore_leave_value();
+
+        return;
+    }
+
     /* A constant is written through the address in HL: `*p = 0` is
      * ld (hl), 0 rather than the 0 made in HL and moved through A to (de),
      * and a three-byte one is ld de, n; ld (hl), de. The constant stays the

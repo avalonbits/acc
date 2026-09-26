@@ -382,5 +382,15 @@ emits "gc, a char global"               3a000000 yes \
 emits "*(k ? &a : &b), read after"      1800ed27 yes \
     'int a, b; int f(int k) { return *(k ? &a : &b); }'
 
+# A store to a global of this file names its address -- ld (nn), hl and
+# ld (nn), a -- rather than loading it into HL to store through: and a
+# char from a local goes through A as it is, not widened first.
+emits "gi = k, ld (nn), hl"             dd270622 yes \
+    'int gi; void f(int k) { gi = k; }'
+emits "gi = k, not through HL"          21000000 no \
+    'int gi; void f(int k) { gi = k; }'
+emits "gc = c, ld a, (ix+9); ld (nn), a" dd7e0932 yes \
+    'char gc; void f(int k, char c) { gc = c; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
