@@ -3246,12 +3246,19 @@ static void wide_bytes_at(int disp, uint64_t bits, int n)
      * and a store is eight bytes against fifteen. The last run overlaps
      * the one before it rather than going a byte at a time. */
     if (n >= ACC_INT_SIZE && disp_fits(disp) && disp_fits(disp + n - 1)) {
+        int last = -1;
+
         for (i = 0; i < n; i += ACC_INT_SIZE) {
             if (i > n - ACC_INT_SIZE)
                 i = n - ACC_INT_SIZE;
-            out_byte2(0xfd, 0x21);              /* ld iy, nn */
-            out_byte3(bytes[i], bytes[i + 1], bytes[i + 2]);
+            /* IY already holds these three bytes -- a zero's runs are all
+             * alike -- so it is stored again without the load. */
+            if (last < 0 || memcmp(bytes + last, bytes + i, 3)) {
+                out_byte2(0xfd, 0x21);          /* ld iy, nn */
+                out_byte3(bytes[i], bytes[i + 1], bytes[i + 2]);
+            }
             out_byte3(0xdd, 0x3e, disp + i);    /* ld (ix+d), iy */
+            last = i;
         }
 
         return;
@@ -3867,6 +3874,19 @@ static void vbinop_long(int op, Type result)
 
     if (long_const_bytes(op, result))
         return;
+
+    /* A float take away a constant is the float plus the constant with its
+     * sign turned over -- exactly, in every case IEEE has, zeros and NaNs
+     * included -- and the add only reads its right operand, which lets the
+     * constant be read from the pool: the subtract writes its right. */
+    if (type_float(result) && op == TK_MINUS
+        && (vsp[-1].kind == VAL_WIDE || val_number(vsp[-1].kind))) {
+        uint64_t neg = const_as(vsp - 1, result) ^ 0x80000000u;
+
+        vdrop();
+        vpush_const_wide((uint32_t) neg, 0, result);
+        op = TK_PLUS;
+    }
 
     /* After the spills, not before: a register the call below puts in the
      * frame is a value under the operands, and the floor has to know about
