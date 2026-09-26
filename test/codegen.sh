@@ -186,8 +186,9 @@ emits "while (*p)"                      "$zero_test" no \
 
 # A call to a static inline function whose body is one return is compiled
 # in place. The function is the object's first, at offset zero, so a call
-# to it is call 0.
-call_zero=cd000000
+# to it is call 0 -- after its argument's push, which tells it from the
+# call every function's prologue makes, which is to 0 in an object too.
+call_zero=e5cd000000
 emits "static inline, one return"       "$call_zero" no \
     'static inline int twice(int x) { return x + x; } int f(int y) { return twice(y) + 1; }'
 emits "static, not inline"              "$call_zero" yes \
@@ -203,11 +204,12 @@ emits "a name the caller shadows"       "$call_zero" yes \
 emits "t[c], c into DE directly"        e5d1e1 no \
     'extern const unsigned char t[256]; int f(unsigned char c) { return t[c]; }'
 
-# A function with no frame to make has no ld hl, 0; add hl, sp; ld sp, hl.
-no_frame=2100000039f9
+# A function with no frame to make has no ld hl, 0 before its prologue's
+# call; one with a frame loads its size there.
+no_frame=21000000cd000000
 emits "no locals, no frame set up"      "$no_frame" no \
     'int f(int x) { return x + 1; }'
-emits "an array, a frame"               39f9 yes \
+emits "an array, a frame"               '21[0-9a-f]\{6\}cd000000' yes \
     'int f(int x) { int a[4]; a[x & 3] = x; return a[0]; }'
 
 # An assignment to a narrow local stores the low bytes, which converting to
@@ -349,6 +351,15 @@ emits "p != 0, as a value, tested"      09b7ed42 yes \
 # returns 0 three times.
 emits "return 0 three times, one load"  '210000007d.*210000007d' no \
     '_Bool f(int x) { if (x == 1) return 0; if (x == 2) return 1; if (x == 5) return 0; if (x > 9) return 1; return 0; }'
+
+# The prologue is a call into the runtime: acc_rt_frameset with the frame's
+# size in HL, or acc_rt_frameset0 for a function with no frame -- which has
+# no load of HL before the call, so the other would make its frame of
+# whatever HL held.
+calls "no frame, frameset0"             acc_rt_frameset0 yes \
+    'int f(int x) { return x + 1; }'
+calls "a frame, not frameset0"          acc_rt_frameset0 no \
+    'int f(int x) { int a[4]; a[x] = 1; return a[0]; }'
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

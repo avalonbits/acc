@@ -51,6 +51,40 @@
 	.assume adl=1
 	.section .text,"ax",@progbits
 
+; ================================================================ the frame
+; The prologue every function begins with, as agondev's __frameset: called
+; with HL the frame's size, negated, it saves IX, points it at the saved
+; IX, and makes room for the frame below. The return address is taken off
+; first and jumped to at the end, so the frame starts where the caller's
+; call left SP. HL and DE go; nothing is in them at a function's entry.
+; frameset0 is the same for a function with no frame. First in the blob,
+; and acc_rt_machine marks where they end: every program carries these, and
+; only a program that uses something below carries more.
+
+	.global _acc_rt_frameset
+	.global _acc_rt_frameset0
+
+_acc_rt_frameset:
+	pop de
+	push ix
+	ld ix, 0
+	add ix, sp
+	add hl, sp
+	ld sp, hl
+	ex de, hl
+	jp (hl)
+
+_acc_rt_frameset0:
+	pop de
+	push ix
+	ld ix, 0
+	add ix, sp
+	ex de, hl
+	jp (hl)
+
+	.global	acc_rt_machine
+acc_rt_machine:
+
 ; ================================================================ the machine
 ; What the eZ80 cannot do on its own but MOS can, which is everything to do
 ; with the world outside the program. First in the blob, and acc_rt_ops marks

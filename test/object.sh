@@ -515,7 +515,9 @@ fi
 # item is as long in the image as its object's own map says, the items
 # come one after another in the order of the image, and at the address
 # the map gives an item is its object's bytes -- `twice`, which holds no
-# address to be moved. The runtime is listed when the program calls it.
+# address to be moved but its prologue's call into the runtime, the three
+# bytes after its first, which the link fills in. The runtime is listed
+# when the program calls it.
 cat > "$tmp/la.c" <<'EOF2'
 static int sq(int x) { return x * x; }
 int twice(int x);
@@ -556,7 +558,9 @@ for at, size, name, obj, off in rows:
         out.append('%s is %d, its object says %s' % (name, size, own.get((obj, off))))
     if name == 'twice':
         body = image[at - 0x40000:at - 0x40000 + size]
-        out.append('twice ' + ('matches' if body == text(obj)[off:off + size] else 'differs'))
+        own_body = text(obj)[off:off + size]
+        same = body[:1] == own_body[:1] == b'\xcd' and body[4:] == own_body[4:]
+        out.append('twice ' + ('matches' if same else 'differs'))
 names = [r[2] for r in rows if r[3] != '(runtime)']
 out.append(' '.join(names))
 out.append('runtime' if any(r[2] == 'acc_rt_mul' for r in rows) else 'no runtime')

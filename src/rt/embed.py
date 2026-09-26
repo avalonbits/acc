@@ -55,11 +55,13 @@ def main(asm, out, tools):
         fixups.append((int(at, 16), int(addend, 16)))
 
     # Global symbols only: the entry points, in address order.
-    # And the two places the blob may be cut, each of which only what is
-    # below it is emitted for: acc_rt_ops before the arithmetic, and
-    # acc_rt_split before the long long routines.
+    # And the three places the blob may be cut, each of which only what is
+    # below it is emitted for: acc_rt_machine after the prologue every
+    # function calls, acc_rt_ops before the arithmetic, and acc_rt_split
+    # before the long long routines.
     entries = []
-    cuts = {'acc_rt_ops': len(text), 'acc_rt_split': len(text)}
+    cuts = {'acc_rt_machine': len(text), 'acc_rt_ops': len(text),
+            'acc_rt_split': len(text)}
     for line in run(tools + '/ez80-none-elf-nm', obj).splitlines():
         parts = line.split()
         if len(parts) != 3:
@@ -74,6 +76,8 @@ def main(asm, out, tools):
     entries.sort()
     if cuts['acc_rt_ops'] > cuts['acc_rt_split']:
         sys.exit('%s: acc_rt_ops comes after acc_rt_split' % asm)
+    if cuts['acc_rt_machine'] > cuts['acc_rt_ops']:
+        sys.exit('%s: acc_rt_machine comes after acc_rt_ops' % asm)
     for at, to in fixups:
         for name, cut in cuts.items():
             if at < cut and to >= cut:
@@ -121,6 +125,7 @@ def main(asm, out, tools):
                 ' * emitted only when a program uses one of the helpers\n'
                 ' * below it, so that a program which only prints does not\n'
                 ' * carry the arithmetic. */\n')
+        f.write('#define RT_MACHINE %d\n' % cuts['acc_rt_machine'])
         f.write('#define RT_OPS %d\n' % cuts['acc_rt_ops'])
         f.write('#define RT_SPLIT %d\n\n' % cuts['acc_rt_split'])
         f.write('#define RT_NFIX %d\n\n' % len(fixups))

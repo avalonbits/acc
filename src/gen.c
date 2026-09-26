@@ -688,6 +688,7 @@ static unsigned char nspill_pending;     /* a byte: vpush tests it */
 static int spill_peak;           /* the most it ever held */
 static int spill_locked;         /* held by something not on the value stack */
 static int frame_patch;          /* where the prologue's frame size is written */
+static int frame_call;           /* and its call to acc_rt_frameset, among rt_fixups */
 
 /* Local arrays, which go below everything else in the frame.
  *
@@ -4316,10 +4317,11 @@ void gen_label(int hole)
  * uses a long long does not carry them. */
 static int rt_base = 0;                 /* where the blob landed */
 
-/* How much of the blob a program wants: 1 for what talks to the machine, 2
- * for the arithmetic as well, 3 for the long long routines too. The blob is
- * laid out in that order and nothing above a cut calls below it, so what is
- * emitted is always a run from its first byte. */
+/* How much of the blob a program wants: 1 for the prologue every function
+ * calls, 2 for what talks to the machine as well, 3 for the arithmetic, 4
+ * for the long long routines too. The blob is laid out in that order and
+ * nothing above a cut calls below it, so what is emitted is always a run
+ * from its first byte. */
 static int rt_any_used;
 
 typedef struct {
@@ -4365,8 +4367,9 @@ static int rt_which(const char *name)
  * emitted here, or a name that came in from an object. */
 static void rt_wanted(int which)
 {
-    int want = rt_entry[which] >= RT_SPLIT ? 3
-             : rt_entry[which] >= RT_OPS   ? 2 : 1;
+    int want = rt_entry[which] >= RT_SPLIT   ? 4
+             : rt_entry[which] >= RT_OPS     ? 3
+             : rt_entry[which] >= RT_MACHINE ? 2 : 1;
 
     if (want > rt_any_used)
         rt_any_used = want;
@@ -4449,8 +4452,9 @@ static void rt_emit_used(void)
     if (!rt_any_used)
         return;
 
-    len = rt_any_used == 3 ? (int) sizeof rt_code
-        : rt_any_used == 2 ? RT_SPLIT : RT_OPS;
+    len = rt_any_used == 4 ? (int) sizeof rt_code
+        : rt_any_used == 3 ? RT_SPLIT
+        : rt_any_used == 2 ? RT_OPS : RT_MACHINE;
     rt_base = out_here();
     for (i = 0; i < len; i++)
         out_byte(rt_code[i]);
@@ -5589,12 +5593,12 @@ static void relax_function(const Mark *from, int frame_at)
         Cut *cut = cuts;
 
         /* A frame of no bytes, which the prologue made room to set up before
-         * it knew: the six bytes that would, taken out with the jumps'
-         * operands. They come before every jump in the function, so the
-         * runs are still in order, and nothing jumps into them. */
+         * it knew: the ld hl of its size, taken out with the jumps'
+         * operands. It comes before every jump in the function, so the runs
+         * are still in order, and nothing jumps into it. */
         if (frame_at >= 0) {
             cut->at = frame_at;
-            cut->len = 6;
+            cut->len = 4;
             cut++;
             ncuts++;
         }
@@ -6519,21 +6523,19 @@ void gen_func_begin(int fn, int nparams, Type returns)
     narray_patches = 0;
     in_function = 1;
 
-    /* push ix / ld ix, 0 / add ix, sp -- the frame agondev's __frameset
-     * builds, written out rather than called, because there is nothing to
-     * link against yet. ix then points at the saved ix, so the first argument
-     * is at ix+6: three bytes of saved ix and three of return address. */
-    out_byte2(0xdd, 0xe5);              /* push ix */
-    out_byte2(0xdd, 0x21);              /* ld ix, 0 */
-    out_word24(0);
-    out_byte2(0xdd, 0x39);              /* add ix, sp */
-
-    /* ld hl, -frame / add hl, sp / ld sp, hl. The size is not known until the
-     * body has been read, so the space is reserved and filled in at the end. */
+    /* ld hl, -frame / call acc_rt_frameset: the frame agondev's __frameset
+     * builds -- IX saved and pointed at, room made below -- and in eight
+     * bytes rather than the thirteen of writing it out, since every
+     * function has one. IX then points at the saved IX, so the first
+     * argument is at ix+6: three bytes of saved IX and three of return
+     * address. The size is not known until the body has been read, so it
+     * is filled in at the end, and a function with no frame has the load
+     * taken out and calls acc_rt_frameset0 instead. */
     out_byte(0x21);                              /* ld hl, nn */
     frame_patch = out_here();
     out_word24(0);
-    out_byte2(0x39, 0xf9);                       /* add hl, sp; ld sp, hl */                              /* ld sp, hl */
+    frame_call = nrt_fixups;
+    rt_call(RT_FRAMESET);
 }
 
 void gen_func_end(void)
@@ -6571,6 +6573,8 @@ void gen_func_end(void)
 
     /* Last, so that everything written into the function is written before
      * any of it moves -- and before static_end measures how long it is. */
+    if (!frame_size())
+        rt_fixups[frame_call].which = RT_FRAMESET0;
     relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
     static_end();
 }
