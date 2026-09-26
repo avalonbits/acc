@@ -3181,6 +3181,48 @@ void vpush_const_wide(uint32_t low, uint32_t high, Type type)
         wide_to_slot(bits, type);
 }
 
+/* n bytes between the frame slot at `slot` and where HL points, read from
+ * there or written there: three at a time through IY where the slot is in
+ * reach, ld iy, (hl) and a store, or the other way round, with the last
+ * three overlapping the ones before if n is not a multiple of three -- a
+ * long is twelve bytes of code where a byte at a time through A was
+ * nineteen. HL is left past the start, wherever the last run began. */
+static void wide_through_hl(int slot, int n, int store)
+{
+    int i, at = 0;
+
+    if (n >= ACC_INT_SIZE && disp_fits(slot) && disp_fits(slot + n - 1)) {
+        for (i = 0; i < n; i += ACC_INT_SIZE) {
+            if (i > n - ACC_INT_SIZE)
+                i = n - ACC_INT_SIZE;
+            while (at < i) {
+                inc_hl();
+                at++;
+            }
+            if (store) {
+                out_byte3(0xdd, 0x31, slot + i);    /* ld iy, (ix+d) */
+                out_byte2(0xed, 0x3e);              /* ld (hl), iy */
+            } else {
+                out_byte2(0xed, 0x31);              /* ld iy, (hl) */
+                out_byte3(0xdd, 0x3e, slot + i);    /* ld (ix+d), iy */
+            }
+        }
+
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        if (store) {
+            ld_a_ix(slot + i);
+            ld_hl_a();
+        } else {
+            ld_a_hl();
+            ld_ix_a(slot + i);
+        }
+        if (i < n - 1)
+            inc_hl();
+    }
+}
+
 /* The bytes of a wide constant written into a frame slot: `ld a, n` and a
  * store, a byte at a time.
  *
@@ -3545,7 +3587,7 @@ static int long_const_bytes(int op, Type result)
     Value *r = vsp - 1;
     unsigned char b[8];
     uint64_t c;
-    int cost = 0, i, k = 0, low, left, zeros = 0;
+    int cost = 0, i, k = 0, low, left, src, zeros = 0;
 
     if (type_wide_bytes(result) != 4 || type_float(result)
         || (r->kind != VAL_WIDE && !val_number(r->kind)))
@@ -3598,7 +3640,18 @@ static int long_const_bytes(int op, Type result)
         return 0;
 
     vdrop();                            /* the constant */
-    materialise_long(left, result);
+
+    /* A shift by whole bytes of a value already in a slot of its width
+     * reads it there, rather than copying it into the scratch to move it
+     * again. */
+    src = left;
+    if ((op == TK_SHL || op == TK_SHR) && k != 1
+        && (vsp - 1)->kind == VAL_LOCAL && !(vsp - 1)->bits
+        && type_wide(vsp[-1].type) && type_wide_bytes(vsp[-1].type) == 4
+        && disp_fits(vsp[-1].val - 2) && disp_fits(vsp[-1].val + 5))
+        src = (vsp - 1)->val;
+    else
+        materialise_long(left, result);
     vdrop();
     spill_used = low + 4;
 
@@ -3648,7 +3701,7 @@ static int long_const_bytes(int op, Type result)
             break;
         }
         k /= 8;
-        out_byte3(0xdd, 0x31, left + 1 - k);            /* ld iy, (ix+d) */
+        out_byte3(0xdd, 0x31, src + 1 - k);             /* ld iy, (ix+d) */
         out_byte3(0xdd, 0x3e, left + 1);                /* ld (ix+d), iy */
         out_byte(0xaf);                                 /* xor a, a */
         for (i = 0; i < k; i++)
@@ -3668,10 +3721,10 @@ static int long_const_bytes(int op, Type result)
         if (type_unsigned(result)) {
             out_byte(0xaf);                             /* xor a, a */
         } else {
-            ld_a_ix(left + 3);
+            ld_a_ix(src + 3);
             out_byte2(0x17, 0x9f);                      /* rla; sbc a, a */
         }
-        out_byte3(0xdd, 0x31, left + k);                /* ld iy, (ix+d) */
+        out_byte3(0xdd, 0x31, src + k);                 /* ld iy, (ix+d) */
         out_byte3(0xdd, 0x3e, left);                    /* ld (ix+d), iy */
         for (i = 4 - k; i < 4; i++)
             ld_ix_a(left + i);
@@ -3737,6 +3790,18 @@ static void vbinop_long(int op, Type result)
      * program has -- `a + b` now copies a and reads b. */
     in_place = !helper_writes_right(which) && wide_in_place(vsp - 1, result, n);
     low = spill_lowest(2, in_place);
+
+    /* A right operand read in place is live while the routine runs, and
+     * nothing is put below a live slot -- but the answer can go where the
+     * left operand was even so, as long as the two do not overlap: the
+     * routine reads the right while it writes the left. The left is then
+     * built where it already is, where it was copied above the right. */
+    if (in_place) {
+        int size, rs = spill_start_of(vsp - 1, &size), l0 = spill_lowest(2, 0);
+
+        if (rs < 0 || l0 + n <= rs || rs + size <= l0)
+            low = l0;
+    }
     rstart = spill_used > low + n ? spill_used : low + n;
 
     /* The right operand is built first, because building the left one may
@@ -7886,14 +7951,8 @@ void vderef(void)
     if (type_wide(to)) {
         int n = type_wide_bytes(to);
         int slot = long_scratch(to);
-        int i;
 
-        for (i = 0; i < n; i++) {
-            ld_a_hl();
-            ld_ix_a(slot + i);
-            if (i < n - 1)
-                inc_hl();
-        }
+        wide_through_hl(slot, n, 0);
         vdrop();
         vpush_scratch(to, slot);
 
@@ -8041,20 +8100,34 @@ void vstore_indirect(void)
 
     if (type_wide(to)) {
         int n = type_wide_bytes(to);
-        int slot = long_scratch(to);
-        int i;
+        int slot;
+
+        /* A value already in a slot of its own at this width is stored
+         * from there, and is the answer as it was: copying it into scratch
+         * first was the same bytes moved twice. */
+        if ((vsp - 1)->kind == VAL_LOCAL && !(vsp - 1)->bits
+            && type_wide((vsp - 1)->type)
+            && type_wide_bytes((vsp - 1)->type) == n) {
+            Value kept = *(vsp - 1);
+
+            vdrop();
+            force_into(vsp - 1, R_HL);
+            wide_through_hl(kept.val, n, 1);
+            vdrop();
+            vpush(kept.kind, kept.type, kept.val);
+            (vsp - 1)->ext = kept.ext;
+            (vsp - 1)->quals = kept.quals;
+
+            return;
+        }
 
         /* The value first, because building it may want HL, and the address
          * afterwards, which is what is left underneath it. */
+        slot = long_scratch(to);
         materialise_long(slot, to);
         vdrop();
         force_into(vsp - 1, R_HL);
-        for (i = 0; i < n; i++) {
-            ld_a_ix(slot + i);
-            ld_hl_a();
-            if (i < n - 1)
-                inc_hl();
-        }
+        wide_through_hl(slot, n, 1);
         vdrop();
         vpush_scratch(to, slot);
 

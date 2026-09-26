@@ -411,5 +411,27 @@ emits "gc = c, ld a, (ix+9); ld (nn), a" dd7e0932 yes \
 emits "for loop, no jump into the body" '30..18' no \
     'unsigned f(unsigned n) { unsigned s = 0, i; for (i = 0; i < n; i++) s += i; return s; }'
 
+# A long through a pointer moves three bytes at a time through IY: ld iy,
+# (hl) and a store to the slot, or the other way round -- and a value
+# already in a slot of its own is stored from there, not copied first.
+emits "*p, a long, through IY"          ed31dd3e yes \
+    'long f(long *p) { return *p; }'
+emits "*p = v, v stored from its slot"  dd3109dd3e no \
+    'void g(long *p, long v) { *p = v; }'
+emits "*p = v, through IY"              dd3109ed3e yes \
+    'void g(long *p, long v) { *p = v; }'
+
+# A shift of a long by whole bytes reads the variable where it is, and
+# does not copy it into scratch first.
+emits "a >> 8, read where a is"         dd3107dd3e yes \
+    'unsigned long f(unsigned long a) { return a >> 8; }'
+emits "a >> 8, no copy first"           dd3106dd3e no \
+    'unsigned long f(unsigned long a) { return a >> 8; }'
+
+# An operator whose right operand is read in place puts its answer where
+# its left operand was, rather than copying that above the right.
+emits "t[i] ^ (b >> 8), no copy"        dd31fcdd3ef4 no \
+    'unsigned long f(unsigned long a, unsigned long b, unsigned long *t) { return t[a & 0xff] ^ (b >> 8); }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
