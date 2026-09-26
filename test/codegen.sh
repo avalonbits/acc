@@ -440,5 +440,13 @@ emits "a[i], lea hl, ix+d"              ed22 yes \
 emits "a[i], not through DE"            d511 no \
     'int f(int i) { int a[4]; a[i] = 1; return a[0]; }'
 
+# A long worked out through the runtime and assigned to a variable is
+# worked out in the variable: x = x * 3 + 1 copies x nowhere, and leaves
+# its answer in no scratch to be copied back.
+emits "x = x * 3 + 1, x not copied"     dd3106dd3e no \
+    'long f(long x) { x = x * 3L + 1L; return x; }'
+emits "x = x * 3 + 1, worked on in x"   ed2206 yes \
+    'long f(long x) { x = x * 3L + 1L; return x; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

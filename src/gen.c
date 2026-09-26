@@ -218,6 +218,8 @@ static void convert_float_to_int(Type to);
 static void force_into(Value *target, int want);
 static int  needs_helper(int op);
 static void rt_call(int which);
+static int  long_into(int offset, Type type);
+static int  nrt_fixups;
 
 /* ------------------------------------------------------------------ */
 /* narrow widths                                                       */
@@ -2161,6 +2163,8 @@ void vstore_local(int offset, Type type)
                                  * bytes, which the narrow store takes */
 
     if (type_wide(type)) {
+        if (long_into(offset, type))
+            return;
         materialise_long(offset, type);
         vdrop();
         vpush(VAL_LOCAL, type, offset);
@@ -3835,6 +3839,86 @@ static int long_const_bytes(int op, Type result)
     return 1;
 }
 
+/* The last wide operators that went through a routine, each one where it
+ * began building its left operand, what that was, and how its right one is
+ * read. An assignment of the answer to a variable straight after takes them
+ * back and does them again into the variable: the first one's left copied
+ * there -- or not at all, if it is the variable -- and each routine working
+ * on it where it is, where each built its answer in scratch and the last
+ * one's was copied. `x = x * k + 1` on a long had two copies of twelve bytes
+ * and has none.
+ *
+ * The ones taken back are a chain: each one's left operand is the answer
+ * of the one before, and it begins where that one ended, so that nothing
+ * else was written between them. */
+#define LOPS 4
+typedef struct {
+    int      at, nrt, spill_used, which, pooled, right, n, slot, end;
+    unsigned epoch;
+    uint64_t bits;
+    Type     result;
+    Value    left;
+} LongOp;
+
+static LongOp lops[LOPS];
+static int    nlops;
+
+/* See lops: 1 if the value on top, going into the wide variable at
+ * `offset`, was made again there. Not if a right operand is read from where
+ * the variable is: the routine would write it while it read it. */
+static int long_into(int offset, Type type)
+{
+    Value *top = vsp - 1;
+    LongOp *last, *first;
+    int i;
+
+    if (!nlops)
+        return 0;
+    last = &lops[nlops - 1];
+    if (last->end != out_here() || last->epoch != out_rewinds
+        || top->kind != VAL_LOCAL || top->val != last->slot || top->bits
+        || type_wide_bytes(type) != last->n
+        || type_float(type) != type_float(last->result))
+        return 0;
+
+    /* Back along the chain, as far as it goes. */
+    for (i = nlops - 1; i > 0; i--) {
+        LongOp *prev = &lops[i - 1], *op = &lops[i];
+
+        if (prev->end != op->at || prev->epoch != op->epoch
+            || op->left.kind != VAL_LOCAL || op->left.val != prev->slot
+            || prev->n != op->n)
+            break;
+    }
+    first = &lops[i];
+    for (; i < nlops; i++)
+        if (offset == lops[i].slot
+            || (!lops[i].pooled && offset < lops[i].right + lops[i].n
+                && lops[i].right < offset + lops[i].n))
+            return 0;
+
+    vdrop();
+    out_rewind(first->at);
+    nrt_fixups = first->nrt;
+    spill_used = first->spill_used;
+    *vsp++ = first->left;
+    vtop++;
+    materialise_long(offset, first->result);
+    vdrop();
+    for (i = (int) (first - lops); i < nlops; i++) {
+        lea_rr_ix(R_HL, offset);
+        if (lops[i].pooled)
+            ld_rr_pool(R_DE, lops[i].bits, lops[i].n);
+        else
+            lea_rr_ix(R_DE, lops[i].right);
+        rt_call(lops[i].which);
+    }
+    nlops = 0;
+    vpush(VAL_LOCAL, type, offset);
+
+    return 1;
+}
+
 static void vbinop_long(int op, Type result)
 {
     int which;
@@ -3850,6 +3934,7 @@ static void vbinop_long(int op, Type result)
     int n = type_wide_bytes(result);
     int low, rstart, in_place, pooled;
     uint64_t bits = 0;
+    LongOp *lop;
 
     /* Both constants: worked out here, and nothing emitted. */
     if (vconst_pair()) {
@@ -3942,6 +4027,22 @@ static void vbinop_long(int op, Type result)
         vdrop();
     }
 
+    if (nlops == LOPS) {
+        memmove(lops, lops + 1, (LOPS - 1) * sizeof *lops);
+        nlops--;
+    }
+    lop = &lops[nlops++];
+    lop->at = out_here();
+    lop->nrt = nrt_fixups;
+    lop->spill_used = spill_used;
+    lop->left = vsp[-1];
+    lop->which = which;
+    lop->pooled = pooled;
+    lop->bits = bits;
+    lop->right = right;
+    lop->n = n;
+    lop->result = result;
+
     materialise_long(left, result);
     vdrop();
 
@@ -3951,6 +4052,9 @@ static void vbinop_long(int op, Type result)
     else
         lea_rr_ix(R_DE, right);
     rt_call(which);
+    lop->slot = left;
+    lop->end = out_here();
+    lop->epoch = out_rewinds;
 
     spill_used = low + n;               /* the answer, and nothing else */
     vpush(VAL_LOCAL, result, left);
