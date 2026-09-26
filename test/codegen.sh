@@ -324,5 +324,15 @@ emits "g.b of an extern struct"         232323 no \
 emits "g.b: the slot says 3"            21030000ed27 yes \
     'extern struct st { int a, b; } g; int f(void) { return g.b; }'
 
+# A long moves between near frame slots three bytes at a time through IY
+# -- ld iy, (ix+d); ld (ix+d), iy -- not a byte at a time through A, and a
+# long constant is ld iy, nn and a store.
+emits "long x = a, a copy through IY"   dd3106dd3e yes \
+    'long f(long a) { long x = a; return x; }'
+emits "long x = a, no byte through A"   dd7e06dd77 no \
+    'long f(long a) { long x = a; return x; }'
+emits "long y = 100000, through IY"     fd21a08601dd3e yes \
+    'long f(void) { long y = 100000L; return y; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

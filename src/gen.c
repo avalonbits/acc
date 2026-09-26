@@ -2818,6 +2818,22 @@ static void copy_long(int to, int from, int n)
 
         return;
     }
+
+    /* Three bytes at a time through IY, the backend's scratch, where the
+     * two slots are apart: a long is two of those, the second overlapping
+     * the first by two bytes, which writes them again with what they
+     * already hold -- twelve bytes of code where a byte at a time was
+     * twenty-four. */
+    if (n >= ACC_INT_SIZE && (to + n <= from || from + n <= to)) {
+        for (i = 0; i < n; i += ACC_INT_SIZE) {
+            if (i > n - ACC_INT_SIZE)
+                i = n - ACC_INT_SIZE;
+            out_byte3(0xdd, 0x31, from + i);    /* ld iy, (ix+d) */
+            out_byte3(0xdd, 0x3e, to + i);      /* ld (ix+d), iy */
+        }
+
+        return;
+    }
     for (i = 0; i < n; i++) {
         out_byte3(0xdd, 0x7e, from + i);        /* ld a, (ix+d) */
         out_byte3(0xdd, 0x77, to + i);          /* ld (ix+d), a */
@@ -3013,6 +3029,7 @@ static void materialise_long(int disp, Type type)
         if (type_unsigned(top->type)) {
             out_byte(0xaf);                     /* xor a, a */
         } else {
+            ld_a_ix(top->val + from - 1);       /* the top byte, for its sign */
             out_byte2(0x87, 0x9f);              /* add a, a; sbc a, a */
         }
         fill_from_a(disp, from, n);
@@ -3070,6 +3087,20 @@ static void wide_bytes_at(int disp, uint64_t bits, int n)
     const unsigned char *bytes = (const unsigned char *) &bits;
 #endif
 
+    /* Three bytes at a time through IY where the slot is near: ld iy, nn
+     * and a store is eight bytes against fifteen. The last run overlaps
+     * the one before it rather than going a byte at a time. */
+    if (n >= ACC_INT_SIZE && disp_fits(disp) && disp_fits(disp + n - 1)) {
+        for (i = 0; i < n; i += ACC_INT_SIZE) {
+            if (i > n - ACC_INT_SIZE)
+                i = n - ACC_INT_SIZE;
+            out_byte2(0xfd, 0x21);              /* ld iy, nn */
+            out_byte3(bytes[i], bytes[i + 1], bytes[i + 2]);
+            out_byte3(0xdd, 0x3e, disp + i);    /* ld (ix+d), iy */
+        }
+
+        return;
+    }
     for (i = 0; i < n; i++) {
         out_byte(0x3e);                         /* ld a, n */
         out_byte(bytes[i]);
