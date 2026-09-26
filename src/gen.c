@@ -3525,6 +3525,163 @@ static void vunary_long(int which, Type type)
     vpush_scratch(type, slot);
 }
 
+/* A four-byte integer operator with a constant on the right, done on the
+ * left's bytes in its scratch slot when that is shorter than the call: the
+ * call wants the constant in a slot of its own, sixteen bytes, and the two
+ * pointers and the call, ten more.
+ *
+ * & | ^ go a byte at a time through A, and leave the bytes the constant
+ * does not change alone -- `c & 0xff` is the low byte kept and three
+ * zeros. A shift by one is four rotates of the slot's bytes in place, and a
+ * shift by whole bytes is three moved through IY and the rest filled, with
+ * zero or the sign. IY reads and writes three bytes, so the move may read
+ * up to two bytes past the slot either side, which are the frame's; it
+ * writes only the slot's. Returns 0, having emitted nothing, for anything
+ * else, or where the slot's bytes are out of a displacement's reach. */
+#define LONG_CALL_BYTES 26
+
+static int long_const_bytes(int op, Type result)
+{
+    Value *r = vsp - 1;
+    unsigned char b[8];
+    uint64_t c;
+    int cost = 0, i, k = 0, low, left, zeros = 0;
+
+    if (type_wide_bytes(result) != 4 || type_float(result)
+        || (r->kind != VAL_WIDE && !val_number(r->kind)))
+        return 0;
+    c = const_as(r, result);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    for (i = 0; i < 8; i++)
+        b[i] = (unsigned char) (c >> (i * 8));
+#else
+    memcpy(b, &c, sizeof b);
+#endif
+
+    switch (op) {
+    case TK_AMP:
+        for (i = 0; i < 4; i++)
+            if (b[i] == 0)
+                zeros++;
+            else if (b[i] != 0xff)
+                cost += 8;
+        cost += zeros ? 1 + 3 * zeros : 0;
+        break;
+    case TK_PIPE:
+        for (i = 0; i < 4; i++)
+            cost += b[i] == 0 ? 0 : b[i] == 0xff ? 4 : 8;
+        break;
+    case TK_CARET:
+        for (i = 0; i < 4; i++)
+            cost += b[i] == 0 ? 0 : b[i] == 0xff ? 7 : 8;
+        break;
+    case TK_SHL:
+    case TK_SHR:
+        k = b[0];
+        if (b[1] || b[2] || b[3] || !(k == 1 || k == 8 || k == 16 || k == 24))
+            return 0;
+        cost = 16;
+        break;
+    default:
+        return 0;
+    }
+    if (cost >= LONG_CALL_BYTES)
+        return 0;
+
+    /* The spills first, as vbinop_long has them, since they move where
+     * the scratch is free from. Done for nothing if the slot is out of
+     * reach; the call does them too. */
+    save_regs_below(2);
+    low = spill_lowest(2, 0);
+    left = slot_at(low, 4);
+    if (!disp_fits(left - 2) || !disp_fits(left + 5))
+        return 0;
+
+    vdrop();                            /* the constant */
+    materialise_long(left, result);
+    vdrop();
+    spill_used = low + 4;
+
+    switch (op) {
+    case TK_AMP:
+        for (i = 0; i < 4; i++)
+            if (b[i] != 0 && b[i] != 0xff) {
+                ld_a_ix(left + i);
+                and_a_imm(b[i]);
+                ld_ix_a(left + i);
+            }
+        if (zeros) {
+            out_byte(0xaf);                             /* xor a, a */
+            for (i = 0; i < 4; i++)
+                if (b[i] == 0)
+                    ld_ix_a(left + i);
+        }
+        break;
+    case TK_PIPE:
+    case TK_CARET:
+        for (i = 0; i < 4; i++) {
+            if (b[i] == 0)
+                continue;
+            if (op == TK_PIPE && b[i] == 0xff) {
+                out_byte2(0xdd, 0x36);                  /* ld (ix+d), 0xff */
+                out_byte2(left + i, 0xff);
+                continue;
+            }
+            ld_a_ix(left + i);
+            if (op == TK_CARET && b[i] == 0xff)
+                out_byte(0x2f);                         /* cpl */
+            else if (op == TK_CARET)
+                xor_a_imm(b[i]);
+            else
+                or_a_imm(b[i]);
+            ld_ix_a(left + i);
+        }
+        break;
+    case TK_SHL:
+        if (k == 1) {
+            out_byte2(0xdd, 0xcb);                      /* sla (ix+d) */
+            out_byte2(left, 0x26);
+            for (i = 1; i < 4; i++) {
+                out_byte2(0xdd, 0xcb);                  /* rl (ix+d) */
+                out_byte2(left + i, 0x16);
+            }
+            break;
+        }
+        k /= 8;
+        out_byte3(0xdd, 0x31, left + 1 - k);            /* ld iy, (ix+d) */
+        out_byte3(0xdd, 0x3e, left + 1);                /* ld (ix+d), iy */
+        out_byte(0xaf);                                 /* xor a, a */
+        for (i = 0; i < k; i++)
+            ld_ix_a(left + i);
+        break;
+    case TK_SHR:
+        if (k == 1) {
+            out_byte2(0xdd, 0xcb);                      /* srl or sra (ix+d) */
+            out_byte2(left + 3, type_unsigned(result) ? 0x3e : 0x2e);
+            for (i = 2; i >= 0; i--) {
+                out_byte2(0xdd, 0xcb);                  /* rr (ix+d) */
+                out_byte2(left + i, 0x1e);
+            }
+            break;
+        }
+        k /= 8;
+        if (type_unsigned(result)) {
+            out_byte(0xaf);                             /* xor a, a */
+        } else {
+            ld_a_ix(left + 3);
+            out_byte2(0x17, 0x9f);                      /* rla; sbc a, a */
+        }
+        out_byte3(0xdd, 0x31, left + k);                /* ld iy, (ix+d) */
+        out_byte3(0xdd, 0x3e, left);                    /* ld (ix+d), iy */
+        for (i = 4 - k; i < 4; i++)
+            ld_ix_a(left + i);
+        break;
+    }
+    vpush(VAL_LOCAL, result, left);
+
+    return 1;
+}
+
 static void vbinop_long(int op, Type result)
 {
     int which;
@@ -3560,6 +3717,9 @@ static void vbinop_long(int op, Type result)
             return;
         }
     }
+
+    if (long_const_bytes(op, result))
+        return;
 
     /* After the spills, not before: a register the call below puts in the
      * frame is a value under the operands, and the floor has to know about
