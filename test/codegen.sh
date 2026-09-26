@@ -344,5 +344,11 @@ emits "p == 0, as a value"              11000000b7ed52 no \
 emits "p != 0, as a value, tested"      09b7ed42 yes \
     'int f(char *p) { return p != 0; }'
 
+# A constant returned a second time jumps back to where the first return
+# loaded it: ld hl, 0; ld a, l comes once in a _Bool function that
+# returns 0 three times.
+emits "return 0 three times, one load"  '210000007d.*210000007d' no \
+    '_Bool f(int x) { if (x == 1) return 0; if (x == 2) return 1; if (x == 5) return 0; if (x > 9) return 1; return 0; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

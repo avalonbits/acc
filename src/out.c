@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -518,9 +519,16 @@ void out_word24(int value)
  * before it. */
 unsigned out_rewinds;
 
+/* The lowest address the image has been taken back to since whoever reads
+ * this last set it high: which marks a rewind reached, where out_rewinds
+ * says only that there was one. */
+int out_rewind_floor = INT_MAX;
+
 void out_rewind(int here)
 {
     out_rewinds++;
+    if (here < out_rewind_floor)
+        out_rewind_floor = here;
     /* The slots recorded in what is being undone go with it. The table is
      * in increasing order, so the ones to drop are the last ones. */
     while (out_reloc_put > out_relocs + 1 && out_reloc_put[-1] >= here - out_base)

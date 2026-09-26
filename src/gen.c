@@ -6474,6 +6474,16 @@ void gen_value_end(void)
  * ld sp, ix; pop ix; ret is five -- a function has four and a half
  * returns, on zap. The jumps are chained through their holes, as patch_to
  * reads them, and the chain is patched when the end is reached. */
+/* The constants this function has returned, and where each return's code
+ * began and ended: `return 0;` a third time is a jump to the first, two
+ * bytes when it is near, where the load, the byte in A and the jump to the
+ * epilogue were nine. One that a rewind has reached into since is dropped:
+ * out_rewind_floor says how far back the image has been taken. */
+#define CONST_RETS 8
+static int const_ret_val[CONST_RETS], const_ret_at[CONST_RETS];
+static int const_ret_end[CONST_RETS];
+static int nconst_rets;
+
 static int      return_chain;
 static unsigned return_epoch;           /* out_rewinds at the last one */
 
@@ -6494,6 +6504,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
     (void) nparams;
 
     sym_at(fn)->val = out_here();
+    nconst_rets = 0;
     static_begin(fn);
     mark_here(&func_mark);
     vtop = 0;
@@ -6566,6 +6577,8 @@ void gen_func_end(void)
 
 void gen_return(int line)
 {
+    int recorded = -1;             /* its index among const_ret_val */
+
     /* C99 has a return with a value only in a function that returns one, and
      * one without only in a function that does not. */
     if (return_type == TY_VOID && vtop > 0)
@@ -6628,6 +6641,34 @@ void gen_return(int line)
         }
 
         vconvert(return_type);
+
+        /* A constant this function has returned before: a jump back to
+         * where that return loaded it, which goes on to the epilogue. */
+        if (val_number((vsp - 1)->kind)) {
+            int v = (vsp - 1)->val, i, kept = 0;
+
+            for (i = 0; i < nconst_rets; i++)
+                if (out_rewind_floor >= const_ret_end[i]) {
+                    const_ret_val[kept] = const_ret_val[i];
+                    const_ret_at[kept] = const_ret_at[i];
+                    const_ret_end[kept++] = const_ret_end[i];
+                }
+            nconst_rets = kept;
+            out_rewind_floor = INT_MAX;
+            for (i = 0; i < nconst_rets; i++)
+                if (const_ret_val[i] == v) {
+                    vdrop();
+                    gen_jump_to(const_ret_at[i]);
+
+                    return;
+                }
+            if (nconst_rets < CONST_RETS) {
+                const_ret_val[nconst_rets] = v;
+                const_ret_at[nconst_rets] = out_here();
+                const_ret_end[nconst_rets] = INT_MAX;   /* until it is done */
+                recorded = nconst_rets++;
+            }
+        }
         reg = vpop_reg();
         if (reg != R_HL)
             mov_rr(R_HL, reg);
@@ -6640,6 +6681,8 @@ void gen_return(int line)
             ld_a_l();
     }
     return_jump();
+    if (recorded >= 0)
+        const_ret_end[recorded] = out_here();
 }
 
 /* That a struct argument and its parameter are the same struct: a struct
