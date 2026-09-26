@@ -230,5 +230,36 @@ emits "return c = x + 1, value used"    "$short_narrow" yes \
 emits "return b = x + 1, value used"    "$char_narrow" yes \
     'int f(unsigned x) { unsigned char b; return b = x + 1; }'
 
+# An index worked out in HL, after the table's address went to DE, is
+# added the other way round -- add hl, de -- rather than moved to BC
+# through the stack: push hl; pop bc; ex de, hl.
+emits "t[(unsigned char)*p]"            e5c1eb no \
+    'extern const unsigned char t[256]; int f(const char *p) { return t[(unsigned char)*p]; }'
+
+# A byte just loaded into A is masked there, not first moved back from L.
+emits "t[c] & 1, masked in A"           7de601 no \
+    'extern const unsigned char t[256]; int f(unsigned char c) { return t[c] & 1; }'
+
+# A byte read into a char local is stored from A as it came, with no sign
+# fill of a value nothing reads.
+emits "c = *p, a char local"            "$sign_fill" no \
+    'void h(char *); void f(char *p) { char c; c = *p; h(&c); }'
+
+# x++ as a statement leaves no step back to the old value -- dec hl --
+# after the store.
+emits "x++; as a statement"             dd2f062b no \
+    'int f(int x) { x++; return x; }'
+
+# A local just stored from HL is not loaded back into HL.
+emits "x = a + 1; g(x), no reload"      dd2ffddd27fd no \
+    'int g(int); int f(int a) { int x; x = a + 1; return g(x); }'
+
+# A char local read as unsigned char loads zero-filled into whichever
+# register it is wanted in -- DE, beside a table's address in HL -- rather
+# than into HL, with the table's address swapped out of the way first:
+# ex de, hl; or a; sbc hl, hl.
+emits "t[(unsigned char)c], c a local"  ebb7ed62 no \
+    'extern const unsigned char t[256]; int f(char *p) { char c = *p; return t[(unsigned char)c] + c; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

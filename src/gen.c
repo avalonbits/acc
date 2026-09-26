@@ -44,9 +44,22 @@ static void ld_rr_imm(int reg, int imm)    /* ld rr, nn */
 
 static int far_base(int disp);
 
+/* The last register stored whole to a frame slot, and where the store
+ * ended. A load of that slot into that register straight after it -- the
+ * end of one statement storing x and the start of the next reading it,
+ * which is a twentieth of zap's time -- loads what is there already, so it
+ * is left out. Unless something may jump in between the two: join_at is
+ * the last place something jumps to (gen_here, and a jump patched to where
+ * the code has got to). And not once anything has been taken back. */
+static int      stored_at = -1, stored_disp, stored_reg, join_at = -1;
+static unsigned stored_epoch;
+
 static inline __attribute__((always_inline))
 void ld_rr_ix(int reg, int disp)           /* ld rr, (ix+d) */
 {
+    if (stored_at == out_here() && stored_disp == disp && stored_reg == reg
+        && stored_epoch == out_rewinds && join_at != stored_at)
+        return;
     if (disp_fits(disp))
         out_byte3(0xdd, 0x07 + reg_code[reg], disp);
     else
@@ -55,10 +68,15 @@ void ld_rr_ix(int reg, int disp)           /* ld rr, (ix+d) */
 
 static void ld_ix_rr(int disp, int reg)    /* ld (ix+d), rr */
 {
-    if (disp_fits(disp))
+    if (disp_fits(disp)) {
         out_byte3(0xdd, 0x0f + reg_code[reg], disp);
-    else
+        stored_at = out_here();
+        stored_disp = disp;
+        stored_reg = reg;
+        stored_epoch = out_rewinds;
+    } else {
         out_byte3(0xfd, 0x0f + reg_code[reg], far_base(disp));
+    }
 }
 
 static void push_rr(int reg) { out_byte(0xc5 + reg_code[reg]); }
@@ -276,6 +294,9 @@ static int xor_a_imm(int v)  { out_byte2(0xee, v & 0xff); return 0; }
 static void flags_say_nonzero(int from);
 static void jumps_forget(int from);
 static int  widen_again(Type to);
+static int  store_byte_widened(int offset, Type type);
+static int  widen_undo(const Value *v);
+static int  widen_undo_left(void);
 static void cmp_value(int op, int is_unsigned);
 
 static int bitwise_const(int op, int value)
@@ -294,7 +315,8 @@ static int bitwise_const(int op, int value)
 
             return 1;
         }
-        ld_a_l();
+        if (!widen_undo_left())
+            ld_a_l();           /* unless the byte is in A already */
         and_a_imm(c0);
         at = out_here();
         sbc_hl_hl();            /* and cleared the carry, so this is 0 */
@@ -936,7 +958,8 @@ void vconvert(Type to)
     if (top->kind == VAL_LOCAL && !top->bits
         && type_size(top->type) == type_size(to)) {
         top->type = to;
-        force_into(vsp - 1, R_HL);
+        force_reg(vsp - 1);             /* any register: an unsigned one
+                                         * loads into DE or BC as it is */
         (vsp - 1)->type = type_promote(to);
 
         return;
@@ -1911,6 +1934,19 @@ static void vbinop(int op)
         return;
     }
 
+    /* A commutative operator whose right side is in HL already and whose
+     * left side is in another register is done the other way round, so
+     * that HL stays where it is. `t[c]` with the table's address in DE and
+     * c in HL moved c to BC through the stack and swapped DE and HL, to add
+     * them: `add hl, de` is the same sum. */
+    if ((op == TK_PLUS || op == TK_STAR || op == TK_AMP || op == TK_PIPE
+         || op == TK_CARET)
+        && rhs->kind == VAL_REG && rhs->val == R_HL && lhs->kind == VAL_REG) {
+        vswap();
+        lhs = vsp - 2;
+        rhs = vsp - 1;
+    }
+
     /* add hl, rr and sbc hl, rr only accumulate into HL, so the left operand
      * goes there and the right one goes anywhere else. Both are done through
      * the allocator rather than by moving registers about by hand: a scratch
@@ -2086,6 +2122,11 @@ void vstore_local(int offset, Type type)
     }
 
     if (type_size(type) < ACC_INT_SIZE) {
+        /* A byte just read and widened is still in A: stored from there,
+         * and widened again only for the value, as below. */
+        if (type_size(type) == 1 && store_byte_widened(offset, type))
+            return;
+
         /* The narrow stores write out of HL, so the value goes there. They
          * write only the low bytes, which the conversion does not change,
          * so the store comes first and the conversion after, for the value
@@ -3514,6 +3555,8 @@ static void vcmp_wide(int op, Type operand)
 
 int gen_here(void)
 {
+    join_at = out_here();
+
     return out_here();
 }
 
@@ -3610,6 +3653,8 @@ static void jumps_forget(int here)
  * caller still has one thing to remember and one thing to patch. */
 static void patch_to(int hole, int target)
 {
+    if (hole && target == out_here())
+        join_at = target;               /* see ld_rr_ix */
     while (hole) {
         unsigned char *at = out_img + (hole - out_base);
         int next = get24(at);
@@ -3725,6 +3770,54 @@ static void widen_loaded(Type to)
     widen_to = out_here();
     widen_epoch = out_rewinds;
     widen_type = to;
+}
+
+/* If `v` is a byte just read and widened into HL, and nothing since: the
+ * widening taken back, which leaves the byte in A and HL as it was before
+ * -- for a caller about to make all of HL itself from A. */
+static int widen_undo(const Value *v)
+{
+    if (widen_from < 0 || out_here() != widen_to || widen_epoch != out_rewinds
+        || v->kind != VAL_REG || v->val != R_HL || type_size(widen_type) != 1)
+        return 0;
+    out_rewind(widen_from);
+    widen_from = -1;
+
+    return 1;
+}
+
+/* The same for a binary operator's left side, from before the value stack
+ * is in scope. */
+static int widen_undo_left(void)
+{
+    return widen_undo(vsp - 2);
+}
+
+/* The value on top, if it is a byte just read and widened, stored to the
+ * byte at `offset` straight from A, where it still is: the widening taken
+ * back, and made again after the store as the value the assignment has --
+ * `type`'s -- with the mark gen_discard takes it back by. `*p` into a char
+ * was ld a, (hl), the sign fill, ld a, l and the store. Returns 0 if the
+ * top is not such a byte. */
+static int store_byte_widened(int offset, Type type)
+{
+    Value *top = vsp - 1;
+
+    if (widen_from < 0 || out_here() != widen_to || widen_epoch != out_rewinds
+        || top->kind != VAL_REG || top->val != R_HL
+        || type_size(widen_type) != 1)
+        return 0;
+    out_rewind(widen_from);
+    widen_from = -1;
+    ld_ix_a(offset);
+    conversion_from = out_here();
+    widen_as(type);
+    conversion_to = out_here();
+    conversion_epoch = out_rewinds;
+    top->type = type_promote(type);
+    vset_width(top, type_unsigned(type) ? 1 : 3);
+
+    return 1;
 }
 
 /* Whether the value on top is that one, and `to` as wide: if so, it is
@@ -7728,7 +7821,13 @@ void vpostfix_local(int offset, Type type, int ext, int op)
         vset_ext(ext);
         vstep(op, type);
         vstore_local(offset, type);
+
+        /* The step back makes the value x++ has, which `x++;` throws away:
+         * marked as an assignment's conversion is, for gen_discard. */
+        conversion_from = out_here();
         vstep(op == TK_PLUS ? TK_MINUS : TK_PLUS, type);
+        conversion_to = out_here();
+        conversion_epoch = out_rewinds;
 
         return;
     }
