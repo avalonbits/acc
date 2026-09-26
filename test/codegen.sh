@@ -278,9 +278,10 @@ emits "*q == 300, out of its range"     fe2c no \
     'int f(const unsigned char *q) { return *q == 300; }'
 
 # Two sides that cannot be negative -- unsigned chars, which promote to
-# int -- are compared unsigned, which gives the same answer without the
-# overflow test a signed comparison needs: ld hl, 1; jp pe.
-signed_cmp=21010000ea
+# int -- are compared unsigned, which gives the same answer without
+# moving both sides by 0x800000 first, as a signed comparison does:
+# ld bc, 0x800000.
+signed_cmp=01000080
 emits "uchar < uchar, unsigned"         "$signed_cmp" no \
     'int f(unsigned char a, unsigned char b) { return a < b; }'
 emits "uchar < int, signed"             "$signed_cmp" yes \
@@ -360,6 +361,13 @@ calls "no frame, frameset0"             acc_rt_frameset0 yes \
     'int f(int x) { return x + 1; }'
 calls "a frame, not frameset0"          acc_rt_frameset0 no \
     'int f(int x) { int a[4]; a[x] = 1; return a[0]; }'
+
+# A signed order is an unsigned one of both sides moved by 0x800000, and a
+# jump on the carry: no jp pe, jp m and jp p on the sign and the overflow.
+emits "x < n, signed, branch"           ea......f2 no \
+    'int f(int x, int n) { if (x < n) return 1; return 2; }'
+emits "x > 5, as x >= 6, moved"         01060080 yes \
+    'int f(int x) { if (x > 5) return 1; return 2; }'
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

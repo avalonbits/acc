@@ -2705,6 +2705,70 @@ static void hl_zero_test(void)
     sbc_hl_rr(R_BC);
 }
 
+/* See vcmp. Returns 0 when the constant is at the end of the range, where
+ * c + 1 does not fit, having emitted nothing. */
+static int signed_as_unsigned(int op)
+{
+    Value *lhs = vsp - 2;
+    Value *rhs = vsp - 1;
+    int rr;
+
+    if (val_number(rhs->kind)) {
+        int c = rhs->val;
+
+        if (tok_pair(op, TK_GT)) {
+            if (c >= 0x7fffff)
+                return 0;
+            c++;
+            op = op == TK_GT ? TK_GE : TK_LT;
+        }
+        force_into(lhs, R_HL);
+        rr = reg_busy(R_BC) && !reg_busy(R_DE) ? R_DE : R_BC;
+        evict_reg(rr);
+        ld_rr_imm(rr, 0x800000);
+        add_hl_rr(rr);
+        ld_rr_imm(rr, (c + 0x800000) & 0xffffff);
+        or_a_a();
+        sbc_hl_rr(rr);
+    } else {
+        if (tok_pair(op, TK_GT)) {
+            Value swapped = *lhs;       /* a > b is b < a */
+
+            *lhs = *rhs;
+            *rhs = swapped;
+            op = op == TK_GT ? TK_LT : TK_GE;
+        }
+        /* The right side where it is, in DE or BC, and the other of the
+         * two holds the 0x800000: moved there, the right side went through
+         * the stack, which in a loop's condition cost more than the jumps
+         * it replaced. Either way the moved right side ends in DE. */
+        force_into(lhs, R_HL);
+        rr = force_reg(rhs);
+        if (rr == R_DE) {
+            evict_reg(R_BC);
+            ld_rr_imm(R_BC, 0x800000);
+            add_hl_rr(R_BC);            /* HL is moved */
+            ex_de_hl();
+            add_hl_rr(R_BC);            /* and the right side */
+            ex_de_hl();
+        } else {
+            evict_reg(R_DE);
+            ld_rr_imm(R_DE, 0x800000);
+            add_hl_rr(R_DE);            /* HL is moved */
+            ex_de_hl();
+            add_hl_rr(R_BC);            /* and BC, into HL */
+            ex_de_hl();
+        }
+        or_a_a();
+        sbc_hl_rr(R_DE);
+    }
+    vdrop();
+    vdrop();
+    cmp_value(op, 1);
+
+    return 1;
+}
+
 static void vcmp(int op)
 {
     Value *lhs = vsp - 2;
@@ -2732,6 +2796,17 @@ static void vcmp(int op)
     }
 
     if (cmp_byte_const(op))
+        return;
+
+    /* A signed order as an unsigned one: 0x800000 added to both sides,
+     * which moves -8388608 to 0 and 8388607 to the top and keeps them in
+     * order, so the carry of the subtraction is the answer. The signed
+     * answer read the sign and the overflow, which is three jumps and
+     * fourteen bytes where the carry is one jump; against a constant the
+     * constant is moved already, and x > c is x >= c + 1 so that x stays
+     * in HL. */
+    if (!is_unsigned && op != TK_EQ && op != TK_NE
+        && !val_const(lhs->kind) && signed_as_unsigned(op))
         return;
 
     /* Equal to zero, or not: HL tested where it is. */
