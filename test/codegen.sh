@@ -448,5 +448,16 @@ emits "x = x * 3 + 1, x not copied"     dd3106dd3e no \
 emits "x = x * 3 + 1, worked on in x"   ed2206 yes \
     'long f(long x) { x = x * 3L + 1L; return x; }'
 
+# A long tested against zero ORs its bytes in A and a branch jumps on Z,
+# with no 0 or 1 made of it; and a constant on the left of a commutative
+# operator goes to the right, where the pool has it, rather than into a
+# slot of its own.
+emits "if (x), a long, bytes ORed"      ddb6 yes \
+    'int f(long x) { if (x) return 1; return 2; }'
+emits "if (x), a long, no 0 or 1 made"  ddb6..21000000 no \
+    'int f(long x) { if (x) return 1; return 2; }'
+emits "1000 + x, no constant in a slot" fd21e80300 no \
+    'long f(long x) { return 1000L + x; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

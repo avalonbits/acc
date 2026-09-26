@@ -3963,6 +3963,16 @@ static void vbinop_long(int op, Type result)
         }
     }
 
+    /* A constant on the left of an operator that does not care which side
+     * is which goes to the right, where the pool or the bytes can have it:
+     * on the left it was written into a slot of its own. */
+    if ((vsp[-2].kind == VAL_WIDE || val_number(vsp[-2].kind))
+        && vsp[-1].kind != VAL_WIDE && !val_number(vsp[-1].kind)
+        && !type_float(result)
+        && (op == TK_PLUS || op == TK_STAR || op == TK_AMP || op == TK_PIPE
+            || op == TK_CARET))
+        vswap();
+
     if (long_const_bytes(op, result))
         return;
 
@@ -4177,6 +4187,35 @@ static void vcmp_wide(int op, Type operand)
     }
 
     save_regs_below(2);
+
+    /* Equal to zero, or not: the bytes ORed together in A, which leaves Z
+     * for cmp_value -- and for a branch after it -- rather than a zero put
+     * in the pool and the compare routine called. A variable is read where
+     * it is. */
+    if (!floating && (op == TK_EQ || op == TK_NE)
+        && wide_const_top(operand, &bits)
+        && (n == 8 ? bits == 0 : (uint32_t) bits == 0)) {
+        Value *l = vsp - 2;
+        int src, own = l->kind == VAL_LOCAL && !l->bits && type_wide(l->type)
+                       && type_wide_bytes(l->type) == n, i;
+
+        low = spill_lowest(2, 0);
+        src = own ? l->val : slot_at(low, n);
+        if (disp_fits(src) && disp_fits(src + n - 1)) {
+            vdrop();                            /* the zero */
+            if (!own)
+                materialise_long(src, operand);
+            vdrop();
+            if (!own)
+                spill_used = low;
+            ld_a_ix(src);
+            for (i = 1; i < n; i++)
+                out_byte3(0xdd, 0xb6, src + i);     /* or a, (ix+d) */
+            cmp_value(op, 1);
+
+            return;
+        }
+    }
 
     /* As in vbinop_long: the integer comparisons only read through DE, so a
      * right operand already in the frame is compared where it lies. The
@@ -4631,6 +4670,13 @@ static int jump_on_truth(int when_true)
 {
     int reg;
 
+    /* A wide value tested is compared with zero first, and that leaves the
+     * flags the mark below reads: a long tested for zero ORs its bytes, and
+     * the branch jumps on Z. Asked after the marks, it made its 0 or 1 and
+     * tested that again. */
+    if (type_wide(vtype()))
+        vtruth(TK_NE);
+
     if (logic_from >= 0 && out_here() == logic_to && logic_epoch == out_rewinds
         && vtop == 1
         && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
@@ -4677,9 +4723,6 @@ static int jump_on_truth(int when_true)
 
         return jump_on_flags(op, cmp_was_unsigned);
     }
-
-    if (type_wide(vtype()))
-        vtruth(TK_NE);
 
     /* One whose top byte, or top two, are known to be zero: those that are
      * left are tested in A. */
