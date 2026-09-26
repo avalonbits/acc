@@ -246,26 +246,42 @@ static int exported(const Sym *s)
     return 0;
 }
 
-/* What a relocation at `at` wants: see the note on the format above.
- *
- * The calls a file cannot resolve are a handful -- most objects have none --
- * so they are walked. The slots that want the bss are not a handful, so they
- * are merged: both they and the relocations are in order of where they are,
- * and `bss` is how far along that walk has got. */
-static int reloc_wants(int at, const int *slot_of, int nexterns, int *bss)
+/* Whether a relocation at `at` wants the bss: see the note on the format
+ * above. The slots that do are merged with the relocations: both are in
+ * order of where they are, and `bss` is how far along that walk has got. */
+static int reloc_wants_bss(int at, int *bss)
+{
+    while (*bss < gen_nbss_fixups() && gen_bss_fixup_at(*bss) < at)
+        ++*bss;
+
+    return *bss < gen_nbss_fixups() && gen_bss_fixup_at(*bss) == at;
+}
+
+/* For each relocation, the symbol it wants if it is a call out of this
+ * file, or 0: each call looked for among the relocations, which are in
+ * order. The calls out were once a handful and were walked for every
+ * relocation; every function's prologue calls into the runtime, which an
+ * object leaves to the link, and that walk became most of writing one. */
+static void reloc_calls(int *wants, int nrelocs, const int *slot_of,
+                        int nexterns)
 {
     int i;
 
-    while (*bss < gen_nbss_fixups() && gen_bss_fixup_at(*bss) < at)
-        ++*bss;
-    if (*bss < gen_nbss_fixups() && gen_bss_fixup_at(*bss) == at)
-        return 1;
+    for (i = 0; i < nexterns; i++) {
+        unsigned at = (unsigned) gen_extern_at(i);
+        int lo = 0, hi = nrelocs;
 
-    for (i = 0; i < nexterns; i++)
-        if (gen_extern_at(i) == at)
-            return slot_of[i];
+        while (lo < hi) {
+            int mid = (int) ((unsigned) (lo + hi) / 2);
 
-    return 0;
+            if ((unsigned) out_reloc_at(mid) < at)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        if (lo < nrelocs && (unsigned) out_reloc_at(lo) == at)
+            wants[lo] = slot_of[i];
+    }
 }
 
 static void put_num(FILE *f, int value)
@@ -390,7 +406,7 @@ void obj_write(const char *path)
     int nglobals = sym_nglobals(), step = (int) sizeof(Sym);
     int nsyms = 0, nrelocs = out_nrelocs(), ndeps = lex_ndeps();
     int nexterns = gen_nexterns(), nwalk = nglobals / step;
-    int *name_at, *index_of, *dep_at, *slot_of, *items, *want_at;
+    int *name_at, *index_of, *dep_at, *slot_of, *items, *want_at, *wants;
     char *used;
     int i, s, n, nitems = 0, nwants;
 
@@ -508,12 +524,17 @@ void obj_write(const char *path)
         front_byte(OBJ_WANT | OBJ_FUNC);
     }
 
+    wants = calloc((size_t) nrelocs + 1, sizeof *wants);
+    if (!wants)
+        acc_error("out of memory for the object");
+    reloc_calls(wants, nrelocs, slot_of, nexterns);
     for (i = 0, n = 0; i < nrelocs; i++) {
         int at = out_reloc_at(i);
 
         front_num(at);
-        front_num(reloc_wants(at, slot_of, nexterns, &n));
+        front_num(reloc_wants_bss(at, &n) ? 1 : wants[i]);
     }
+    free(wants);
 
     for (i = 0; i < ndeps; i++) {
         unsigned size, sum, weighted;
