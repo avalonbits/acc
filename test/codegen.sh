@@ -433,5 +433,12 @@ emits "a >> 8, no copy first"           dd3106dd3e no \
 emits "t[i] ^ (b >> 8), no copy"        dd31fcdd3ef4 no \
     'unsigned long f(unsigned long a, unsigned long b, unsigned long *t) { return t[a & 0xff] ^ (b >> 8); }'
 
+# A local array's address in reach of a displacement is lea hl, ix+d, not
+# push de; ld de, d; push ix; pop hl; add hl, de; pop de.
+emits "a[i], lea hl, ix+d"              ed22 yes \
+    'int f(int i) { int a[4]; a[i] = 1; return a[0]; }'
+emits "a[i], not through DE"            d511 no \
+    'int f(int i) { int a[4]; a[i] = 1; return a[0]; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

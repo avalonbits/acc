@@ -6036,20 +6036,24 @@ static int           *relax_target, *relax_slot;
 static unsigned char *relax_short;
 static int            relax_cap;
 
+/* The seven bytes each local array's address no longer needs, made lea by
+ * gen_func_end: cut with the jumps, in order among them. */
+static int *arr_cut_at, narr_cuts, arr_cuts_cap;
+
 static void relax_function(const Mark *from, int frame_at)
 {
     Cut *cuts;
     int *target, *slot, *put;
     unsigned char *shrink;
-    int n = njumps - from->jump, ncuts = 0, nslots = 0, i;
+    int n = njumps - from->jump, ncuts = 0, nslots = 0, i, ai = 0;
 
-    if (n <= 0 && frame_at < 0)
+    if (n <= 0 && frame_at < 0 && !narr_cuts)
         return;
 
     /* Grown and kept, as everything on this path is: a function is a handful
      * of jumps and there are hundreds of functions. */
-    if (n + 1 > relax_cap) {
-        relax_cap = (n + 1) * 2;
+    if (n + 1 + narr_cuts > relax_cap) {
+        relax_cap = (n + 1 + narr_cuts) * 2;
         relax_cuts = realloc(relax_cuts, (size_t) relax_cap * sizeof *relax_cuts);
         relax_target = realloc(relax_target,
                                (size_t) relax_cap * sizeof *relax_target);
@@ -6093,12 +6097,24 @@ static void relax_function(const Mark *from, int frame_at)
             int to = get24(out_img + (*at + 1 - out_base));
             int d = to - (*at + 2);
 
+            while (ai < narr_cuts && (unsigned) arr_cut_at[ai] < (unsigned) *at) {
+                cut->at = arr_cut_at[ai++];     /* an array's, before it */
+                cut->len = 7;
+                cut++;
+                ncuts++;
+            }
             *put++ = to;
             *fits++ = jr_of(*cc) && JR_REACHES(d);
             if (!fits[-1])
                 continue;
             cut->at = *at + 1;
             cut->len = 2;
+            cut++;
+            ncuts++;
+        }
+        while (ai < narr_cuts) {
+            cut->at = arr_cut_at[ai++];
+            cut->len = 7;
             cut++;
             ncuts++;
         }
@@ -7050,12 +7066,35 @@ void gen_func_end(void)
     out_patch24(frame_patch, -frame_size());
     in_function = 0;
 
+    /* Each local array's address, now that the frame is laid out: where
+     * it is within a displacement's reach, the ten bytes vaddr_array wrote
+     * -- push de; ld de, d; push ix; pop hl; add hl, de; pop de -- are made
+     * lea hl, ix+d, and the seven after it are cut with the jumps. */
     {
         int above = locals_size + spill_peak, i;
 
-        for (i = 0; i < narray_patches; i++)
-            out_patch24(array_patches[i].at,
-                        -(above + array_end[array_patches[i].array]));
+        narr_cuts = 0;
+        for (i = 0; i < narray_patches; i++) {
+            int at = array_patches[i].at;
+            int d = -(above + array_end[array_patches[i].array]);
+            unsigned char *p = out_img + (at - 2 - out_base);
+
+            if (!disp_fits(d)) {
+                out_patch24(at, d);
+                continue;
+            }
+            p[0] = 0xed;                /* lea hl, ix+d */
+            p[1] = 0x22;
+            p[2] = (unsigned char) d;
+            if (narr_cuts == arr_cuts_cap) {
+                arr_cuts_cap = arr_cuts_cap ? arr_cuts_cap * 2 : 16;
+                arr_cut_at = realloc(arr_cut_at,
+                                     (size_t) arr_cuts_cap * sizeof *arr_cut_at);
+                if (!arr_cut_at)
+                    acc_error("out of memory for local arrays");
+            }
+            arr_cut_at[narr_cuts++] = at + 1;
+        }
     }
 
     /* Last, so that everything written into the function is written before
