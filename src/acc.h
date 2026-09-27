@@ -903,6 +903,7 @@ void gen_call_indirect(int nargs);      /* through the pointer under them */
 void vpush_function(int fn);          /* a function's address */
 void vpush_global_addr(int sym);      /* a variable's, when it has none yet */
 void gen_data_fixup(int fn, int at);  /* and one in a global's bytes */
+void gen_link_fixup(int fn, int at);  /* and one in a link's */
 extern int gen_data_context;          /* a global's initial value is being read */
 extern int gen_pending_sym;            /* whose address it needs, not yet known */
 
@@ -1012,6 +1013,9 @@ void gen_startup(int ending, const char *program); /* the entry stub */
 void out_open(const char *path, int header);
 void out_close(void);
 void out_free(void);                /* let it go without writing it */
+void out_flush(void);               /* a link's image, into its file so far */
+void out_abandon(void);             /* and taken out again, on an error */
+extern int out_may_flush;           /* whether out_flush may: see src/out.c */
 void out_forget(void);          /* a function's cut runs, given back */
 int  out_len(void);                 /* bytes written so far */
 
@@ -1201,6 +1205,7 @@ void out_seek(int here);            /* back to it, keeping what came after */
 void out_copy(int at, unsigned char *to, int len);  /* bytes already written */
 int  out_read24(int at);            /* and read one back */
 void out_patch24(int at, int v);
+void out_add24(int at, int delta);  /* added to what is there */
 void out_patch8(int at, int v);
 void out_patch16(int at, int v);
 

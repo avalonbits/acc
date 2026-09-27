@@ -60,6 +60,7 @@ static int errors_asked;
 __attribute__((noreturn)) static void fail(const char *file, int line, int col,
                                            const char *msg)
 {
+    out_abandon();
     if (errors_path) {
         FILE *f = fopen(errors_path, "w");
 
@@ -9076,6 +9077,7 @@ static void link_object(const char *path)
 
     obj_read(path, &o, 1);
     place_object(&o, path);
+    out_flush();
 }
 
 /* What a link has taken from one member of a library so far: where each of
@@ -9291,9 +9293,10 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         } else if (which == 1) {
             gen_late_fixup(-1, dest, kind, t->bss + a);
         } else if (kind == REL_ABS24) {
-            /* gen_finish adds the symbol to what is in the slot. */
+            /* The symbol is added to what is in the slot: now, or by
+             * gen_finish. */
             out_patch24(dest, (int) a);
-            gen_data_fixup(link_symbol(obj_sym_name(&o, which - 2),
+            gen_link_fixup(link_symbol(obj_sym_name(&o, which - 2),
                                        obj_sym_flags(&o, which - 2)), dest);
         } else {
             gen_late_fixup(link_symbol(obj_sym_name(&o, which - 2),
@@ -9438,6 +9441,7 @@ static void link_archive(const char *path)
             take_items(&o, &taken[m], obj_object_name(name_text(sym_at(sym)->name)),
                        ar_member_name(&a, m));
             obj_free(&o);
+            out_flush();
             if (gen_no_address(sym) && gen_bss_offset(sym) < 0)
                 acc_error("'%s' says it defines '%s', and its member does "
                           "not", path, name_text(sym_at(sym)->name));
@@ -9648,13 +9652,23 @@ int main(int argc, char **argv)
         /* Linking. The entry stub goes in first, as it does for a program
          * compiled in one piece, and its call to main is a fixup like any
          * other -- which is what makes the objects' own symbols do the work
-         * of finding it. */
+         * of finding it. Nothing in it is moved once it is written, so what
+         * is done goes to the file as the link goes. */
         out_open(out, 1);
+        out_may_flush = 1;
         if (obj_map_path)
             obj_link_map_open();
         gen_startup(ending, out);
         link_inputs(objs, nobjs);
         gen_finish();
+#ifdef ACC_TABLE_STATS
+        {
+            int out_npatches(void);
+
+            fprintf(stderr, "fixups %d patches %d\n", gen_nfixups(),
+                    out_npatches());
+        }
+#endif
         obj_link_map_close();
         out_close();
     } else if (to_object && obj_current(out, in)) {

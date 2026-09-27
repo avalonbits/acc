@@ -1951,8 +1951,7 @@ static void vbinop(int op)
         int at = gaddr_end - ACC_INT_SIZE;
         Type type = lhs->type;
 
-        out_patch24(at, out_read24(at)
-                        + (op == TK_PLUS ? rhs->val : -rhs->val));
+        out_add24(at, op == TK_PLUS ? rhs->val : -rhs->val);
         vdrop();
         (vsp - 1)->type = type;
 
@@ -2377,7 +2376,7 @@ void gen_settle(int sym)
             fixups[kept++] = fixups[i];
             continue;
         }
-        out_patch24(fixups[i].at, sym_at(sym)->val + out_read24(fixups[i].at));
+        out_add24(fixups[i].at, sym_at(sym)->val);
     }
     nfixups = kept;
 }
@@ -5453,7 +5452,7 @@ static void bss_emit(void)
      * program left anything at zero or not -- so this runs even when there
      * was nothing to clear. */
     for (i = 0; i != nbss_fixups; i++)
-        out_patch24(bss_fixups[i], out_read24(bss_fixups[i]) + base);
+        out_add24(bss_fixups[i], base);
 
     bss_top = base + bss_len + bss_extra;
     bss_start = base;
@@ -6587,7 +6586,7 @@ void gen_finish(void)
          * a global's bytes: `int *p = &g + 1` puts the one there, because
          * where g is was not known when the bytes were written. */
         if (f->declared) {
-            out_patch24(f->at, fn->val + out_read24(f->at));
+            out_add24(f->at, fn->val);
             continue;
         }
         if (fn->type == TY_VOID)
@@ -6601,7 +6600,7 @@ void gen_finish(void)
                           "'%s' returns a one-byte type and is called before "
                           "it is defined; move its definition above the call",
                           name_text(fn->name));
-        out_patch24(f->at, fn->val + out_read24(f->at));
+        out_add24(f->at, fn->val);
     }
     late_fill(bss_start);
 }
@@ -7791,6 +7790,23 @@ void gen_data_fixup(int fn, int at)
 {
     fixup_add(fn, at);
     fixups[nfixups - 1].declared = 1;
+}
+
+/* The same for a link's slot, filled now if `fn` has its address already:
+ * one placed before the object that wants it. Kept for the end, a fixup
+ * is a patch to bytes long gone to the file (see out_flush), and a link
+ * of zap had two thousand of them. A weak one waits: something after it
+ * may be what it turns out to be. */
+void gen_link_fixup(int fn, int at)
+{
+    if (no_address(fn) || name_weak(sym_at(fn)->name)) {
+        gen_data_fixup(fn, at);
+
+        return;
+    }
+    want(fn);
+    out_reloc(at);
+    out_add24(at, sym_at(fn)->val);
 }
 
 /* A call through the pointer to a function under the arguments. */
