@@ -97,8 +97,19 @@ else
     bad "-I is looked in before the default" "the default was read first"
 fi
 
-# With the library missing, a program that needs nothing from it links.
+# The default directory is not an option: an object made with it is the same
+# file as one made without it, so objects carry between the Agon and a PC.
 printf 'int main(void) { return 0; }\n' > "$tmp/plain.c"
+bin/acc -c "$tmp/plain.c" -o "$tmp/plain-ref.o" >/dev/null || exit 2
+if "$tmp/acc" -c "$tmp/plain.c" -o "$tmp/plain.o" >/dev/null 2>&1 \
+   && cmp -s "$tmp/plain.o" "$tmp/plain-ref.o"; then
+    ok "the default directory leaves an object alone"
+else
+    bad "the default directory leaves an object alone" "the objects differ"
+fi
+rm -f "$tmp/plain.o"
+
+# With the library missing, a program that needs nothing from it links.
 if "$tmp/acc-nolib" -c "$tmp/plain.c" -o "$tmp/plain.o" >/dev/null 2>&1 \
    && "$tmp/acc-nolib" "$tmp/plain.o" -o "$tmp/plain.bin" >/dev/null 2>&1; then
     ok "a missing default library is passed over"

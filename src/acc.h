@@ -448,6 +448,7 @@ int lex_name_col(const char *at, int *line); /* of the name before `at` */
 void lex_init(void);
 void lex_open(const char *path);
 void lex_add_include(const char *dir);
+void lex_add_include_default(const char *dir);
 void lex_define(const char *arg);       /* -D, as a #define would read it */
 void lex_undefine(const char *arg);     /* -U, as a #undef would */
 

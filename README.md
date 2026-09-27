@@ -55,7 +55,7 @@ over unchanged sources does nothing:
     */ acc -c main.c -o main.o
     main.o is up to date
     */ acc -v
-    acc 0.1.0 (build 7014277)
+    acc 0.1.0 (build 7597311)
 
 Objects can be collected into a library, from which a link takes only the
 members a program uses:

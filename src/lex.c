@@ -596,10 +596,18 @@ static int         ninclude_dirs;
 
 void lex_add_include(const char *dir)
 {
+    lex_add_include_default(dir);
+    opt_fold('I', dir);
+}
+
+/* A directory the build names rather than the command line: looked in the
+ * same way, and not an option, so that an object made where it is looked in
+ * is the same file as one made where it is not. */
+void lex_add_include_default(const char *dir)
+{
     if (ninclude_dirs == INCLUDE_DIRS)
         acc_error("more than %d -I directories", INCLUDE_DIRS);
     include_dirs[ninclude_dirs++] = dir;
-    opt_fold('I', dir);
 }
 
 int      tok;

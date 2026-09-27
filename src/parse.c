@@ -9514,7 +9514,7 @@ int main(int argc, char **argv)
     if (to_archive && (!nobjs || to_object))
         usage();
 #ifdef ACC_INCLUDE_DIR
-    lex_add_include(ACC_INCLUDE_DIR);   /* after every -I */
+    lex_add_include_default(ACC_INCLUDE_DIR); /* after every -I */
 #endif
 
     begin = clock();
