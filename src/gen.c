@@ -6485,7 +6485,8 @@ static void drop_unused_statics(void)
 
 void gen_finish(void)
 {
-    int i;
+    Fixup   *f, *end;
+    RtFixup *r, *rend;
 
 #ifndef ACC_NODROP
     drop_unused_statics();
@@ -6494,16 +6495,20 @@ void gen_finish(void)
     /* A helper wanted by name, which is how one arrives from an object: that
      * object used it and did not carry the blob. Claimed before anything is
      * laid down, so that the blob knows how much of itself to be. */
+    /* The loops below walk the fixups by pointer: indexed, each use was a
+     * multiply by the entry's width, and a call in between meant it was
+     * worked out again. Nothing in them adds a fixup, so the table stays
+     * where it is. */
     if (!gen_objects)
-        for (i = 0; i != nfixups; i++) {
+        for (f = fixups, end = fixups + nfixups; f != end; f++) {
             int which;
 
-            if (!no_address(fixups[i].fn))
+            if (!no_address(f->fn))
                 continue;
-            which = rt_which(name_text(sym_at(fixups[i].fn)->name));
+            which = rt_which(name_text(sym_at(f->fn)->name));
             if (which < 0)
                 continue;
-            rt_syms[which] = fixups[i].fn;
+            rt_syms[which] = f->fn;
             rt_wanted(which);
         }
 
@@ -6512,8 +6517,8 @@ void gen_finish(void)
      * linked, rather than one into every object that multiplies. */
     if (gen_objects) {
         extern_reserve(nexterns + nrt_fixups + nfixups);
-        for (i = 0; i != nrt_fixups; i++)
-            extern_add(rt_fixups[i].at, rt_symbol(rt_fixups[i].which));
+        for (r = rt_fixups, rend = rt_fixups + nrt_fixups; r != rend; r++)
+            extern_add(r->at, rt_symbol(r->which));
     } else {
         rt_emit_used();
         args_emit();
@@ -6532,8 +6537,8 @@ void gen_finish(void)
 
         /* And the ones the link itself answers for, now that there is an
          * answer: everything else has been laid down. */
-        for (i = 0; i != nfixups; i++) {
-            int sym = fixups[i].fn, at;
+        for (f = fixups, end = fixups + nfixups; f != end; f++) {
+            int sym = f->fn, at;
 
             if (!no_address(sym) || (at = link_given(sym)) == 0)
                 continue;
@@ -6542,24 +6547,24 @@ void gen_finish(void)
         }
     }
 
-    for (i = 0; i != nfixups; i++) {
-        Sym *fn = sym_at(fixups[i].fn);
+    for (f = fixups, end = fixups + nfixups; f != end; f++) {
+        Sym *fn = sym_at(f->fn);
 
-        if (no_address(fixups[i].fn)) {
+        if (no_address(f->fn)) {
             if (gen_objects) {
-                extern_add(fixups[i].at, fixups[i].fn);
+                extern_add(f->at, f->fn);
                 continue;
             }
         }
 
         /* A weak reference nothing else wanted is at zero, and so is what
          * reads it as a pointer: see do_pragma. */
-        if (no_address(fixups[i].fn) && name_weak(fn->name)) {
+        if (no_address(f->fn) && name_weak(fn->name)) {
             fn->val = 0;
             if (fn->kind == SYM_FUNC)
-                sym_set_flags(fixups[i].fn, SYMF_DEFINED);
+                sym_set_flags(f->fn, SYMF_DEFINED);
         }
-        if (no_address(fixups[i].fn)) {
+        if (no_address(f->fn)) {
             if (fn->kind == SYM_FUNC)
                 acc_error("'%s' is called but never defined",
                           name_text(fn->name));
@@ -6581,22 +6586,22 @@ void gen_finish(void)
          * call or a register load and is the amount added for an address in
          * a global's bytes: `int *p = &g + 1` puts the one there, because
          * where g is was not known when the bytes were written. */
-        if (fixups[i].declared) {
-            out_patch24(fixups[i].at, fn->val + out_read24(fixups[i].at));
+        if (f->declared) {
+            out_patch24(f->at, fn->val + out_read24(f->at));
             continue;
         }
         if (fn->type == TY_VOID)
-            acc_error_pos(fixups[i].line, fixups[i].col,
+            acc_error_pos(f->line, f->col,
                           "'%s' returns void and is called before it is "
                           "defined, which declares it as returning int; move "
                           "its definition above the call",
                           name_text(fn->name));
         if (RETURNS_IN_A(fn->type))
-            acc_error_pos(fixups[i].line, fixups[i].col,
+            acc_error_pos(f->line, f->col,
                           "'%s' returns a one-byte type and is called before "
                           "it is defined; move its definition above the call",
                           name_text(fn->name));
-        out_patch24(fixups[i].at, fn->val + out_read24(fixups[i].at));
+        out_patch24(f->at, fn->val + out_read24(f->at));
     }
     late_fill(bss_start);
 }
