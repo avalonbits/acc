@@ -1155,10 +1155,12 @@ void ar_member(const Archive *a, int i, Object *o)
     if (at < AR_HEADER || len < OBJ_HEADER || at + len > a->size)
         acc_error("'%s' says a member is at %06x and %d bytes, and it is not",
                   a->path, at, len);
-    f = fopen(a->path, "rb");
     all = malloc((size_t) len);
-    if (!f || !all)
-        acc_error("cannot read '%s'", a->path);
+    if (!all)
+        acc_error("out of memory for a member of '%s'", a->path);
+    f = fopen(a->path, "rb");
+    if (!f)
+        acc_error("cannot open '%s'", a->path);
     if (fseek(f, at, SEEK_SET) != 0
         || (int) fread(all, 1, (size_t) len, f) != len)
         acc_error("short read on '%s'", a->path);

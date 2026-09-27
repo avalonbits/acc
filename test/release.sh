@@ -59,6 +59,11 @@ printf 'acc -c main.c\r\nacc -c util.c\r\nacc main.o util.o -o prog.bin\r\n' \
     > "$sd/build.obey"
 # main.c edited, for the second run: only it is compiled again.
 sed 's/7 squared/Seven squared/' "$sd/main.c" > "$sd/main2.c"
+# One step with <agon/mos.h>, whose declarations fill the heap: the link
+# reads the library while the compile's tables are all still there.
+printf '#include <agon/mos.h>\n\nint main(void)\n{\n    mos_putstring("mos in one step\\r\\n");\n    return 0;\n}\n' \
+    > "$sd/mosone.c"
+
 # A compile that fails, in an obey file: the line after it must not run,
 # and MOS must not add a message of its own. It stops the autoexec too, so
 # it is the last line, and the run ends at the prompt rather than at stop.
@@ -77,6 +82,8 @@ hello Agon
 acc -c hello.c -o hello.o -I common
 acc one.c
 one Agon
+acc mosone.c
+mosone
 obey build.obey
 prog
 delete main.c
@@ -119,6 +126,7 @@ expect "acc -v on the Agon"                  "acc $version (build $build)"
 expect "a program linked with the defaults"  "hello, Agon"
 expect "a current object is left alone"      "hello.o is up to date"
 expect "one step, named after the source"    "one step, Agon"
+expect "one step with <agon/mos.h>"          "mos in one step"
 expect "the README's obey build"             "7 squared is 49"
 expect "run again, an unchanged file is kept" "util.o is up to date"
 expect "and the edited one compiled again"   "Seven squared is 49"

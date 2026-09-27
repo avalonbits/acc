@@ -9671,9 +9671,9 @@ int main(int argc, char **argv)
         translation_unit();
         lex_end();
         bss_end();
+        lex_close();                    /* its window is room for the link */
         link_inputs(objs, nobjs);
         gen_finish();
-        lex_close();
         if (relocs)
             out_relocs_write(relocs);
         out_close();
