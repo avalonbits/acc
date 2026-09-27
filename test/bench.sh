@@ -78,6 +78,8 @@ fi
 
 sd=$(emu_card); trap 'rm -rf "$sd"' EXIT
 cp "$ACC" "$sd/bin/acc.bin"
+mkdir -p "$sd/lib/acc"                  # where the Agon build looks
+cp -r include "$sd/lib/acc/include"
 
 # A counting build says so in its own bytes: the format it reports with.
 speed=
@@ -176,6 +178,15 @@ fi
 # Searched with the comments stripped. Every input opens with one, so a bare
 # `*` or `/` matched the `/*` of a comment and every input looked to use both
 # -- and the word "long" in a sentence covered the keyword.
+# A small program compiled as it stands, reading its headers from
+# /lib/acc/include as it would on the machine: the other real-code inputs
+# have theirs folded in, and so never open a header at all. See
+# test/bench/headers/agon.c.
+if [ -z "${ACC_BENCH_SRC:-}" ] && [ $# -eq 0 ]; then
+    SRCS="$SRCS test/bench/headers/agon.c"
+    UNITS="$UNITS test/bench/headers/agon.c"
+fi
+
 for src in $SRCS; do
     sed 's|//.*||' "$src" | tr '\n' '\001' | sed 's=/\*[^\*]*\*\+\([^/\*][^\*]*\*\+\)*/= =g' \
         | tr '\001' '\n' >> "$tmp/code.c"
@@ -276,7 +287,7 @@ for SRC in $SRCS; do
       *)          unit=0 ;;
     esac
     if [ "$unit" = 1 ]; then
-        if ! bin/acc -c "$SRC" -o "$sd/check.o" >/dev/null 2>&1; then
+        if ! bin/acc -c "$SRC" -o "$sd/check.o" -Iinclude >/dev/null 2>&1; then
             echo "$(basename "$SRC"): the host acc cannot compile it" >&2
             status=1; continue
         fi
@@ -327,7 +338,15 @@ for SRC in $SRCS; do
 
     total=$(printf '%s\n' "$times" | head -n "$RUNS" | awk '{t+=$1} END {print t}')
     total_all=$((total_all + total))
-    bytes=$(stat -c%s "$SRC")
+    # The bytes acc reads: an input that includes headers is counted with
+    # each of them once, as their guards have it -- which is the size of
+    # the input with them folded in.
+    if grep -q '^[[:space:]]*#[[:space:]]*include' "$SRC"; then
+        bytes=$(test/bench/amalgamate.py "$(dirname "$SRC")" "$(basename "$SRC")" \
+                include | wc -c)
+    else
+        bytes=$(stat -c%s "$SRC")
+    fi
 
     # A build made with CYCLES=1 also says how many cycles each compile took,
     # counted by the eZ80's own timer. Where it does, that is the figure: the
