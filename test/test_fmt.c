@@ -70,6 +70,10 @@ int main(void)
     SAME(64, "%c%c%c", 'a', 'Z', '0');
     SAME(64, "%s and %s", "one", "");
     SAME(64, "[%8s]", "pad");
+    SAME(64, "[%.*s]", 3, "abcdef");
+    SAME(64, "[%.*s]", 0, "abcdef");
+    SAME(64, "[%.*s]", 10, "abc");
+    SAME(64, "%.*s is not a character", 6, "\\u0041");
     SAME(64, "100%% of %s", "it");
     SAME(64, "%s:%d:%d: error: %s", "file.c", 12, 7, "text");
     SAME(64, "Done in %u.%02u seconds\r\n", 3u, 5u);

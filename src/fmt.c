@@ -10,9 +10,9 @@
  * and five kilobytes of acc.bin with the helpers it brings -- five
  * kilobytes of heap, on a machine where the heap is what decides which
  * programs compile. acc prints messages, a map and a list of offsets, and
- * what they ask for is %s, %c, %%, and %d, %u and %x with an optional `l`,
- * a width and a `0` to pad with. That is all this does; anything else
- * comes out as written.
+ * what they ask for is %s, with a precision as %.*s, %c, %%, and %d, %u and
+ * %x with an optional `l`, a width and a `0` to pad with. That is all this
+ * does; anything else comes out as written.
  *
  * In agondev's build it is printf, fprintf, vfprintf, snprintf and
  * vsnprintf, so that libagon's are not linked. Elsewhere it is only
@@ -24,6 +24,12 @@
 #include <string.h>
 
 #include "fmt.h"
+
+/* agondev's build packs the words of acc's error messages into single bytes
+ * (src/msgpack.py), and a format is where they are expanded again. */
+#ifdef ACC_MSG_PACKED
+#include "msgdict.h"
+#endif
 
 /* Where the characters go: a buffer of `cap`, of which `len` would have
  * been written, or a file, through `chunk` a piece at a time. */
@@ -53,6 +59,19 @@ static void sink_put(Sink *s, char c)
     }
     s->len++;
 }
+
+#ifdef ACC_MSG_PACKED
+/* The word a packed byte stands for: the one after that many NULs. */
+static void put_word(Sink *s, unsigned char code)
+{
+    const char *w = msg_words;
+
+    for (; code != MSG_FIRST; code--)
+        w += strlen(w) + 1;
+    while (*w)
+        sink_put(s, *w++);
+}
+#endif
 
 /* A number's digits, most significant first, padded to `width` with
  * `pad`; `neg` puts a minus sign in front of them. */
@@ -102,8 +121,15 @@ static void format(Sink *s, const char *fmt, Args *a)
         const char *start = fmt;
         char pad = ' ';
         int width = 0, lng = 0;
+        unsigned most = (unsigned) -1;          /* %.*s's precision */
 
         if (*fmt != '%') {
+#ifdef ACC_MSG_PACKED
+            if ((unsigned char) *fmt >= MSG_FIRST) {
+                put_word(s, (unsigned char) *fmt);
+                continue;
+            }
+#endif
             sink_put(s, *fmt);
             continue;
         }
@@ -114,6 +140,10 @@ static void format(Sink *s, const char *fmt, Args *a)
         }
         while (*fmt >= '0' && *fmt <= '9')
             width = width * 10 + (*fmt++ - '0');
+        if (fmt[0] == '.' && fmt[1] == '*') {   /* %.*s, the only one used */
+            most = (unsigned) va_arg(a->ap, int);
+            fmt += 2;
+        }
         if (*fmt == 'l') {
             lng = 1;
             fmt++;
@@ -141,9 +171,11 @@ static void format(Sink *s, const char *fmt, Args *a)
 
             if (!str)
                 str = "(null)";
-            for (n = (int) strlen(str); width > n; width--)
+            for (n = 0; str[n] && (unsigned) n != most; n++)
+                ;
+            for (; width > n; width--)
                 sink_put(s, ' ');
-            while (*str)
+            while (n--)
                 sink_put(s, *str++);
             break;
         }
@@ -197,7 +229,9 @@ int fmt_vfprintf(FILE *file, const char *fmt, va_list ap)
     return (int) s.len;
 }
 
-#if defined(AGONDEV) && defined(__clang__)     /* agondev's build: libagon's */
+/* agondev's build, in place of libagon's; and a host build that asks, so
+ * that test/msgpack.sh can print the packed messages through this. */
+#if (defined(AGONDEV) && defined(__clang__)) || defined(ACC_FMT_WRAP)
 int vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap)
 {
     return fmt_vsnprintf(buf, cap, fmt, ap);
