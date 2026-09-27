@@ -19,10 +19,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE_MAX=248052        # bytes of acc.bin
-HEAP_MIN=179729         # bytes from ___heapbot to ___heaptop
-SETFLAG_MAX=564
-IMULU_MAX=324
+IMAGE_MAX=246661        # bytes of acc.bin
+HEAP_MIN=181120         # bytes from ___heapbot to ___heaptop
+SETFLAG_MAX=560
+IMULU_MAX=320
 
 AGONDEV=${AGONDEV:-$HOME/agondev}
 CC=$AGONDEV/bin/ez80-none-elf-clang
@@ -32,9 +32,8 @@ make -s -f Makefile.agon >/dev/null 2>&1 || { echo "  FAIL the Agon build"; exit
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 for f in $(sed -n 's/^SRCS = //p; /^       src/p' Makefile.agon | tr -d '\\'); do
-    "$CC" -mllvm -z80-gas-style -mllvm -z80-print-zero-offset -nostdinc -Isrc \
-        -isystem "$AGONDEV/include" -target ez80-none-elf -DAGONDEV -Oz \
-        -Wa,-march=ez80+full -fno-threadsafe-statics \
+    # shellcheck disable=SC2046
+    "$CC" $(make -s -f Makefile.agon cflags) \
         -S "$f" -o "$tmp/$(basename "$f" .c).s" || exit 1
 done
 cat "$tmp"/*.s > "$tmp/all.s"

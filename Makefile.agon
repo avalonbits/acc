@@ -36,13 +36,19 @@ NAME    = acc-stack
 EXTRA   = -DACC_STACK
 endif
 
+# -inline-threshold=-10 on top: clang still inlines what is called once
+# and what says always_inline, and stops inlining small functions it has a
+# call to anyway. acc.bin came out 1,391 bytes smaller -- heap, on the Agon
+# -- and compiling 0.4% slower; at -40, 238 bytes more for 1.3% more.
+#
 # -Oz because the budget is space. The Agon gives a program 448 KB for code,
 # data, heap and stack together, and every byte acc is not is a byte left for
 # the symbol table of whatever it is compiling.
 CFLAGS = -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
          -nostdinc -Isrc -isystem $(AGONDEV)/include \
          -target ez80-none-elf -DAGONDEV \
-         -Oz -Wa,-march=ez80+full -fno-threadsafe-statics $(EXTRA)
+         -Oz -mllvm -inline-threshold=-10 \
+         -Wa,-march=ez80+full -fno-threadsafe-statics $(EXTRA)
 
 # acc takes a command line, so it needs the argument splitting that agondev's
 # crt0 leaves to a defsym.
@@ -67,7 +73,7 @@ HDRS = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt
 
 OBJS = $(patsubst src/%.c,$(OBJ)/%.o,$(SRCS)) $(OBJ)/marks.o
 
-.PHONY: all clean size
+.PHONY: all clean size cflags
 all: $(BIN)/$(NAME).bin
 
 $(BIN)/$(NAME).bin: $(OBJS) src/agon.ld | $(BIN)
@@ -103,6 +109,11 @@ size: $(BIN)/$(NAME).bin
 	@echo "[$$(stat -c%s $(BIN)/$(NAME).bin) bytes of image, of 458752 available]"
 	@$(TOOLS)/ez80-none-elf-size $(OBJS) | tail -n +2 \
 	  | awk '{t+=$$1; d+=$$2; b+=$$3} END {printf "[text %d  data %d  bss %d  = %d, leaving %d for heap and stack]\n", t, d, b, t+d+b, 458752-(t+d+b)}'
+
+# The flags, for the tests that read the assembly they make: test/frames.sh
+# and test/budget.sh.
+cflags:
+	@echo $(CFLAGS)
 
 $(BIN) $(OBJ):
 	@mkdir -p $@

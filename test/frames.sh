@@ -26,9 +26,8 @@ CC=$AGONDEV/bin/ez80-none-elf-clang
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 for f in $(sed -n 's/^SRCS = //p; /^       src/p' Makefile.agon | tr -d '\\'); do
-    "$CC" -mllvm -z80-gas-style -mllvm -z80-print-zero-offset -nostdinc -Isrc \
-        -isystem "$AGONDEV/include" -target ez80-none-elf -DAGONDEV -Oz \
-        -Wa,-march=ez80+full -fno-threadsafe-statics \
+    # shellcheck disable=SC2046
+    "$CC" $(make -s -f Makefile.agon cflags) \
         -S "$f" -o "$tmp/$(basename "$f" .c).s" || exit 1
 done
 
