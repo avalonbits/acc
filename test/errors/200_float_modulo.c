@@ -1,4 +1,4 @@
-/* expect: 8: error: '%' takes integers, not floating-point values */
+/* expect: 8:20: error: '%' takes integers, not floating-point values */
 /* Not a missing routine: C requires integer operands for the remainder, so a
  * float here is the program's mistake. The same goes for the bitwise
  * operators and the shifts. */

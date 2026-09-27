@@ -1,4 +1,4 @@
-/* expect: 6: error: a case label has to be a constant integer */
+/* expect: 6:10: error: a case label has to be a constant integer */
 /* A case is a constant, fixed when the switch is compiled. */
 int main(void) {
     int n = 2;

@@ -1,4 +1,4 @@
-/* expect: 7: error: hex constant with no digits */
+/* expect: 7:9: error: hex constant with no digits */
 /* An error from inside the number lexer, which reports at the line the token
  * began on.
  */

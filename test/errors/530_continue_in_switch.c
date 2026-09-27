@@ -1,4 +1,4 @@
-/* expect: 6: error: 'continue' is not inside a loop */
+/* expect: 6:9: error: 'continue' is not inside a loop */
 /* A switch is not a loop, so there is nothing for a continue to go on with. */
 int main(void) {
     switch (1) {

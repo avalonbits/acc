@@ -1,4 +1,4 @@
-/* expect: 3: error: 'struct point' is defined twice */
+/* expect: 3:1: error: 'struct point' is defined twice */
 struct point { int x; };
 struct point { int y; };
 int main(void) {

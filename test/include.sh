@@ -119,7 +119,7 @@ cat > "$tmp/src/usebad.c" <<'EOF'
 int main(void) { return 0; }
 EOF
 refuses "an error inside a header names the header" \
-    "bad.h:2: error:" "$tmp/src/usebad.c"
+    "bad.h:2:27: error:" "$tmp/src/usebad.c"
 
 # And when the header ends, the lines are the includer's again.
 cat > "$tmp/src/after.c" <<'EOF'
@@ -129,7 +129,7 @@ cat > "$tmp/src/after.c" <<'EOF'
 int main(void) { return @; }
 EOF
 refuses "the line after an include is the includer's" \
-    "after.c:4: error:" "$tmp/src/after.c"
+    "after.c:4:25: error:" "$tmp/src/after.c"
 
 # --- how deep it goes --------------------------------------------------
 # A file that includes itself is the shortest way to the bottom.

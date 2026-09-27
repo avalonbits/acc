@@ -1,4 +1,4 @@
-/* expect: 4: error: this function returns a struct, and 'return' has to give it one of the same type */
+/* expect: 4:5: error: this function returns a struct, and 'return' has to give it one of the same type */
 struct point { int x; };
 struct point f(void) {
     return 1;

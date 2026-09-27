@@ -1,4 +1,4 @@
-/* expect: 6: error: this is const, so it cannot be changed */
+/* expect: 6:13: error: this is const, so it cannot be changed */
 int x;
 int main(void) {
     const int *p = &x;

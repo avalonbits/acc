@@ -1,4 +1,4 @@
-/* expect: 4: error: an array needs at least one element */
+/* expect: 4:11: error: an array needs at least one element */
 /* C has no empty arrays. */
 int main(void) {
     char a[0];

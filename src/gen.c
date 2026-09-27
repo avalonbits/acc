@@ -2332,7 +2332,10 @@ void vnot(void)
 typedef struct {
     int fn;                 /* index, not a pointer: see sym.c */
     int at;
-    int line;               /* where the call was, for the diagnostic below */
+    int line, col;          /* where the call was, for the diagnostic below:
+                             * the column only when that can be said, and
+                             * worked out then, since the file has moved on
+                             * by the time it is */
     unsigned char declared; /* whether the call knew the function's type */
 } Fixup;
 
@@ -2356,6 +2359,7 @@ static void fixup_add(int fn, int at)
     fixups[nfixups].at = at;
     fixups[nfixups].line = tok_line;
     fixups[nfixups].declared = (unsigned char) (sym_flags(fn) & SYMF_DECLARED);
+    fixups[nfixups].col = fixups[nfixups].declared ? 0 : lex_col();
     nfixups++;
 }
 
@@ -6566,15 +6570,16 @@ void gen_finish(void)
             continue;
         }
         if (fn->type == TY_VOID)
-            acc_error_at(fixups[i].line,
-                         "'%s' returns void and is called before it is "
-                         "defined, which declares it as returning int; move "
-                         "its definition above the call", name_text(fn->name));
+            acc_error_pos(fixups[i].line, fixups[i].col,
+                          "'%s' returns void and is called before it is "
+                          "defined, which declares it as returning int; move "
+                          "its definition above the call",
+                          name_text(fn->name));
         if (RETURNS_IN_A(fn->type))
-            acc_error_at(fixups[i].line,
-                         "'%s' returns a one-byte type and is called before it "
-                         "is defined; move its definition above the call",
-                         name_text(fn->name));
+            acc_error_pos(fixups[i].line, fixups[i].col,
+                          "'%s' returns a one-byte type and is called before "
+                          "it is defined; move its definition above the call",
+                          name_text(fn->name));
         out_patch24(fixups[i].at, fn->val + out_read24(fixups[i].at));
     }
     late_fill(bss_start);
@@ -7347,18 +7352,18 @@ void gen_func_end(void)
     static_end();
 }
 
-void gen_return(int line)
+void gen_return(int line, const char *spot)
 {
     int recorded = -1;             /* its index among const_ret_val */
 
     /* C99 has a return with a value only in a function that returns one, and
      * one without only in a function that does not. */
     if (return_type == TY_VOID && vtop > 0)
-        acc_error_at(line, "this function returns void, so 'return' cannot "
-                           "give it a value");
+        acc_error_spot(line, spot, "this function returns void, so 'return' "
+                                   "cannot give it a value");
     if (return_type != TY_VOID && vtop == 0)
-        acc_error_at(line, "this function returns a value, so 'return' needs "
-                           "one");
+        acc_error_spot(line, spot, "this function returns a value, so "
+                                   "'return' needs one");
 
     /* A struct is copied to where the caller asked for it, which is the
      * hidden first argument, and that address is the answer in HL -- as
@@ -7367,8 +7372,9 @@ void gen_return(int line)
         Value *top = vsp - 1;
 
         if (!type_is_struct(top->type) || top->ext != return_ext)
-            acc_error_at(line, "this function returns a struct, and 'return' "
-                               "has to give it one of the same type");
+            acc_error_spot(line, spot, "this function returns a struct, and "
+                                       "'return' has to give it one of the "
+                                       "same type");
         top->type = type_ptr_to(TY_CHAR);
         force_into(top, R_HL);
         ld_rr_ix(R_DE, 2 * ACC_PTR_SIZE);

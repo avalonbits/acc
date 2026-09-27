@@ -1,4 +1,4 @@
-/* expect: 4: error: va_start in a function with no '...' */
+/* expect: 4:5: error: va_start in a function with no '...' */
 int f(int n) {
     va_list ap;
     va_start(ap, n);

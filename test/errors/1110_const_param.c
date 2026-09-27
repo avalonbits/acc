@@ -1,4 +1,4 @@
-/* expect: 3: error: 'x' is const, so it cannot be changed */
+/* expect: 3:7: error: 'x' is const, so it cannot be changed */
 int f(const int x) {
     x += 1;
     return x;

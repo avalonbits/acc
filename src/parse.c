@@ -22,28 +22,117 @@ const char *lex_path(void);
 /* ------------------------------------------------------------------ */
 /* diagnostics                                                         */
 
+/* -errors: where to write the error as well, for a program that runs acc
+ * and needs to know what went wrong -- an editor that jumps to the line. It
+ * can't read what acc prints: MOS has no output redirection, and one program
+ * can't capture another's console. So the error goes to this file too, as
+ *
+ *     file:line:column: error: text
+ *
+ * with the column 0 when it is not known. An error with no line -- a link
+ * that can't find a symbol, say -- is `acc:0:0: error: text`. A compile that
+ * works removes the file, so a reader never finds a stale error.
+ *
+ * It also changes how acc fails: with 100 rather than 1 (or 2 for usage).
+ * On the Agon MOS reads a program's result as one of its own errors and
+ * rewrites 1, 4 and 5 into "Invalid command" -- a failed compile then looks
+ * like acc isn't there at all. 100 is past MOS's table: MOS hands it back
+ * unchanged and prints nothing for it. */
+static const char *errors_path;
+static int errors_asked;
+#define ERRORS_EXIT 100
+
+__attribute__((noreturn)) static void fail(const char *file, int line, int col,
+                                           const char *msg)
+{
+    if (errors_path) {
+        FILE *f = fopen(errors_path, "w");
+
+        if (f) {
+            fprintf(f, "%s:%d:%d: error: %s\n", file, line, col, msg);
+            fclose(f);
+        }
+    }
+    exit(errors_asked ? ERRORS_EXIT : 1);
+}
+
+/* An error at a line and a column, which is printed as gcc prints one:
+ * `file:line:column: error: text`, or without the column when it is 0,
+ * not known. */
+__attribute__((noreturn)) static void error_pos(int line, int col,
+                                                const char *fmt, va_list ap)
+{
+    char msg[256];
+    const char *file = lex_path() ? lex_path() : "acc";
+
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    if (col)
+        fprintf(stderr, "%s:%d:%d: error: %s\n", file, line, col, msg);
+    else
+        fprintf(stderr, "%s:%d: error: %s\n", file, line, msg);
+    fail(file, line, col, msg);
+}
+
+void acc_error_pos(int line, int col, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    error_pos(line, col, fmt, ap);
+}
+
+void acc_error_spot(int line, const char *spot, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    error_pos(line, lex_col_at(spot), fmt, ap);
+}
+
+void acc_error_prev(const char *fmt, ...)
+{
+    int line = tok_line, col = lex_name_col(tok_at, &line);
+    va_list ap;
+
+    va_start(ap, fmt);
+    error_pos(line, col ? col : lex_col(), fmt, ap);
+}
+
+/* At the name before the token the parser kept `at` of, on `line` -- the
+ * name a call's `(` or an assignment's `=` follows -- or at that token when
+ * what is before it is not a name. */
+__attribute__((noreturn)) static void error_before(int line, const char *at,
+                                                   const char *fmt, ...)
+{
+    int col = lex_name_col(at, &line);
+    va_list ap;
+
+    va_start(ap, fmt);
+    error_pos(line, col ? col : lex_col_at(at), fmt, ap);
+}
+
+/* At a line, and at the current token's column when it is the current
+ * token's line: that is the token nearly every caller means. One that
+ * means an earlier token kept where it was, and says so with
+ * acc_error_spot. */
 void acc_error_at(int line, const char *fmt, ...)
 {
     va_list ap;
 
-    fprintf(stderr, "%s:%d: error: ", lex_path() ? lex_path() : "acc", line);
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fputc('\n', stderr);
-    exit(1);
+    error_pos(line, line == tok_line ? lex_col() : 0, fmt, ap);
 }
 
 void acc_error(const char *fmt, ...)
 {
+    char msg[256];
     va_list ap;
 
-    fprintf(stderr, "acc: error: ");
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    fputc('\n', stderr);
-    exit(1);
+    fprintf(stderr, "acc: error: %s\n", msg);
+    fail("acc", 0, 0, msg);
 }
 
 /* ------------------------------------------------------------------ */
@@ -139,27 +228,28 @@ static int call_args_open(void)
 }
 
 /* A call through the pointer to a function on the stack, from just past
- * its `(`. */
+ * its `(`, which was at `spot` on `line`: an error about the call points at
+ * what is called, the name before it. */
 __attribute__((noinline))
-static void call_value(void)
+static void call_value(int line, const char *spot)
 {
     int x = vext(), nargs;
 
     if (vtype() != type_ptr_to(TY_FUNC))
-        acc_error_at(tok_line, "only a function or a pointer to one can be "
-                               "called");
+        error_before(line, spot, "only a function or a pointer to one can be "
+                                 "called");
     nargs = call_args();
     if (ext_func_declared(x) && nargs != ext_func_count(x)
         && !(nargs > ext_func_count(x) && ext_func_variadic(x)))
-        acc_error_at(tok_line, "this function takes %d argument%s, and this "
-                               "call gives it %d", ext_func_count(x),
+        error_before(line, spot, "this function takes %d argument%s, and this "
+                                 "call gives it %d", ext_func_count(x),
                      ext_func_count(x) == 1 ? "" : "s", nargs);
     gen_call_indirect(nargs);
 }
 
 /* A variable's value, for a call through it: `fp(3)`. */
 __attribute__((noinline))
-static void call_variable(int sym, NameRef name)
+static void call_variable(int sym, NameRef name, int line, const char *spot)
 {
     const Sym *v = sym_at(sym);
 
@@ -178,10 +268,10 @@ static void call_variable(int sym, NameRef name)
         vderef();
         break;
     default:
-        acc_error_at(tok_line, "'%s' is not a function", name_text(name));
+        error_before(line, spot, "'%s' is not a function", name_text(name));
     }
     vset_ext(sym_at(sym)->ext);
-    call_value();
+    call_value(line, spot);
 }
 
 /* ------------------------------------------------------------------ */
@@ -392,7 +482,7 @@ static void inline_keep(int fn, const char *start, const char *end)
 /* The body's first statement, a return, when the function may be inlined:
  * compiled as ever, and its text kept if it is the only statement. */
 __attribute__((noinline))
-static void return_kept(int line)
+static void return_kept(int line, const char *spot)
 {
     char *end;
 
@@ -403,7 +493,7 @@ static void return_kept(int line)
         comma_expr();
     end = tok == TK_SEMI ? lex_record_take_semi() : (lex_record_take(), NULL);
     expect(TK_SEMI, "';'");
-    gen_return(line);
+    gen_return(line, spot);
     if (end && tok == TK_RBRACE)
         inline_keep(current_fn, inline_buf, end);
 }
@@ -477,21 +567,26 @@ static void inline_expand(const struct Inline *in, int fn)
     expect(TK_RPAREN, "')'");
 }
 
+/* A call to a name, with the `(` after it the current token. */
 static void call_rest(NameRef name)
 {
     int fn = sym_find(name);
     int nargs, nparams;
     const struct Inline *inl;
+    int line = tok_line;                /* the `(`, for an error */
+    const char *spot = tok_at;
+
+    next();
 
     /* Not declared: C99 took away the implicit declaration C89 gave such a
      * call, of a function returning int (6.5.1p2, 6.5.2.2), and a program
      * that relies on one is refused, as gcc 14 refuses it. */
     if (fn == SYM_NONE) {
-        acc_error_at(tok_line, "'%s' is called and not declared; C99 needs a "
-                               "declaration of a function before a call to it",
-                     name_text(name));
+        error_before(line, spot, "'%s' is called and not declared; C99 needs "
+                                 "a declaration of a function before a call "
+                                 "to it", name_text(name));
     } else if (sym_at(fn)->kind != SYM_FUNC) {
-        call_variable(fn, name);
+        call_variable(fn, name, line, spot);
 
         return;
     }
@@ -507,10 +602,10 @@ static void call_rest(NameRef name)
     expect(TK_RPAREN, "')'");
     if (nargs != nparams && (sym_flags(fn) & SYMF_PARAMS)
         && !(nargs > nparams && (sym_flags(fn) & SYMF_VARIADIC)))
-        acc_error_at(tok_line, "'%s' takes %s%d argument%s, and this call gives "
-                               "it %d", name_text(name),
-                     sym_flags(fn) & SYMF_VARIADIC ? "at least " : "",
-                     nparams, nparams == 1 ? "" : "s", nargs);
+        error_before(line, spot, "'%s' takes %s%d argument%s, and this call "
+                                 "gives it %d", name_text(name),
+                     sym_flags(fn) & SYMF_VARIADIC ? "at least " : "", nparams,
+                     nparams == 1 ? "" : "s", nargs);
     gen_call(fn, nargs, sym_params_first(fn), nparams);
 }
 
@@ -545,8 +640,8 @@ static void global_address(int sym)
     const Sym *global = sym_at(sym);
 
     if (type_ptr_depth(global->type) == TY_PTR_MAX)
-        acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
-                     TY_PTR_MAX);
+        acc_error_prev("a pointer can be %d deep and this is deeper",
+                       TY_PTR_MAX);
 
     /* In the bss, whose start is not known until the image is finished --
      * but where in it this variable is, is. So the offset is what goes on
@@ -597,19 +692,22 @@ static void object_value(void)
 
 /* `[index]`, with a pointer on the stack: the address of the element it
  * picks, which is `pointer + index` with the step C gives it. */
-/* Neither side of a subscript a pointer, said of the one on the left. */
+/* Neither side of a subscript a pointer, said of the one on the left, at
+ * the `[`. */
 __attribute__((noinline))
-static void subscript_refused(void)
+static void subscript_refused(int line, const char *spot)
 {
-    acc_error_at(tok_line, "'[' needs an array or a pointer, and this is %s",
-                 type_float(vtype_at(1)) ? "a floating-point value"
-                                         : "an integer");
+    acc_error_spot(line, spot, "'[' needs an array or a pointer, and this "
+                               "is %s",
+                   type_float(vtype_at(1)) ? "a floating-point value"
+                                           : "an integer");
 }
 
 static void subscript(void)
 {
     Type outer = narrow_dest;
-    int left = type_pointer(vtype()) != 0;
+    int left = type_pointer(vtype()) != 0, line = tok_line;
+    const char *spot = tok_at;
 
     next();
     narrow_dest = 0;            /* the index is not the destination */
@@ -620,7 +718,7 @@ static void subscript(void)
     /* `a[i]` is `*(a + i)`, and so is `i[a]` (C99 6.5.2.1): one of the two
      * is the pointer, and the addition takes it on either side. */
     if (!left && !type_pointer(vtype()))
-        subscript_refused();
+        subscript_refused(line, spot);
     vapply(TK_PLUS, 0);
 }
 
@@ -642,7 +740,7 @@ enum {
 
 static const char *record_name(int x);
 static void        func_suffix(Type *type, int *ext);
-static void        record_complete(int x, int line);
+static void        record_complete(int x, int line, const char *spot);
 
 /* The member of record x called `name`, looked for through its anonymous
  * members too, with *offset its place from the start of x. -1 if there is
@@ -682,14 +780,16 @@ __attribute__((noinline))
 static void member(void)
 {
     int line = tok_line, arrow = (tok == TK_ARROW), x = vext(), m, offset, top;
+    const char *spot = tok_at;
     Type type = vtype();
     NameRef name;
 
     next();
     if (type != type_ptr_to(TY_STRUCT))
-        acc_error_at(line, arrow ? "'->' needs a pointer to a struct or union"
-                                 : "'.' needs a struct or union");
-    record_complete(x, line);
+        acc_error_spot(line, spot,
+                       arrow ? "'->' needs a pointer to a struct or union"
+                             : "'.' needs a struct or union");
+    record_complete(x, line, spot);
     if (tok != TK_IDENT)
         acc_error_at(tok_line, "expected a member's name, found %s",
                      tok_spelling(tok));
@@ -735,10 +835,13 @@ static int postfix_chain(int object)
         } else if (tok == TK_LPAREN) {
             /* A call through a pointer to a function: `s.op(1)`,
              * `table[i](2)`, `get()(3)`. Its result is a value. */
+            int line = tok_line;
+            const char *spot = tok_at;
+
             if (object == POST_OBJECT)
                 vderef();
             next();
-            call_value();
+            call_value(line, spot);
             object = POST_CALL;
             continue;
         } else {
@@ -811,7 +914,7 @@ static int name_operand(int sym, NameRef name)
     int object;
 
     if (sym == SYM_NONE)
-        acc_error_at(tok_line, "'%s' is not declared", name_text(name));
+        acc_error_prev("'%s' is not declared", name_text(name));
     s = sym_at(sym);
 
     switch (s->kind) {
@@ -889,7 +992,7 @@ static int name_operand(int sym, NameRef name)
         object = 1;
         break;
     default:
-        acc_error_at(tok_line, "'%s' is not a variable", name_text(name));
+        acc_error_prev("'%s' is not a variable", name_text(name));
     }
 
     object = postfix_chain(object);
@@ -933,7 +1036,7 @@ void symbol_value(int sym, NameRef name)
     const Sym *local;
 
     if (sym == SYM_NONE)
-        acc_error_at(tok_line, "'%s' is not declared", name_text(name));
+        acc_error_prev("'%s' is not declared", name_text(name));
 
     /* Fetched once, so the fields below are read through one pointer held in
      * a register; nothing below pushes a symbol, so it stays good. */
@@ -1010,14 +1113,15 @@ static void prefix_operand(int op, const char *spelling)
 {
     if (tok == TK_LPAREN) {
         int line = tok_line;
+        const char *spot = tok_at;
 
         next();
         prefix_operand(op, spelling);
         expect(TK_RPAREN, "')'");
         if (tok_postfix())
-            acc_error_at(line, "%s of a parenthesis with a subscript or a "
-                               "member after it is more than acc reads",
-                         spelling);
+            acc_error_spot(line, spot, "%s of a parenthesis with a subscript "
+                                       "or a member after it is more than acc "
+                                       "reads", spelling);
 
         return;
     }
@@ -1026,6 +1130,7 @@ static void prefix_operand(int op, const char *spelling)
         NameRef name = tok_name;
         int sym = sym_find(name);
         int line = tok_line;
+        const char *spot = tok_at;
 
         next();
         switch (name_operand(sym, name)) {
@@ -1041,8 +1146,8 @@ static void prefix_operand(int op, const char *spelling)
 
             return;
         }
-        acc_error_at(line, "'%s' cannot be changed by %s", name_text(name),
-                     spelling);
+        acc_error_spot(line, spot, "'%s' cannot be changed by %s",
+                       name_text(name), spelling);
     }
 
     if (tok == TK_STAR) {
@@ -1140,7 +1245,7 @@ static void readonly_address(int sym)
 #define ADDR_VALUE  2
 
 __attribute__((noinline))
-static int  address_of_literal(int line);
+static int  address_of_literal(int line, const char *spot);
 static int  address_of_operand(void);
 static int  string_address(void);
 static Type joined_elem(void);
@@ -1148,11 +1253,12 @@ static Type joined_elem(void);
 static void address_of(void)
 {
     int line = tok_line;
+    const char *spot = tok_at;
 
     next();
     if (address_of_operand() == ADDR_VALUE)
-        acc_error_at(line, "'&' takes the address of a variable, and a cast "
-                           "has none");
+        acc_error_spot(line, spot, "'&' takes the address of a variable, and "
+                                   "a cast has none");
 }
 
 /* What `&` is being applied to, with the `&` already read. Answers whether
@@ -1162,6 +1268,7 @@ static int address_of_operand(void)
 {
     NameRef name;
     int sym, line;
+    const char *spot;
 
     /* `&(struct s){ ... }`: a compound literal is an object, and this is
      * the address of the one it makes. A parenthesis round anything else is
@@ -1170,7 +1277,7 @@ static int address_of_operand(void)
      * stay inlined into its callers, and a call to it from here is one more
      * of those on a path that is rare. */
     if (tok == TK_LPAREN)
-        return address_of_literal(tok_line);
+        return address_of_literal(tok_line, tok_at);
 
 
     /* `&*p`: the address of what a pointer leads to is the pointer, so the
@@ -1217,6 +1324,8 @@ static int address_of_operand(void)
                                "this is %s", tok_spelling(tok));
     name = tok_name;
     line = tok_line;
+    spot = tok_at;
+    spot = tok_at;
     sym = sym_find(name);
     next();
     switch (name_operand(sym, name)) {
@@ -1224,8 +1333,8 @@ static int address_of_operand(void)
         const Sym *local = sym_at(sym);
 
         if (local->quals & SQ_REGISTER)
-            acc_error_at(line, "'%s' is declared register, so it has no "
-                               "address to take", name_text(name));
+            acc_error_spot(line, spot, "'%s' is declared register, so it has "
+                                       "no address to take", name_text(name));
         vaddr_local(local->val, local->type);
         vset_ext(local->ext);
         vset_quals(local->quals);
@@ -1234,12 +1343,12 @@ static int address_of_operand(void)
     }
     case NAME_OBJECT:
         if (vbits())
-            acc_error_at(line, "a bit-field has no address to take");
+            acc_error_spot(line, spot, "a bit-field has no address to take");
 
         return ADDR_OBJECT;     /* the address is what is wanted */
     case NAME_CONST:
-        acc_error_at(line, "'%s' is a constant, which has no address",
-                     name_text(name));
+        acc_error_spot(line, spot, "'%s' is a constant, which has no address",
+                       name_text(name));
     case NAME_READONLY:
         vdrop();
         readonly_address(sym);
@@ -1248,7 +1357,8 @@ static int address_of_operand(void)
     case NAME_FUNC:
         return ADDR_OBJECT;     /* `&f` is f's address, as `f` is */
     case NAME_RESULT:
-        acc_error_at(line, "what a call comes to has no address to take");
+        acc_error_spot(line, spot, "what a call comes to has no address to "
+                                   "take");
     }
 
     /* An array whose length was worked out as the program ran is already
@@ -1425,12 +1535,14 @@ static void cast_operand(Type to, int x, int quals);
 static void sizeof_value(void);
 static void offsetof_value(void);
 static void compound_literal(Type type, int x, int count, Type elem,
-                             int elem_x, int line, int address, int *countp);
+                             int elem_x, int line, const char *spot,
+                             int address, int *countp);
 static int  local_array_object(Type elem, int elem_x, int *countp, int line,
-                               int braced);
-static int  local_struct_object(int x, int line, int braced);
+                               const char *spot, int braced);
+static int  local_struct_object(int x, int line, const char *spot, int braced);
 static void literal_bytes(Type type, int x, int count, Type elem, int elem_x,
-                          int line, int address, int *countp);
+                          int line, const char *spot, int address,
+                          int *countp);
 static void va_form(void);
 static inline __attribute__((always_inline)) int starts_decl(void);
 
@@ -1561,7 +1673,7 @@ static void primary(void)
 
         next();
 
-        if (accept(TK_LPAREN)) {
+        if (tok == TK_LPAREN) {
             call_rest(name);
             if (tok_postfix() || tok == TK_LPAREN)
                 subscript_value();
@@ -1813,9 +1925,9 @@ static void compound_local(NameRef name)
     int off, ext;
 
     if (sym == SYM_NONE)
-        acc_error_at(tok_line, "'%s' is not declared", name_text(name));
+        acc_error_prev("'%s' is not declared", name_text(name));
     if (sym_at(sym)->kind != SYM_LOCAL)
-        acc_error_at(tok_line, "'%s' cannot be assigned to", name_text(name));
+        acc_error_prev("'%s' cannot be assigned to", name_text(name));
 
     /* Taken now rather than looked up again after the right side: a call in
      * it to a function not yet seen pushes a symbol and moves the locals
@@ -1980,7 +2092,7 @@ void name_rest(NameRef name)
 {
     int sym;
 
-    if (accept(TK_LPAREN)) {
+    if (tok == TK_LPAREN) {
         call_rest(name);
         postfix_statement();
 
@@ -1999,7 +2111,8 @@ void name_rest(NameRef name)
     }
 
     if (tok == TK_ASSIGN) {
-        int dest = sym;
+        int dest = sym, line = tok_line;
+        const char *spot = tok_at;      /* the `=`, for an error */
         Type outer = narrow_dest;
 
         next();
@@ -2024,7 +2137,7 @@ void name_rest(NameRef name)
             const Sym *local = (sym == SYM_NONE) ? NULL : sym_at(sym);
 
             if (!local || local->kind != SYM_LOCAL)
-                acc_error_at(tok_line, "'%s' cannot be assigned to",
+                error_before(line, spot, "'%s' cannot be assigned to",
                              name_text(name));
             vstore_local(local->val, local->type);
         }
@@ -2515,7 +2628,7 @@ static int starts_type(int token)
 /* The several-keyword case: `unsigned short int` and `int short unsigned` are
  * the same type, so they are counted rather than matched against a list. */
 __attribute__((noinline))
-static Type type_specifier_slow(int first, int line)
+static Type type_specifier_slow(int first, int line, const char *spot)
 {
     int is_void = 0, is_char = 0, is_short = 0, is_int = 0;
     int is_long = 0, is_signed = 0, is_unsigned = 0, is_float = 0, is_bool = 0;
@@ -2545,34 +2658,35 @@ static Type type_specifier_slow(int first, int line)
     if (is_bool) {
         if (is_bool > 1 || is_void || is_char || is_short || is_int || is_long
             || is_signed || is_unsigned || is_float)
-            acc_error_at(line, "'_Bool' with another type");
+            acc_error_spot(line, spot, "'_Bool' with another type");
 
         return TY_BOOL;
     }
     if (is_long > 2)
-        acc_error_at(line, "'long long long' is not a type");
+        acc_error_spot(line, spot, "'long long long' is not a type");
     if (is_signed && is_unsigned)
-        acc_error_at(line, "'signed' and 'unsigned' together");
+        acc_error_spot(line, spot, "'signed' and 'unsigned' together");
     if (is_void && (is_char || is_short || is_int || is_long || is_signed || is_unsigned))
-        acc_error_at(line, "'void' with another type");
+        acc_error_spot(line, spot, "'void' with another type");
     if (is_char && (is_short || is_long))
-        acc_error_at(line, "'char' with another width");
+        acc_error_spot(line, spot, "'char' with another width");
     if (is_short && is_long)
-        acc_error_at(line, "'short' and 'long' together");
+        acc_error_spot(line, spot, "'short' and 'long' together");
 
     if (is_float) {
         if (is_char || is_short || is_int || is_signed || is_unsigned)
-            acc_error_at(line, "a floating type with an integer one");
+            acc_error_spot(line, spot, "a floating type with an integer one");
         if (is_long)
-            acc_error_at(line, "'long double' is not supported: agondev's "
-                               "library has no arithmetic for one, so a "
-                               "program that asks for it does not link");
+            acc_error_spot(line, spot, "'long double' is not supported: "
+                                       "agondev's library has no arithmetic "
+                                       "for one, so a program that asks for "
+                                       "it does not link");
 
         return TY_FLOAT;
     }
     if (is_long > 1) {
         if (is_char || is_short)
-            acc_error_at(line, "'long long' with another width");
+            acc_error_spot(line, spot, "'long long' with another width");
 
         return is_unsigned ? TY_ULLONG : TY_LLONG;
     }
@@ -2591,6 +2705,7 @@ static Type type_specifier_slow(int first, int line)
 static Type type_specifier(void)
 {
     int line = tok_line;
+    const char *spot = tok_at;
     int first = tok;
     unsigned char alone = spec_alone[first];
 
@@ -2603,7 +2718,7 @@ static Type type_specifier(void)
             return (Type) (alone - 1);
     }
 
-    return type_specifier_slow(first, line);
+    return type_specifier_slow(first, line, spot);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2639,12 +2754,13 @@ static int push_here(NameRef name, int kind, int val)
 }
 
 /* That `name` is not already declared in the scope being declared into. */
-static void not_redeclared(NameRef name, int line)
+static void not_redeclared(NameRef name, int line, const char *spot)
 {
     int sym = sym_find(name);
 
     if (sym != SYM_NONE && sym_declared_in(sym, scope_mark))
-        acc_error_at(line, "'%s' is already declared", name_text(name));
+        acc_error_spot(line, spot, "'%s' is already declared",
+                       name_text(name));
 }
 
 /* The same for a block's own variable, which has no linkage and so may be
@@ -2653,10 +2769,11 @@ static void not_redeclared(NameRef name, int line)
  * int x; }` declares x twice. A name no local of the function has had
  * needs no walk to say so, and one that has walks only its block. */
 __attribute__((noinline))
-static void local_redeclared(NameRef name, int line)
+static void local_redeclared(NameRef name, int line, const char *spot)
 {
     if (sym_find_in(name, scope_mark) != SYM_NONE)
-        acc_error_at(line, "'%s' is already declared", name_text(name));
+        acc_error_spot(line, spot, "'%s' is already declared",
+                       name_text(name));
 }
 
 /* The name local_not_redeclared asks about, whose low byte is read from
@@ -2665,11 +2782,11 @@ static void local_redeclared(NameRef name, int line)
 static NameRef stamp_name;
 
 static inline __attribute__((always_inline))
-void local_not_redeclared(NameRef name, int line)
+void local_not_redeclared(NameRef name, int line, const char *spot)
 {
     stamp_name = name;
     if (sym_maybe_local(stamp_name))
-        local_redeclared(name, line);
+        local_redeclared(name, line, spot);
     sym_stamp_name(stamp_name);
 }
 
@@ -2717,14 +2834,15 @@ static const char *const tag_keyword[] = { "enum", "struct", "union" };
 
 /* The tag's symbol, if it is visible, checked to be the kind the keyword
  * said; SYM_NONE if it is not declared at all. */
-static int tag_find(NameRef tag, int kind, NameRef name, int line)
+static int tag_find(NameRef tag, int kind, NameRef name, int line,
+                    const char *spot)
 {
     int sym = sym_find(tag);
 
     if (sym != SYM_NONE && sym_at(sym)->val != kind)
-        acc_error_at(line, "'%s' is declared as a %s tag, not a %s one",
-                     name_text(name), tag_keyword[sym_at(sym)->val],
-                     tag_keyword[kind]);
+        acc_error_spot(line, spot, "'%s' is declared as a %s tag, not a %s "
+                                   "one", name_text(name),
+                       tag_keyword[sym_at(sym)->val], tag_keyword[kind]);
 
     return sym;
 }
@@ -2737,6 +2855,7 @@ __attribute__((noinline))
 static Type enum_specifier(void)
 {
     int line = tok_line, negative = 0, val = 0, sym;
+    const char *spot = tok_at;
     NameRef name = NAME_NONE, tag = NAME_NONE;
     Type type;
 
@@ -2748,16 +2867,19 @@ static Type enum_specifier(void)
     }
     if (!accept(TK_LBRACE)) {
         if (!tag)
-            acc_error_at(line, "'enum' needs a name or a list of constants");
-        sym = tag_find(tag, TAG_ENUM, name, line);
+            acc_error_spot(line, spot, "'enum' needs a name or a list of "
+                                       "constants");
+        sym = tag_find(tag, TAG_ENUM, name, line, spot);
         if (sym == SYM_NONE)
-            acc_error_at(line, "'enum %s' is not defined", name_text(name));
+            acc_error_spot(line, spot, "'enum %s' is not defined",
+                           name_text(name));
 
         return sym_at(sym)->type;
     }
 
     while (tok != TK_RBRACE) {
         int cline = tok_line;
+        const char *cspot = tok_at;
         NameRef constant = declared_name();
 
         if (accept(TK_ASSIGN)) {
@@ -2768,8 +2890,9 @@ static Type enum_specifier(void)
             storage_ok = outer;
         }
         if (val > 0x7fffff)
-            acc_error_at(cline, "an enum constant has to fit in an int");
-        not_redeclared(constant, cline);
+            acc_error_spot(cline, cspot, "an enum constant has to fit in an "
+                                         "int");
+        not_redeclared(constant, cline, cspot);
 
         /* The push on its own line, and its answer used after it. Written as
          * `sym_at(push_here(...))->type = ...` the compiler was free to read
@@ -2789,7 +2912,7 @@ static Type enum_specifier(void)
 
     type = negative ? TY_INT : TY_UINT;
     if (tag) {
-        not_redeclared(tag, line);
+        not_redeclared(tag, line, spot);
         sym = push_here(tag, SYM_TAG, TAG_ENUM);
         sym_at(sym)->type = type;
     }
@@ -2820,11 +2943,13 @@ static const char *record_name(int x)
 
 /* That a record's members are known: it cannot be declared, sized or looked
  * into before they are. */
-static void record_complete(int x, int line)
+/* Record x has its members, or an error at `at`, on `line`: the token that
+ * needs them. */
+static void record_complete(int x, int line, const char *spot)
 {
     if (!ext_complete(x))
-        acc_error_at(line, "'%s' is declared but its members are not given",
-                     record_name(x));
+        acc_error_spot(line, spot, "'%s' is declared but its members are not "
+                                   "given", record_name(x));
 }
 
 /* A record's members, from just past its `{`. Each is laid where the last
@@ -2834,26 +2959,28 @@ static void record_complete(int x, int line)
 /* A bit-field's width, from just past its `:`: an integer type, and no more
  * bits than it has -- one for a _Bool. Zero, which ends the byte the last
  * was in, only without a name. */
-static int bitfield_width(Type type, NameRef name, int line)
+static int bitfield_width(Type type, NameRef name, int line,
+                          const char *spot)
 {
     int width = constant_int("a bit-field's width", line);
     int most = type == TY_BOOL ? 1 : type_scalar_bytes(type) * 8;
 
     if (type_pointer(type) || type_float(type) || type_is_struct(type)
         || type_is_array(type) || type == TY_VOID)
-        acc_error_at(line, "a bit-field has to have an integer type");
+        acc_error_spot(line, spot, "a bit-field has to have an integer type");
     if (width < 0 || width > most)
-        acc_error_at(line, "a bit-field of this type is 0 to %d bits wide",
-                     most);
+        acc_error_spot(line, spot, "a bit-field of this type is 0 to %d bits "
+                                   "wide", most);
     if (!width && name)
-        acc_error_at(line, "a bit-field of no bits cannot have a name");
+        acc_error_spot(line, spot, "a bit-field of no bits cannot have a "
+                                   "name");
 
     return width;
 }
 
 static int vla_length;           /* see array_dims */
 
-static void record_members(int x, int is_union, int line)
+static void record_members(int x, int is_union, int line, const char *spot)
 {
     /* Where the next member goes: a byte, and a bit within it, for a
      * bit-field to continue from. */
@@ -2874,7 +3001,7 @@ static void record_members(int x, int is_union, int line)
 
             if (!type_is_struct(base) || ext_tag(bx) != NAME_NONE)
                 continue;
-            record_complete(bx, line);
+            record_complete(bx, tok_prev_line, NULL);
             if (!is_union && bit) {
                 size++;
                 bit = 0;
@@ -2897,6 +3024,7 @@ static void record_members(int x, int is_union, int line)
         for (;;) {
             int mline = tok_line, count = 0, ext = bx, bytes, m, width = -1;
             int at, pos;
+            const char *mspot = tok_at; /* for an error about the member */
             Type type = base;
             NameRef name = NAME_NONE;
 
@@ -2904,16 +3032,17 @@ static void record_members(int x, int is_union, int line)
                 name = direct_declarator_out(declarator_stars_out(base),
                                              bx, &type, &ext, &count);
             if (vla_length)             /* C99 6.7.2.1p8 */
-                acc_error_at(mline, "a member's size has to be known as the "
-                                    "program is compiled, and this array's "
-                                    "length is worked out as it runs");
+                acc_error_spot(mline, mspot, "a member's size has to be known "
+                                             "as the program is compiled, and "
+                                             "this array's length is worked "
+                                             "out as it runs");
             if (!count)
                 func_suffix(&type, &ext);
             if (type_is_func(type))
-                acc_error_at(mline, "a member cannot be a function; a pointer "
-                                    "to one can");
+                acc_error_spot(mline, mspot, "a member cannot be a function; "
+                                             "a pointer to one can");
             if (accept(TK_COLON))
-                width = bitfield_width(type, name, mline);
+                width = bitfield_width(type, name, mline, mspot);
             /* `char b[];` last in a struct: C99's flexible array member,
              * which takes no room and stands for whatever was allocated
              * past the struct. Only last, only in a struct, and only where
@@ -2921,14 +3050,17 @@ static void record_members(int x, int is_union, int line)
              * no size to allocate from. */
             if (count < 0) {
                 if (is_union)
-                    acc_error_at(mline, "a union's member that is an array "
-                                        "needs its size");
+                    acc_error_spot(mline, mspot,
+                                   "a union's member that is an array needs "
+                                   "its size");
                 if (first < 0)
-                    acc_error_at(mline, "an array with no size has to come "
-                                        "after another member");
+                    acc_error_spot(mline, mspot,
+                                   "an array with no size has to come after "
+                                   "another member");
                 if (width >= 0 || !name)
-                    acc_error_at(mline, "an array with no size cannot be a "
-                                        "bit-field");
+                    acc_error_spot(mline, mspot,
+                                   "an array with no size cannot be a "
+                                   "bit-field");
                 flexible = 1;
                 count = 0;              /* no room, and no elements of its
                                          * own: the room is the caller's */
@@ -2938,24 +3070,26 @@ static void record_members(int x, int is_union, int line)
                 type = TY_EXT;
             }
             if (type == TY_VOID)
-                acc_error_at(mline, "'void' is not a type a member can have");
+                acc_error_spot(mline, mspot, "'void' is not a type a member "
+                                             "can have");
             /* A struct that ends in an array with no size may not be a
              * struct's member (C99 6.7.2.1p2), but a union may hold one --
              * and is then held to the same rule itself, as the struct would
              * be: no member of a struct, no element of an array. */
             if (type_is_struct(type)) {
-                record_complete(ext, mline);
+                record_complete(ext, mline, mspot);
                 if (ext_has_flex(ext) && !is_union)
-                    acc_error_at(mline, "'%s' ends in an array with no size, "
-                                        "so it cannot be a member",
-                                 record_name(ext));
+                    acc_error_spot(mline, mspot,
+                                   "'%s' ends in an array with no size, so it "
+                                   "cannot be a member", record_name(ext));
                 if (ext_has_flex(ext))
                     holds_flex = 1;
             }
             for (m = first; name && m >= 0; m = member_next(m))
                 if (member_name(m) == name)
-                    acc_error_at(mline, "'%s' is already a member of '%s'",
-                                 name_text(name), record_name(x));
+                    acc_error_spot(mline, mspot,
+                                   "'%s' is already a member of '%s'",
+                                   name_text(name), record_name(x));
 
             if (width >= 0) {
                 /* A bit-field: where the last ended, if it fits in a unit
@@ -3005,12 +3139,12 @@ static void record_members(int x, int is_union, int line)
                 first = m;
             last = m;
             if (flexible && !(tok == TK_SEMI && lex_rbrace_follows()))
-                acc_error_at(mline, "an array with no size has to be the last "
-                                    "member");
+                acc_error_spot(mline, mspot, "an array with no size has to be "
+                                             "the last member");
           placed:
             if (size > 0x7fffff)
-                acc_error_at(mline, "a struct this large does not fit in "
-                                    "memory");
+                acc_error_spot(mline, mspot, "a struct this large does not "
+                                             "fit in memory");
             if (!accept(TK_COMMA))
                 break;
         }
@@ -3019,7 +3153,8 @@ static void record_members(int x, int is_union, int line)
     if (bit)
         size++;
     if (first < 0)
-        acc_error_at(line, "a struct or union needs at least one member");
+        acc_error_spot(line, spot, "a struct or union needs at least one "
+                                   "member");
     ext_record_done(x, first, size);
     if (has_bits)
         ext_set_bits(x);
@@ -3035,6 +3170,7 @@ __attribute__((noinline))
 static Type struct_specifier(void)
 {
     int line = tok_line, is_union = (tok == TK_KW_UNION), kind, sym, x;
+    const char *spot = tok_at;
     NameRef name = NAME_NONE, tag = NAME_NONE;
 
     kind = is_union ? TAG_UNION : TAG_STRUCT;
@@ -3046,7 +3182,7 @@ static Type struct_specifier(void)
     }
 
     if (tag) {
-        sym = tag_find(tag, kind, name, line);
+        sym = tag_find(tag, kind, name, line, spot);
         if (sym != SYM_NONE && tok == TK_LBRACE
             && !sym_declared_in(sym, scope_mark))
             sym = SYM_NONE;                 /* a new one, shadowing it */
@@ -3059,8 +3195,9 @@ static Type struct_specifier(void)
         x = sym_at(sym)->ext;
     } else {
         if (tok != TK_LBRACE)
-            acc_error_at(line, "'%s' needs a name or a list of members",
-                         is_union ? "union" : "struct");
+            acc_error_spot(line, spot, "'%s' needs a name or a list of "
+                                       "members",
+                           is_union ? "union" : "struct");
         x = ext_record(is_union, NAME_NONE);
     }
 
@@ -3068,9 +3205,10 @@ static Type struct_specifier(void)
         unsigned char outer = storage_ok, outer_storage = (unsigned char) decl_storage;
 
         if (ext_complete(x))
-            acc_error_at(line, "'%s' is defined twice", record_name(x));
+            acc_error_spot(line, spot, "'%s' is defined twice",
+                           record_name(x));
         storage_ok = 0;
-        record_members(x, is_union, line);
+        record_members(x, is_union, line, spot);
         storage_ok = outer;
         decl_storage = outer_storage;
         expect(TK_RBRACE, "'}'");
@@ -3096,6 +3234,7 @@ __attribute__((noinline))
 static Type base_type_other(void)
 {
     int line = tok_line;
+    const char *spot = tok_at;
 
     switch (tok) {
     case TK_KW_CONST:                   /* `const int`, `const struct s` */
@@ -3156,7 +3295,7 @@ static Type base_type_other(void)
     case TK_KW_RESERVED:
         reserved_word();
     }
-    acc_error_at(line, "expected a type, found %s", tok_spelling(tok));
+    acc_error_spot(line, spot, "expected a type, found %s", tok_spelling(tok));
 }
 
 static Type base_type(void)
@@ -3231,12 +3370,13 @@ static inline __attribute__((always_inline))
 Type declarator_stars(Type base)
 {
     int line = tok_line;
+    const char *spot = tok_at;
 
     stars_const = 0;
     while (accept(TK_STAR)) {
         if (type_ptr_depth(base) == TY_PTR_MAX)
-            acc_error_at(line, "a pointer can be %d deep and this is deeper",
-                         TY_PTR_MAX);
+            acc_error_spot(line, spot, "a pointer can be %d deep and this is "
+                                       "deeper", TY_PTR_MAX);
         base = type_ptr_to(base);
         stars_const = tok_qualifier() ? star_qualifiers() : 0;
     }
@@ -3248,10 +3388,10 @@ Type declarator_stars(Type base)
  * after them: there is no value of type void, but `void *` is an ordinary
  * pointer to something unsaid. */
 static inline __attribute__((always_inline))
-void not_void(Type type, const char *what, int line)
+void not_void(Type type, const char *what, int line, const char *spot)
 {
     if (type == TY_VOID)
-        acc_error_at(line, "'void' is not a type %s can have", what);
+        acc_error_spot(line, spot, "'void' is not a type %s can have", what);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3265,52 +3405,58 @@ void not_void(Type type, const char *what, int line)
  * INT_MIN and a long because 8388608 is too big for an int before the minus
  * makes it fit, or `2L`. Its value, if an int holds it. */
 __attribute__((noinline))
-static int constant_wide(const char *what, int line)
+static int constant_wide(const char *what, int line, const char *spot)
 {
     uint64_t bits;
     int64_t v;
     Type type;
 
     if (!vconst_wide(&bits, &type) || type_float(type))
-        acc_error_at(line, "%s has to be a constant integer", what);
+        acc_error_spot(line, spot, "%s has to be a constant integer", what);
     v = type_unsigned(type) ? (int64_t) bits
       : type_scalar_bytes(type) == 4 ? (int64_t) (int32_t) (uint32_t) bits
       : (int64_t) bits;
     /* Written as long long: on the Agon 0x800000 does not fit an int, so
      * it is unsigned, and minus it is 8388608 again. */
     if (v < -0x800000LL || v > 0xffffffLL)
-        acc_error_at(line, "%s has to fit in an int", what);
+        acc_error_spot(line, spot, "%s has to fit in an int", what);
 
     return (int) v;
 }
 
-static int constant_folded(const char *what, int line, int before)
+/* The constant that was read from `at`, on `line`. */
+static int constant_folded(const char *what, int line, const char *spot,
+                           int before)
 {
     int val;
     Type type;
 
     if (!vconst_top(&val, &type)) {
-        val = constant_wide(what, line);
+        val = constant_wide(what, line, spot);
         type = TY_INT;
     }
     if (out_here() != before || type_pointer(type) || type_float(type))
-        acc_error_at(line, "%s has to be a constant integer", what);
+        acc_error_spot(line, spot, "%s has to be a constant integer", what);
     vdrop();
 
     return val;
 }
 
+/* An error about it is at the expression, whatever line the caller was
+ * given for the construct it is part of. */
 static int constant_int(const char *what, int line)
 {
     int before = out_here();
     Type outer = narrow_dest;
+    const char *spot = tok_at;
 
+    line = tok_line;
     narrow_dest = 0;
     conditional();              /* `?:` too: it is a constant expression when
                                  * its condition and the side it picks are */
     narrow_dest = outer;
 
-    return constant_folded(what, line, before);
+    return constant_folded(what, line, spot, before);
 }
 
 /* Whether the array just read has a length the program works out: its
@@ -3482,11 +3628,11 @@ static int vm_back_in(const VlaBlock *to, int nto)
     return 0;
 }
 
-static void vm_jump_refused(int line)
+static void vm_jump_refused(int line, int col)
 {
-    acc_error_at(line, "this goto jumps past the declaration of an array "
-                       "whose length is worked out as it runs, into its "
-                       "scope");
+    acc_error_pos(line, col, "this goto jumps past the declaration of an "
+                             "array whose length is worked out as it runs, "
+                             "into its scope");
 }
 
 /* The block's mark, made if this is the first array in it to need one. */
@@ -3541,7 +3687,7 @@ static unsigned char nvla_params;
  * says nothing -- the parameter is a pointer either way -- so there the
  * expression is read for its syntax and thrown away with the code it
  * emitted. */
-static int constant_wide(const char *what, int line);
+static int constant_wide(const char *what, int line, const char *spot);
 
 static int array_size(const char *what, int line, int *variable)
 {
@@ -3551,7 +3697,9 @@ static int array_size(const char *what, int line, int *variable)
     Type outer = narrow_dest;
     int val;
     Type type;
+    const char *spot = tok_at;          /* the size's, for an error */
 
+    line = tok_line;
     *variable = 0;
     vla_text_now = 0;
     recording = vla_marked;
@@ -3579,7 +3727,7 @@ static int array_size(const char *what, int line, int *variable)
 
         if (out_here() == before && vconst_wide(&bits, &type)
             && !type_float(type)) {
-            val = constant_wide(what, line);
+            val = constant_wide(what, line, spot);
             vdrop();
 
             return val;
@@ -3603,15 +3751,15 @@ static int array_size(const char *what, int line, int *variable)
          * macro it did not begin in -- is thrown away, which is only right
          * when there was nothing in it to lose. */
         if (in_params && gen_effects != effects)
-            acc_error_at(line, "a parameter's array size is evaluated when "
-                               "the function is entered, and acc could not "
-                               "keep this one to do that");
+            acc_error_spot(line, spot, "a parameter's array size is evaluated "
+                                       "when the function is entered, and acc "
+                                       "could not keep this one to do that");
         if (in_params)
             return -1;                  /* `int a[n]` is `int *a` */
-        acc_error_at(line, "%s has to be a constant integer", what);
+        acc_error_spot(line, spot, "%s has to be a constant integer", what);
     }
     if (type_pointer(vtype()) || type_float(vtype()))
-        acc_error_at(line, "an array's length has to be an integer");
+        acc_error_spot(line, spot, "an array's length has to be an integer");
     vconvert(TY_INT);
     *variable = 1;
 
@@ -3632,7 +3780,7 @@ static int array_size(const char *what, int line, int *variable)
  * none at all -- which only the first dimension may leave out. */
 static unsigned char star_length;
 
-static void array_brackets(int line)
+static void array_brackets(int line, const char *spot)
 {
     int had_static = 0, had_qualifier = 0;
 
@@ -3647,7 +3795,7 @@ static void array_brackets(int line)
         next();
         if (tok == TK_KW_STATIC) {
             if (had_static)
-                acc_error_at(line, "'static' twice inside []");
+                acc_error_spot(line, spot, "'static' twice inside []");
             had_static = 1;
         } else if (tok_qualifier()) {
             had_qualifier = 1;
@@ -3667,11 +3815,12 @@ static void array_brackets(int line)
     star_length = 0;
     if (tok == TK_STAR && lex_rbracket_follows()) {
         if (!in_params)
-            acc_error_at(line, "'[*]' belongs in a function's parameters, "
-                               "where its length is said elsewhere");
+            acc_error_spot(line, spot, "'[*]' belongs in a function's "
+                                       "parameters, where its length is said "
+                                       "elsewhere");
         if (had_static)
-            acc_error_at(line, "'static' says how many elements there are "
-                               "at least, and '[*]' says nothing");
+            acc_error_spot(line, spot, "'static' says how many elements there "
+                                       "are at least, and '[*]' says nothing");
         next();
         star_length = 1;
         vla_marked = 0;
@@ -3682,11 +3831,12 @@ static void array_brackets(int line)
     if (!had_static && !had_qualifier)
         return;
     if (!in_params)
-        acc_error_at(line, "'static' and qualifiers inside [] say something "
-                           "about a parameter, and this is not one");
+        acc_error_spot(line, spot, "'static' and qualifiers inside [] say "
+                                   "something about a parameter, and this is "
+                                   "not one");
     if (had_static && tok == TK_RBRACKET)
-        acc_error_at(line, "'static' inside [] needs the number the caller "
-                           "passes at least");
+        acc_error_spot(line, spot, "'static' inside [] needs the number the "
+                                   "caller passes at least");
 }
 
 /* The dimensions after a name being declared: `[N]`, `[]`, `[N][M]` and so
@@ -3779,10 +3929,12 @@ static void vla_params_enter(void)
         next();
         for (i = 0; i < nvla_texts; i++) {
             int line = tok_line;
+            const char *spot = tok_at;
 
             conditional();
             if (type_pointer(vtype()) || type_float(vtype()))
-                acc_error_at(line, "an array's length has to be an integer");
+                acc_error_spot(line, spot, "an array's length has to be an "
+                                           "integer");
             vconvert(TY_INT);
             slots[i] = gen_local(ACC_INT_SIZE);
             vstore_local(slots[i], TY_INT);
@@ -3804,16 +3956,24 @@ static void vla_params_enter(void)
 static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
                       int *count)
 {
-    int dims[12], lengths[12], n = 0, i;
+    int dims[12], lengths[12], n = 0, i, first_line = 0;
     unsigned char texts[12];
+    const char *first = NULL;           /* the first `[`, for an error */
 
     vla_length = 0;
     while (tok == TK_LBRACKET) {
         int line = tok_line, d = -1;
+        const char *spot = tok_at;
 
-        array_brackets(line);
+        if (!n) {
+            first_line = line;
+            first = spot;
+        }
+
+        array_brackets(line, spot);
         if (n == 12)                    /* C99 5.2.4.1 asks for 12 */
-            acc_error_at(line, "an array may have at most 12 dimensions");
+            acc_error_spot(line, spot, "an array may have at most 12 "
+                                       "dimensions");
         lengths[n] = 0;
         texts[n] = 0;
         if (tok != TK_RBRACKET) {
@@ -3834,11 +3994,12 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
                  * function is entered -- C99 6.9.1p10 -- from the text
                  * array_size kept: see vla_texts. */
             } else if (d == 0) {
-                acc_error_at(line, "an array needs at least one element");
+                acc_error_spot(line, spot, "an array needs at least one "
+                                           "element");
             }
         } else if (n > 0 && !star_length) {
-            acc_error_at(line, "only an array's first dimension may be left "
-                               "out");
+            acc_error_spot(line, spot, "only an array's first dimension may "
+                                       "be left out");
         }
         expect(TK_RBRACKET, "']'");
         dims[n++] = d;
@@ -3847,13 +4008,15 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
         return 0;
 
     if (base == TY_VOID)
-        acc_error_at(tok_line, "an array of void has no elements to hold");
+        acc_error_spot(first_line, first, "an array of void has no elements "
+                                          "to hold");
     if (type_is_struct(base)) {
-        record_complete(base_x, tok_line);
+        record_complete(base_x, first_line, first);
         if (ext_has_flex(base_x))
-            acc_error_at(tok_line, "'%s' ends in an array with no size, so "
-                                   "there is no saying where the next element "
-                                   "would start", record_name(base_x));
+            acc_error_spot(first_line, first, "'%s' ends in an array with no "
+                                              "size, so there is no saying "
+                                              "where the next element would "
+                                              "start", record_name(base_x));
     }
     *elem = base;
     *elem_x = base_x;
@@ -3880,7 +4043,8 @@ static int array_dims(Type base, int base_x, Type *elem, int *elem_x,
         return n;
     }
     if (*count > 0 && (long) *count * type_bytes(*elem, *elem_x) > 0x7fffff)
-        acc_error_at(tok_line, "an array this large does not fit in memory");
+        acc_error_spot(first_line, first, "an array this large does not fit "
+                                          "in memory");
 
     return n;
 }
@@ -3959,7 +4123,7 @@ static Type type_name(int *x)
     Type type = type_name_elem(x, &count, &elem, &elem_x);
 
     if (count < 0)
-        acc_error_at(tok_line, "an array type here needs its size");
+        acc_error_prev("an array type here needs its size");
 
     return type;
 }
@@ -3979,7 +4143,8 @@ static Type type_name(int *x)
  */
 __attribute__((noinline))
 static void compound_literal(Type type, int x, int count, Type elem,
-                             int elem_x, int line, int address, int *countp)
+                             int elem_x, int line, const char *spot,
+                             int address, int *countp)
 {
     int array;
 
@@ -3988,13 +4153,14 @@ static void compound_literal(Type type, int x, int count, Type elem,
      * image, and what the literal comes to is where they went. That half is
      * further down, where the machinery for a global's bytes is. */
     if (!in_body) {
-        literal_bytes(type, x, count, elem, elem_x, line, address, countp);
+        literal_bytes(type, x, count, elem, elem_x, line, spot, address,
+                      countp);
 
         return;
     }
 
     if (count) {
-        array = local_array_object(elem, elem_x, &count, line, 1);
+        array = local_array_object(elem, elem_x, &count, line, spot, 1);
         vaddr_array(array, elem);       /* an array is its first element's
                                          * address, address or not */
         vset_ext(elem_x);
@@ -4005,7 +4171,7 @@ static void compound_literal(Type type, int x, int count, Type elem,
     }
 
     if (type_is_struct(type)) {
-        array = local_struct_object(x, line, 1);
+        array = local_struct_object(x, line, spot, 1);
         vaddr_array(array, TY_STRUCT);
         vset_ext(x);
         if (!address)
@@ -4021,7 +4187,7 @@ static void compound_literal(Type type, int x, int count, Type elem,
 
         expect(TK_LBRACE, "'{'");
         if (tok == TK_RBRACE)
-            acc_error_at(line, "a compound literal needs a value");
+            acc_error_spot(line, spot, "a compound literal needs a value");
         narrow_dest = type_narrow(type);
         expr();
         narrow_dest = outer;
@@ -4040,7 +4206,7 @@ static void compound_literal(Type type, int x, int count, Type elem,
 /* `&(type){ values }`: the object the literal makes, and its address. The
  * `&` is read, and the `(` is next. */
 __attribute__((noinline))
-static int address_of_literal(int line)
+static int address_of_literal(int line, const char *spot)
 {
     int x, count, elem_x, quals;
     Type elem, type;
@@ -4094,8 +4260,9 @@ static int address_of_literal(int line)
             return ADDR_OBJECT;
         }
         if (kind == ADDR_VALUE)
-            acc_error_at(line, "'&' takes the address of a variable, and "
-                               "what is in the parenthesis is a value");
+            acc_error_spot(line, spot, "'&' takes the address of a variable, "
+                                       "and what is in the parenthesis is a "
+                                       "value");
 
         return kind;
     }
@@ -4111,14 +4278,14 @@ static int address_of_literal(int line)
      * `)` that closes it is; this says only that a value was left. */
     if (tok != TK_LBRACE) {
         if (count < 0)
-            acc_error_at(line, "an array type here needs its size");
+            acc_error_spot(line, spot, "an array type here needs its size");
         if (type_is_array(type))
-            acc_error_at(line, "a cast cannot make an array");
+            acc_error_spot(line, spot, "a cast cannot make an array");
         cast_operand(type, x, quals);
 
         return ADDR_VALUE;
     }
-    compound_literal(type, x, count, elem, elem_x, line, 1, NULL);
+    compound_literal(type, x, count, elem, elem_x, line, spot, 1, NULL);
 
     /* `&(int []){ 0, 1, 2 }[i]`, `&(struct s){ ... }.m`: what follows binds
      * to the literal, before the `&` does. An array's literal is already
@@ -4138,6 +4305,7 @@ __attribute__((noinline))
 static int cast_rest_as(int statement)
 {
     int x, line = tok_line, count, elem_x;
+    const char *spot = tok_at;
     Type elem;
     Type to = type_name_elem(&x, &count, &elem, &elem_x), outer = narrow_dest;
     int quals = base_const ? VQ_CONST : 0;
@@ -4149,14 +4317,14 @@ static int cast_rest_as(int statement)
      * assigns to it. */
     if (tok == TK_LBRACE && statement && !count) {
         narrow_dest = 0;
-        compound_literal(to, x, count, elem, elem_x, line, 1, NULL);
+        compound_literal(to, x, count, elem, elem_x, line, spot, 1, NULL);
         narrow_dest = outer;
 
         return !tok_postfix() || postfix_chain(POST_OBJECT) == POST_OBJECT;
     }
     if (tok == TK_LBRACE) {
         narrow_dest = 0;
-        compound_literal(to, x, count, elem, elem_x, line, 0, NULL);
+        compound_literal(to, x, count, elem, elem_x, line, spot, 0, NULL);
         narrow_dest = outer;
         if (tok_postfix())
             subscript_value();
@@ -4164,9 +4332,9 @@ static int cast_rest_as(int statement)
         return 0;
     }
     if (count < 0)
-        acc_error_at(line, "an array type here needs its size");
+        acc_error_spot(line, spot, "an array type here needs its size");
     if (type_is_array(to))
-        acc_error_at(line, "a cast cannot make an array");
+        acc_error_spot(line, spot, "a cast cannot make an array");
     cast_operand(to, x, quals);
 
     return 0;
@@ -4281,15 +4449,15 @@ static int sizeof_unary(void)
         int sym;
 
         next();
-        if (accept(TK_LPAREN)) {
+        if (tok == TK_LPAREN) {
             call_rest(name);
 
             return sizeof_postfix(SIZEOF_VALUE);
         }
         sym = sym_find_value(name);
         if (sym != SYM_NONE && sym_at(sym)->kind == SYM_FUNC)
-            acc_error_at(tok_line, "'%s' is a function, which has no size",
-                         name_text(name));
+            acc_error_prev("'%s' is a function, which has no size",
+                           name_text(name));
 
         /* `sizeof a` where a's length was worked out as the program ran:
          * the answer is in the frame beside it. A subscript or a member
@@ -4321,8 +4489,7 @@ static int sizeof_unary(void)
             if (sizeof_vla)
                 return SIZEOF_VALUE;    /* the size is read, not counted */
             if (sym_count(sym) < 0)
-                acc_error_at(tok_line, "'%s' has no size yet",
-                             name_text(name));
+                acc_error_prev("'%s' has no size yet", name_text(name));
             vset_type(type_ptr_to(TY_EXT),
                       ext_array(array->type, array->ext, sym_count(sym)));
             break;
@@ -4344,6 +4511,7 @@ static int sizeof_unary(void)
     if (accept(TK_LPAREN)) {
         if (starts_decl()) {
             int x, count, elem_x, line = tok_line;
+            const char *spot = tok_at;
             Type elem, type = type_name_elem(&x, &count, &elem, &elem_x);
 
             expect(TK_RPAREN, "')'");
@@ -4351,7 +4519,7 @@ static int sizeof_unary(void)
             /* A compound literal, whose size is the object's and not the
              * pointer an array one comes to as a value. */
             if (tok == TK_LBRACE) {
-                compound_literal(type, x, count, elem, elem_x, line, 0,
+                compound_literal(type, x, count, elem, elem_x, line, spot, 0,
                                  &count);
                 if (count) {
                     vset_type(type_ptr_to(TY_EXT),
@@ -4363,9 +4531,10 @@ static int sizeof_unary(void)
                 return sizeof_postfix(SIZEOF_VALUE);
             }
             if (count < 0)
-                acc_error_at(line, "an array type here needs its size");
+                acc_error_spot(line, spot, "an array type here needs its "
+                                           "size");
             if (type_is_array(type))
-                acc_error_at(line, "a cast cannot make an array");
+                acc_error_spot(line, spot, "a cast cannot make an array");
             cast_operand(type, x, base_const ? VQ_CONST : 0);
 
             /* A cast's result has the type it names, and that type's size is
@@ -4409,13 +4578,14 @@ static int va_slot(Type type, int ext)
 static void va_list_address(void)
 {
     int line = tok_line;
+    const char *spot = tok_at;
 
     if (tok != TK_IDENT && tok != TK_STAR && tok != TK_LPAREN)
-        acc_error_at(line, "expected the va_list, found %s",
-                     tok_spelling(tok));
+        acc_error_spot(line, spot, "expected the va_list, found %s",
+                       tok_spelling(tok));
     address_of_operand();
     if (vtype() != type_ptr_to(type_ptr_to(TY_CHAR)))
-        acc_error_at(line, "this has to be a va_list, and it is not");
+        acc_error_spot(line, spot, "this has to be a va_list, and it is not");
 }
 
 /* What <stdarg.h> would give, as the language's own words. A va_list is a
@@ -4427,6 +4597,7 @@ __attribute__((noinline))
 static void va_form(void)
 {
     int form = tok, line = tok_line;
+    const char *spot = tok_at;
 
     next();
     expect(TK_LPAREN, "'('");
@@ -4439,7 +4610,7 @@ static void va_form(void)
 
         expect(TK_COMMA, "','");
         if (current_fn == SYM_NONE || !(sym_flags(current_fn) & SYMF_VARIADIC))
-            acc_error_at(line, "va_start in a function with no '...'");
+            acc_error_spot(line, spot, "va_start in a function with no '...'");
         sym = tok == TK_IDENT ? sym_find(tok_name) : SYM_NONE;
         last = sym == SYM_NONE ? NULL : sym_at(sym);
         if (!last || (last->kind != SYM_LOCAL && last->kind != SYM_LOCAL_CONST)
@@ -4452,17 +4623,20 @@ static void va_form(void)
         break;
     }
     case TK_KW_VA_ARG: {
-        int x, slot;
+        int x, slot, tline;
+        const char *tspot;
         Type type;
 
         expect(TK_COMMA, "','");
         if (!starts_decl())
             acc_error_at(tok_line, "va_arg needs a type, found %s",
                          tok_spelling(tok));
+        tline = tok_line;
+        tspot = tok_at;
         type = type_name(&x);
         if (type_is_func(type))         /* 7.15.1.1: an object's type */
-            acc_error_at(tok_line, "va_arg reads a value, and a function "
-                                   "type has none");
+            acc_error_spot(tline, tspot, "va_arg reads a value, and a "
+                                         "function type has none");
         slot = va_slot(type, x);
 
         /* ap = ap + slot, and the value at ap - slot. */
@@ -4515,14 +4689,15 @@ __attribute__((noinline))
 static void offsetof_value(void)
 {
     int line = tok_line, x, count, elem_x, at = 0;
+    const char *spot = tok_at;
     Type elem, type;
 
     next();
     expect(TK_LPAREN, "'('");
     type = type_name_elem(&x, &count, &elem, &elem_x);
     if (!type_is_struct(type))
-        acc_error_at(line, "__builtin_offsetof wants a struct or a union, "
-                           "and this is not one");
+        acc_error_spot(line, spot, "__builtin_offsetof wants a struct or a "
+                                   "union, and this is not one");
     expect(TK_COMMA, "','");
 
     for (;;) {
@@ -4530,7 +4705,8 @@ static void offsetof_value(void)
         int offset, top, member = member_lookup(x, name, &offset, &top);
 
         if (member < 0)
-            acc_error_at(line, "'%s' is not a member of it", name_text(name));
+            acc_error_spot(line, spot, "'%s' is not a member of it",
+                           name_text(name));
         at += offset;
         type = member_type(member);
         x = member_ext(member);
@@ -4547,7 +4723,8 @@ static void offsetof_value(void)
         if (!accept(TK_DOT))
             break;
         if (!type_is_struct(type))
-            acc_error_at(line, "what is before the '.' is not a struct");
+            acc_error_spot(line, spot, "what is before the '.' is not a "
+                                       "struct");
     }
     expect(TK_RPAREN, "')'");
     vpush_const(at, TY_UINT);
@@ -4559,6 +4736,7 @@ static void offsetof_value(void)
 static void sizeof_value(void)
 {
     int line = tok_line, paren, x;
+    const char *spot = tok_at;
     Type type;
 
     next();
@@ -4578,7 +4756,7 @@ static void sizeof_value(void)
         type = vtype();
         x = vext();
         if (what == SIZEOF_OBJECT && vbits())
-            acc_error_at(line, "a bit-field has no size of its own");
+            acc_error_spot(line, spot, "a bit-field has no size of its own");
         if (what == SIZEOF_OBJECT)
             type = type_deref(type);
 
@@ -4601,14 +4779,15 @@ static void sizeof_value(void)
     }
 
     if (type == TY_VOID)
-        acc_error_at(line, "'void' has no size");
+        acc_error_spot(line, spot, "'void' has no size");
     if (vla_size_slot(type, x)) {       /* a VLA's row, or a typedef of one */
         vpush_local(vla_size_slot(type, x), TY_UINT);
 
         return;
     }
     if (type_is_array(type) && ext_count(x) < 0)
-        acc_error_at(line, "an array of unknown size has no size to give");
+        acc_error_spot(line, spot, "an array of unknown size has no size to "
+                                   "give");
     vpush_const(type_bytes(type, x), TY_UINT);
 }
 
@@ -4673,7 +4852,7 @@ static void decl_apply(const DeclOp *op, Type *t, int *x)
             acc_error_at(tok_line, "an array of functions is not a thing C "
                                    "has; an array of pointers to them is");
         if (type_is_struct(*t))
-            record_complete(*x, tok_line);
+            record_complete(*x, tok_line, tok_at);
         *x = op->b || vla_size_slot(*t, *x) ? vla_type(*t, *x, op->b, op->a)
              : vla_param_row(*t, *x, op->c) ? vla_param(*t, *x, op->c, op->a)
                                             : ext_array(*t, *x, op->a);
@@ -4785,8 +4964,9 @@ static NameRef decl_direct(void)
     for (;;) {
         if (tok == TK_LBRACKET) {
             int n = -1, line = tok_line, length = 0, variable, text = 0;
+            const char *spot = tok_at;
 
-            array_brackets(line);
+            array_brackets(line, spot);
             if (tok != TK_RBRACKET) {
                 n = array_size("an array's size", line, &variable);
                 text = vla_text_now;
@@ -4799,7 +4979,8 @@ static NameRef decl_direct(void)
                     vdrop();
                     n = 0;
                 } else if (n == 0) {
-                    acc_error_at(line, "an array needs at least one element");
+                    acc_error_spot(line, spot,
+                                   "an array needs at least one element");
                 }
             }
             expect(TK_RBRACKET, "']'");
@@ -4899,7 +5080,7 @@ static int param_types(int *first, int *count)
                                        "deeper", TY_PTR_MAX);
             type = type_ptr_to(type);
         }
-        not_void(type, "a parameter", tok_line);
+        not_void(type, "a parameter", tok_line, tok_at);
         if (nested_lists != seen) {
             *first = params_keep_run(*first, *count);
             seen = nested_lists;
@@ -5136,15 +5317,15 @@ static int init_designator_next;
 /* That the string just gathered is the kind the array's elements want: a
  * narrow one for chars, a wide one for wchar_t. C99 6.7.8p14 and p15 allow
  * no other pairing. */
-static void string_for(Type elem, int line)
+static void string_for(Type elem, int line, const char *spot)
 {
     if (str_joined_wide && !type_is_wchar(elem))
-        acc_error_at(line, "a wide string initialises an array of wchar_t, "
-                           "and this is not one");
+        acc_error_spot(line, spot, "a wide string initialises an array of "
+                                   "wchar_t, and this is not one");
     if (!str_joined_wide && !type_is_char(elem))
-        acc_error_at(line, "a string initialises an array of char, and this "
-                           "is not one; a wide string, L\"...\", is for "
-                           "wchar_t");
+        acc_error_spot(line, spot, "a string initialises an array of char, "
+                                   "and this is not one; a wide string, "
+                                   "L\"...\", is for wchar_t");
 }
 
 /* The elements of a braced list, the brace already read. Returns how many.
@@ -5239,16 +5420,17 @@ static void init_designated(Type type, int x, int offset, InitPut put)
 static int init_index(Type elem, int elem_x, int count, int offset, InitPut put)
 {
     int line = tok_line, i;
+    const char *spot = tok_at;
 
     next();                             /* the '[' */
     i = constant_int("the element a designator names", line);
     expect(TK_RBRACKET, "']'");
     if (i < 0)
-        acc_error_at(line, "a designator names element %d, and there is no "
-                           "such element", i);
+        acc_error_spot(line, spot, "a designator names element %d, and there "
+                                   "is no such element", i);
     if (count >= 0 && i >= count)
-        acc_error_at(line, "a designator names element %d of an array of %d",
-                     i, count);
+        acc_error_spot(line, spot, "a designator names element %d of an array "
+                                   "of %d", i, count);
     init_designated(elem, elem_x, offset + i * type_bytes(elem, elem_x), put);
 
     return i;
@@ -5259,6 +5441,7 @@ static int init_index(Type elem, int elem_x, int count, int offset, InitPut put)
 static int init_member(int x, int offset, InitPut put)
 {
     int line = tok_line, m, saved_bits, at, top;
+    const char *spot = tok_at;
     NameRef name;
 
     next();                             /* the '.' */
@@ -5267,11 +5450,11 @@ static int init_member(int x, int offset, InitPut put)
                      tok_spelling(tok));
     name = tok_name;
     next();
-    record_complete(x, line);
+    record_complete(x, line, spot);
     m = member_lookup(x, name, &at, &top);
     if (m < 0)
-        acc_error_at(line, "'%s' has no member '%s'", record_name(x),
-                     name_text(name));
+        acc_error_spot(line, spot, "'%s' has no member '%s'", record_name(x),
+                       name_text(name));
 
     saved_bits = init_bits;
     init_bits = member_bits(m);
@@ -5352,15 +5535,18 @@ static void braced_string_end(void)
 
 static int init_string(Type elem, int count, int offset, InitPut put)
 {
-    int line = tok_line, len = string_gather(), i;
+    int line = tok_line, len, i;
+    const char *spot = tok_at;
 
-    string_for(elem, line);
+    len = string_gather();
+
+    string_for(elem, line, spot);
     if (str_joined_wide) {
         int units = joined_count(len);
 
         if (count >= 0 && units > count)
-            acc_error_at(line, "this string is longer than the array it "
-                               "initialises");
+            acc_error_spot(line, spot, "this string is longer than the array "
+                                       "it initialises");
         for (i = 0; i < units; i++)
             put(elem, offset + 2 * i,
                 (short) ((unsigned char) str_joined[2 * i]
@@ -5373,8 +5559,8 @@ static int init_string(Type elem, int count, int offset, InitPut put)
         return units;
     }
     if (count >= 0 && len > count)
-        acc_error_at(line, "this string is longer than the array it "
-                           "initialises");
+        acc_error_spot(line, spot, "this string is longer than the array it "
+                                   "initialises");
     for (i = 0; i < len; i++)
         put(TY_CHAR, offset + i, (unsigned char) str_joined[i]);
     if (count < 0 || len < count) {
@@ -5393,7 +5579,7 @@ static void init_record(int x, int offset, InitPut put, int braced)
 {
     int m = member_first(x), i;
 
-    record_complete(x, tok_line);
+    record_complete(x, tok_line, tok_at);
     for (i = 0; m >= 0 || (braced && tok_designator()); i++) {
         if (braced && tok == TK_RBRACE)
             break;
@@ -5568,20 +5754,21 @@ static void bits_zeroed(int array, int x, int bytes)
  * and a compound literal leaves it unnamed. `braced` says the initialiser
  * follows straight away, as a compound literal's does, rather than after an
  * `=`. Returns which array area it is in. */
-static int local_struct_object_in(int x, int line, int braced);
+static int local_struct_object_in(int x, int line, const char *spot,
+                                  int braced);
 
 /* A compound literal -- `braced` -- can be inside another initialiser, and
  * saves that one's state round its own: see InitState. */
 __attribute__((noinline))
-static int local_struct_object(int x, int line, int braced)
+static int local_struct_object(int x, int line, const char *spot, int braced)
 {
     InitState outer;
     int array;
 
     if (!braced)
-        return local_struct_object_in(x, line, 0);
+        return local_struct_object_in(x, line, spot, 0);
     init_save(&outer);
-    array = local_struct_object_in(x, line, 1);
+    array = local_struct_object_in(x, line, spot, 1);
     init_restore(&outer);
 
     return array;
@@ -5605,13 +5792,14 @@ static int decl_name_push(int kind, int array, Type type, int x)
     return sym;
 }
 
-static int local_struct_object_in(int x, int line, int braced)
+static int local_struct_object_in(int x, int line, const char *spot,
+                                  int braced)
 {
     int array = gen_local_array();
 
     if (decl_name != NAME_NONE)
         decl_name_push(SYM_LOCAL_STRUCT, array, TY_STRUCT, x);
-    record_complete(x, line);
+    record_complete(x, line, spot);
     gen_local_array_size(array, ext_bytes(x));
     if (braced || accept(TK_ASSIGN)) {
         if (braced || accept(TK_LBRACE)) {
@@ -5636,10 +5824,10 @@ static int local_struct_object_in(int x, int line, int braced)
     return array;
 }
 
-static void local_struct(int x, NameRef name, int line)
+static void local_struct(int x, NameRef name, int line, const char *spot)
 {
     decl_name = name;
-    local_struct_object(x, line, 0);
+    local_struct_object(x, line, spot, 0);
 }
 
 /* A struct member or element of a local's initialiser, given without
@@ -5687,28 +5875,28 @@ static int local_struct_value(int x, int offset)
  * elements having been stored against an address that is only filled in
  * when the function ends. */
 static int local_array_object_in(Type elem, int elem_x, int *countp,
-                                 int line, int braced);
+                                 int line, const char *spot, int braced);
 
 /* As local_struct_object: a compound literal saves the state of the
  * initialiser it may be inside. */
 __attribute__((noinline))
 static int local_array_object(Type elem, int elem_x, int *countp, int line,
-                              int braced)
+                              const char *spot, int braced)
 {
     InitState outer;
     int array;
 
     if (!braced)
-        return local_array_object_in(elem, elem_x, countp, line, 0);
+        return local_array_object_in(elem, elem_x, countp, line, spot, 0);
     init_save(&outer);
-    array = local_array_object_in(elem, elem_x, countp, line, 1);
+    array = local_array_object_in(elem, elem_x, countp, line, spot, 1);
     init_restore(&outer);
 
     return array;
 }
 
 static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
-                                 int braced)
+                                 const char *spot, int braced)
 {
     int array = gen_local_array();
     int step = type_bytes(elem, elem_x);
@@ -5730,13 +5918,15 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
      * zeroed after. In braces too. */
     in_braces = init && braced_string(elem);
     if (init && tok == TK_STRING && (type_is_char(elem) || type_is_wchar(elem))) {
-        int len = string_gather(), units, from, n;
+        int sline = tok_line, len, units, from, n;
+        const char *sspot = tok_at;
 
-        string_for(elem, line);
+        len = string_gather();
+        string_for(elem, sline, sspot);
         units = joined_count(len);
         if (count >= 0 && units > count)
-            acc_error_at(line, "this string is longer than the array it "
-                               "initialises");
+            acc_error_spot(line, spot, "this string is longer than the array "
+                                       "it initialises");
         from = joined_data(len);
         n = (count < 0 || units < count) ? units + 1 : units; /* terminator */
         if (count < 0) {
@@ -5781,7 +5971,8 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
             expect(TK_RBRACE, "'}'");        /* the walk read its own */
         if (count < 0) {
             if (n == 0)
-                acc_error_at(line, "an array needs at least one element");
+                acc_error_spot(line, spot, "an array needs at least one "
+                                           "element");
             count = n;
             gen_local_array_size(array, count * step);
         }
@@ -5801,7 +5992,8 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
 
             if (count < 0) {
                 if (n == 0)
-                    acc_error_at(line, "an array needs at least one element");
+                    acc_error_spot(line, spot,
+                                   "an array needs at least one element");
                 count = n;
                 gen_local_array_size(array, count * step);
             }
@@ -5809,8 +6001,8 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
 
         zero_gaps(array, count * step);
     } else if (count < 0) {
-        acc_error_at(line, "an array declared with [] needs initial values to "
-                           "say how long it is");
+        acc_error_spot(line, spot, "an array declared with [] needs initial "
+                                   "values to say how long it is");
     }
 
     if (sym != SYM_NONE)
@@ -5835,7 +6027,8 @@ static int local_array_object_in(Type elem, int elem_x, int *countp, int line,
  * block_vla_mark. An initialiser is not allowed -- C99 says so, and there
  * would be no telling how many values to expect. */
 __attribute__((noinline))
-static void local_vla(Type elem, int elem_x, NameRef name, int line)
+static void local_vla(Type elem, int elem_x, NameRef name, int line,
+                      const char *spot)
 {
     vm_declared();
     int step = type_bytes(elem, elem_x);
@@ -5843,7 +6036,7 @@ static void local_vla(Type elem, int elem_x, NameRef name, int line)
     int size = gen_local(ACC_INT_SIZE);
     int sym;
 
-    not_void(elem, "an array's element", line);
+    not_void(elem, "an array's element", line, spot);
     block_vla_mark();
 
     /* bytes = length * the element's size, and the size local holds it:
@@ -5860,8 +6053,8 @@ static void local_vla(Type elem, int elem_x, NameRef name, int line)
     gen_stmt_end();
 
     if (tok == TK_ASSIGN)
-        acc_error_at(line, "an array whose length is worked out as it runs "
-                           "cannot have an initialiser");
+        acc_error_spot(line, spot, "an array whose length is worked out as it "
+                                   "runs cannot have an initialiser");
 
     sym = sym_push(name, SYM_LOCAL_VLA, ptr);
     sym_at(sym)->type = type_ptr_to(elem);
@@ -5870,20 +6063,22 @@ static void local_vla(Type elem, int elem_x, NameRef name, int line)
 }
 
 static void local_array(Type elem, int elem_x, NameRef name, int count,
-                        int line)
+                        int line, const char *spot)
 {
     if (elem_x)
         vm_maybe(elem_x);               /* `int (*a[2])[n]` */
     decl_name = name;
-    local_array_object(elem, elem_x, &count, line, 0);
+    local_array_object(elem, elem_x, &count, line, spot, 0);
 }
 
 static int  function_declarator(Type ret_type, int ret_ext, NameRef name,
-                                int line);
-static int  function_from_type(int x, NameRef name, int line);
+                                int line, const char *spot);
+static int  function_from_type(int x, NameRef name, int line,
+                               const char *spot);
 static void global_variable(Type type, int ext, NameRef name, int count,
-                            int line);
-static int  global_again(int sym, Type type, int ext, int count, int line);
+                            int line, const char *spot);
+static int  global_again(int sym, Type type, int ext, int count, int line,
+                         const char *spot);
 
 /* How the variable being declared at file scope is bound: see push_global. */
 static int static_local;
@@ -5903,6 +6098,7 @@ static void typedef_declarators(Type base, int bx, unsigned char bc)
 {
     for (;;) {
         int line = tok_line, count, ext, sym;
+        const char *spot = tok_at;
         Type type;
         NameRef name = direct_declarator(declarator_stars(base), bx, &type,
                                          &ext, &count);
@@ -5944,7 +6140,7 @@ static void typedef_declarators(Type base, int bx, unsigned char bc)
 
             continue;
         }
-        not_redeclared(name, line);
+        not_redeclared(name, line, spot);
         if (in_body && ext)
             vm_maybe(ext);              /* `typedef int row[n];` */
         sym = push_here(name, SYM_TYPEDEF, 0);
@@ -5961,24 +6157,24 @@ static void typedef_declarators(Type base, int bx, unsigned char bc)
 /* `extern name;` in a block: the file-scope variable of that name, declared
  * there now if it is not yet, and the block's name for it. */
 static void block_extern(Type type, int ext, NameRef name, int count,
-                         int line)
+                         int line, const char *spot)
 {
     int g = name_global(name), sym;
     const Sym *global;
 
     if (tok == TK_ASSIGN)
-        acc_error_at(line, "an extern in a block cannot give a value");
+        acc_error_spot(line, spot, "an extern in a block cannot give a value");
     if (g == SYM_NONE) {
         /* Nothing of that name at file scope yet, so this declaration
          * introduces it -- and reserves nothing for it, which is what extern
          * means wherever it is said. It used to put the variable's bytes
          * here, in the middle of a function, with a jump over them. */
         decl_extern = 1;
-        global_variable(type, ext, name, count, line);
+        global_variable(type, ext, name, count, line, spot);
         decl_extern = 0;
         g = name_global(name);
     } else {
-        global_again(g, type, ext, count, line);
+        global_again(g, type, ext, count, line, spot);
     }
     global = sym_at(g);
     sym_stamp_name(name);               /* see local_not_redeclared */
@@ -6010,26 +6206,28 @@ static void storage_declarators(int storage, Type base, int bx,
         return;
     for (;;) {
         int line = tok_line, count, ext;
+        const char *spot = tok_at;
         Type type, stars = declarator_stars(base);
         NameRef name = direct_declarator(stars, bx, &type, &ext, &count);
 
         if (vla_length)                 /* C99 6.7.5.2p2 */
-            acc_error_at(line, "a static or extern array's length has to be "
-                               "known as the program is compiled");
+            acc_error_spot(line, spot, "a static or extern array's length has "
+                                       "to be known as the program is "
+                                       "compiled");
         decl_const = stars != base ? stars_const : bc;
         decl_bottom_const = bc ? SQ_CONST : 0;
         if (tok == TK_LPAREN) {
-            function_declarator(type, ext, name, line);
+            function_declarator(type, ext, name, line, spot);
         } else if (storage == TK_KW_EXTERN) {
             if (!extern_again(name))
-                not_redeclared(name, line);
-            block_extern(type, ext, name, count, line);
+                not_redeclared(name, line, spot);
+            block_extern(type, ext, name, count, line, spot);
         } else {
             int hole = gen_jump();
 
-            not_redeclared(name, line);
+            not_redeclared(name, line, spot);
             static_local = 1;
-            global_variable(type, ext, name, count, line);
+            global_variable(type, ext, name, count, line, spot);
             static_local = 0;
             gen_label(hole);
         }
@@ -6095,25 +6293,26 @@ void declaration(void)
 
     for (;;) {
         int line = tok_line, count, ext, off, sym, far = 0;
+        const char *spot = tok_at;
         Type type, stars = declarator_stars(base);
         NameRef name = direct_declarator(stars, bx, &type, &ext, &count);
 
         if (type_is_func(type)) {
-            function_from_type(ext, name, line);
+            function_from_type(ext, name, line, spot);
             if (!accept(TK_COMMA))
                 break;
             continue;
         }
         if (tok == TK_LPAREN) {         /* a function declared in a block */
             decl_bottom_const = bc ? SQ_CONST : 0;
-            function_declarator(type, ext, name, line);
+            function_declarator(type, ext, name, line, spot);
             if (!accept(TK_COMMA))
                 break;
             continue;
         }
-        local_not_redeclared(name, line);
+        local_not_redeclared(name, line, spot);
         if (vla_length) {
-            local_vla(type, ext, name, line);
+            local_vla(type, ext, name, line, spot);
             if (bc)
                 sym_at(sym_find(name))->quals |= SQ_CONST;
             if (!accept(TK_COMMA))
@@ -6121,7 +6320,7 @@ void declaration(void)
             continue;
         }
         if (count) {
-            local_array(type, ext, name, count, line);
+            local_array(type, ext, name, count, line, spot);
             if (bc)
                 sym_at(sym_find(name))->quals |= SQ_CONST;
             if (!accept(TK_COMMA))
@@ -6129,14 +6328,14 @@ void declaration(void)
             continue;
         }
         if (type_is_struct(type)) {
-            local_struct(ext, name, line);
+            local_struct(ext, name, line, spot);
             if (bc)
                 sym_at(sym_find(name))->quals |= SQ_CONST;
             if (!accept(TK_COMMA))
                 break;
             continue;
         }
-        not_void(type, "a variable", line);
+        not_void(type, "a variable", line, spot);
 
         /* Past what the frame pointer reaches, a local goes where the
          * arrays and the structs go: see gen_local_fits. Everything about
@@ -6266,16 +6465,17 @@ static Switch in_switch = { -1, -1, TY_INT, 0 };
  * the switch is not (C99 6.8.4.2p2): every block opened since the switch
  * is inside it, so none of them may have made one yet. */
 __attribute__((noinline))
-static void case_in_scope(int line)
+static void case_in_scope(int line, const char *spot)
 {
     VlaBlock *b;
 
     for (b = (VlaBlock *) ((char *) vla_blocks + in_switch.blocks);
          b < vla_top; b++)
         if (vm_since(b, 0))
-            acc_error_at(line, "the switch would jump to this label past the "
-                               "declaration of an array whose length is "
-                               "worked out as it runs, into its scope");
+            acc_error_spot(line, spot, "the switch would jump to this label "
+                                       "past the declaration of an array "
+                                       "whose length is worked out as it "
+                                       "runs, into its scope");
 }
 
 static long     *case_value;
@@ -6344,11 +6544,12 @@ __attribute__((noinline))
 static void break_statement(void)
 {
     int line = tok_line;
+    const char *spot = tok_at;
 
     next();
     expect(TK_SEMI, "';'");
     if (jumps.break_mark < 0)
-        acc_error_at(line, "'break' is not inside a loop or a switch");
+        acc_error_spot(line, spot, "'break' is not inside a loop or a switch");
     if (vla_mark != NO_VLA_MARK)
         gen_stack_back(vla_mark);
     hole_push(&breaks, gen_jump());
@@ -6358,11 +6559,12 @@ __attribute__((noinline))
 static void continue_statement(void)
 {
     int line = tok_line;
+    const char *spot = tok_at;
 
     next();
     expect(TK_SEMI, "';'");
     if (jumps.continue_mark < 0)
-        acc_error_at(line, "'continue' is not inside a loop");
+        acc_error_spot(line, spot, "'continue' is not inside a loop");
     if (vla_mark != NO_VLA_MARK)
         gen_stack_back(vla_mark);
     if (jumps.continue_to >= 0)
@@ -6423,6 +6625,7 @@ static void do_statement(void)
 static long case_constant(uint32_t *high)
 {
     int line = tok_line;
+    const char *spot = tok_at;
     long value;
 
     *high = 0;
@@ -6455,7 +6658,7 @@ static long case_constant(uint32_t *high)
             vneg();
             binary_rest(PREC_LOWEST);
             narrow_dest = outer;
-            value = constant_folded("a case label", line, before);
+            value = constant_folded("a case label", line, spot, before);
             *high = (uint32_t) (value < 0 ? -1 : 0);
         }
     } else {
@@ -6481,21 +6684,24 @@ __attribute__((noinline))
 static void case_label(void)
 {
     int line = tok_line, i;
+    const char *spot = tok_at;
     long value;
     uint32_t high;
 
     next();
     if (in_switch.case_mark < 0)
-        acc_error_at(line, "'case' is not inside a switch");
+        acc_error_spot(line, spot, "'case' is not inside a switch");
     value = case_constant(&high);
     expect(TK_COLON, "':' after a case");
-    case_in_scope(line);
+    case_in_scope(line, spot);
 
     for (i = in_switch.case_mark; i < ncases; i++)
         if (case_value[i] == value && case_high[i] == high)
-            acc_error_at(line, "this switch already has a case for %ld",
-                         type_unsigned(in_switch.type) || type_wide(in_switch.type)
-                         ? value : (long) ((value ^ 0x800000) - 0x800000));
+            acc_error_spot(line, spot, "this switch already has a case "
+                                       "for %ld",
+                           type_unsigned(in_switch.type)
+                           || type_wide(in_switch.type)
+                           ? value : (long) ((value ^ 0x800000) - 0x800000));
 
     if (ncases == cases_cap) {
         cases_cap = cases_cap ? cases_cap * 2 : 16;
@@ -6515,14 +6721,15 @@ __attribute__((noinline))
 static void default_label(void)
 {
     int line = tok_line;
+    const char *spot = tok_at;
 
     next();
     expect(TK_COLON, "':' after default");
     if (in_switch.case_mark < 0)
-        acc_error_at(line, "'default' is not inside a switch");
+        acc_error_spot(line, spot, "'default' is not inside a switch");
     if (in_switch.default_at >= 0)
-        acc_error_at(line, "this switch already has a default");
-    case_in_scope(line);
+        acc_error_spot(line, spot, "this switch already has a default");
+    case_in_scope(line, spot);
     in_switch.default_at = gen_here();
 }
 
@@ -6549,17 +6756,20 @@ static void switch_statement(void)
     Type type;
     int line, slot, to_tests, i, mark = sym_scope_begin();     /* see TK_KW_IF */
     int outer = scope_mark;
+    const char *spot;
 
     scope_mark = mark;
     next();
     expect(TK_LPAREN, "'('");
     line = tok_line;
+    spot = tok_at;
     comma_expr();
     expect(TK_RPAREN, "')'");
     type = vtype();
     if (type_pointer(type) || type_float(type))
-        acc_error_at(line, "a switch needs an integer, and this is %s",
-                     type_pointer(type) ? "a pointer" : "a floating-point value");
+        acc_error_spot(line, spot, "a switch needs an integer, and this is %s",
+                       type_pointer(type) ? "a pointer"
+                                          : "a floating-point value");
     type = type_promote(type);
     vconvert(type);
     slot = gen_local(type_scalar_bytes(type));
@@ -6609,17 +6819,18 @@ typedef struct {
     int     at;             /* its address, or -1 until it is reached */
     VlaBlock *blocks;       /* the blocks open when it was reached, and */
     int       nblocks;      /* their marks then: see vla_back_to */
-    int     line;           /* where it was first named */
+    int     line, col;      /* where it was first named */
 } Label;
 
 static Label *labels;
 static int    nlabels, labels_cap;
 
 /* The gotos still waiting for their label: the hole, which label, and --
- * for vm_forward_in, once the label is reached -- the goto's line and
- * vla_serial then. */
+ * for vm_forward_in, once the label is reached -- the goto's line, column
+ * and vla_serial then. The column is worked out when the goto is read,
+ * since the function may run on past where its window can still say. */
 typedef struct {
-    int hole, label, line, vm;
+    int hole, label, line, col, vm;
 } Goto;
 
 static Goto *gotos;
@@ -6639,7 +6850,7 @@ static VlaBlock *vla_blocks_copy(void)
     return copy;
 }
 
-static int label_find(NameRef name, int line)
+static int label_find(NameRef name, int line, int col)
 {
     int i;
 
@@ -6656,6 +6867,7 @@ static int label_find(NameRef name, int line)
     labels[nlabels].name = name;
     labels[nlabels].at = -1;
     labels[nlabels].line = line;
+    labels[nlabels].col = col;
     labels[nlabels].blocks = NULL;
     labels[nlabels].nblocks = 0;
 
@@ -6665,13 +6877,13 @@ static int label_find(NameRef name, int line)
 __attribute__((noinline))
 static void goto_statement(void)
 {
-    int line = tok_line, label;
+    int line = tok_line, col = lex_col(), label;
 
     next();
     if (tok != TK_IDENT)
         acc_error_at(tok_line, "'goto' needs a label, and this is %s",
                      tok_spelling(tok));
-    label = label_find(tok_name, line);
+    label = label_find(tok_name, line, col);
     next();
     expect(TK_SEMI, "';'");
 
@@ -6683,7 +6895,7 @@ static void goto_statement(void)
         int back = vla_back_to(labels[label].blocks, labels[label].nblocks);
 
         if (vm_back_in(labels[label].blocks, labels[label].nblocks))
-            vm_jump_refused(line);
+            vm_jump_refused(line, col);
 
         if (back != NO_VLA_MARK)
             gen_stack_back(back);
@@ -6700,6 +6912,7 @@ static void goto_statement(void)
     gotos[ngotos].hole = gen_jump();
     gotos[ngotos].label = label;
     gotos[ngotos].line = line;
+    gotos[ngotos].col = col;
     gotos[ngotos].vm = vla_serial;
     ngotos++;
 }
@@ -6709,11 +6922,12 @@ static void goto_statement(void)
 __attribute__((noinline))
 static void label_statement(void)
 {
-    int line = tok_line, label = label_find(tok_name, line), i, kept = 0;
+    int line = tok_line, col = lex_col(), i, kept = 0;
+    int label = label_find(tok_name, line, col);
 
     if (labels[label].at >= 0)
-        acc_error_at(line, "the label '%s' is defined twice",
-                     name_text(tok_name));
+        acc_error_pos(line, col, "the label '%s' is defined twice",
+                      name_text(tok_name));
     next();
     expect(TK_COLON, "':'");
     labels[label].at = gen_here();
@@ -6725,7 +6939,7 @@ static void label_statement(void)
 
         if (g->label == label) {
             if (vm_forward_in(g->vm))
-                vm_jump_refused(g->line);
+                vm_jump_refused(g->line, g->col);
             gen_label(g->hole);
             continue;
         }
@@ -6740,9 +6954,9 @@ static void label_statement(void)
 static void labels_end(void)
 {
     if (ngotos)
-        acc_error_at(labels[gotos[0].label].line, "the label '%s' is used "
-                     "but never defined",
-                     name_text(labels[gotos[0].label].name));
+        acc_error_pos(labels[gotos[0].label].line, labels[gotos[0].label].col,
+                      "the label '%s' is used but never defined",
+                      name_text(labels[gotos[0].label].name));
     {
         Label *l, *end = labels + nlabels;
 
@@ -7087,9 +7301,10 @@ static void statement(void)
 
     case TK_KW_RETURN: {
         int line = tok_line;
+        const char *spot = tok_at;
 
         if (inline_capture) {
-            return_kept(line);
+            return_kept(line, spot);
 
             return;
         }
@@ -7097,7 +7312,7 @@ static void statement(void)
         if (tok != TK_SEMI)
             comma_expr();
         expect(TK_SEMI, "';'");
-        gen_return(line);
+        gen_return(line, spot);
 
         return;
     }
@@ -7159,7 +7374,7 @@ static void body_end(int fn)
 
     if (s->name == main_name && s->type == TY_INT) {
         vpush_const(0, TY_INT);
-        gen_return(tok_line);
+        gen_return(tok_line, tok_at);
     }
 }
 
@@ -7194,23 +7409,26 @@ static void struct_params_copy(void)
 /* That a function declared again is declared the same way: its result, and
  * its parameters if both declarations give them. */
 static void same_signature(int fn, Type ret_type, int ret_ext, int first,
-                           int count, int params, NameRef name, int line)
+                           int count, int params, NameRef name, int line,
+                           const char *spot)
 {
     int i, prior = sym_params_first(fn);
 
     if (sym_at(fn)->type != ret_type || sym_at(fn)->ext != ret_ext)
-        acc_error_at(line, "'%s' is declared again with another result type",
-                     name_text(name));
+        acc_error_spot(line, spot, "'%s' is declared again with another "
+                                   "result type", name_text(name));
     if (!params || !(sym_flags(fn) & SYMF_PARAMS))
         return;
     if (count != sym_nparams(fn))
-        acc_error_at(line, "'%s' is declared again with %d parameters, not %d",
-                     name_text(name), count, sym_nparams(fn));
+        acc_error_spot(line, spot, "'%s' is declared again with %d "
+                                   "parameters, not %d", name_text(name),
+                       count, sym_nparams(fn));
     for (i = 0; i < count; i++)
         if (sym_param_type(first, i) != sym_param_type(prior, i)
             || !ext_compatible(sym_param_ext(first, i), sym_param_ext(prior, i)))
-            acc_error_at(line, "'%s' is declared again with parameter %d of "
-                               "another type", name_text(name), i + 1);
+            acc_error_spot(line, spot, "'%s' is declared again with parameter "
+                                       "%d of another type", name_text(name),
+                           i + 1);
 }
 
 /* `()` against a list of parameters, which C99 6.7.5.3p15 lets agree only
@@ -7220,24 +7438,27 @@ static void same_signature(int fn, Type ret_type, int ret_ext, int first,
  * `unlisted` says this declaration is the one with `()`. */
 __attribute__((noinline))
 static void unlisted_agrees(int first, int count, int variadic, int unlisted,
-                            NameRef name, int line)
+                            NameRef name, int line, const char *spot)
 {
     int i;
 
     if (variadic)
-        acc_error_at(line, "'%s' is declared with '()' and with '...', "
-                           "which do not agree", name_text(name));
+        acc_error_spot(line, spot, "'%s' is declared with '()' and with "
+                                   "'...', which do not agree",
+                       name_text(name));
     if (unlisted && tok == TK_LBRACE && !in_body && count)
-        acc_error_at(line, "'%s' is defined with no parameters, and was "
-                           "declared with %d", name_text(name), count);
+        acc_error_spot(line, spot, "'%s' is defined with no parameters, and "
+                                   "was declared with %d", name_text(name),
+                       count);
     for (i = 0; i < count; i++) {
         Type t = sym_param_type(first, i);
 
         if (!type_pointer(t) && !type_is_struct(t) && !type_float(t)
             && type_promote(t) != t)
-            acc_error_at(line, "'%s' is declared with '()', which passes "
-                               "parameter %d promoted, and with a type for "
-                               "it that is not", name_text(name), i + 1);
+            acc_error_spot(line, spot, "'%s' is declared with '()', which "
+                                       "passes parameter %d promoted, and "
+                                       "with a type for it that is not",
+                           name_text(name), i + 1);
     }
 }
 
@@ -7247,16 +7468,19 @@ static void unlisted_agrees(int first, int count, int variadic, int unlisted,
  * `extern`, and a function with no storage class, take the linkage it
  * already has. */
 __attribute__((noinline))
-static void same_linkage(int sym, int is_static, int takes, int line)
+static void same_linkage(int sym, int is_static, int takes, int line,
+                         const char *spot)
 {
     int was = sym_flags(sym) & SYMF_STATIC;
 
     if (is_static && !was)
-        acc_error_at(line, "'%s' is declared static after a declaration "
-                           "that was not", name_text(sym_at(sym)->name));
+        acc_error_spot(line, spot, "'%s' is declared static after a "
+                                   "declaration that was not",
+                       name_text(sym_at(sym)->name));
     if (!is_static && !takes && was)
-        acc_error_at(line, "'%s' was declared static, and this declaration "
-                           "is not", name_text(sym_at(sym)->name));
+        acc_error_spot(line, spot, "'%s' was declared static, and this "
+                                   "declaration is not",
+                       name_text(sym_at(sym)->name));
 }
 
 /* A function's declarator, from just past its name: its parameters, and
@@ -7269,20 +7493,21 @@ static void same_linkage(int sym, int is_static, int takes, int line)
  * nothing about the parameters, as C has it, so calls convert nothing; in
  * a definition it means there are none. */
 static int function_declarator(Type ret_type, int ret_ext, NameRef name,
-                               int line)
+                               int line, const char *spot)
 {
     int fn, declared, params = 1, unnamed = 0, mark, variadic = 0;
     int nparams = 0, argoff, params_first;
     int incomplete_line = 0, incomplete_x = 0;
+    const char *incomplete_spot = NULL;
     unsigned seen = nested_lists;
 
     expect(TK_LPAREN, "'('");
 
     fn = sym_find(name);
     if (fn != SYM_NONE && sym_at(fn)->kind != SYM_FUNC)
-        acc_error_at(line, "'%s' is already %s", name_text(name),
-                     sym_at(fn)->kind == SYM_GLOBAL ? "a variable"
-                                                    : "declared");
+        acc_error_spot(line, spot, "'%s' is already %s", name_text(name),
+                       sym_at(fn)->kind == SYM_GLOBAL ? "a variable"
+                                                      : "declared");
     declared = fn != SYM_NONE && (sym_flags(fn) & SYMF_DECLARED);
 
     /* Pushed before the parameters: a file-scope symbol goes in below the
@@ -7312,6 +7537,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
             Type pbase, ptype, pstars;
             unsigned char pconst, pquals = 0;
             int pbx, pline = tok_line, pcount, pext;
+            const char *pspot = tok_at;
             NameRef pname;
             int psym = SYM_NONE;
 
@@ -7341,15 +7567,16 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                                            "is deeper", TY_PTR_MAX);
                 ptype = type_ptr_to(ptype);
             }
-            not_void(ptype, "a parameter", pline);
+            not_void(ptype, "a parameter", pline, pspot);
 
             if (pname) {
                 /* Named once, as C99 6.7p3 asks of a prototype as much as
                  * of a definition. */
                 psym = sym_push_param(pname, argoff, mark);
                 if (psym == SYM_NONE)
-                    acc_error_at(pline, "'%s' is already declared",
-                                 name_text(pname));
+                    acc_error_spot(pline, pspot,
+                                   "'%s' is already declared",
+                                   name_text(pname));
                 sym_at(psym)->type = ptype;
                 sym_at(psym)->ext = (unsigned char) pext;
                 sym_at(psym)->quals = pquals;
@@ -7374,6 +7601,7 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
                  * one is known at the `)`, and it is asked then. */
                 if (!ext_complete(pext) && !incomplete_line) {
                     incomplete_line = pline;
+                    incomplete_spot = pspot;
                     incomplete_x = pext;
                 }
                 if (nstruct_params == struct_params_cap) {
@@ -7408,25 +7636,25 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
 
     if (declared) {
         same_signature(fn, ret_type, ret_ext, params_first, nparams, params,
-                       name, line);
+                       name, line, spot);
         if ((sym_at(fn)->quals ^ decl_bottom_const) & SQ_CONST)
-            acc_error_at(line, "'%s' is declared again with another result "
-                               "type", name_text(name));
+            acc_error_spot(line, spot, "'%s' is declared again with another "
+                                       "result type", name_text(name));
         if (!params != !(sym_flags(fn) & SYMF_PARAMS)) {
             if (params)
                 unlisted_agrees(params_first, nparams, variadic, 0, name,
-                                line);
+                                line, spot);
             else
                 unlisted_agrees(sym_params_first(fn), sym_nparams(fn),
                                 sym_flags(fn) & SYMF_VARIADIC, 1, name,
-                                line);
+                                line, spot);
         }
         if (!in_body)
-            same_linkage(fn, decl_static, 1, line);
+            same_linkage(fn, decl_static, 1, line, spot);
         if (params && (sym_flags(fn) & SYMF_PARAMS)
             && (sym_flags(fn) & SYMF_VARIADIC) != variadic)
-            acc_error_at(line, "'%s' is declared again with%s '...'",
-                         name_text(name), variadic ? "" : "out");
+            acc_error_spot(line, spot, "'%s' is declared again with%s '...'",
+                           name_text(name), variadic ? "" : "out");
     }
     sym_at(fn)->type = ret_type;
     sym_at(fn)->ext = (unsigned char) ret_ext;
@@ -7451,14 +7679,14 @@ static int function_declarator(Type ret_type, int ret_ext, NameRef name,
      * object puts the first function at offset zero, and zero is what a
      * function that has not been defined has. */
     if (sym_flags(fn) & SYMF_DEFINED)
-        acc_error_at(line, "'%s' is defined twice", name_text(name));
+        acc_error_spot(line, spot, "'%s' is defined twice", name_text(name));
     if (unnamed)
-        acc_error_at(line, "a parameter of a function's definition needs a "
-                           "name");
+        acc_error_spot(line, spot, "a parameter of a function's definition "
+                                   "needs a name");
     sym_stamp_params(mark);     /* see local_not_redeclared */
 
     if (incomplete_line)
-        record_complete(incomplete_x, incomplete_line);
+        record_complete(incomplete_x, incomplete_line, incomplete_spot);
 
     sym_set_params(fn, params_first, nparams);
     sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED | variadic
@@ -7542,13 +7770,14 @@ static int init_bss;
  * Anything else is parsed as an ordinary expression and has to fold to a
  * constant without the code generator emitting anything: `3 * 4 + 1`, `-5`,
  * `&counter`. */
-static void global_initializer(Type type, unsigned char *bytes, int line)
+static void global_initializer(Type type, unsigned char *bytes)
 {
     int size = type_scalar_bytes(type);
-    int before;
+    int before, line = tok_line;        /* an error is at the value */
     uint64_t value;
     Type from;
     int i;
+    const char *spot = tok_at;
 
     /* Read as an expression and folded, whatever it is: a long's arithmetic
      * is worked out by the compiler now, so `2L + 3L` and `1L << 20` are as
@@ -7569,7 +7798,8 @@ static void global_initializer(Type type, unsigned char *bytes, int line)
     before = out_here();
     vconvert(type);
     if (!vconst_wide(&value, &from) || out_here() != before)
-        acc_error_at(line, "a global's initial value has to be a constant");
+        acc_error_spot(line, spot, "a global's initial value has to be a "
+                                   "constant");
     init_address = vconst_addr();
     init_bss = vconst_bss();
     vdrop();
@@ -7690,7 +7920,7 @@ static void global_bits(Type scalar, int offset)
 
     global_initializer(scalar == TY_BOOL ? TY_BOOL
                        : n > ACC_LONG_SIZE ? TY_ULLONG : TY_ULONG,
-                       bytes, tok_line);
+                       bytes);
     for (i = n - 1; i >= 0; i--)
         value = value << 8 | bytes[i];
     if (bf->width < 64)
@@ -7713,7 +7943,7 @@ static void global_put(Type scalar, int offset, int value)
     if (value >= 0)
         init_bytes[offset] = (unsigned char) value;     /* a char of a string */
     else
-        global_initializer(scalar, init_bytes + offset, tok_line);
+        global_initializer(scalar, init_bytes + offset);
     if (gen_pending_sym != SYM_NONE) {
         walk_fn_add(gen_pending_sym, offset);
         gen_pending_sym = SYM_NONE;
@@ -7730,7 +7960,8 @@ static void global_put(Type scalar, int offset, int value)
  * the way a global's are, in the initialiser's buffer, and left in the
  * image. See compound_literal, which is where the rest of it is. */
 static void literal_bytes_in(Type type, int x, int count, Type elem,
-                             int elem_x, int line, int address, int *countp);
+                             int elem_x, int line, const char *spot,
+                             int address, int *countp);
 
 /* A literal inside a global's initialiser -- `&(struct B) { &(struct A)
  * { 1, 2 } }` -- is built while that one is still being built, and they
@@ -7741,7 +7972,7 @@ static void literal_bytes_in(Type type, int x, int count, Type elem,
  * one's are put back after, as a local literal does with InitState. */
 __attribute__((noinline))
 static void literal_bytes(Type type, int x, int count, Type elem, int elem_x,
-                          int line, int address, int *countp)
+                          int line, const char *spot, int address, int *countp)
 {
     unsigned char *bytes = init_bytes;
     int bytes_cap = init_bytes_cap, bytes_len = init_bytes_len;
@@ -7757,7 +7988,8 @@ static void literal_bytes(Type type, int x, int count, Type elem, int elem_x,
     nwalk_fns = 0;
     walk_fns_cap = 0;
 
-    literal_bytes_in(type, x, count, elem, elem_x, line, address, countp);
+    literal_bytes_in(type, x, count, elem, elem_x, line, spot, address,
+                     countp);
 
     free(init_bytes);
     free(walk_fns);
@@ -7771,7 +8003,8 @@ static void literal_bytes(Type type, int x, int count, Type elem, int elem_x,
 }
 
 static void literal_bytes_in(Type type, int x, int count, Type elem,
-                             int elem_x, int line, int address, int *countp)
+                             int elem_x, int line, const char *spot,
+                             int address, int *countp)
 {
 
         int at, total, i;
@@ -7792,9 +8025,9 @@ static void literal_bytes_in(Type type, int x, int count, Type elem,
 
             if (count < 0) {
                 if (n == 0)
-                    acc_error_at(line, "a compound literal of an array with no "
-                                       "size needs a value to say how long "
-                                       "it is");
+                    acc_error_spot(line, spot,
+                                   "a compound literal of an array with no "
+                                   "size needs a value to say how long it is");
                 count = n;
             }
             total = count * type_bytes(elem, elem_x);
@@ -7839,7 +8072,7 @@ static void literal_bytes_in(Type type, int x, int count, Type elem,
  * constant as a global's value has to be and zeros for the rest, written into
  * the image. A `[]` array is as long as its initialiser. */
 static void global_array(Type elem, int elem_x, NameRef name, int count,
-                         int line)
+                         int line, const char *spot)
 {
     int step = type_bytes(elem, elem_x), total, at, sym, i, braces;
     /* Read as a test and then consumed, rather than as accept's value.
@@ -7897,11 +8130,11 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
                     acc_error_at(tok_line, "more initial values than the array "
                                            "has elements");
                 if (accept(TK_LBRACE)) {
-                    global_initializer(elem, bytes, tok_line);
+                    global_initializer(elem, bytes);
                     accept(TK_COMMA);
                     expect(TK_RBRACE, "'}'");
                 } else {
-                    global_initializer(elem, bytes, tok_line);
+                    global_initializer(elem, bytes);
                 }
                 /* Nothing may have been written since the last element, or
                  * this one is not where the array says it is. Only a value
@@ -7921,12 +8154,13 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
                 expect(TK_RBRACE, "'}'");    /* the walk read its own */
             if (count < 0) {
                 if (n == 0)
-                    acc_error_at(line, "an array needs at least one element");
+                    acc_error_spot(line, spot,
+                                   "an array needs at least one element");
                 count = n;
             }
         } else if (count < 0) {
-            acc_error_at(line, "an array declared with [] needs initial values "
-                               "to say how long it is");
+            acc_error_spot(line, spot, "an array declared with [] needs "
+                                       "initial values to say how long it is");
         }
         if (designated) {
             init_room(count * step);
@@ -7963,12 +8197,13 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
         n = init_list(elem, elem_x, count, 0, global_put, 0);
         if (count < 0) {
             if (n == 0)
-                acc_error_at(line, "an array needs at least one element");
+                acc_error_spot(line, spot, "an array needs at least one "
+                                           "element");
             count = n;
         }
     } else if (count < 0) {
-        acc_error_at(line, "an array declared with [] needs initial values to "
-                           "say how long it is");
+        acc_error_spot(line, spot, "an array declared with [] needs initial "
+                                   "values to say how long it is");
     }
 
     total = count * step;
@@ -7987,11 +8222,11 @@ static void global_array(Type elem, int elem_x, NameRef name, int count,
 /* A file-scope struct or union: its bytes built from a braced initialiser,
  * as an array's are, zeros for whatever it does not give. */
 __attribute__((noinline))
-static void global_struct(int x, NameRef name, int line)
+static void global_struct(int x, NameRef name, int line, const char *spot)
 {
     int total, at, sym, i;
 
-    record_complete(x, line);
+    record_complete(x, line, spot);
     total = ext_bytes(x);
     init_bytes_len = 0;
     if (accept(TK_ASSIGN)) {
@@ -8012,13 +8247,15 @@ static void global_struct(int x, NameRef name, int line)
 /* That a variable declared again at file scope is declared the same way,
  * and whether this declaration gives it its value -- which it may only do
  * once. */
-static int global_again(int sym, Type type, int ext, int count, int line)
+static int global_again(int sym, Type type, int ext, int count, int line,
+                        const char *spot)
 {
     const Sym *g = sym_at(sym);
     NameRef name = g->name;
 
     if (g->kind == SYM_FUNC)
-        acc_error_at(line, "'%s' is already a function", name_text(name));
+        acc_error_spot(line, spot, "'%s' is already a function",
+                       name_text(name));
     if (count < 0 && g->kind == SYM_GLOBAL_ARRAY)
         count = sym_count(sym);         /* `int a[] = ...` after `int a[4]` */
     /* An array declared with no size takes the size a later declaration
@@ -8031,12 +8268,12 @@ static int global_again(int sym, Type type, int ext, int count, int line)
                           : SYM_GLOBAL)
         || g->type != type || !ext_compatible(g->ext, ext)
         || (count && count != sym_count(sym)))
-        acc_error_at(line, "'%s' is declared again with another type",
-                     name_text(name));
+        acc_error_spot(line, spot, "'%s' is declared again with another type",
+                       name_text(name));
     if (tok != TK_ASSIGN)
         return 0;
     if (sym_flags(sym) & SYMF_DEFINED)
-        acc_error_at(line, "'%s' is defined twice", name_text(name));
+        acc_error_spot(line, spot, "'%s' is defined twice", name_text(name));
 
     return 1;
 }
@@ -8046,7 +8283,8 @@ static int global_again(int sym, Type type, int ext, int count, int line)
  * definition gives it one, and a use until then reads the address from the
  * cell as the program runs. The definition writes it there, and from then
  * on the array is an ordinary one, used directly. */
-static void global_emit(Type type, int ext, NameRef name, int count, int line);
+static void global_emit(Type type, int ext, NameRef name, int count, int line,
+                        const char *spot);
 
 /* A file-scope variable's bytes, from its initialiser if it has one, and
  * its name bound to them -- or, when redefining, written over the bytes it
@@ -8057,29 +8295,30 @@ static void global_emit(Type type, int ext, NameRef name, int count, int line);
  * it is written, so nothing that refers to it ever needs patching. A global
  * with no initial value is zero, as C says, and takes its bytes in the image
  * like any other -- there is no separate zeroed area yet. */
-static void global_emit(Type type, int ext, NameRef name, int count, int line)
+static void global_emit(Type type, int ext, NameRef name, int count, int line,
+                        const char *spot)
 {
     unsigned char bytes[8] = { 0 };
     int size = type_scalar_bytes(type), sym, i, at;
 
     if (count) {
-        global_array(type, ext, name, count, line);
+        global_array(type, ext, name, count, line, spot);
 
         return;
     }
     if (type_is_struct(type)) {
-        global_struct(ext, name, line);
+        global_struct(ext, name, line, spot);
 
         return;
     }
 
-    not_void(type, "a variable", line);
+    not_void(type, "a variable", line, spot);
     if (accept(TK_ASSIGN)) {
         /* A scalar's value may be in braces, `int m = {0};` (C99
          * 6.7.8p11), and a comma may end it. */
         int braced = accept(TK_LBRACE);
 
-        global_initializer(type, bytes, line);
+        global_initializer(type, bytes);
         if (braced) {
             accept(TK_COMMA);
             expect(TK_RBRACE, "'}'");
@@ -8125,14 +8364,14 @@ static int global_bytes(int sym)
  * The kind is the one a definition would push, so that a later declaration
  * of the same thing agrees with this one. */
 static void global_undefined(Type type, int ext, NameRef name, int count,
-                             int line, int is_extern)
+                             int line, const char *spot, int is_extern)
 {
     int kind = count ? SYM_GLOBAL_ARRAY
              : decl_const && !type_is_struct(type) ? SYM_GLOBAL_CONST
              : SYM_GLOBAL;
     int sym;
 
-    not_void(type, "a variable", line);
+    not_void(type, "a variable", line, spot);
     sym = push_global(name, kind, -1);
     sym_at(sym)->type = type;
     sym_at(sym)->ext = (unsigned char) ext;
@@ -8179,7 +8418,7 @@ static void global_undefined(Type type, int ext, NameRef name, int count,
  * rewound to them. So a use between the two finds the address the variable
  * will always have. */
 static void global_variable(Type type, int ext, NameRef name, int count,
-                            int line)
+                            int line, const char *spot)
 {
     int sym, init = (tok == TK_ASSIGN);
 
@@ -8196,11 +8435,11 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         int known = name_global(name);
 
         if (known == SYM_NONE) {
-            global_undefined(type, ext, name, count, line, 1);
+            global_undefined(type, ext, name, count, line, spot, 1);
 
             return;
         }
-        (void) global_again(known, type, ext, count, line);
+        (void) global_again(known, type, ext, count, line, spot);
         sym_set_flags(known, SYMF_EXTERN);
 
         return;
@@ -8212,14 +8451,14 @@ static void global_variable(Type type, int ext, NameRef name, int count,
      * first, as `extern` would declare it, and every use in its own
      * initialiser is filled in when the definition below gives it one. */
     if (init && !static_local && name_global(name) == SYM_NONE) {
-        global_undefined(type, ext, name, count, line, 1);
+        global_undefined(type, ext, name, count, line, spot, 1);
         sym_clear_flags(name_global(name), SYMF_EXTERN);
     }
 
     if (!static_local && (sym = name_global(name)) != SYM_NONE) {
-        int saved, again = global_again(sym, type, ext, count, line);
+        int saved, again = global_again(sym, type, ext, count, line, spot);
 
-        same_linkage(sym, decl_static, decl_extern, line);
+        same_linkage(sym, decl_static, decl_extern, line, spot);
 
         if (count < 0)
             count = sym_count(sym);
@@ -8248,7 +8487,7 @@ static void global_variable(Type type, int ext, NameRef name, int count,
                 gen_bss_forget(sym);
                 sym_at(sym)->val = -1;
                 redefining = sym;
-                global_emit(type, ext, name, count, line);
+                global_emit(type, ext, name, count, line, spot);
                 redefining = SYM_NONE;
                 sym_set_flags(sym, SYMF_DEFINED);
                 gen_bss_move(at, global_bytes(sym), sym_at(sym)->val);
@@ -8256,7 +8495,7 @@ static void global_variable(Type type, int ext, NameRef name, int count,
                 return;
             }
             redefining = sym;
-            global_emit(type, ext, name, count, line);
+            global_emit(type, ext, name, count, line, spot);
             redefining = SYM_NONE;
             sym_set_flags(sym, SYMF_DEFINED);
 
@@ -8267,7 +8506,7 @@ static void global_variable(Type type, int ext, NameRef name, int count,
         saved = out_here();
         out_seek(sym_at(sym)->val);
         redefining = sym;
-        global_emit(type, ext, name, count, line);
+        global_emit(type, ext, name, count, line, spot);
         redefining = SYM_NONE;
         out_seek(saved);
         sym_set_flags(sym, SYMF_DEFINED);
@@ -8286,7 +8525,7 @@ static void global_variable(Type type, int ext, NameRef name, int count,
      * what puts those right is the start of the bss, which is the same one
      * number for all of them. */
     if (!init) {
-        global_undefined(type, ext, name, count, line, 0);
+        global_undefined(type, ext, name, count, line, spot, 0);
 
         return;
     }
@@ -8295,17 +8534,17 @@ static void global_variable(Type type, int ext, NameRef name, int count,
      * file-scope one is above, and its uses in its own initialiser filled in
      * here: its name does not outlive the function. */
     if (static_local) {
-        global_undefined(type, ext, name, count, line, 1);
+        global_undefined(type, ext, name, count, line, spot, 1);
         sym = sym_find(name);
         sym_clear_flags(sym, SYMF_EXTERN);
         redefining = sym;
-        global_emit(type, ext, name, count, line);
+        global_emit(type, ext, name, count, line, spot);
         redefining = SYM_NONE;
         gen_settle(sym);
 
         return;
     }
-    global_emit(type, ext, name, count, line);
+    global_emit(type, ext, name, count, line, spot);
     if (init && !static_local)
         sym_set_flags(name_global(name), SYMF_DEFINED);
 }
@@ -8354,7 +8593,7 @@ static void bss_end(void)
  * any function is, and defined, when a body follows, with the parameters
  * its type's parameter list named. Returns whether it was defined. */
 __attribute__((noinline))
-static int function_from_type(int x, NameRef name, int line)
+static int function_from_type(int x, NameRef name, int line, const char *spot)
 {
     Type ret = ext_elem(x);
     int ret_x = ext_elem_x(x), first = ext_func_first(x);
@@ -8362,9 +8601,10 @@ static int function_from_type(int x, NameRef name, int line)
     int fn = sym_find(name), i, argoff;
 
     if (fn != SYM_NONE && sym_at(fn)->kind != SYM_FUNC)
-        acc_error_at(line, "'%s' is already declared", name_text(name));
+        acc_error_spot(line, spot, "'%s' is already declared",
+                       name_text(name));
     if (fn != SYM_NONE && (sym_flags(fn) & SYMF_DECLARED))
-        same_signature(fn, ret, ret_x, first, count, params, name, line);
+        same_signature(fn, ret, ret_x, first, count, params, name, line, spot);
     if (fn == SYM_NONE)
         fn = sym_push(name, SYM_FUNC, 0);
     sym_at(fn)->type = ret;
@@ -8379,7 +8619,7 @@ static int function_from_type(int x, NameRef name, int line)
     }
 
     if (sym_flags(fn) & SYMF_DEFINED)
-        acc_error_at(line, "'%s' is defined twice", name_text(name));
+        acc_error_spot(line, spot, "'%s' is defined twice", name_text(name));
     argoff = 2 * ACC_PTR_SIZE + (type_is_struct(ret) ? ACC_PTR_SIZE : 0);
     nstruct_params = 0;
     for (i = 0; i < count; i++) {
@@ -8387,8 +8627,8 @@ static int function_from_type(int x, NameRef name, int line)
         int e = sym_param_ext(first, i), psym;
 
         if (i >= param_names_cap || !param_names[first + i])
-            acc_error_at(line, "a parameter of a function's definition needs "
-                               "a name");
+            acc_error_spot(line, spot, "a parameter of a function's "
+                                       "definition needs a name");
         psym = sym_push(param_names[first + i], SYM_LOCAL, argoff);
         sym_at(psym)->type = t;
         sym_at(psym)->ext = (unsigned char) e;
@@ -8440,6 +8680,7 @@ static int function_from_type(int x, NameRef name, int line)
 static void static_assert_declaration(void)
 {
     int line = tok_line, value;
+    const char *spot = tok_at;
 
     next();
     expect(TK_LPAREN, "'('");
@@ -8449,7 +8690,7 @@ static void static_assert_declaration(void)
         acc_error_at(tok_line, "a _Static_assert needs a message to give if "
                                "it does not hold");
     if (!value)
-        acc_error_at(line, "%.*s", tok_str_len, tok_str);
+        acc_error_spot(line, spot, "%.*s", tok_str_len, tok_str);
     next();
     while (tok == TK_STRING)             /* "a" "b", joined as C joins them */
         next();
@@ -8461,6 +8702,7 @@ static void external_declaration(void)
 {
     Type base, type;
     int line, count = 0, ext, bx;
+    const char *spot;
     unsigned char bc;
     NameRef name;
 
@@ -8483,14 +8725,15 @@ static void external_declaration(void)
     bx = ext = base_ext;
     bc = base_const;
     line = tok_line;
+    spot = tok_at;
     if (decl_storage == TK_KW_TYPEDEF) {
         typedef_declarators(base, bx, bc);
 
         return;
     }
     if (decl_storage == TK_KW_AUTO || decl_storage == TK_KW_REGISTER)
-        acc_error_at(line, "%s is for a variable in a block, not at file "
-                           "scope", tok_spelling(decl_storage));
+        acc_error_spot(line, spot, "%s is for a variable in a block, not at "
+                                   "file scope", tok_spelling(decl_storage));
     decl_extern = decl_storage == TK_KW_EXTERN;
     decl_static = decl_storage == TK_KW_STATIC;
     decl_inline_fn = decl_inline;
@@ -8502,20 +8745,22 @@ static void external_declaration(void)
         Type stars;
 
         line = tok_line;
+        spot = tok_at;
         stars = declarator_stars(base);
         name = direct_declarator(stars, bx, &type, &ext, &count);
         decl_const = stars != base ? stars_const : bc;
         decl_bottom_const = bc ? SQ_CONST : 0;
         if (tok == TK_LPAREN) {
             if (count)
-                acc_error_at(line, "a function cannot return an array");
-            if (function_declarator(type, ext, name, line))
+                acc_error_spot(line, spot, "a function cannot return an "
+                                           "array");
+            if (function_declarator(type, ext, name, line, spot))
                 return;
         } else if (type_is_func(type)) {
-            if (function_from_type(ext, name, line))
+            if (function_from_type(ext, name, line, spot))
                 return;
         } else {
-            global_variable(type, ext, name, count, line);
+            global_variable(type, ext, name, count, line, spot);
         }
         if (!accept(TK_COMMA))
             break;
@@ -8589,8 +8834,12 @@ static void usage(void)
         "  The program returns what main returned to MOS, as agondev's do.\n"
         "  -p  print it as six hex digits too, before returning.\n"
         "  -x  report it to IO port 0 instead, which stops an emulator\n"
-        "      with the low byte as its exit status.\n");
-    exit(2);
+        "      with the low byte as its exit status.\n"
+        "  -errors  write an error to that file too, as\n"
+        "      `file:line:column: error: text`, and fail with 100 rather\n"
+        "      than 1: for a program that runs acc and reads what went\n"
+        "      wrong. A compile that works removes the file.\n");
+    exit(errors_asked ? ERRORS_EXIT : 2);
 }
 
 #if defined(AGONDEV) && defined(ACC_CYCLES)
@@ -9202,6 +9451,11 @@ int main(int argc, char **argv)
             if (++i == argc)
                 usage();
             obj_map_path = argv[i];
+        } else if (!strcmp(argv[i], "-errors")) {
+            errors_asked = 1;
+            if (++i == argc)
+                usage();
+            errors_path = argv[i];
         } else if (argv[i][0] == '-') {
             usage();
         } else if (is_object(argv[i]) || is_archive(argv[i])) {
@@ -9320,6 +9574,10 @@ int main(int argc, char **argv)
      * under the sanitizer, so every comparison in the file failed and the
      * leak it was watching for could not have been seen. */
     free(objs);
+
+    /* It worked: no error to read, and none left from a run before. */
+    if (errors_path)
+        remove(errors_path);
 
     return 0;
 }

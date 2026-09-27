@@ -1,4 +1,4 @@
-/* expect: 7: error: 'wide' is not declared */
+/* expect: 7:5: error: 'wide' is not declared */
 /* A typedef in a block ends with the block, as a variable does. */
 int main(void) {
     {

@@ -1,4 +1,4 @@
-/* expect: 5: error: this is const, so it cannot be changed */
+/* expect: 5:13: error: this is const, so it cannot be changed */
 struct point { const int id; int x; };
 int main(void) {
     struct point p = { 1, 2 };

@@ -1,4 +1,4 @@
-/* expect: 6: error: the constant does not fit in 64 bits */
+/* expect: 6:28: error: the constant does not fit in 64 bits */
 /* Caught while the digits are being read, not after: the accumulator holds
  * sixty-four bits and twenty digits pass through it before the ladder ever
  * sees a value. */

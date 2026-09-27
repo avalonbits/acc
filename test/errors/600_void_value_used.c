@@ -1,4 +1,4 @@
-/* expect: 7: error: a void function returns nothing, so its result cannot be used */
+/* expect: 7:22: error: a void function returns nothing, so its result cannot be used */
 /* A void function has no result to use. */
 void nothing(void) {
 }

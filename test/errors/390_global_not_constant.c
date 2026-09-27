@@ -1,4 +1,4 @@
-/* expect: 5: error: a global's initial value has to be a constant */
+/* expect: 5:9: error: a global's initial value has to be a constant */
 /* Written into the image when it is declared, so it has to be known then.
  */
 int a = 1;

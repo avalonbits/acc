@@ -1,4 +1,4 @@
-/* expect: 5: error: unterminated comment */
+/* expect: 5:1: error: unterminated comment */
 int main(void) {
     return 42;
 }

@@ -1,4 +1,4 @@
-/* expect: 9: error: an address cannot become a floating-point value */
+/* expect: 9:31: error: an address cannot become a floating-point value */
 /* With a value, so that its address is known as this is compiled and is a
  * constant this could spoil. One with no value is in the bss, whose address
  * is not known until the end: it is loaded whole and relocated, and what the
