@@ -27,10 +27,8 @@
 int out_base = LOAD_ADDR;
 
 /* Held in memory and written at the end, because a call to a function defined
- * further down the file has to be patched once its address is known. The
- * image is small -- the previous compiler's output for four hundred lines of
- * input was 33 KB against 206 KB of room -- and it is not what runs the
- * machine out of memory. */
+ * further down the file has to be patched once its address is known -- all
+ * of it, but for a link: see out_flush. */
 /* Held as a write pointer and the end of the buffer rather than as an index
  * and a capacity. Every byte the compiler emits comes through out_byte, and
  * `img[len++]` is an addition of two 24-bit values before the store, where a
@@ -41,6 +39,36 @@ unsigned char        *out_put;          /* where the next byte goes */
 unsigned char        *out_limit;        /* one past the last it may use */
 static int            cap;
 static const char    *out_path;
+
+/* A link's image, which is the whole program, goes to its file as it is
+ * made. The first `flushed` bytes are there, and memory holds the rest, from
+ * out_img + flushed: out_img is where the first byte would be, so that an
+ * address is found the same way whichever part it is in. What is written
+ * to a byte already in the file waits in `patches` until out_close. */
+static int            flushed;
+static FILE          *spill;            /* the output, once it is written to */
+int                   out_may_flush;    /* set by a link: see out_flush */
+
+/* Each is PATCH_WIDE bytes: the offset, the value, and the kind. Walked
+ * by a pointer, as the relocations are: an index into seven-byte entries
+ * is a multiply, which is a call into the runtime on this target. */
+#define PATCH_WIDE  7
+#define PATCH_SET8  0
+#define PATCH_SET24 1
+#define PATCH_ADD24 2
+
+/* Kept in blocks of a kilobyte, one after another, and not in one array:
+ * a link of zap makes two thousand, and an array that doubled to hold them
+ * wanted 42 KB at once at the end of a link, when the heap is fullest. */
+#define PATCH_BLOCK (146 * PATCH_WIDE)
+
+typedef struct PatchBlock {
+    struct PatchBlock *next;
+    unsigned char      bytes[PATCH_BLOCK];
+} PatchBlock;
+
+static PatchBlock    *patches, *patch_last;
+static unsigned char *patch_put, *patch_limit;
 
 #define OUT_LEN ((int) (out_put - out_img))
 
@@ -513,6 +541,8 @@ static void img_free(unsigned char *img)
 
 extern int out_start_cap;
 
+static void hold(unsigned char *held, int used);
+
 /* `header` is whether MOS's is wanted: a program has one and an object does
  * not, its bytes being something a linker will put after a header of its own
  * making. */
@@ -522,11 +552,7 @@ void out_open(const char *path, int header)
     const char *base, *scan;
 
     cap = out_start_cap;
-    out_img = img_take(cap);
-    if (!out_img)
-        acc_error("out of memory for the output");
-    out_put = out_img;
-    out_limit = out_img + cap;
+    hold(img_take(cap), 0);
     out_reloc_grow();                   /* so the sentinel is there to read */
     out_path = path;
     if (!header)
@@ -596,17 +622,50 @@ int out_capacity(void)
     return cap;
 }
 
+/* The image as `held`, of cap bytes, `used` of them written: past the
+ * `flushed` bytes in the file. */
+static void hold(unsigned char *held, int used)
+{
+    if (!held)
+        acc_error("out of memory for the output");
+    out_img = held - flushed;
+    out_put = held + used;
+    out_limit = held + cap;
+}
+
 void out_grow(void)
 {
-    int used = OUT_LEN;
+    unsigned char *held = out_img + flushed;
+    int used = (int) (out_put - held);
 
-    /* One doubling is always enough: cap starts at 4096 or more and the largest
-     * single write is the four bytes of out_opcode24. */
-    out_img = img_grow(out_img, used, &cap);
-    if (!out_img)
-        acc_error("out of memory for the output");
-    out_put = out_img + used;
-    out_limit = out_img + cap;
+    /* One doubling is enough for any one write: cap starts at 4096 or more
+     * and the largest is the four bytes of out_opcode24. */
+    hold(img_grow(held, used, &cap), used);
+}
+
+/* What memory holds of a link's image, written to its file and let go of
+ * once it is half the room the image starts with: a link calls this between
+ * objects, which is where nothing written can be reached for again but
+ * through out_patch and out_add24. A program compiled from a source is not
+ * flushed, since leaving out its unused functions moves what came before.
+ *
+ * The image starts again at its first size, and on the Agon what it grew to
+ * goes back to malloc. */
+void out_flush(void)
+{
+    unsigned char *held = out_img + flushed;
+    int used = (int) (out_put - held);
+
+    if (!out_may_flush || (unsigned) used < (unsigned) out_start_cap / 2)
+        return;
+    if (!spill && !(spill = fopen(out_path, "w+b")))
+        acc_error("cannot write '%s'", out_path);
+    if ((int) fwrite(held, 1, (size_t) used, spill) != used)
+        acc_error("short write on '%s'", out_path);
+    flushed += used;
+    img_free(held);
+    cap = out_start_cap;
+    hold(img_take(cap), 0);
 }
 
 
@@ -681,7 +740,7 @@ void out_copy(int at, unsigned char *to, int len)
 
     if (len <= 0)
         return;                 /* nothing written yet, and `to` may be null */
-    if (off < 0 || off + len > OUT_LEN)
+    if (off < flushed || off + len > OUT_LEN)
         acc_error("internal: a read at %06x is outside the image", at);
     memcpy(to, out_img + off, (size_t) len);
 }
@@ -693,20 +752,62 @@ int out_read24(int at)
 {
     int off = at - out_base;
 
-    if (off < 0 || off + 3 > OUT_LEN)
+    if (off < flushed || off + 3 > OUT_LEN)
         acc_error("internal: a read at %06x is outside the image", at);
 
     return get24(out_img + off);
 }
 
+/* A patch made: `value` written to the bytes at `at`, or added to them. */
+static void patch_apply(unsigned char *at, int value, int kind)
+{
+    if (kind == PATCH_SET8)
+        *at = (unsigned char) value;
+    else
+        put24(at, kind == PATCH_SET24 ? value : get24(at) + value);
+}
+
+/* A patch to the image at `at`: made, or for bytes in the file already,
+ * kept for out_close. A slot is never split between the two: a link
+ * flushes between objects, and no slot is split across two of them. */
+static void patch(int at, int value, int kind)
+{
+    int off = at - out_base, width = kind == PATCH_SET8 ? 1 : 3;
+
+    if ((unsigned) off >= (unsigned) OUT_LEN
+        || (unsigned) (OUT_LEN - off) < (unsigned) width
+        || ((unsigned) off < (unsigned) flushed
+            && (unsigned) (off + width) > (unsigned) flushed))
+        acc_error("internal: patch at %06x is outside the image", at);
+    if ((unsigned) off >= (unsigned) flushed) {
+        patch_apply(out_img + off, value, kind);
+
+        return;
+    }
+    if (patch_put == patch_limit) {
+        PatchBlock *b = malloc(sizeof *b);
+
+        if (!b)
+            acc_error("out of memory for the patches to the output");
+        b->next = NULL;
+        if (patch_last)
+            patch_last->next = b;
+        else
+            patches = b;
+        patch_last = b;
+        patch_put = b->bytes;
+        patch_limit = b->bytes + PATCH_BLOCK;
+    }
+    put24(patch_put, off);
+    put24(patch_put + 3, value);
+    patch_put[6] = (unsigned char) kind;
+    patch_put += PATCH_WIDE;
+}
+
 /* One byte and two, for what an assembler's objects ask of a slot. */
 void out_patch8(int at, int value)
 {
-    int off = at - out_base;
-
-    if (off < 0 || off + 1 > OUT_LEN)
-        acc_error("internal: patch at %06x is outside the image", at);
-    out_img[off] = (unsigned char) value;
+    patch(at, value, PATCH_SET8);
 }
 
 void out_patch16(int at, int value)
@@ -717,31 +818,108 @@ void out_patch16(int at, int value)
 
 void out_patch24(int at, int value)
 {
-    int off = at - out_base;
+    patch(at, value, PATCH_SET24);
+}
 
-    if (off < 0 || off + 3 > OUT_LEN)
-        acc_error("internal: patch at %06x is outside the image", at);
-    put24(out_img + off, value);
+/* `delta` added to the three bytes at `at`: an address filled in on top of
+ * what its slot was emitted with, which may be in the file by then. */
+void out_add24(int at, int delta)
+{
+    patch(at, delta, PATCH_ADD24);
 }
 
 /* The image and its table let go of, without writing anything: what the
  * object writer wants, having written the same bytes itself. */
 void out_free(void)
 {
-    img_free(out_img);
+    img_free(out_img + flushed);
     out_img = NULL;
+    flushed = 0;
+    while (patches) {
+        PatchBlock *next = patches->next;
+
+        free(patches);
+        patches = next;
+    }
+    patch_last = NULL;
+    patch_put = patch_limit = NULL;
     free(out_relocs);
     out_relocs = out_reloc_put = out_reloc_limit = NULL;
 }
 
+#ifdef ACC_TABLE_STATS
+/* How many patches wait for out_close: see test/linkstream.sh. */
+int out_npatches(void)
+{
+    const PatchBlock *b;
+    int n = 0;
+
+    for (b = patches; b; b = b->next)
+        n += (int) ((b == patch_last ? patch_put : b->bytes + PATCH_BLOCK)
+                    - b->bytes) / PATCH_WIDE;
+
+    return n;
+}
+#endif
+
+/* The patches kept for the bytes in the file, made there: a piece at a
+ * time into `buf`, of `room`, each patch in the order it was made. The
+ * pieces overlap by two bytes, and a patch is made in the piece it starts
+ * in, short of the overlap: so a slot is never split between two pieces. */
+static void patch_file(unsigned char *buf, int room)
+{
+    int from = 0;
+
+    for (;;) {
+        int n = flushed - from, stop;
+        const PatchBlock *b;
+
+        if ((unsigned) n > (unsigned) room)
+            n = room;
+        stop = from + n == flushed ? flushed : from + n - 2;
+        if (fseek(spill, from, SEEK_SET) != 0
+            || (int) fread(buf, 1, (size_t) n, spill) != n)
+            acc_error("short read on '%s'", out_path);
+        for (b = patches; b; b = b->next) {
+            const unsigned char *p = b->bytes;
+            const unsigned char *end = b == patch_last ? patch_put : p + PATCH_BLOCK;
+
+            for (; p != end; p += PATCH_WIDE)
+                if ((unsigned) (get24(p) - from) < (unsigned) (stop - from))
+                    patch_apply(buf + (get24(p) - from), get24(p + 3), p[6]);
+        }
+        if (fseek(spill, from, SEEK_SET) != 0
+            || (int) fwrite(buf, 1, (size_t) n, spill) != n)
+            acc_error("short write on '%s'", out_path);
+        if (stop == flushed)
+            return;
+        from = stop;
+    }
+}
+
 void out_close(void)
 {
-    FILE *file = fopen(out_path, "wb");
+    unsigned char *held = out_img + flushed;
+    int used = (int) (out_put - held);
+    FILE *file = spill ? spill : fopen(out_path, "wb");
 
     if (!file)
         acc_error("cannot write '%s'", out_path);
-    if ((int) fwrite(out_img, 1, (size_t) OUT_LEN, file) != OUT_LEN)
+    if ((int) fwrite(held, 1, (size_t) used, file) != used)
         acc_error("short write on '%s'", out_path);
+    if (spill)
+        patch_file(held, cap);
     fclose(file);
+    spill = NULL;
     out_free();
+}
+
+/* A link that fails leaves no program: what it wrote is not one. */
+void out_abandon(void)
+{
+    if (!spill)
+        return;
+    fclose(spill);
+    spill = NULL;
+    remove(out_path);
 }
