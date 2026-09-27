@@ -17,15 +17,15 @@ Unzip `acc-<version>.zip` onto the root of the SD card. It holds:
     /lib/acc/libc.a           the C library
     /lib/acc/include/         its headers, <stdio.h> to <agon/vdp.h>
 
-acc looks in `/lib/acc/include` for every `#include`, and links
-`/lib/acc/libc.a` into every program, without being told. `/bin` is where
+acc looks in `/lib/acc/include` for every `#include`, and takes what a
+program calls from `/lib/acc/libc.a`, without being told. `/bin` is where
 MOS looks for a command, so `acc` works from any directory. It is tested
 on MOS 3.0.2.
 
 ## Using it on the Agon
 
-A program is compiled to an object and then linked into a program, which
-runs like any other MOS command:
+A program is compiled from its source in one step, and runs like any other
+MOS command. The output is named after the source, `hello.bin` here:
 
     */ type hello.c
     #include <stdio.h>
@@ -35,38 +35,43 @@ runs like any other MOS command:
         printf("hello, %s\n", argc > 1 ? argv[1] : "world");
         return 0;
     }
-    */ acc -c hello.c -o hello.o
-    */ acc hello.o -o hello.bin
+    */ acc hello.c
     */ hello Agon
     hello, Agon
 
-A program that calls nothing from the library can also be compiled in one
-step, straight from the source:
+`-o` names the output something else: `acc hello.c -o greet.bin`.
 
-    */ acc add.c -o add.bin
+A program in several files is compiled a file at a time with `-c`, which
+writes `main.o` from `main.c`, and linked together. The link is named after
+its first input, `main.bin` here. An object records the files it was made
+from, so a second `-c` over unchanged sources does nothing:
 
-A program in several files is compiled a file at a time and linked
-together. An object records the files it was made from, so a second `-c`
-over unchanged sources does nothing:
-
-    */ acc -c main.c -o main.o
-    */ acc -c util.c -o util.o
-    */ acc main.o util.o -o prog.bin
-    */ acc -c main.c -o main.o
+    */ acc -c main.c
+    */ acc -c util.c
+    */ acc main.o util.o
+    */ acc -c main.c
     main.o is up to date
-    */ acc -v
-    acc 0.1.0 (build 7597311)
+
+A source can also be named with objects and libraries, which are linked
+after it:
+
+    */ acc main.c util.o
 
 Objects can be collected into a library, from which a link takes only the
 members a program uses:
 
     */ acc -a mylib.a util.o parse.o
-    */ acc main.o mylib.a -o prog.bin
+    */ acc main.c mylib.a -o prog.bin
 
 Headers of your own are found beside the file that includes them, or in a
 directory given with `-I`, which is searched before `/lib/acc/include`:
 
-    */ acc -c main.c -o main.o -I /src/common
+    */ acc -c main.c -I /src/common
+
+`acc -v` prints the version:
+
+    */ acc -v
+    acc 0.1.0 (build 5441504)
 
 Every compile and link ends by printing the time it took, as
 `Done in 0.04 seconds`; the examples leave that line out. An error prints
@@ -74,16 +79,16 @@ as `file:line:column: error: text`, and acc stops at the first one.
 
 ## Options
 
-    acc [-c] <source.c> -o <out> [-I <dir>]... [-D <name>[=<value>]]...
-                                 [-U <name>]... [-include <file>]
-    acc <file.o|lib.a>... -o <out.bin>
+    acc [-c] <source.c> [<file.o|lib.a>]... [-o <out>] [-I <dir>]...
+             [-D <name>[=<value>]]... [-U <name>]... [-include <file>]
+    acc <file.o|lib.a>... [-o <out.bin>]
     acc -a <lib.a> <file.o>...
     acc -v
 
 | Option | Meaning |
 | --- | --- |
 | `-c` | Compile to an object, to be linked later |
-| `-o <out>` | The program or object to write |
+| `-o <out>` | The program or object to write; without it, the first input's name with `.bin`, or `.o` with `-c` |
 | `-a <lib.a>` | Put the objects that follow into a library |
 | `-I <dir>` | Look in `<dir>` for an `#include` |
 | `-D <name>[=<value>]` | Define a macro, as `#define` would; `-DN` is `-DN=1` |
@@ -144,8 +149,7 @@ On Linux, with a C compiler and make:
 
 acc on the host has no default include directory or library, so name them:
 
-    bin/acc -c hello.c -o hello.o -Iinclude
-    bin/acc hello.o bin/libc.a -o hello.bin
+    bin/acc hello.c bin/libc.a -Iinclude
 
 The Agon build needs [AgonDev](https://github.com/AgonPlatform/agondev) in
 `~/agondev` (or `AGONDEV=<dir>`):

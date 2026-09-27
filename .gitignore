@@ -24,3 +24,6 @@ test/perf/cache/
 
 # mkrelease.sh output.
 /acc-*.zip
+
+# Local notes and tools, never committed.
+.internal/

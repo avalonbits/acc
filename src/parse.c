@@ -8810,12 +8810,13 @@ static int ncmdline;
 static void usage(void)
 {
     fprintf(stderr,
-        "usage: acc [-c] <source.c> -o <out> [-I <dir>]... [-b <addr>]\n"
+        "usage: acc [-c] <source.c> [<file.o|lib.a>]... [-o <out>]\n"
+        "                                    [-I <dir>]... [-b <addr>]\n"
         "                                    [-D <name>[=<value>]]...\n"
         "                                    [-U <name>]...\n"
         "                                    [-r <file>] [-x] [-trigraphs]\n"
         "                                    [-include <file>]\n"
-        "       acc <file.o|lib.a>... -o <out.bin> [-x]\n"
+        "       acc <file.o|lib.a>... [-o <out.bin>] [-x]\n"
         "       acc -a <lib.a> <file.o>...\n"
         "       acc -v\n"
         "\n"
@@ -8826,6 +8827,9 @@ static void usage(void)
         "      linked with others later. An object also records what the\n"
         "      compile read, so that a build can tell whether it has to\n"
         "      be made again.\n"
+        "  -o  the file to write. Without it, the first input's name with\n"
+        "      .bin, or .o with -c, beside it.\n"
+        "  Objects and libraries named with a source are linked after it.\n"
         "  -D  define a name before the file is read, as #define would:\n"
         "      `-DN` is `-DN=1`, and `-D\'N(a,b)=...\'` takes parameters.\n"
         "  -U  undefine one, as #undef would.\n"
@@ -9322,6 +9326,39 @@ static int file_exists(const char *path)
 }
 #endif
 
+/* The name the i-th of what a link waits on is still waiting for, or -1:
+ * the n calls and addresses, then the nl slots of the kinds an assembly
+ * object has (gen_late_fixup), then what objects want.
+ *
+ * A variable whose room is in a bss has no address until the link ends, and
+ * is defined all the same. A weak name is not looked for on its own
+ * account. A slot that wants the bss is not waiting on a name at all. */
+static int waiting_on(int i, int n, int nl)
+{
+    int sym = i < n ? gen_fixup_sym(i)
+            : i < n + nl ? gen_late_sym(i - n) : wanted[i - n - nl];
+
+    if (sym < 0 || !gen_no_address(sym) || gen_bss_offset(sym) >= 0
+        || (i < n + nl && name_weak(sym_at(sym)->name)))
+        return -1;
+
+    return sym;
+}
+
+/* Whether anything is still waiting on a name: a program that calls
+ * nothing it does not define has no use for a library, and reading one's
+ * index is 19 KB of heap for libc.a. */
+static int link_short(void)
+{
+    int i, n = gen_nfixups(), nl = gen_nlate();
+
+    for (i = 0; i < n + nl + nwanted; i++)
+        if (waiting_on(i, n, nl) >= 0)
+            return 1;
+
+    return 0;
+}
+
 /* A library, which is asked only for what the link is short of.
  *
  * Round and round until it has nothing more to offer: what is taken may
@@ -9345,25 +9382,15 @@ static void link_archive(const char *path)
         acc_error("out of memory for '%s'", path);
 
     while (again) {
-        int i, n = gen_nfixups();
-
-        /* What calls and addresses wait on, then the slots of the kinds an
-         * assembly object has (gen_late_fixup), then what objects want. */
-        int nl = gen_nlate();
+        int i, n = gen_nfixups(), nl = gen_nlate();
 
         again = 0;
         for (i = 0; i < n + nl + nwanted; i++) {
-            int sym = i < n ? gen_fixup_sym(i)
-                    : i < n + nl ? gen_late_sym(i - n) : wanted[i - n - nl];
+            int sym = waiting_on(i, n, nl);
             const char *name;
             Object o;
 
-            /* A variable whose room is in a bss has no address until the
-             * link ends, and is defined all the same. A weak name is not
-             * looked for on its own account. A slot that wants the bss is
-             * not waiting on a name at all. */
-            if (sym < 0 || !gen_no_address(sym) || gen_bss_offset(sym) >= 0
-                || (i < n + nl && name_weak(sym_at(sym)->name)))
+            if (sym < 0)
                 continue;
             name = obj_object_name(name_text(sym_at(sym)->name));
             m = ar_find(&a, name);
@@ -9394,6 +9421,48 @@ static void link_archive(const char *path)
         free(taken[m].placed);
     free(taken);
     ar_close(&a);
+}
+
+/* What is written when -o is not given: the first input's name with its
+ * extension changed, beside it -- as zap names its output. */
+static const char *output_named(const char *from, const char *ext)
+{
+    static char name[256];
+    int n = 0, dot = -1;
+
+    for (; from[n]; n++) {
+        if (from[n] == '.')
+            dot = n;
+        else if (from[n] == '/' || from[n] == '\\' || from[n] == ':')
+            dot = -1;
+    }
+    if (dot >= 0)
+        n = dot;
+    if (n + (int) strlen(ext) >= (int) sizeof name)
+        acc_error("'%s' is too long a name to write the output beside", from);
+    memcpy(name, from, (size_t) n);
+    strcpy(name + n, ext);
+
+    return name;
+}
+
+/* The objects and libraries a program is linked from, in the order given,
+ * and then the default library if the build names one and it is there. A
+ * library is read only while something is still waiting on a name. */
+static void link_inputs(const char **objs, int nobjs)
+{
+    int i;
+
+    for (i = 0; i < nobjs; i++) {
+        if (!is_archive(objs[i]))
+            link_object(objs[i]);
+        else if (link_short())
+            link_archive(objs[i]);
+    }
+#ifdef ACC_LIBC
+    if (link_short() && file_exists(ACC_LIBC))
+        link_archive(ACC_LIBC);
+#endif
 }
 
 int main(int argc, char **argv)
@@ -9507,7 +9576,9 @@ int main(int argc, char **argv)
             usage();
         }
     }
-    if (!out || (!in && !nobjs) || (in && nobjs))
+    if (!out && !to_archive && (in || nobjs))
+        out = output_named(in ? in : objs[0], to_object ? ".o" : ".bin");
+    if (!out || (!in && !nobjs) || (in && nobjs && (to_object || to_archive)))
         usage();
     if (to_object && !in)
         usage();
@@ -9538,7 +9609,7 @@ int main(int argc, char **argv)
         /* Nothing is compiled and nothing is linked: the objects are put
          * together with a list of what each of them defines in front. */
         ar_write(out, objs, nobjs);
-    } else if (nobjs) {
+    } else if (!in) {
         /* Linking. The entry stub goes in first, as it does for a program
          * compiled in one piece, and its call to main is a fixup like any
          * other -- which is what makes the objects' own symbols do the work
@@ -9547,16 +9618,7 @@ int main(int argc, char **argv)
         if (obj_map_path)
             obj_link_map_open();
         gen_startup(ending, out);
-        for (i = 0; i < nobjs; i++) {
-            if (is_archive(objs[i]))
-                link_archive(objs[i]);
-            else
-                link_object(objs[i]);
-        }
-#ifdef ACC_LIBC
-        if (file_exists(ACC_LIBC))
-            link_archive(ACC_LIBC);
-#endif
+        link_inputs(objs, nobjs);
         gen_finish();
         obj_link_map_close();
         out_close();
@@ -9585,12 +9647,16 @@ int main(int argc, char **argv)
             out_relocs_write(relocs);
         out_free();
     } else {
+        /* A program from a source, and whatever it calls from the objects
+         * and libraries named with it -- and from the default library --
+         * linked in after it, as a link of its object would. */
         out_open(out, 1);
         gen_startup(ending, out);
         lex_open(in);
         translation_unit();
         lex_end();
         bss_end();
+        link_inputs(objs, nobjs);
         gen_finish();
         lex_close();
         if (relocs)

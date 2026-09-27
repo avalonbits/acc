@@ -40,6 +40,15 @@ int main(int argc, char **argv)
     return 0;
 }
 EOF
+cat > "$sd/one.c" <<'EOF'
+#include <stdio.h>
+
+int main(int argc, char **argv)
+{
+    printf("one step, %s\n", argc > 1 ? argv[1] : "world");
+    return 0;
+}
+EOF
 mkdir -p "$sd/common"
 echo '#define GREETING "hello"' > "$sd/common/greet.h"
 
@@ -49,6 +58,8 @@ acc -c hello.c -o hello.o -I common
 acc hello.o -o hello.bin
 hello Agon
 acc -c hello.c -o hello.o -I common
+acc one.c
+one Agon
 stop
 EOF
 sed -i 's/$/\r/' "$sd/autoexec.txt"
@@ -70,6 +81,7 @@ build=$(sed -n 's/.*ACC_BUILD \([0-9]*\).*/\1/p' src/acc_build.h)
 expect "acc -v on the Agon"                  "acc $version (build $build)"
 expect "a program linked with the defaults"  "hello, Agon"
 expect "a current object is left alone"      "hello.o is up to date"
+expect "one step, named after the source"    "one step, Agon"
 
 echo "  $pass passed, $fail failed"
 [ $fail -eq 0 ] || { sed 's/^/    | /' "$host/out.txt" | tail -15; exit 1; }
