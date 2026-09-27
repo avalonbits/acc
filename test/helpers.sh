@@ -46,6 +46,13 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 #              one too. Its operator is a byte, so its tests are no AND.
 #   __llsh     a 64-bit shift, a bit at a time. A wide constant's bytes,
 #              shifted out of it rather than read from where it lies.
+#   __idivs    a signed divide. item_of's `(low + high + 1) / 2`, a third of
+#              linking a hello world; an unsigned shift halves it.
+#   (obj.c)    the item and relocation accessors a link runs for every
+#              relocation, whose entries are three, six and nine bytes wide:
+#              found by adding the index to the pointer, since as a multiply,
+#              or as adds to an int that clang folds into one, each is
+#              __imulu.
 checks=(
     "gen.c __setflag vpush_const vpush_local vpush_reg vdrop vtype vtype_at
            vconst_top vdup ld_ix_rr push_rr pop_rr add_hl_rr sbc_hl_rr"
@@ -64,6 +71,9 @@ checks=(
     "parse.c - starts_decl"
     "lex.c +next lex_two"
     "parse.c +base_type type_specifier_slow"
+    "obj.c __imulu obj_item obj_item_align obj_reloc_at obj_reloc_sym
+           obj_reloc_kind obj_reloc_addend"
+    "parse.c __idivs item_of"
 )
 
 fail=0

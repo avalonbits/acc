@@ -758,14 +758,33 @@ void obj_free(Object *o)
     o->all = NULL;
 }
 
+/* The accessors below run for every relocation a link looks at. On the
+ * eZ80 a 24-bit shift or multiply is a call into the runtime, so the top
+ * nibble of an entry -- an item's alignment, a relocation's kind -- is read
+ * from its third byte, not shifted down from the whole number, and an
+ * entry is found by adds (see reloc_entry). */
+static int low20(const unsigned char *at)
+{
+    int value = get24(at);
+
+    ((unsigned char *) &value)[2] &= 0x0f;
+
+    return value;
+}
+
+static const unsigned char *item_entry(const Object *o, int i)
+{
+    return o->items + i + i + i;                /* i * OBJ_ITEM: see below */
+}
+
 int obj_item(const Object *o, int i)
 {
-    return get24(o->items + i * OBJ_ITEM) & LOW20;
+    return low20(item_entry(o, i));
 }
 
 int obj_item_align(const Object *o, int i)
 {
-    return get24(o->items + i * OBJ_ITEM) >> 20;
+    return item_entry(o, i)[2] >> 4;
 }
 
 /* The relocations, both tables as one: relocs first, then relocs_a. */
@@ -774,10 +793,21 @@ int obj_nrelocs(const Object *o)
     return o->nrelocs + o->nrelocs_a;
 }
 
+/* An entry's address by adding the index to the pointer, once for each
+ * byte of the entry. Written as a multiply -- or as adds to an int, which
+ * clang folds back into one -- it is a call to the runtime's __imulu for
+ * every field of every relocation a link reads; added to the pointer, clang
+ * leaves it as adds. */
 static const unsigned char *reloc_entry(const Object *o, int i)
 {
-    return i < o->nrelocs ? o->relocs + i * OBJ_RELOC
-                          : o->relocs_a + (i - o->nrelocs) * OBJ_RELOC_A;
+    const unsigned char *a;
+
+    if (i < o->nrelocs)
+        return o->relocs + i + i + i + i + i + i;       /* i * OBJ_RELOC */
+    i -= o->nrelocs;
+    a = o->relocs_a + i + i + i;                        /* i * OBJ_RELOC_A */
+
+    return a + i + i + i + i + i + i;
 }
 
 int obj_reloc_width(int kind)
@@ -787,7 +817,7 @@ int obj_reloc_width(int kind)
 
 int obj_reloc_kind(const Object *o, int i)
 {
-    return get24(reloc_entry(o, i) + 3) >> 20;
+    return reloc_entry(o, i)[5] >> 4;
 }
 
 /* What is added to the target: the relocation's own when it is in relocs_a,
@@ -833,7 +863,7 @@ int obj_reloc_at(const Object *o, int i)
 
 int obj_reloc_sym(const Object *o, int i)
 {
-    return get24(reloc_entry(o, i) + 3) & LOW20;
+    return low20(reloc_entry(o, i) + 3);
 }
 
 const char *obj_dep_path(const Object *o, int i)
