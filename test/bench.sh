@@ -1,7 +1,33 @@
 #!/bin/bash
-# How long acc takes to compile test/bench/big.c, on the Agon.
+# How long acc takes, on the Agon: from the command being typed to the
+# prompt coming back.
 #
 #   test/bench.sh [runs] [source.c ...]     # default 10, all of test/bench
+#
+# What is timed is the whole of an invocation: MOS finding acc and loading
+# it, acc's startup, the compile or the link, writing the output, and exit.
+# Two small programs on the card start and stop the emulator's cycle counter
+# (IO ports 0x40 and 0x41), one on each side of the command; the same pair
+# with nothing between them is timed too, and taken off. A count is exact
+# and does not care how fast the host runs the machine, so the emulator
+# runs unthrottled (-u). That needs an emulator that counts (fab-agon-emulator
+# 2037657 on: point ACC_EMU at a build of it), and without one there is no
+# figure.
+#
+# The emulator reads the card without the time a real SD card takes: a
+# program of 240 KB loads in the same cycles as one of 268 bytes. So the
+# figure is what an Agon would take with a card that cost nothing to read,
+# and a real one takes that and the reading of acc.bin besides.
+#
+# After the inputs, the same for whole programs: hello.c compiled to an
+# object, linked, and built in one step, and zap linked from its objects --
+# reported in milliseconds, since what they cost is not a function of any
+# one file's size.
+#
+# The rest of this note is about a build made with CYCLES=1, which counts
+# only its own compile, from after its arguments to before "Done in": that
+# figure leaves out loading, startup and exit, and is what this script
+# reported before. It is still what a counting build gives.
 #
 # Measured on the target because the host is not a proxy for it: the same
 # change can look like a 1.4x win here and a 3.2x win there, and host counts
@@ -48,10 +74,12 @@ shift 2>/dev/null
 # the benchmark shows up as an input that is not there rather than as a
 # measurement that quietly stops covering it. if/else/while were measured as
 # costing nothing for a while, on a program with no if and no while in it.
+ALL_INPUTS=0
 if [ $# -gt 0 ]; then
     SRCS="$*"
 else
     SRCS=$(echo test/bench/*.c)
+    ALL_INPUTS=1
 fi
 [ -n "${ACC_BENCH_SRC:-}" ] && SRCS=$ACC_BENCH_SRC
 
@@ -82,8 +110,23 @@ mkdir -p "$sd/lib/acc"                  # where the Agon build looks
 cp -r include "$sd/lib/acc/include"
 
 # A counting build says so in its own bytes: the format it reports with.
-speed=
-grep -aq 'Cycles: ' "$ACC" && speed=-u
+# Any other is timed whole, between the two programs that start and stop
+# the emulator's count.
+speed=-u
+whole=
+if ! grep -aq 'Cycles: ' "$ACC"; then
+    whole=1
+    for port in 40 41; do
+        printf '#include <ez80f92.h>\nint main(void) { io_out(0x%s, 0); return 0; }\n' \
+            "$port" > "$sd/t.c"
+        bin/acc -Iinclude "$sd/t.c" bin/libc.a -o "$sd/bin/tick$port.bin" >/dev/null \
+            || { echo "cannot build the counter's switches" >&2; exit 2; }
+    done
+    printf 'int main(void) { return 0; }\n' > "$sd/t.c"
+    bin/acc "$sd/t.c" -o "$sd/bin/nop.bin" >/dev/null || exit 2
+    rm -f "$sd/t.c"
+    cp bin/libc.a "$sd/lib/acc/"
+fi
 
 # MOS runs autoexec and then sits at the prompt: the emulator has no way to
 # stop itself, so without this every measurement burned the whole timeout and
@@ -268,6 +311,20 @@ set +f
 
 [ -z "$missing" ] || echo "note: no benchmark input uses:$missing" >&2
 
+# Milliseconds at the Agon's clock, to a tenth: `ms <cycles>`.
+ms() {
+    printf '%d.%d' $(($1 / (CLOCK / 1000))) $(($1 * 10 / (CLOCK / 1000) % 10))
+}
+
+# The counts of a card run timed whole: the first is the two switches with
+# nothing between them, and it is taken off each of the next RUNS.
+whole_counts() {
+    printf '%s' "$1" \
+        | sed -n 's/.*Debug OUT(0x41): \([0-9][0-9]*\) CPU cycles.*/\1/p' \
+        | awk -v runs="$RUNS" 'NR == 1 { base = $1; next }
+                               NR <= runs + 1 { print $1 - base }'
+}
+
 status=0
 total_all=0
 bytes_all=0
@@ -317,12 +374,15 @@ for SRC in $SRCS; do
     # answer -- which is what a spread of nine million cycles was saying.
     : > "$sd/autoexec.txt"
     rm -f "$sd"/out*.o
+    [ -z "$whole" ] || printf 'tick40\r\ntick41\r\n' >> "$sd/autoexec.txt"
     for i in $(seq $((RUNS + 1))); do
+        [ -z "$whole" ] || printf 'tick40\r\n' >> "$sd/autoexec.txt"
         if [ "$unit" = 1 ]; then
             printf 'acc -c in.c -o out%s.o\r\n' "$i" >> "$sd/autoexec.txt"
         else
             printf 'acc in.c -o out.bin\r\n' >> "$sd/autoexec.txt"
         fi
+        [ -z "$whole" ] || printf 'tick41\r\n' >> "$sd/autoexec.txt"
     done
     printf 'stop\r\n' >> "$sd/autoexec.txt"
 
@@ -352,25 +412,30 @@ for SRC in $SRCS; do
     # counted by the eZ80's own timer. Where it does, that is the figure: the
     # seconds come from a clock the emulator keeps on another thread and
     # wander by a few percent between sittings, and the count does not.
-    cycles=$(printf '%s' "$out" \
-        | sed -n 's/.*Debug OUT(0x41): \([0-9][0-9]*\) CPU cycles.*/\1/p' | head -n "$RUNS")
-    [ "$(printf '%s\n' "$cycles" | grep -c .)" -eq "$RUNS" ] \
-        || cycles=$(printf '%s' "$out" | sed -n 's/.*Cycles: \([0-9][0-9]*\).*/\1/p' | head -n "$RUNS")
+    if [ -n "$whole" ]; then
+        cycles=$(whole_counts "$out")
+    else
+        cycles=$(printf '%s' "$out" \
+            | sed -n 's/.*Debug OUT(0x41): \([0-9][0-9]*\) CPU cycles.*/\1/p' | head -n "$RUNS")
+        [ "$(printf '%s\n' "$cycles" | grep -c .)" -eq "$RUNS" ] \
+            || cycles=$(printf '%s' "$out" | sed -n 's/.*Cycles: \([0-9][0-9]*\).*/\1/p' | head -n "$RUNS")
+    fi
     if [ "$(printf '%s\n' "$cycles" | grep -c .)" -eq "$RUNS" ]; then
         csum=$(printf '%s\n' "$cycles" | awk '{t+=$1} END {printf "%d", t}')
         spread=$(printf '%s\n' "$cycles" | sort -n | sed -n '1p;$p' | paste -sd' ' | awk '{print $2 - $1}')
         cycles_all=$((cycles_all + csum))
         bytes_all=$((bytes_all + bytes))
-        printf '%-16s %-14s %2d runs  %d cycles each, spread %d  %d.%d cycles/byte\n' \
+        printf '%-16s %-14s %2d runs  %d cycles each, %s ms, spread %d  %d.%d cycles/byte\n' \
             "$(basename "$ACC")" "$(basename "$SRC")" "$RUNS" \
-            $((csum / RUNS)) "$spread" $((csum / (RUNS * bytes))) \
+            $((csum / RUNS)) "$(ms $((csum / RUNS)))" "$spread" $((csum / (RUNS * bytes))) \
             $((csum * 10 / (RUNS * bytes) % 10))
         continue
     fi
 
     # Unthrottled, the seconds are the host's and not the Agon's.
     if [ -n "$speed" ]; then
-        echo "$(basename "$SRC"): a counting build gave no count" >&2
+        echo "$(basename "$SRC"): no count -- the emulator has to be one that" \
+             "counts (ACC_EMU)" >&2
         status=1; continue
     fi
 
@@ -393,6 +458,55 @@ for SRC in $SRCS; do
         $((total / RUNS / 100)) $((total * 10 / RUNS % 1000)) \
         $((total * (CLOCK / 100) / (RUNS * bytes)))
 done
+
+# Whole programs, timed whole: a program that does nothing, which is what
+# MOS costs any command before it is acc's; hello.c to an object, hello.o linked,
+# hello.c built in one step, and zap linked from the objects the host acc
+# makes of it -- the objects being what a link reads, whoever made them.
+# Only when every input was asked for, as the real-code ones are.
+program() {    # program <name> <setup line> <command, with %s for the run>
+    local name=$1 setup=$2 cmd=$3 i out cycles csum
+
+    printf '%s\r\ntick40\r\ntick41\r\n' "$setup" > "$sd/autoexec.txt"
+    for i in $(seq $((RUNS + 1))); do
+        # shellcheck disable=SC2059
+        printf "tick40\r\n$cmd\r\ntick41\r\n" "$i" >> "$sd/autoexec.txt"
+    done
+    printf 'stop\r\n' >> "$sd/autoexec.txt"
+    out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-600} emu_run "$sd" -z -u)
+    cycles=$(whole_counts "$out")
+    if [ "$(printf '%s\n' "$cycles" | grep -c .)" -ne "$RUNS" ] \
+       || printf '%s' "$out" | grep -q 'error:'; then
+        echo "$name: no count, or an error:" >&2
+        printf '%s\n' "$out" | grep -a 'error' >&2
+        status=1
+        return
+    fi
+    csum=$(printf '%s\n' "$cycles" | awk '{t+=$1} END {printf "%d", t}')
+    printf '%-16s %-14s %2d runs  %d cycles each, %s ms\n' \
+        "$(basename "$ACC")" "$name" "$RUNS" $((csum / RUNS)) "$(ms $((csum / RUNS)))"
+}
+
+if [ -n "$whole" ] && [ -z "${ACC_BENCH_SRC:-}" ] && [ "$ALL_INPUTS" = 1 ]; then
+    printf '#include <stdio.h>\nint main(void) { printf("hello\\n"); return 0; }\n' \
+        > "$sd/hello.c"
+    program "(nothing)" "" "nop"
+    program "hello -c" "" "acc -c hello.c -o h%s.o"
+    program "hello link" "acc -c hello.c -o hello.o" "acc hello.o -o h%s.bin"
+    program "hello" "" "acc hello.c -o h%s.bin"
+    if [ -d "$tmp/zap/src" ]; then
+        zobjs= n=0
+        for f in "$tmp/zap/src"/*.c; do
+            [ "$(basename "$f")" = zmalloc.c ] && continue
+            n=$((n + 1))
+            bin/acc -c "$f" -o "$sd/z$n.o" -Iinclude -I"$tmp/zap/src" -DAGONDEV \
+                >/dev/null 2>&1 || { echo "zap: the host acc cannot compile $f" >&2
+                                      status=1; zobjs=; break; }
+            zobjs="$zobjs z$n.o"
+        done
+        [ -z "$zobjs" ] || program "zap link" "" "acc$zobjs -o zap%s.bin"
+    fi
+fi
 
 if [ "$bytes_all" -gt 0 ]; then
     printf '%-16s %-14s %2d runs  %*s%d.%d cycles/byte\n' \
