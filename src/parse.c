@@ -9659,6 +9659,13 @@ int main(int argc, char **argv)
         lex_end();
         bss_end();
         gen_finish();
+#ifdef ACC_TABLE_STATS
+        {
+            unsigned gen_table_bytes(void);
+
+            fprintf(stderr, "tables %u\n", gen_table_bytes());
+        }
+#endif
         lex_close();
         sym_members_free();             /* room for writing the object */
         name_table_free();

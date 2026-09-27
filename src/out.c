@@ -170,6 +170,25 @@ static int  cut_indexed;
 #define CUT_GONE 2
 #define CUT_WIDE 3              /* the three of them, per run */
 
+/* The runs a function's cuts made, given back once it is done when they
+ * grew past a kilobyte: see gen_forget. */
+void out_forget(void)
+{
+    if ((unsigned) cut_run_cap > 1024 / (CUT_WIDE * sizeof *cut_run)) {
+        free(cut_run);
+        cut_run = NULL;
+        cut_stop = NULL;
+        cut_run_cap = 0;
+        cut_n = 0;
+    }
+    if ((unsigned) cut_first_cap > 1024 / sizeof *cut_first) {
+        free(cut_first);
+        cut_first = NULL;
+        cut_first_cap = 0;
+        cut_nchunks = 0;
+    }
+}
+
 void out_cut_sum(const Cut *cuts, int n)
 {
     int total = 0, i, c, *r;

@@ -7306,6 +7306,8 @@ void gen_func_begin(int fn, int nparams, Type returns)
     rt_call(RT_FRAMESET);
 }
 
+static void gen_forget(void);
+
 void gen_func_end(void)
 {
     /* A return that is the last thing in the function jumps to the next
@@ -7371,6 +7373,64 @@ void gen_func_end(void)
     relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
     pool_emit();
     static_end();
+    gen_forget();
+}
+
+/* The tables a function needs while it is compiled, given back once it is:
+ * each is empty again when the next begins, and kept at the size the
+ * largest function made it, they held that much of the Agon's heap to the
+ * end of the file -- the end being where a big file runs out. One that
+ * stayed small is kept, so that a file of small functions does not pay for
+ * growing them again each time. */
+#define FORGET_ABOVE 1024       /* bytes */
+#define FORGET(p, cap, width) do {                                      \
+        if ((unsigned) (cap) > FORGET_ABOVE / (width)) {                \
+            free(p);                                                    \
+            (p) = NULL;                                                 \
+            (cap) = 0;                                                  \
+        }                                                               \
+    } while (0)
+
+#ifdef ACC_TABLE_STATS
+/* What the per-function tables still hold, for test/forget.sh. */
+unsigned gen_table_bytes(void)
+{
+    return (unsigned) jumps_cap * (sizeof *jump_at + 1)
+           + (unsigned) relax_cap * (sizeof *relax_cuts + 2 * sizeof(int) + 1)
+           + (unsigned) pool_sites_cap * 2 * sizeof *pool_site_at
+           + (unsigned) array_end_cap * sizeof *array_end
+           + (unsigned) array_patches_cap * sizeof *array_patches
+           + (unsigned) arr_cuts_cap * sizeof *arr_cut_at;
+}
+#endif
+
+static void gen_forget(void)
+{
+    /* Divided, not multiplied: the constant folds, where a multiply of
+     * the count would be a call to the runtime's. */
+    if ((unsigned) jumps_cap > FORGET_ABOVE / sizeof *jump_at) {
+        free(jump_cc);
+        jump_cc = NULL;
+    }
+    FORGET(jump_at, jumps_cap, sizeof *jump_at);
+    jumps_rewind(0);
+    if ((unsigned) relax_cap > FORGET_ABOVE / sizeof *relax_cuts) {
+        free(relax_target);
+        free(relax_slot);
+        free(relax_short);
+        relax_target = relax_slot = NULL;
+        relax_short = NULL;
+    }
+    FORGET(relax_cuts, relax_cap, sizeof *relax_cuts);
+    if ((unsigned) pool_sites_cap > FORGET_ABOVE / sizeof *pool_site_at) {
+        free(pool_site_entry);
+        pool_site_entry = NULL;
+    }
+    FORGET(pool_site_at, pool_sites_cap, sizeof *pool_site_at);
+    FORGET(array_end, array_end_cap, sizeof *array_end);
+    FORGET(array_patches, array_patches_cap, sizeof *array_patches);
+    FORGET(arr_cut_at, arr_cuts_cap, sizeof *arr_cut_at);
+    out_forget();
 }
 
 void gen_return(int line, const char *spot)
