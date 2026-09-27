@@ -92,8 +92,6 @@ static void syms_grow(void)
  * constant, a typedef or a tag declared inside a function belongs to the
  * block it is declared in, where the same declaration at file scope does
  * not. */
-static void fn_shift(int at, int bytes);
-
 static inline __attribute__((always_inline))
 int push_local(NameRef name, int kind, int val)
 {
@@ -110,6 +108,9 @@ int push_local(NameRef name, int kind, int val)
     sym->type = TY_INT;     /* until the declaration says otherwise */
     sym->ext = 0;
     sym->quals = 0;
+    sym->first = 0;
+    sym->count = 0;
+    sym->flags = 0;
     sym_nbytes += sizeof *sym;
 
     return at;
@@ -153,12 +154,6 @@ int sym_push(NameRef name, int kind, int val)
     at = sym_nglobal_bytes;
     sym = sym_at(at);
     memmove(sym + 1, sym, (size_t) (sym_nbytes - at));
-
-    /* And what the table beside it holds for the locals -- an array's count
-     * -- moves with them: `sizeof a` after a call to a function not yet
-     * seen read another symbol's. */
-    if (sym_nbytes != at)            /* at file scope there are no locals */
-        fn_shift(at, sym_nbytes - at);
     sym->name = name;
     sym->kind = (unsigned char) kind;
     sym->val = val;
@@ -166,7 +161,9 @@ int sym_push(NameRef name, int kind, int val)
                                  * assumed to return int, as C says */
     sym->ext = 0;
     sym->quals = 0;
-    sym_set_params(at, 0, 0);   /* and to take nothing known */
+    sym->first = 0;             /* and to take nothing known */
+    sym->count = 0;
+    sym->flags = 0;
     sym_nbytes += sizeof *sym;
     sym_nglobal_bytes += sizeof *sym;
     name_set_global(name, at);
@@ -220,9 +217,8 @@ int sym_find(NameRef name)
  * C89 would call that the programmer's fault for not writing a prototype;
  * C99, which acc is aimed at, requires the conversion.
  *
- * Kept beside the symbols rather than in them: a Sym is eight bytes, and two
- * more fields would make it twelve for every local as well as every
- * function. */
+ * The types are kept beside the symbols rather than in them: a function
+ * takes any number, and each Sym says where its run starts. */
 /* Two arrays of bytes rather than one of pairs: reaching the pair would be
  * a shift of the index, which is a call into the runtime on this target, on
  * every argument of every call. */
@@ -230,79 +226,22 @@ static Type          *param_type;
 static unsigned char *param_ext;       /* a struct's, which says how big */
 static unsigned param_used, param_cap;
 
-/* Where each function's run starts and how long it is, indexed by its symbol.
- * File-scope symbols keep their index when others are added, so this stays
- * lined up with them.
- *
- * A record is as wide as a Sym, so that a symbol's index -- its offset into
- * the symbol table -- is also its signature's offset into this one, and
- * finding it is an add like sym_at. */
-typedef union {
-    struct {
-        int           first;
-        unsigned char count;
-        unsigned char flags;    /* SYMF_* */
-    } s;
-    unsigned char size[sizeof(Sym)];
-} FnSig;
-
-typedef char fn_sig_is_a_sym_wide[sizeof(FnSig) == sizeof(Sym) ? 1 : -1];
-
-static unsigned char *fn_sigs;
-static unsigned       fn_cap;           /* bytes */
-
-#define fn_sig(sym)  ((FnSig *) (fn_sigs + (sym)))
-
-static void fn_room(unsigned want)
-{
-    unsigned was = fn_cap;
-
-    if (want < fn_cap)
-        return;
-    while (fn_cap <= want)
-        fn_cap = fn_cap ? fn_cap * 2 : 64 * sizeof(FnSig);
-    fn_sigs = realloc(fn_sigs, fn_cap);
-    if (!fn_sigs)
-        acc_error("out of memory for the function signatures");
-
-    /* What realloc hands back is whatever was last in it. A slot read
-     * before anything wrote it is read all the same -- sym_set_params keeps
-     * the bit that says something holds this function's address, so a slot
-     * that came back with it set made an uncalled `static` look wanted and
-     * kept it in the image. On a host the memory is a fresh page and reads
-     * as zeros, which is why this only ever showed on the Agon. */
-    memset(fn_sigs + was, 0, fn_cap - was);
-}
-
-/* The records from `at` on, `bytes` of them, one symbol's width further up:
- * see sym_push. The slot they leave is cleared, because the move leaves a
- * copy of what was there and the symbol about to take it is one nobody has
- * said anything about yet. */
-static void fn_shift(int at, int bytes)
-{
-    fn_room((unsigned) (at + bytes + sizeof(FnSig)));
-    memmove(fn_sigs + at + sizeof(FnSig), fn_sigs + at, (size_t) bytes);
-    memset(fn_sigs + at, 0, sizeof(FnSig));
-}
-
 void sym_set_params(int sym, int first, int count)
 {
-    fn_room((unsigned) sym);
-    fn_sig(sym)->s.first = first;
-    fn_sig(sym)->s.count = (unsigned char) count;
+    sym_at(sym)->first = first;
+    sym_at(sym)->count = (unsigned char) count;
 
     /* Whoever sets the parameters says the rest of what is known about the
      * declaration -- but not whether something has already wanted it. A
      * `static` called before it is defined is called all the same, and the
      * definition clearing that took it out of the image from under the
      * call. */
-    fn_sig(sym)->s.flags &= SYMF_USED;
+    sym_at(sym)->flags &= SYMF_USED;
 }
 
 void sym_set_flags(int sym, int flags)
 {
-    fn_room((unsigned) sym);
-    fn_sig(sym)->s.flags |= (unsigned char) flags;
+    sym_at(sym)->flags |= (unsigned char) flags;
 }
 
 /* Taking one back, which only extern needs: a declaration that says it
@@ -310,27 +249,23 @@ void sym_set_flags(int sym, int flags)
  * does not. */
 void sym_clear_flags(int sym, int flags)
 {
-    fn_room((unsigned) sym);
-    fn_sig(sym)->s.flags &= (unsigned char) ~flags;
+    sym_at(sym)->flags &= (unsigned char) ~flags;
 }
 
 unsigned char sym_flags(int sym)
 {
-    return fn_sig(sym)->s.flags;
+    return sym_at(sym)->flags;
 }
 
-/* The reads need no room check: a symbol only has a signature because
- * sym_push or sym_set_params made room for it first, and both run before any
- * call site can ask. Checking on every read cost a compare and a branch on
- * the path of every argument of every call. */
+/* A symbol's signature is in its own record, so a read is a load. */
 int sym_params_first(int sym)
 {
-    return fn_sig(sym)->s.first;
+    return sym_at(sym)->first;
 }
 
 int sym_nparams(int sym)
 {
-    return fn_sig(sym)->s.count;
+    return sym_at(sym)->count;
 }
 
 int sym_params_begin(void)
@@ -409,13 +344,12 @@ int sym_declared_in(int sym, int mark)
 
 void sym_set_count(int sym, int count)
 {
-    fn_room((unsigned) sym);
-    fn_sig(sym)->s.first = count;
+    sym_at(sym)->first = count;
 }
 
 int sym_count(int sym)
 {
-    return fn_sig(sym)->s.first;
+    return sym_at(sym)->first;
 }
 
 /* ------------------------------------------------------------------ */
@@ -654,10 +588,83 @@ typedef struct {
                                  * one: see bitfield_at */
 } Member;
 
-static Member *members;
-static int     members_used, members_cap;       /* bytes */
+/* In chunks that never move, as the names are (see names_chunk in lex.c):
+ * a member is its offset from `members`, which is the first chunk and stays
+ * put, and a struct's members are a chain through their `next` offsets, so
+ * nothing needs them side by side. Grown as one block by realloc, the
+ * members of an Agon program's headers took 13 KB to 26 KB, holding both at
+ * once while they did. On the Agon the first chunk is static, below every
+ * chunk malloc hands out; on the host every chunk is cut, in order, from
+ * one block reserved at the start. */
+#define MEMBER_CHUNK (78 * (int) sizeof(Member))
+
+static char *members;
+static char *members_at, *members_end;  /* the current chunk's free part */
+
+#ifdef AGONDEV
+static char members_first[MEMBER_CHUNK];
+static char *members_more;              /* the malloc'd chunks, newest first */
+#else
+#define MEMBER_RESERVE (16L * 1024 * 1024)
+static char *members_reserve;
+#endif
 
 #define member_at(m)  ((Member *) ((char *) members + (m)))
+
+__attribute__((noinline))
+static void members_chunk(void)
+{
+    if (!members) {
+#ifdef AGONDEV
+        members = members_first;
+#else
+        members = malloc(MEMBER_RESERVE);
+        if (!members)
+            acc_error("out of memory for struct members");
+        members_reserve = members + MEMBER_CHUNK;
+#endif
+        members_at = members;
+    } else {
+#ifdef AGONDEV
+        /* Each starts with the one malloc'd before it, for
+         * sym_members_free, and its members after that. */
+        char *chunk = malloc(sizeof(char *) + MEMBER_CHUNK);
+
+        if (!chunk)
+            acc_error("out of memory for struct members");
+        *(char **) chunk = members_more;
+        members_more = chunk;
+        members_at = chunk + sizeof(char *);
+#else
+        if (members_reserve + MEMBER_CHUNK > members + MEMBER_RESERVE)
+            acc_error("more struct members than the host build reserved "
+                      "room for");
+        members_at = members_reserve;
+        members_reserve += MEMBER_CHUNK;
+#endif
+    }
+    members_end = members_at + MEMBER_CHUNK;
+}
+
+/* The members let go of, once the source has been read: nothing after it --
+ * the object's writer, or a link -- asks about a struct's members. */
+void sym_members_free(void)
+{
+#ifdef AGONDEV
+    char *chunk;
+
+    /* Every chunk but the first, which is static, through the list
+     * members_chunk keeps. */
+    while (members_more) {
+        chunk = members_more;
+        members_more = *(char **) chunk;
+        free(chunk);
+    }
+#else
+    free(members);
+#endif
+    members = members_at = members_end = NULL;
+}
 
 int ext_record(int is_union, NameRef tag)
 {
@@ -719,14 +726,11 @@ void ext_record_done(int x, int first, int bytes)
 int member_add(NameRef name, Type type, int ext, int offset, int quals)
 {
     Member *m;
-    int at = members_used;
+    int at;
 
-    if (members_used == members_cap) {
-        members_cap = members_cap ? members_cap * 2 : 32 * (int) sizeof *m;
-        members = realloc(members, (size_t) members_cap);
-        if (!members)
-            acc_error("out of memory for struct members");
-    }
+    if (members_end - members_at < (int) sizeof *m)
+        members_chunk();
+    at = (int) (members_at - members);
     m = member_at(at);
     m->name = name;
     m->offset = offset;
@@ -735,7 +739,7 @@ int member_add(NameRef name, Type type, int ext, int offset, int quals)
     m->ext = (unsigned char) ext;
     m->quals = (unsigned char) quals;
     m->bits = 0;
-    members_used += sizeof *m;
+    members_at += sizeof *m;
 
     return at;
 }

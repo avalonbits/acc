@@ -7,10 +7,12 @@
 # machine. These are held: each combination below compiles, and the widest
 # builds in one step and runs.
 #
+# Every header acc has, in one file; and eleven an Agon program might
+# include, built in one step and run.
+#
 # And aed, if ~/code/aed is there (AED_SRC to point elsewhere): a real
-# program of 23 files, compiled a file at a time. Not all of it fits yet;
-# AED_OVER is how many may still run out of memory, so that the number can
-# only go down.
+# program of 23 files, compiled a file at a time. AED_OVER is how many may
+# run out of memory: none.
 #
 #   test/headers.sh [acc.bin]           # default bin/acc.bin
 set -u
@@ -20,7 +22,7 @@ cd "$(dirname "$0")/.."
 
 ACC=${1:-bin/acc.bin}
 AED_SRC=${AED_SRC:-$HOME/code/aed/src}
-AED_OVER=3
+AED_OVER=0
 
 emu_available || exit 77
 [ -f "$ACC" ] || { echo "no $ACC -- run make -f Makefile.agon" >&2; exit 2; }
@@ -73,6 +75,37 @@ int main(void)
 EOF
 printf 'echo FILE five\r\ntry acc five.c\r\ntry five\r\n' >> "$sd/autoexec.txt"
 
+# Every header, then the eleven.
+(cd include && find . -name '*.h' | sed 's|^\./||' | sort) | while read -r h; do
+    echo "#include <$h>"
+done > "$sd/allh.c"
+echo 'int main(void) { return 0; }' >> "$sd/allh.c"
+printf 'echo FILE allh\r\ntry acc -c allh.c -o allh.o\r\n' >> "$sd/autoexec.txt"
+
+cat > "$sd/eleven.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <agon/mos.h>
+#include <agon/vdp.h>
+#include <agon/keyboard.h>
+#include <agon/timer.h>
+
+int main(void)
+{
+    char *p = malloc(8);
+
+    strcpy(p, "ok");
+    printf("eleven %s %d %d\n", p, (int) sqrt(49.0), toupper('a'));
+    return 0;
+}
+EOF
+printf 'echo FILE eleven\r\ntry acc eleven.c\r\ntry eleven\r\n' >> "$sd/autoexec.txt"
+
 naed=0
 if [ -d "$AED_SRC" ]; then
     mkdir -p "$sd/aed"
@@ -109,6 +142,14 @@ if grep -qxF "five headers, 4" "$host/out.txt" && grep -qxF "in one step" "$host
     printf '  ok   %s\n' "and the program runs"; pass=$((pass + 1))
 else
     printf '  FAIL %-40s %s\n' "and the program runs" "no output"; fail=$((fail + 1))
+fi
+
+held "every header at once"                allh
+held "eleven headers in one step"           eleven
+if grep -qxF "eleven ok 7 65" "$host/out.txt"; then
+    printf '  ok   %s\n' "and that program runs"; pass=$((pass + 1))
+else
+    printf '  FAIL %-40s %s\n' "and that program runs" "no output"; fail=$((fail + 1))
 fi
 
 if [ "$naed" -gt 0 ]; then

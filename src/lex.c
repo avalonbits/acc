@@ -28,7 +28,6 @@
  *
  * Offset zero is never a name, so it can mean "none". */
 char         *name_arena;       /* name_global reads it directly */
-static size_t names_len, names_cap;
 
 /* Open addressing over the arena: each slot is an offset, and a collision
  * walks forward. Sized as a power of two so the modulo is a mask, and grown by
@@ -175,23 +174,49 @@ Bucket *name_home(const char *text, unsigned n)
     return (Bucket *) ((char *) buckets + offset);
 }
 
-/* Split so that the test can be inlined into name_intern and the growth
- * cannot: the test is once per identifier, the growth is a dozen times in a
- * compile, and inlining both put a realloc's frame on the hot path. */
-__attribute__((noinline))
-static void names_realloc(size_t need)
-{
-    while (names_cap < names_len + need)
-        names_cap = names_cap ? names_cap * 2 : 1024;
-    name_arena = realloc(name_arena, names_cap);
-    if (!name_arena)
-        acc_error("out of memory for names");
-}
+/* Where names go: chunks that never move, so that the arena never has to
+ * grow as one block.
+ *
+ * It was one block doubled by realloc, and on the Agon agondev's realloc
+ * mallocs the new block, copies and frees the old: an arena of 36 KB --
+ * what the headers of one of aed's files come to -- was a 64 KB block by
+ * then, and asked for 96 KB at once to get there. Now each name goes in the
+ * current chunk, and a name that does not fit starts a new one, so the
+ * arena costs what is in it and the rest of a chunk.
+ *
+ * A name is still an offset from name_arena, which stays where it is: on
+ * the Agon it is the first chunk, a static one, below every chunk malloc
+ * hands out afterwards, so every offset is positive; on the host it is one
+ * block reserved at the start, which the chunks are cut from in order.
+ * Either way the first chunk has the lowest offsets, and the keywords --
+ * interned first -- are the names below kw_limit, as they always were. */
+#define NAME_CHUNK 1024
 
-static void names_grow(size_t need)
+static char *chunk_at, *chunk_end;      /* the current chunk's free part */
+
+#ifdef AGONDEV
+static char name_first[NAME_CHUNK];
+#else
+#define NAME_RESERVE (64L * 1024 * 1024)
+static char *reserve_at;
+#endif
+
+__attribute__((noinline))
+static void names_chunk(size_t need)
 {
-    if (names_len + need > names_cap)
-        names_realloc(need);
+    size_t size = need > NAME_CHUNK ? need : NAME_CHUNK;
+
+#ifdef AGONDEV
+    chunk_at = malloc(size);
+    if (!chunk_at)
+        acc_error("out of memory for names");
+#else
+    if (reserve_at + size > name_arena + NAME_RESERVE)
+        acc_error("more names than the host build reserved room for");
+    chunk_at = reserve_at;
+    reserve_at += size;
+#endif
+    chunk_end = chunk_at + size;
 }
 
 static void buckets_rehash(unsigned newn)
@@ -200,14 +225,15 @@ static void buckets_rehash(unsigned newn)
     unsigned mask = newn * sizeof *buckets - 1;
 
     if (newn * sizeof *buckets > 65536)
-        acc_error("too many names: the limit is %u", 65536 / sizeof *buckets / 2 - 1);
+        acc_error("too many names: the limit is %u",
+                  65536 / sizeof *buckets / 4 * 3 - 1);
     REHASHED();
     buckets = calloc(newn, sizeof *buckets);
     if (!buckets)
         acc_error("out of memory for the name table");
     buckets_end = buckets + newn;
     nbuckets = newn;
-    names_room = newn / 2 - 1 - nnames;
+    names_room = newn / 4 * 3 - 1 - nnames;
     mask_lo = (unsigned char) (mask & ~(sizeof *buckets - 1));
     mask_hi = (unsigned char) (mask >> 8);
     for (from = old; from != end; from++) {
@@ -227,18 +253,35 @@ static void buckets_rehash(unsigned newn)
 
 void name_init(void)
 {
-    names_cap = 1024;
-    name_arena = malloc(names_cap);
+#ifdef AGONDEV
+    name_arena = name_first;
+#else
+    name_arena = malloc(NAME_RESERVE);
     if (!name_arena)
         acc_error("out of memory for names");
+    reserve_at = name_arena + NAME_CHUNK;
+#endif
     name_arena[0] = '\0';     /* so offset 0 is never a real name */
-    names_len = 1;
+    chunk_at = name_arena + 1;
+    chunk_end = name_arena + NAME_CHUNK;
 
     /* 1024 slots, which hold 511 names before the table grows: enough for a
      * program of a few hundred lines without a rehash, each of which moves
      * every name. Starting at 256, the two a benchmark input needed were 2%
      * of its compile. Four KB. */
     buckets_rehash(1024);
+}
+
+/* The table that finds a name from its text, let go of: an object's
+ * writer, which is all that follows a compile to one, reads names by their
+ * offset and interns none. 16 KB of an Agon program's headers. Nothing may
+ * intern a name after this. */
+void name_table_free(void)
+{
+    free(buckets);
+    buckets = buckets_end = NULL;
+    nbuckets = 0;
+    names_room = 0;
 }
 
 NameRef name_intern(const char *text, int len)
@@ -266,9 +309,12 @@ NameRef name_intern(const char *text, int len)
         PROBE();
     }
 
-    /* Kept under half full, since past that a linear probe starts walking.
-     * Checked here, where the name is new, rather than on every lookup: the
-     * growth moves every name, so the probe starts again. */
+    /* Kept under three quarters full. A linear probe walks further past
+     * half, but a table of four-byte slots at half full for the headers of
+     * an Agon program was 32 KB, and growing it held that and the 16 KB
+     * before it at once; the compile measured no slower. Checked here, where
+     * the name is new, rather than on every lookup: the growth moves every
+     * name, so the probe starts again. */
     if (names_room == 0) {
         buckets_rehash(nbuckets * 2);
 
@@ -276,12 +322,13 @@ NameRef name_intern(const char *text, int len)
     }
 
     /* Not a macro and no file-scope symbol yet, then the text. */
-    names_grow(4 + len + 1);
-    memset(name_arena + names_len, 0, 4);
-    ref = (NameRef) names_len + 4;
+    if ((size_t) (chunk_end - chunk_at) < 4 + (size_t) len + 1)
+        names_chunk(4 + (size_t) len + 1);
+    memset(chunk_at, 0, 4);
+    ref = (NameRef) (chunk_at + 4 - name_arena);
     memcpy(name_arena + ref, text, len);
     name_arena[ref + len] = '\0';
-    names_len = ref + len + 1;
+    chunk_at += 4 + len + 1;
     b->ref = ref;
     nnames++;
     names_room--;
@@ -328,7 +375,7 @@ const char *name_text(NameRef ref)
  * more are what one of aed's files needed to compile on the Agon
  * (test/headers.sh); reading it in 4 KB pieces costs nothing measurable. */
 #define SRC_CAP     4096
-#define INCLUDE_CAP 4096
+#define INCLUDE_CAP 2048
 
 static char *src;           /* src_cap + 1 bytes, the +1 for the sentinel */
 static int   src_cap;       /* which of the two sizes this level has */
@@ -1171,8 +1218,49 @@ static void buf_putc(Buf *b, int c)
     buf_put(b, &ch, 1);
 }
 
-static Macro   *macros;
+/* The table is of pointers, and the records are in chunks of their own.
+ * It was of the 16-byte records themselves, kept under three quarters
+ * full: an Agon program's headers, 500-odd macros, made it 16 KB, and
+ * growing it held that and 32 KB more at once. As pointers the table is 3
+ * KB, the records are 16 bytes for each macro there is, and growing the
+ * table copies the pointers, not the records -- which also means a Macro *
+ * stays good across a #define that grows it. A record an #undef frees goes
+ * on a list for the next #define. */
+static Macro  **macros;
 static unsigned nmacro_slots, nmacros;
+static Macro   *macro_spare;            /* freed records, through `text` */
+
+#define MACRO_CHUNK 1024
+
+/* A chunk starts with the one before it, so lex_close can free them all. */
+static void  *macro_chunks;
+static char  *macro_at, *macro_end;
+
+static Macro *macro_new(void)
+{
+    Macro *m;
+
+    if (macro_spare) {
+        m = macro_spare;
+        macro_spare = (Macro *) (void *) m->text;
+
+        return m;
+    }
+    if ((size_t) (macro_end - macro_at) < sizeof *m) {
+        void **chunk = malloc(MACRO_CHUNK);
+
+        if (!chunk)
+            acc_error("out of memory for macros");
+        *chunk = macro_chunks;
+        macro_chunks = chunk;
+        macro_at = (char *) chunk + sizeof(Macro *) * 2;
+        macro_end = (char *) chunk + MACRO_CHUNK;
+    }
+    m = (Macro *) (void *) macro_at;
+    macro_at += sizeof *m;
+
+    return m;
+}
 
 /* Whether a name is a macro, kept in the byte four in front of its text.
  *
@@ -1215,11 +1303,11 @@ void name_set_weak(NameRef ref, int weak)
 static void macros_grow(void);
 
 /* The slot a name belongs in, empty or not. */
-static Macro *macro_slot(NameRef name)
+static Macro **macro_slot(NameRef name)
 {
     unsigned i = (name >> 2) & (nmacro_slots - 1);
 
-    while (macros[i].name != NAME_NONE && macros[i].name != name)
+    while (macros[i] && macros[i]->name != name)
         i = (i + 1) & (nmacro_slots - 1);
 
     return &macros[i];
@@ -1228,13 +1316,10 @@ static Macro *macro_slot(NameRef name)
 /* The definition of a name, or null. */
 static Macro *macro_find(NameRef name)
 {
-    Macro *m;
-
     if (!nmacros)
         return NULL;
-    m = macro_slot(name);
 
-    return m->name == NAME_NONE ? NULL : m;
+    return *macro_slot(name);
 }
 
 /* Which definition a name has as a macro now, or 0: the same name defined
@@ -1250,7 +1335,7 @@ int lex_macro_def(NameRef name)
 
 static void macros_grow(void)
 {
-    Macro   *old = macros;
+    Macro  **old = macros;
     unsigned n = nmacro_slots, i;
 
     nmacro_slots = n ? n * 2 : 64;
@@ -1258,22 +1343,19 @@ static void macros_grow(void)
     if (!macros)
         acc_error("out of memory for macros");
     for (i = 0; i < n; i++)
-        if (old[i].name != NAME_NONE)
-            *macro_slot(old[i].name) = old[i];
+        if (old[i])
+            *macro_slot(old[i]->name) = old[i];
     free(old);
 }
 
 static void macro_define(NameRef name, const char *text, int len,
                          NameRef *params, int nparams, int variadic)
 {
-    Macro *m;
-    char  *keep;
+    Macro **slot, *m;
+    char   *keep;
 
-    /* Kept under three quarters full. A linear probe walks further past
-     * half, but only #define and a macro's use probe here, and the table is
-     * 16 bytes a slot: at half full the headers of an Agon program took it
-     * to 32 KB, and growing it holds the old table and the new at once. */
-    if (!nmacro_slots || nmacros * 4 >= nmacro_slots * 3)
+    /* Kept under half full: past that a linear probe starts walking. */
+    if (!nmacro_slots || nmacros * 2 >= nmacro_slots)
         macros_grow();
 
     keep = malloc((size_t) len + 1);
@@ -1286,11 +1368,14 @@ static void macro_define(NameRef name, const char *text, int len,
         memcpy(keep, text, (size_t) len);
     keep[len] = '\0';
 
-    m = macro_slot(name);
-    if (m->name != NAME_NONE) {
+    slot = macro_slot(name);
+    m = *slot;
+    if (m) {
         free(m->text);          /* defined again; C allows it if it matches */
         free(m->params);
     } else {
+        m = macro_new();
+        *slot = m;
         nmacros++;
     }
     m->name = name;
@@ -1306,31 +1391,35 @@ static void macro_define(NameRef name, const char *text, int len,
  * names that probed past this one is put back through the table. */
 static void macro_undef(NameRef name)
 {
-    Macro   *m = macro_find(name);
+    Macro  **slot, *m;
     unsigned i;
 
+    if (!nmacros)
+        return;
+    slot = macro_slot(name);
+    m = *slot;
     if (!m)
         return;
     free(m->text);
     free(m->params);
-    m->name = NAME_NONE;
-    m->text = NULL;
     m->params = NULL;
+    m->text = (char *) (void *) macro_spare;
+    macro_spare = m;
+    *slot = NULL;
     nmacros--;
     name_is_macro(name) &= ~NAME_MACRO;
 
     /* Whatever follows in this run may have probed past the hole. */
-    i = (unsigned) (m - macros);
+    i = (unsigned) (slot - macros);
     for (;;) {
-        Macro moved;
+        Macro *moved;
 
         i = (i + 1) & (nmacro_slots - 1);
-        if (macros[i].name == NAME_NONE)
+        if (!macros[i])
             return;
         moved = macros[i];
-        macros[i].name = NAME_NONE;
-        macros[i].text = NULL;
-        *macro_slot(moved.name) = moved;
+        macros[i] = NULL;
+        *macro_slot(moved->name) = moved;
     }
 }
 
@@ -1591,13 +1680,21 @@ void lex_close(void)
     /* The macros too: nothing after the source asks about them, and a link
      * that follows in the same run -- `acc prog.c` -- has the room. */
     for (i = 0; i < nmacro_slots; i++)
-        if (macros[i].name != NAME_NONE) {
-            free(macros[i].text);
-            free(macros[i].params);
+        if (macros[i]) {
+            free(macros[i]->text);
+            free(macros[i]->params);
         }
     free(macros);
     macros = NULL;
     nmacro_slots = nmacros = 0;
+    while (macro_chunks) {
+        void *chunk = macro_chunks;
+
+        macro_chunks = *(void **) chunk;
+        free(chunk);
+    }
+    macro_at = macro_end = NULL;
+    macro_spare = NULL;
 }
 
 const char *lex_path(void) { return src_path; }
