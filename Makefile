@@ -172,6 +172,8 @@ test: all unit agon
 	 else echo "  [no Agon build: the target test is skipped]"; fi
 	@if [ -f $(BIN)/acc.bin ]; then test/release.sh || [ $$? -eq 77 ]; \
 	 else echo "  [no Agon build: the release test is skipped]"; fi
+	@if [ -f $(BIN)/acc.bin ]; then test/headers.sh || [ $$? -eq 77 ]; \
+	 else echo "  [no Agon build: the headers test is skipped]"; fi
 
 # The Agon build, through its own makefile so there is one recipe for it.
 #

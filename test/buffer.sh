@@ -1,7 +1,7 @@
 #!/bin/bash
 # The source window, swept across every construct that could straddle it.
 #
-# The lexer reads the file 16 KB at a time and refills when it runs out. The
+# The lexer reads the file 4 KB at a time and refills when it runs out. The
 # invariant that makes that safe is that a refill only ever happens where a
 # line ended, so no token is ever split by one -- and nothing in the output
 # shows whether it holds. A token cut in half becomes a different token, or a
@@ -130,21 +130,52 @@ for pad in $(seq $((cap - 80)) $((cap + 80))); do
     pass=$((pass + 1))
 done
 
-# And the one thing the window cannot do: a line with no end in it. There is
-# nowhere to put the rest of such a line, so it has to be refused rather than
-# quietly cut in half.
+# A line longer than the window: the window grows to hold it, at the start
+# of the file and across the edge after padding. Each has to compile to what
+# the same terms make wrapped over many lines, since where a line breaks
+# changes nothing in the image.
+terms=$((cap / 4 + 8))
+acc_abs=$(cd "$(dirname "$ACC")" && pwd)/$(basename "$ACC")
+long_line() {
+    local i=0 wrap=$1
+    printf 'int x = 1'
+    while [ $i -lt $terms ]; do
+        printf ' + 1'
+        i=$((i + 1))
+        [ "$wrap" -gt 0 ] && [ $((i % wrap)) -eq 0 ] && printf '\n'
+    done
+    printf ';\nint main(void) { return x; }\n'
+}
+long_line 100 > "$tmp/ref/wrapped.c"
+(cd "$tmp/ref" && "$acc_abs" wrapped.c -o out.bin >/dev/null 2>&1) \
+    || { echo "  FAIL the wrapped reference does not compile"; exit 1; }
+for pad in 0 $((cap - 100)); do
+    {
+        [ "$pad" -gt 0 ] && printf '/*%*s*/\n' "$((pad - 5))" ''
+        long_line 0
+    } > "$tmp/pad/wrapped.c"
+    rm -f "$tmp/pad/out.bin"
+    if (cd "$tmp/pad" && "$acc_abs" wrapped.c -o out.bin >"$tmp/err" 2>&1) \
+       && cmp -s "$tmp/pad/out.bin" "$tmp/ref/out.bin"; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL a line longer than the window, after %d bytes: %s\n' \
+            "$pad" "$(head -1 "$tmp/err")"
+        fail=$((fail + 1))
+    fi
+done
+
+# Past 64 KB a line is refused rather than cut in half.
 {
     printf 'int x = 1'
-    i=0
-    while [ $i -lt $((cap / 4 + 8)) ]; do printf ' + 1'; i=$((i + 1)); done
+    head -c 70000 /dev/zero | tr '\0' ' '
     printf ';\nint main(void) { return 42; }\n'
 } > "$tmp/long.c"
-
 if "$ACC" "$tmp/long.c" -o "$tmp/pad/out.bin" >"$tmp/err" 2>&1; then
-    echo "  FAIL a line longer than the window was accepted"
+    echo "  FAIL a line longer than 64 KB was accepted"
     fail=$((fail + 1))
-elif ! grep -q "a line longer than" "$tmp/err"; then
-    printf '  FAIL a line longer than the window: %s\n' "$(cat "$tmp/err")"
+elif ! grep -q "a line longer than 65536" "$tmp/err"; then
+    printf '  FAIL a line longer than 64 KB: %s\n' "$(cat "$tmp/err")"
     fail=$((fail + 1))
 else
     pass=$((pass + 1))

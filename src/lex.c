@@ -316,15 +316,18 @@ const char *name_text(NameRef ref)
  * The byte at the end of the handed-out part is replaced by a '\0' so that
  * scanning stops there without a bounds test on every character, and the
  * byte it hid is put back when the window moves. */
-/* The window the file named on the command line gets, which is what sets
- * the longest line a source may have.
+/* The window each file gets, the one named on the command line and every
+ * header below it. A line longer than that grows it (window_grow), so the
+ * size is a starting point and not a limit.
  *
- * A file below it gets less. Four kilobytes is still far longer than any
- * line anybody writes, and eight of them is 32 KB where eight of the big
- * one would be 128 -- on a machine with 448 KB for everything, that is the
- * difference between a deep chain of headers being affordable and not.
- * zap sized its includes the same way and for the same reason. */
-#define SRC_CAP     16384
+ * Four kilobytes is still far longer than any line anybody writes, and eight
+ * of them is 32 KB where eight of 16 KB would be 128 -- on a machine with
+ * 448 KB for everything, that is the difference between a deep chain of
+ * headers being affordable and not. zap sized its includes the same way and
+ * for the same reason. The file on the command line had 16 KB, and the 12
+ * more are what one of aed's files needed to compile on the Agon
+ * (test/headers.sh); reading it in 4 KB pieces costs nothing measurable. */
+#define SRC_CAP     4096
 #define INCLUDE_CAP 4096
 
 static char *src;           /* src_cap + 1 bytes, the +1 for the sentinel */
@@ -1022,6 +1025,29 @@ void lex_pop_record(void)
         pop_source();
 }
 
+/* A window doubled, for a line longer than it: up to SRC_LINE_MAX, which is
+ * far past the 4095 characters C99 asks a compiler to take in a line. */
+#define SRC_LINE_MAX 65536
+
+__attribute__((noinline))
+static void window_grow(void)
+{
+    size_t used = (size_t) (src_raw - src);
+    char *grown;
+
+    if (src_cap >= SRC_LINE_MAX)
+        acc_error_at(line, "a line longer than %d characters", SRC_LINE_MAX);
+    grown = realloc(src, (size_t) src_cap * 2 + 1);
+    if (!grown)
+        acc_error_at(line, "out of memory for a line longer than %d "
+                           "characters", src_cap);
+    src = grown;
+    src_cap *= 2;
+    cursor = src;
+    record_start = src;
+    src_raw = src + used;
+}
+
 static int refill(void)
 {
     size_t keep, room, got;
@@ -1047,23 +1073,28 @@ static int refill(void)
      * full rather than taking one read's worth is what lets the trim below
      * stand: a short read that stopped mid-line would otherwise hand out
      * half a line and break the invariant the whole scheme rests on. */
-    room = (size_t) src_cap - keep;
-    while (room && (got = fread(src_raw, 1, room, src_file)) > 0) {
-        dep_bytes(src_dep, src_raw, (int) got);
-        src_raw += got;
-        room -= got;
-    }
-    if (room) {                         /* that was the end of the file */
-        fclose(src_file);
-        src_file = NULL;
-        nl = src_raw;
-    } else {
+    for (;;) {
+        room = (size_t) src_cap - (size_t) (src_raw - src);
+        while (room && (got = fread(src_raw, 1, room, src_file)) > 0) {
+            dep_bytes(src_dep, src_raw, (int) got);
+            src_raw += got;
+            room -= got;
+        }
+        if (room) {                     /* that was the end of the file */
+            fclose(src_file);
+            src_file = NULL;
+            nl = src_raw;
+            break;
+        }
+
         /* Whole lines only. A full window with no newline in it is a line
-         * longer than the window, which there is nowhere to put. */
+         * longer than the window, and the window grows to hold it: a file
+         * with lines that long pays for them, and no other does. */
         for (nl = src_raw; nl > src && nl[-1] != '\n'; nl--)
             ;
-        if (nl == src)
-            acc_error_at(line, "a line longer than %d characters", src_cap);
+        if (nl != src)
+            break;
+        window_grow();
     }
 
     /* Joined lines go before the end is settled: taking one out moves
@@ -1238,8 +1269,11 @@ static void macro_define(NameRef name, const char *text, int len,
     Macro *m;
     char  *keep;
 
-    /* Kept under half full: past that a linear probe starts walking. */
-    if (!nmacro_slots || nmacros * 2 >= nmacro_slots)
+    /* Kept under three quarters full. A linear probe walks further past
+     * half, but only #define and a macro's use probe here, and the table is
+     * 16 bytes a slot: at half full the headers of an Agon program took it
+     * to 32 KB, and growing it holds the old table and the new at once. */
+    if (!nmacro_slots || nmacros * 4 >= nmacro_slots * 3)
         macros_grow();
 
     keep = malloc((size_t) len + 1);
@@ -1544,6 +1578,8 @@ void lex_open(const char *path)
 
 void lex_close(void)
 {
+    unsigned i;
+
     if (src_file) {
         fclose(src_file);
         src_file = NULL;
@@ -1551,6 +1587,17 @@ void lex_close(void)
     free(src);
     src = NULL;
     cursor = src_end = src_raw = NULL;
+
+    /* The macros too: nothing after the source asks about them, and a link
+     * that follows in the same run -- `acc prog.c` -- has the room. */
+    for (i = 0; i < nmacro_slots; i++)
+        if (macros[i].name != NAME_NONE) {
+            free(macros[i].text);
+            free(macros[i].params);
+        }
+    free(macros);
+    macros = NULL;
+    nmacro_slots = nmacros = 0;
 }
 
 const char *lex_path(void) { return src_path; }

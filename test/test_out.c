@@ -116,17 +116,16 @@ int main(void)
     int i, base, wrong = 0;
     FILE *f;
 
-    /* 60 KB without the image growing once: it starts at 64 KB, because on
-     * the Agon every growth holds the old copy and the new one at once. */
+    /* The image starts small, and 60 KB takes it to 64 KB by doubling. */
     out_open(path, 1);
-    is("the image starts at 64 KB", out_capacity(), 65536);
+    is("the image starts at 4 KB", out_capacity(), 4096);
     for (i = 0; i < WORDS; i++)
         out_word24(i);
-    is("and 60 KB fits it as it is", out_capacity(), 65536);
+    is("and 60 KB doubles it to 64 KB", out_capacity(), 65536);
     out_free();
 
-    /* Everything after starts it small, so that it grows many times over
-     * and the boundaries below fall at every alignment. */
+    /* Grown many times over, so that the boundaries below fall at every
+     * alignment. */
     out_start_cap = 4096;
     out_open(path, 1);
     base = out_here();
