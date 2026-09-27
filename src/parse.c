@@ -16,6 +16,7 @@
 #include "acc.h"
 #include "ctype.h"
 #include "timing.h"
+#include "version.h"
 
 const char *lex_path(void);
 
@@ -33,14 +34,28 @@ const char *lex_path(void);
  * that can't find a symbol, say -- is `acc:0:0: error: text`. A compile that
  * works removes the file, so a reader never finds a stale error.
  *
- * It also changes how acc fails: with 100 rather than 1 (or 2 for usage).
- * On the Agon MOS reads a program's result as one of its own errors and
- * rewrites 1, 4 and 5 into "Invalid command" -- a failed compile then looks
- * like acc isn't there at all. 100 is past MOS's table: MOS hands it back
- * unchanged and prints nothing for it. */
+ * It also changes how acc fails: with 100, whatever went wrong. On the Agon
+ * MOS reads a program's result as one of its own errors and rewrites 1, 4
+ * and 5 into "Invalid command" -- a failed compile then looks like acc isn't
+ * there at all. 100 is past MOS's table: MOS hands it back unchanged and
+ * prints nothing for it. */
 static const char *errors_path;
 static int errors_asked;
 #define ERRORS_EXIT 100
+
+/* How acc fails without -errors. On the host, 1 for an error and 2 for a
+ * command line it does not take, as a compiler does. On the Agon an error
+ * is 100 as well: acc has said what went wrong, 1 would add "Invalid
+ * command" under it, and a code past MOS's table still stops an obey file
+ * at the line that failed. A command line is 19, whose message, "Invalid
+ * parameter", is the right one. */
+#ifdef AGONDEV
+#define ERROR_EXIT  ERRORS_EXIT
+#define USAGE_EXIT  19
+#else
+#define ERROR_EXIT  1
+#define USAGE_EXIT  2
+#endif
 
 __attribute__((noreturn)) static void fail(const char *file, int line, int col,
                                            const char *msg)
@@ -53,7 +68,7 @@ __attribute__((noreturn)) static void fail(const char *file, int line, int col,
             fclose(f);
         }
     }
-    exit(errors_asked ? ERRORS_EXIT : 1);
+    exit(errors_asked ? ERRORS_EXIT : ERROR_EXIT);
 }
 
 /* An error at a line and a column, which is printed as gcc prints one:
@@ -8807,61 +8822,57 @@ static int ncmdline;
 #define ACC_LIBC "/lib/acc/libc.a"
 #endif
 
-static void usage(void)
+/* What acc prints about itself. Both fit a screen of 30 rows, which is what
+ * the Agon has with an 8x16 font: text that scrolls off the top before it
+ * can be read is no help. */
+static void summary(FILE *f)
 {
-    fprintf(stderr,
-        "usage: acc [-c] <source.c> -o <out> [-I <dir>]... [-b <addr>]\n"
-        "                                    [-D <name>[=<value>]]...\n"
-        "                                    [-U <name>]...\n"
-        "                                    [-r <file>] [-x] [-trigraphs]\n"
-        "                                    [-include <file>]\n"
-        "       acc <file.o|lib.a>... -o <out.bin> [-x]\n"
-        "       acc -a <lib.a> <file.o>...\n"
-        "       acc -v\n"
-        "\n"
-        "  -a  put the objects that follow into that library rather than\n"
-        "      into a program. A link takes from a library only the\n"
-        "      members it turns out to need.\n"
-        "  -c  compile to an object rather than to a program, to be\n"
-        "      linked with others later. An object also records what the\n"
-        "      compile read, so that a build can tell whether it has to\n"
-        "      be made again.\n"
-        "  -D  define a name before the file is read, as #define would:\n"
-        "      `-DN` is `-DN=1`, and `-D\'N(a,b)=...\'` takes parameters.\n"
-        "  -U  undefine one, as #undef would.\n"
-        "  -include  read a file before the source, as if it began with an\n"
-        "      #include of it.\n"
-        "  -map  with -c, write each function and variable the object holds,\n"
-        "      static ones too, as `name offset size`, to a file. On a link,\n"
-        "      where each went: `address size name object offset`.\n"
-        "  -trigraphs  read ?\?( as [ and the other eight, as C99 has them.\n"
-        "      Off unless asked, as in gcc and clang: nothing uses them.\n"
-        "  -I  a directory to look in for an #include, after the one the\n"
-        "      including file is in."
-#ifdef ACC_INCLUDE_DIR
-        " " ACC_INCLUDE_DIR " is looked in last.\n"
-#else
-        "\n"
-#endif
+    fprintf(f,
+        "acc " ACC_VERSION ", a C compiler for the Agon\r\n"
+        "\r\n"
+        "  acc prog.c                  compile and link prog.bin\r\n"
+        "  acc -c prog.c               compile to prog.o\r\n"
+        "  acc main.o util.o           link main.bin\r\n"
+        "  acc main.c util.o lib.a     compile main.c, link all three\r\n"
+        "  acc -a lib.a a.o b.o        put objects in a library\r\n"
+        "  acc -h                      every option\r\n");
+}
 
-        "  -b  the address the image is loaded at, in hexadecimal. The\n"
-        "      default is 40000, where MOS loads a program.\n"
-        "  -r  write the addresses inside the image that -b moved, one\n"
-        "      hexadecimal offset a line.\n"
-        "  The program returns what main returned to MOS, as agondev's do.\n"
-        "  -p  print it as six hex digits too, before returning.\n"
-        "  -x  report it to IO port 0 instead, which stops an emulator\n"
-        "      with the low byte as its exit status.\n"
-#ifdef ACC_LIBC
-        "  A link takes what it needs from " ACC_LIBC " after the\n"
-        "  objects and libraries it is given.\n"
+__attribute__((noreturn)) static void help(void)
+{
+    printf(
+        "usage: acc [-c] <file.c> [<file.o|lib.a>]... [options]\r\n"
+        "       acc <file.o|lib.a>... [options]\r\n"
+        "       acc -a <lib.a> <file.o>...\r\n"
+        "\r\n"
+        "  -o <file>       what to write; else the input's name, .bin or .o\r\n"
+        "  -c              compile to an object, to be linked later\r\n"
+        "  -a <lib.a>      put the objects that follow in a library\r\n"
+        "  -I <dir>        look in <dir> for #include, after the source's own\r\n"
+        "  -D <n>[=<v>]    define a macro, as #define; -U <n> undefines one\r\n"
+        "  -include <f>    read <f> before the source\r\n"
+        "  -b <hex>        the address to load at; 40000 unless given\r\n"
+        "  -r <file>       write the offsets inside the image -b moved\r\n"
+        "  -map <file>     write where each function and variable went\r\n"
+        "  -p              print what main returned, as six hex digits\r\n"
+        "  -x              write what main returned to IO port 0\r\n"
+        "  -trigraphs      read ?\?( and the eight others\r\n"
+        "  -errors <file>  write an error to <file> too, and fail with 100\r\n"
+        "  -v              print the version; -h prints this\r\n"
+#if defined(ACC_INCLUDE_DIR) && defined(ACC_LIBC)
+        "\r\n"
+        "Headers from " ACC_INCLUDE_DIR ", the library " ACC_LIBC ".\r\n"
 #endif
-        "  -v  print the version and stop; --version too.\n"
-        "  -errors  write an error to that file too, as\n"
-        "      `file:line:column: error: text`, and fail with 100 rather\n"
-        "      than 1: for a program that runs acc and reads what went\n"
-        "      wrong. A compile that works removes the file.\n");
-    exit(errors_asked ? ERRORS_EXIT : 2);
+        );
+    exit(0);
+}
+
+/* A command line acc does not take: the summary, and a failure. On the
+ * Agon that is MOS's "Invalid parameter", which MOS then prints. */
+__attribute__((noreturn)) static void usage(void)
+{
+    summary(stderr);
+    exit(errors_asked ? ERRORS_EXIT : USAGE_EXIT);
 }
 
 #if defined(AGONDEV) && defined(ACC_CYCLES)
@@ -9322,6 +9333,39 @@ static int file_exists(const char *path)
 }
 #endif
 
+/* The name the i-th of what a link waits on is still waiting for, or -1:
+ * the n calls and addresses, then the nl slots of the kinds an assembly
+ * object has (gen_late_fixup), then what objects want.
+ *
+ * A variable whose room is in a bss has no address until the link ends, and
+ * is defined all the same. A weak name is not looked for on its own
+ * account. A slot that wants the bss is not waiting on a name at all. */
+static int waiting_on(int i, int n, int nl)
+{
+    int sym = i < n ? gen_fixup_sym(i)
+            : i < n + nl ? gen_late_sym(i - n) : wanted[i - n - nl];
+
+    if (sym < 0 || !gen_no_address(sym) || gen_bss_offset(sym) >= 0
+        || (i < n + nl && name_weak(sym_at(sym)->name)))
+        return -1;
+
+    return sym;
+}
+
+/* Whether anything is still waiting on a name: a program that calls
+ * nothing it does not define has no use for a library, and reading one's
+ * index is 19 KB of heap for libc.a. */
+static int link_short(void)
+{
+    int i, n = gen_nfixups(), nl = gen_nlate();
+
+    for (i = 0; i < n + nl + nwanted; i++)
+        if (waiting_on(i, n, nl) >= 0)
+            return 1;
+
+    return 0;
+}
+
 /* A library, which is asked only for what the link is short of.
  *
  * Round and round until it has nothing more to offer: what is taken may
@@ -9345,25 +9389,15 @@ static void link_archive(const char *path)
         acc_error("out of memory for '%s'", path);
 
     while (again) {
-        int i, n = gen_nfixups();
-
-        /* What calls and addresses wait on, then the slots of the kinds an
-         * assembly object has (gen_late_fixup), then what objects want. */
-        int nl = gen_nlate();
+        int i, n = gen_nfixups(), nl = gen_nlate();
 
         again = 0;
         for (i = 0; i < n + nl + nwanted; i++) {
-            int sym = i < n ? gen_fixup_sym(i)
-                    : i < n + nl ? gen_late_sym(i - n) : wanted[i - n - nl];
+            int sym = waiting_on(i, n, nl);
             const char *name;
             Object o;
 
-            /* A variable whose room is in a bss has no address until the
-             * link ends, and is defined all the same. A weak name is not
-             * looked for on its own account. A slot that wants the bss is
-             * not waiting on a name at all. */
-            if (sym < 0 || !gen_no_address(sym) || gen_bss_offset(sym) >= 0
-                || (i < n + nl && name_weak(sym_at(sym)->name)))
+            if (sym < 0)
                 continue;
             name = obj_object_name(name_text(sym_at(sym)->name));
             m = ar_find(&a, name);
@@ -9396,6 +9430,48 @@ static void link_archive(const char *path)
     ar_close(&a);
 }
 
+/* What is written when -o is not given: the first input's name with its
+ * extension changed, beside it -- as zap names its output. */
+static const char *output_named(const char *from, const char *ext)
+{
+    static char name[256];
+    int n = 0, dot = -1;
+
+    for (; from[n]; n++) {
+        if (from[n] == '.')
+            dot = n;
+        else if (from[n] == '/' || from[n] == '\\' || from[n] == ':')
+            dot = -1;
+    }
+    if (dot >= 0)
+        n = dot;
+    if (n + (int) strlen(ext) >= (int) sizeof name)
+        acc_error("'%s' is too long a name to write the output beside", from);
+    memcpy(name, from, (size_t) n);
+    strcpy(name + n, ext);
+
+    return name;
+}
+
+/* The objects and libraries a program is linked from, in the order given,
+ * and then the default library if the build names one and it is there. A
+ * library is read only while something is still waiting on a name. */
+static void link_inputs(const char **objs, int nobjs)
+{
+    int i;
+
+    for (i = 0; i < nobjs; i++) {
+        if (!is_archive(objs[i]))
+            link_object(objs[i]);
+        else if (link_short())
+            link_archive(objs[i]);
+    }
+#ifdef ACC_LIBC
+    if (link_short() && file_exists(ACC_LIBC))
+        link_archive(ACC_LIBC);
+#endif
+}
+
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL, *relocs = NULL;
@@ -9410,8 +9486,15 @@ int main(int argc, char **argv)
     if (!objs)
         acc_error("out of memory for the inputs");
 
+    if (argc < 2) {
+        summary(stdout);
+
+        return 0;
+    }
     for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
+        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+            help();
+        } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
             obj_print_version();
 
             return 0;
@@ -9498,6 +9581,7 @@ int main(int argc, char **argv)
                 usage();
             errors_path = argv[i];
         } else if (argv[i][0] == '-') {
+            fprintf(stderr, "acc: '%s' is not an option\r\n\r\n", argv[i]);
             usage();
         } else if (is_object(argv[i]) || is_archive(argv[i])) {
             objs[nobjs++] = argv[i];
@@ -9507,7 +9591,9 @@ int main(int argc, char **argv)
             usage();
         }
     }
-    if (!out || (!in && !nobjs) || (in && nobjs))
+    if (!out && !to_archive && (in || nobjs))
+        out = output_named(in ? in : objs[0], to_object ? ".o" : ".bin");
+    if (!out || (!in && !nobjs) || (in && nobjs && (to_object || to_archive)))
         usage();
     if (to_object && !in)
         usage();
@@ -9538,7 +9624,7 @@ int main(int argc, char **argv)
         /* Nothing is compiled and nothing is linked: the objects are put
          * together with a list of what each of them defines in front. */
         ar_write(out, objs, nobjs);
-    } else if (nobjs) {
+    } else if (!in) {
         /* Linking. The entry stub goes in first, as it does for a program
          * compiled in one piece, and its call to main is a fixup like any
          * other -- which is what makes the objects' own symbols do the work
@@ -9547,16 +9633,7 @@ int main(int argc, char **argv)
         if (obj_map_path)
             obj_link_map_open();
         gen_startup(ending, out);
-        for (i = 0; i < nobjs; i++) {
-            if (is_archive(objs[i]))
-                link_archive(objs[i]);
-            else
-                link_object(objs[i]);
-        }
-#ifdef ACC_LIBC
-        if (file_exists(ACC_LIBC))
-            link_archive(ACC_LIBC);
-#endif
+        link_inputs(objs, nobjs);
         gen_finish();
         obj_link_map_close();
         out_close();
@@ -9585,14 +9662,18 @@ int main(int argc, char **argv)
             out_relocs_write(relocs);
         out_free();
     } else {
+        /* A program from a source, and whatever it calls from the objects
+         * and libraries named with it -- and from the default library --
+         * linked in after it, as a link of its object would. */
         out_open(out, 1);
         gen_startup(ending, out);
         lex_open(in);
         translation_unit();
         lex_end();
         bss_end();
+        lex_close();                    /* its window is room for the link */
+        link_inputs(objs, nobjs);
         gen_finish();
-        lex_close();
         if (relocs)
             out_relocs_write(relocs);
         out_close();

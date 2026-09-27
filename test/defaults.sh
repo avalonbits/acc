@@ -29,6 +29,12 @@ SRC="src/obj.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c"
     -DACC_INCLUDE_DIR="\"$PWD/include\"" -DACC_LIBC="\"$tmp/none/libc.a\"" \
     || exit 2
 
+echo 'this is not a library' > "$tmp/junk.a"
+# shellcheck disable=SC2086
+"$CC" -O1 -fsigned-char -Isrc -o "$tmp/acc-junk" $SRC \
+    -DACC_INCLUDE_DIR="\"$PWD/include\"" -DACC_LIBC="\"$tmp/junk.a\"" \
+    || exit 2
+
 version=$(sed -n 's/.*ACC_VERSION "\(.*\)".*/\1/p' src/version.h)
 build=$(sed -n 's/.*ACC_BUILD \([0-9]*\).*/\1/p' src/acc_build.h)
 for flag in -v --version; do
@@ -84,6 +90,29 @@ if "$tmp/acc" "$tmp/hello.o" bin/libc.a -o "$tmp/p.bin" >/dev/null 2>&1 \
     ok "naming the library as well changes nothing"
 else
     bad "naming the library as well changes nothing" "no image, or a different one"
+fi
+
+# One step, from the source: headers and library both by default.
+mkdir -p "$tmp/one"
+cp "$tmp/hello.c" "$tmp/one/"
+if (cd "$tmp/one" && "$tmp/acc" hello.c -o p.bin >/dev/null 2>&1) \
+   && cmp -s "$tmp/one/p.bin" "$tmp/ref.bin"; then
+    ok "one step from a source takes the defaults"
+else
+    bad "one step from a source takes the defaults" "no image, or a different one"
+fi
+
+# The default library is read only when something waits on a name.
+printf 'int main(void) { return 0; }\n' > "$tmp/plain.c"
+if "$tmp/acc-junk" "$tmp/plain.c" -o "$tmp/pj.bin" >/dev/null 2>&1; then
+    ok "a program that needs nothing leaves it unread"
+else
+    bad "a program that needs nothing leaves it unread" "the compile failed"
+fi
+if "$tmp/acc-junk" "$tmp/hello.c" -o "$tmp/hj.bin" >/dev/null 2>&1; then
+    bad "a program that needs it reads it" "junk.a was passed over"
+else
+    ok "a program that needs it reads it"
 fi
 
 # -I first: a <stdio.h> of its own is the one read.
