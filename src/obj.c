@@ -1016,6 +1016,27 @@ static const char *ar_base_name(const char *path)
     return base;
 }
 
+/* A member's bytes, from its object into the library. Its own function,
+ * with its kilobyte of buffer on the stack: in ar_write the buffer made
+ * that frame 1,141 bytes, past the 128 an (ix+d) reaches, and each of
+ * ar_write's sixty-four other accesses to a local a computed address. A
+ * static buffer would do the same for the image and take the kilobyte from
+ * the heap; on the stack it is in the room the stack keeps anyway. */
+__attribute__((noinline))
+static void copy_member(FILE *in, FILE *out, int left, const char *path)
+{
+    char buf[1024];
+
+    while (left > 0) {
+        int want = left < (int) sizeof buf ? left : (int) sizeof buf;
+
+        if ((int) fread(buf, 1, (size_t) want, in) != want
+            || (int) fwrite(buf, 1, (size_t) want, out) != want)
+            acc_error("short copy of '%s'", path);
+        left -= want;
+    }
+}
+
 void ar_write(const char *path, const char **members, int nmembers)
 {
     FILE *f;
@@ -1077,15 +1098,7 @@ void ar_write(const char *path, const char **members, int nmembers)
 
         if (!in)
             acc_error("cannot open '%s'", members[i]);
-        while (left > 0) {
-            char buf[1024];
-            int want = left < (int) sizeof buf ? left : (int) sizeof buf;
-
-            if ((int) fread(buf, 1, (size_t) want, in) != want
-                || (int) fwrite(buf, 1, (size_t) want, f) != want)
-                acc_error("short copy of '%s'", members[i]);
-            left -= want;
-        }
+        copy_member(in, f, left, members[i]);
         fclose(in);
     }
     fclose(f);

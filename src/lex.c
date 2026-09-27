@@ -2863,19 +2863,28 @@ static void once_add(const char *path)
     once_seen[nonce++] = keep;
 }
 
-static void do_include(void)
+/* #include, given room for the name and for the path it is found at. The
+ * room is do_include's: 384 bytes of it, inlined into directives, made
+ * that frame 446 bytes, and every local past the 128 an (ix+d) reaches was
+ * a computed address -- 41 of them. In do_include alone it did the same to
+ * this function's 26. So do_include is the buffers and nothing else, and
+ * the work is here, where every local is in reach. */
+#define INCLUDE_NAME_MAX 128
+#define INCLUDE_PATH_MAX 256
+
+__attribute__((noinline))
+static void include_in(char *name, char *buf)
 {
-    char name[128], buf[256];
     const char *found;
     int how;
 
     skip_blanks();
-    how = include_name(name, (int) sizeof name);
+    how = include_name(name, INCLUDE_NAME_MAX);
     cursor = (char *) blanks_and_comments(cursor);
     if (*cursor && *cursor != '\n')
         acc_error_at(line, "an #include takes one file name and nothing else");
 
-    found = find_include(how, name, buf, (int) sizeof buf);
+    found = find_include(how, name, buf, INCLUDE_PATH_MAX);
     if (!found)
         acc_error_at(line, "cannot find '%s'", name);
 
@@ -2886,6 +2895,14 @@ static void do_include(void)
     if (once_has(found))
         return;                         /* it said `#pragma once` already */
     push_source(found);
+}
+
+__attribute__((noinline))
+static void do_include(void)
+{
+    char name[INCLUDE_NAME_MAX], buf[INCLUDE_PATH_MAX];
+
+    include_in(name, buf);
 }
 
 /* ------------------------------------------------------------------ */
