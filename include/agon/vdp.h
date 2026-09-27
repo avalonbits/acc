@@ -20,6 +20,7 @@
  * bitmaps, sprites, fonts, the mouse and contexts, buffer.h for the
  * buffered commands and audio.h for sound.
  */
+#pragma once
 #ifndef ACC_AGON_VDP_H
 #define ACC_AGON_VDP_H
 

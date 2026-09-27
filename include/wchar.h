@@ -13,6 +13,7 @@
  * The functions that take a long double are not here, since acc has none;
  * wcstold is the one this leaves out.
  */
+#pragma once
 #ifndef ACC_WCHAR_H
 #define ACC_WCHAR_H
 

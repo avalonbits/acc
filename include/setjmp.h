@@ -9,6 +9,7 @@
  * setjmp section of src/rt/helpers.s. A jmp_buf is where setjmp was called
  * from, IX, and the stack pointer.
  */
+#pragma once
 #ifndef ACC_SETJMP_H
 #define ACC_SETJMP_H
 

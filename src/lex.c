@@ -265,11 +265,13 @@ void name_init(void)
     chunk_at = name_arena + 1;
     chunk_end = name_arena + NAME_CHUNK;
 
-    /* 1024 slots, which hold 511 names before the table grows: enough for a
-     * program of a few hundred lines without a rehash, each of which moves
-     * every name. Starting at 256, the two a benchmark input needed were 2%
-     * of its compile. Four KB. */
-    buckets_rehash(1024);
+    /* 4096 slots, which hold 3071 names before the table grows: an Agon
+     * program's headers come to two or three thousand, and a rehash hashes
+     * every name again -- starting at 1024, the two a program with
+     * <agon/vdp.h> needed were 8% of its compile, and each held the old
+     * table and the new at once. Sixteen KB, which a program that never
+     * needed them can spare. */
+    buckets_rehash(4096);
 }
 
 /* The table that finds a name from its text, let go of: an object's

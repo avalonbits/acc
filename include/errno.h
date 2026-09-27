@@ -11,6 +11,7 @@
  * One program, one thread: errno is an int in the library's data, and the
  * macro is the object itself.
  */
+#pragma once
 #ifndef ACC_ERRNO_H
 #define ACC_ERRNO_H
 

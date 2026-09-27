@@ -14,6 +14,7 @@
  *
  * The numbers are Linux's.
  */
+#pragma once
 #ifndef ACC_SIGNAL_H
 #define ACC_SIGNAL_H
 

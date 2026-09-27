@@ -9,6 +9,7 @@
  * name, and nothing past 127 is in any of them. The mappings change the
  * twenty-six letters and leave everything else alone.
  */
+#pragma once
 #ifndef ACC_WCTYPE_H
 #define ACC_WCTYPE_H
 

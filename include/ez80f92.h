@@ -14,6 +14,7 @@
  * io_in and io_out -- functions over two instructions of acc's runtime --
  * are the way in here, and IO() is not defined.
  */
+#pragma once
 #ifndef ACC_EZ80F92_H
 #define ACC_EZ80F92_H
 

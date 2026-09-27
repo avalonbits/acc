@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+#pragma once
 #ifndef ACC_STDLIB_H
 #define ACC_STDLIB_H
 

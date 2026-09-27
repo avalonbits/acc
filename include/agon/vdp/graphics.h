@@ -9,6 +9,7 @@
  * graphics origin, with y up unless the program has turned logical
  * coordinates off.
  */
+#pragma once
 #ifndef ACC_AGON_VDP_GRAPHICS_H
 #define ACC_AGON_VDP_GRAPHICS_H
 

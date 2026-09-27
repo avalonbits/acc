@@ -6,6 +6,7 @@
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
+#pragma once
 #ifndef ACC_AGON_VDP_SCREEN_H
 #define ACC_AGON_VDP_SCREEN_H
 
