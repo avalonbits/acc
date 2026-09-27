@@ -80,7 +80,7 @@ static void big_mul_add(Big *a, unsigned m, unsigned add)
     unsigned carry = add;
     int i;
 
-    for (i = 0; i < a->n; i++) {
+    for (i = 0; i != a->n; i++) {
         unsigned t = a->b[i] * m + carry;
 
         a->b[i] = (unsigned char) t;
@@ -130,7 +130,7 @@ static void big_shr1(Big *a)
 {
     int i;
 
-    for (i = 0; i < a->n; i++)
+    for (i = 0; i != a->n; i++)
         a->b[i] = (unsigned char) ((a->b[i] >> 1)
                                    | (i + 1 < a->n ? (a->b[i + 1] & 1) << 7 : 0));
     while (a->n && a->b[a->n - 1] == 0)
@@ -155,7 +155,7 @@ static void big_sub(Big *a, const Big *b)
 {
     int borrow = 0, i;
 
-    for (i = 0; i < a->n; i++) {
+    for (i = 0; i != a->n; i++) {
         int t = a->b[i] - (i < b->n ? b->b[i] : 0) - borrow;
 
         borrow = t < 0;
@@ -190,7 +190,7 @@ static int bits64(uint64_t v)
     unsigned top;
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    for (n = 0; n < 8; n++)
+    for (n = 0; n != 8; n++)
         b[n] = (unsigned char) (v >> (8 * n));
     n = 8;
 #else

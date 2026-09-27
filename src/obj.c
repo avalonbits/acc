@@ -190,7 +190,7 @@ static int items_settle(int *at, int n)
     }
     /* An object with no text has no items: each starts inside the text,
      * which is what take_object checks. */
-    for (i = 0; i < n; i++)
+    for (i = 0; i != n; i++)
         if ((i == 0 || at[i] != at[kept - 1]) && at[i] < out_len())
             at[kept++] = at[i];
 
@@ -275,7 +275,7 @@ static void reloc_calls(int *wants, int nrelocs, const int *slot_of,
 {
     int i;
 
-    for (i = 0; i < nexterns; i++) {
+    for (i = 0; i != nexterns; i++) {
         unsigned at = (unsigned) gen_extern_at(i);
         int lo = 0, hi = nrelocs;
 
@@ -362,7 +362,7 @@ static void map_write(const int *items, int nitems)
 
     if (!f)
         acc_error("cannot write '%s'", obj_map_path);
-    for (i = 0; i < nitems; i++) {
+    for (i = 0; i != nitems; i++) {
         int end = i + 1 < nitems ? items[i + 1] : out_len();
         const char *name = "-";
 
@@ -441,7 +441,7 @@ void obj_write(const char *path)
      * rest are what its headers declared and nothing called, and a link has
      * nothing to do with them: 1,289 of the 1,692 symbols in the library
      * were those, sixteen percent of its bytes. */
-    for (i = 0; i < nexterns; i++)
+    for (i = 0; i != nexterns; i++)
         used[gen_extern_sym(i) / step] = 1;
 
     for (s = 0, n = 0; s < nglobals; s += step, n++) {
@@ -458,7 +458,7 @@ void obj_write(const char *path)
         index_of[n] = nsyms++;
         name_at[n] = string_add(obj_object_name(name_text(sym_at(s)->name)));
     }
-    for (i = 0; i < ndeps; i++)
+    for (i = 0; i != ndeps; i++)
         dep_at[i] = string_add(lex_dep_path(i));
     nitems = items_settle(items, nitems);
     if (obj_map_path)
@@ -470,13 +470,13 @@ void obj_write(const char *path)
     want_at = malloc((size_t) (nwants + 1) * sizeof *want_at);
     if (!want_at)
         acc_error("out of memory for the object");
-    for (i = 0; i < nwants; i++)
+    for (i = 0; i != nwants; i++)
         want_at[i] = string_add(obj_object_name(gen_want_name(i)));
 
     /* And which symbol each call out of this file wants. A symbol is named
      * by its byte offset into the compiler's table, so its place in the walk
      * above is that offset divided by the width of one. */
-    for (i = 0; i < nexterns; i++)
+    for (i = 0; i != nexterns; i++)
         slot_of[i] = index_of[gen_extern_sym(i) / step] + 2;
 
     f = fopen(path, "wb");
@@ -534,7 +534,7 @@ void obj_write(const char *path)
         front_num(value);
         front_byte((defined ? OBJ_DEFINED : 0) | kind);
     }
-    for (i = 0; i < nwants; i++) {
+    for (i = 0; i != nwants; i++) {
         front_num(want_at[i]);
         front_num(0);
         front_byte(OBJ_WANT | OBJ_FUNC);
@@ -552,7 +552,7 @@ void obj_write(const char *path)
     }
     free(wants);
 
-    for (i = 0; i < ndeps; i++) {
+    for (i = 0; i != ndeps; i++) {
         unsigned size, sum, weighted;
 
         lex_dep_marks(i, &size, &sum, &weighted);
@@ -562,7 +562,7 @@ void obj_write(const char *path)
         front_num((int) weighted);
     }
 
-    for (i = 0; i < nitems; i++)
+    for (i = 0; i != nitems; i++)
         front_num(items[i]);
 
     front_flush();
@@ -658,7 +658,7 @@ static int take_object(unsigned char *all, long size, const char *path,
     {
         int i, a = 0, b = 0, last = -1;
 
-        for (i = 0; i < o->nitems; i++) {
+        for (i = 0; i != o->nitems; i++) {
             int item = obj_item(o, i);
 
             if ((i == 0 && item != 0) || (i > 0 && item <= obj_item(o, i - 1))
@@ -1053,11 +1053,11 @@ void ar_write(const char *path, const char **members, int nmembers)
 
     /* Everything but the members themselves is worked out first, because
      * where the members go depends on how long all of it comes to. */
-    for (i = 0; i < nmembers; i++) {
+    for (i = 0; i != nmembers; i++) {
         name_at[i] = string_add(ar_base_name(members[i]));
         obj_read(members[i], &o);
         len_of[i] = (int) (o.text + o.text_len - o.all);
-        for (j = 0; j < o.nsyms; j++)
+        for (j = 0; j != o.nsyms; j++)
             if (obj_sym_flags(&o, j) & OBJ_DEFINED)
                 ar_def_add(string_add(obj_sym_name(&o, j)), i,
                            obj_sym_name(&o, j));
@@ -1078,13 +1078,13 @@ void ar_write(const char *path, const char **members, int nmembers)
     put_num(f, strings_len);
 
     at = AR_HEADER + nmembers * AR_MEMBER + nar_defs * AR_DEF + strings_len;
-    for (i = 0; i < nmembers; i++) {
+    for (i = 0; i != nmembers; i++) {
         put_num(f, name_at[i]);
         put_num(f, at);
         put_num(f, len_of[i]);
         at += len_of[i];
     }
-    for (i = 0; i < nar_defs; i++) {
+    for (i = 0; i != nar_defs; i++) {
         put_num(f, ar_defs[i].name);
         put_num(f, ar_defs[i].member);
     }
@@ -1092,7 +1092,7 @@ void ar_write(const char *path, const char **members, int nmembers)
         && (int) fwrite(strings, 1, (size_t) strings_len, f) != strings_len)
         acc_error("short write on '%s'", path);
 
-    for (i = 0; i < nmembers; i++) {
+    for (i = 0; i != nmembers; i++) {
         FILE *in = fopen(members[i], "rb");
         int left = len_of[i];
 

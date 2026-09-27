@@ -497,7 +497,7 @@ static int dep_add(const char *path)
      * the file: folding a second reading into the first would give a number
      * no reading of that file on its own could produce, and the build would
      * decide it had changed every time. */
-    for (i = 0; i < ndeps; i++)
+    for (i = 0; i != ndeps; i++)
         if (strcmp(deps[i].path, path) == 0) {
             deps[i].size = deps[i].sum = deps[i].weighted = 0;
 
@@ -728,7 +728,7 @@ static int ucn_at(const char *r)
     if (r[0] != '\\' || (r[1] != 'u' && r[1] != 'U'))
         return 0;
     n = r[1] == 'u' ? 4 : 8;
-    for (i = 0; i < n; i++)
+    for (i = 0; i != n; i++)
         if (!is_digit(r[2 + i]) && (unsigned) ((r[2 + i] | 0x20) - 'a') >= 6u)
             return 0;                   /* escape() says what is wrong */
 
@@ -1344,7 +1344,7 @@ static void macros_grow(void)
     macros = calloc(nmacro_slots, sizeof *macros);
     if (!macros)
         acc_error("out of memory for macros");
-    for (i = 0; i < n; i++)
+    for (i = 0; i != n; i++)
         if (old[i])
             *macro_slot(old[i]->name) = old[i];
     free(old);
@@ -1681,7 +1681,7 @@ void lex_close(void)
 
     /* The macros too: nothing after the source asks about them, and a link
      * that follows in the same run -- `acc prog.c` -- has the room. */
-    for (i = 0; i < nmacro_slots; i++)
+    for (i = 0; i != nmacro_slots; i++)
         if (macros[i]) {
             free(macros[i]->text);
             free(macros[i]->params);
@@ -2163,7 +2163,7 @@ static char **collect_args(Macro *m, int *out_argc)
     }
 
     /* Blanks at either end are not part of an argument. */
-    for (i = 0; i < argc; i++) {
+    for (i = 0; i != argc; i++) {
         char *a = argv[i];
         int   n = (int) strlen(a);
 
@@ -2182,7 +2182,7 @@ static void free_args(char **argv, int argc)
 {
     int i;
 
-    for (i = 0; i < argc; i++)
+    for (i = 0; i != argc; i++)
         free(argv[i]);
     free(argv);
 }
@@ -2192,7 +2192,7 @@ static int param_index(Macro *m, const char *at, int len)
 {
     int i;
 
-    for (i = 0; i < m->nparams; i++) {
+    for (i = 0; i != m->nparams; i++) {
         const char *p = name_text(m->params[i]);
 
         if ((int) strlen(p) == len && !memcmp(p, at, (size_t) len))
@@ -2808,7 +2808,7 @@ static const char *find_include(int how, const char *name, char *buf, int cap)
             return buf;
     }
 
-    for (i = 0; i < ninclude_dirs; i++)
+    for (i = 0; i != ninclude_dirs; i++)
         if (join_path(buf, cap, include_dirs[i],
                       (int) strlen(include_dirs[i]), name)
             && readable(buf))
@@ -2837,7 +2837,7 @@ static int once_has(const char *path)
 {
     int i;
 
-    for (i = 0; i < nonce; i++)
+    for (i = 0; i != nonce; i++)
         if (strcmp(once_seen[i], path) == 0)
             return 1;
 
@@ -3024,7 +3024,7 @@ static char **collect_args_text(Macro *m, const char **at, const char *end,
         argv[0] = NULL;
         argc = 0;
     }
-    for (i = 0; i < argc; i++) {
+    for (i = 0; i != argc; i++) {
         char *a = argv[i];
         int   n = (int) strlen(a);
 
@@ -3639,7 +3639,7 @@ static void expand_text_into(Buf *out, const char *text)
             acc_error("out of memory expanding a macro");
         memcpy(saved, if_text, (size_t) saved_len);
     }
-    for (i = 0; i < saved_depth; i++)
+    for (i = 0; i != saved_depth; i++)
         saved_active[i] = if_active[i];
 
     if_len = 0;
@@ -3654,7 +3654,7 @@ static void expand_text_into(Buf *out, const char *text)
     }
     if_len = saved_len;
     if_depth = saved_depth;
-    for (i = 0; i < saved_depth; i++)
+    for (i = 0; i != saved_depth; i++)
         if_active[i] = saved_active[i];
 }
 
@@ -5070,7 +5070,7 @@ static uint32_t wide_char(int quote)
         acc_error_at(tok_line, "a wide literal is read as UTF-8, and this "
                                "byte cannot begin a character in it");
     v = (uint32_t) (c & (0x3f >> n));
-    for (i = 0; i < n; i++) {
+    for (i = 0; i != n; i++) {
         int d = (unsigned char) *cursor;
 
         if ((d & 0xc0) != 0x80)

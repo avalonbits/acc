@@ -348,7 +348,7 @@ static int inline_fits(int fn, Type ret)
     if (ret == TY_VOID || type_wide(ret) || type_is_struct(ret)
         || n > INLINE_PARAMS_MAX)
         return 0;
-    for (i = 0; i < n; i++) {
+    for (i = 0; i != n; i++) {
         Type t = sym_param_type(first, i);
 
         if (type_wide(t) || type_is_struct(t))
@@ -362,7 +362,7 @@ static const struct Inline *inline_of(int fn)
 {
     int i;
 
-    for (i = 0; i < ninlines; i++)
+    for (i = 0; i != ninlines; i++)
         if (inlines[i].fn == fn)
             return &inlines[i];
 
@@ -418,10 +418,10 @@ static int inline_note(struct Inline *in, NameRef name)
 {
     int i;
 
-    for (i = 0; i < in->nparams; i++)
+    for (i = 0; i != in->nparams; i++)
         if (in->params[i] == name)
             return 1;
-    for (i = 0; i < in->nids; i++)
+    for (i = 0; i != in->nids; i++)
         if (in->ids[i] == name)
             return 1;
     if (in->nids % 8 == 0) {
@@ -524,7 +524,7 @@ static const struct Inline *inline_usable(int fn)
     in = inline_of(fn);
     if (!in)
         return NULL;
-    for (i = 0; i < in->nids; i++)
+    for (i = 0; i != in->nids; i++)
         if (sym_find(in->ids[i]) != in->id_sym[i]
             || lex_macro_def(in->ids[i]) != in->id_macro[i])
             return NULL;
@@ -544,7 +544,7 @@ static void inline_expand(const struct Inline *in, int fn)
     Type ret = sym_at(fn)->type, outer = narrow_dest;
     int ret_ext = sym_at(fn)->ext;
 
-    for (i = 0; i < n; i++) {
+    for (i = 0; i != n; i++) {
         at[i] = size;
         size += type_size(sym_param_type(first, i));
     }
@@ -555,7 +555,7 @@ static void inline_expand(const struct Inline *in, int fn)
     }
 
     mark = sym_scope_begin();
-    for (i = 0; i < n; i++) {
+    for (i = 0; i != n; i++) {
         int s = push_here(in->params[i], SYM_LOCAL, base + at[i]);
 
         sym_at(s)->type = sym_param_type(first, i);
@@ -3942,7 +3942,7 @@ static void vla_params_enter(void)
         memcpy(vla_texts + vla_texts_used, "{", 2);
         lex_push_record(vla_texts, vla_texts_used + 1);
         next();
-        for (i = 0; i < nvla_texts; i++) {
+        for (i = 0; i != nvla_texts; i++) {
             int line = tok_line;
             const char *spot = tok_at;
 
@@ -3957,7 +3957,7 @@ static void vla_params_enter(void)
             expect(TK_SEMI, "';'");
         }
     }
-    for (i = 0; i < nvla_params; i++) {
+    for (i = 0; i != nvla_params; i++) {
         int x = vla_param_ext[i], length = 0, size;
 
         if (vla_param_text[i] >= 0)
@@ -6869,7 +6869,7 @@ static int label_find(NameRef name, int line, int col)
 {
     int i;
 
-    for (i = 0; i < nlabels; i++)
+    for (i = 0; i != nlabels; i++)
         if (labels[i].name == name)
             return i;
 
@@ -6949,7 +6949,7 @@ static void label_statement(void)
     labels[label].blocks = vla_blocks_copy();
     labels[label].nblocks = nvla_blocks;
 
-    for (i = 0; i < ngotos; i++) {
+    for (i = 0; i != ngotos; i++) {
         Goto *g = gotos + i;
 
         if (g->label == label) {
@@ -7403,7 +7403,7 @@ static void struct_params_copy(void)
 {
     int i;
 
-    for (i = 0; i < nstruct_params; i++) {
+    for (i = 0; i != nstruct_params; i++) {
         Sym *param = sym_at(struct_params[i].sym);
         int array = gen_local_array(), x = param->ext;
 
@@ -7912,7 +7912,7 @@ static void walk_fns_at(int at)
 {
     int i;
 
-    for (i = 0; i < nwalk_fns; i++) {
+    for (i = 0; i != nwalk_fns; i++) {
         if (walk_fns[i].fn == WALK_BSS)
             gen_bss_fixup(at + walk_fns[i].offset);
         else if (walk_fns[i].fn == SYM_NONE)
@@ -9056,7 +9056,7 @@ static void link_want(const char *text)
 {
     int sym = link_symbol(text, OBJ_FUNC | OBJ_WANT), i;
 
-    for (i = 0; i < nwanted; i++)
+    for (i = 0; i != nwanted; i++)
         if (wanted[i] == sym)
             return;
     if (nwanted == wanted_cap) {
@@ -9134,7 +9134,7 @@ static void link_map_item(const Object *o, int i, int at, const char *path)
     const char *name = "-";
     int s;
 
-    for (s = 0; s < o->nsyms; s++) {
+    for (s = 0; s != o->nsyms; s++) {
         int flags = obj_sym_flags(o, s);
 
         if ((flags & OBJ_DEFINED) && !(flags & OBJ_BSS)
@@ -9184,7 +9184,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         int item = queue[--nqueue], from = obj_item(&o, item);
         int to = item_end(&o, item);
 
-        for (r = 0; r < nrel; r++) {
+        for (r = 0; r != nrel; r++) {
             int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), next;
 
             if (at < from || at >= to)
@@ -9201,7 +9201,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         }
     }
 
-    for (i = 0; i < o.nitems; i++) {
+    for (i = 0; i != o.nitems; i++) {
         int b, step = 1 << obj_item_align(&o, i);
 
         if (!want[i] || t->placed[i] >= 0)
@@ -9221,7 +9221,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
     }
 
     /* What is new, at the address it now has. */
-    for (i = 0; i < o.nsyms; i++) {
+    for (i = 0; i != o.nsyms; i++) {
         int flags = obj_sym_flags(&o, i), value, item = 0, sym;
 
         if ((flags & OBJ_WANT) && want_now)
@@ -9255,7 +9255,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
      * object is taken to where its item went, now or on an earlier look;
      * the bss's and a symbol's are filled when the link ends, since neither
      * is known before. */
-    for (r = 0; r < nrel; r++) {
+    for (r = 0; r != nrel; r++) {
         int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), item, dest;
         int kind = obj_reloc_kind(&o, r);
         long a = obj_reloc_addend(&o, r);
@@ -9297,7 +9297,7 @@ static void place_object(Object *op, const char *path)
     Taken t;
     int i, most = 0;
 
-    for (i = 0; i < op->nitems; i++) {
+    for (i = 0; i != op->nitems; i++) {
         int align = obj_item_align(op, i);
 
         if (obj_item(op, i) & ((1 << align) - 1))
@@ -9313,7 +9313,7 @@ static void place_object(Object *op, const char *path)
     t.placed = malloc(((size_t) op->nitems + 1) * sizeof *t.placed);
     if (!t.placed)
         acc_error("out of memory for '%s'", path);
-    for (i = 0; i < op->nitems; i++)
+    for (i = 0; i != op->nitems; i++)
         t.placed[i] = -1;
     t.bss = -1;
     take_items(op, &t, NULL, path);
@@ -9362,7 +9362,7 @@ static int link_short(void)
 {
     int i, n = gen_nfixups(), nl = gen_nlate();
 
-    for (i = 0; i < n + nl + nwanted; i++)
+    for (i = 0; i != n + nl + nwanted; i++)
         if (waiting_on(i, n, nl) >= 0)
             return 1;
 
@@ -9395,7 +9395,7 @@ static void link_archive(const char *path)
         int i, n = gen_nfixups(), nl = gen_nlate();
 
         again = 0;
-        for (i = 0; i < n + nl + nwanted; i++) {
+        for (i = 0; i != n + nl + nwanted; i++) {
             int sym = waiting_on(i, n, nl);
             const char *name;
             Object o;
@@ -9414,7 +9414,7 @@ static void link_archive(const char *path)
                                          * sizeof *taken[m].placed);
                 if (!taken[m].placed)
                     acc_error("out of memory for '%s'", path);
-                for (k = 0; k < o.nitems; k++)
+                for (k = 0; k != o.nitems; k++)
                     taken[m].placed[k] = -1;
                 taken[m].bss = -1;
             }
@@ -9427,7 +9427,7 @@ static void link_archive(const char *path)
             again = 1;
         }
     }
-    for (m = 0; m < a.nmembers; m++)
+    for (m = 0; m != a.nmembers; m++)
         free(taken[m].placed);
     free(taken);
     ar_close(&a);
@@ -9463,7 +9463,7 @@ static void link_inputs(const char **objs, int nobjs)
 {
     int i;
 
-    for (i = 0; i < nobjs; i++) {
+    for (i = 0; i != nobjs; i++) {
         if (!is_archive(objs[i]))
             link_object(objs[i]);
         else if (link_short())
@@ -9616,7 +9616,7 @@ int main(int argc, char **argv)
     gen_init();
 
     /* The command line's macros, before a source line is read. */
-    for (i = 0; i < ncmdline; i++) {
+    for (i = 0; i != ncmdline; i++) {
         if (cmdline[i].undef)
             lex_undefine(cmdline[i].arg);
         else
