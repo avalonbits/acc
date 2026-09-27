@@ -46,7 +46,7 @@ void acc_error(const char *fmt, ...)
         fprintf(stderr, "  FAIL  acc_error during the test\n");
         exit(2);
     }
-    is("refused at name number", interned, 8192);
+    is("refused at name number", interned, 12288);
     finish();
 }
 
@@ -169,8 +169,8 @@ int main(void)
     is("none is still none", (long) NAME_NONE, 0);
 
     /* The table is 64 KB at most, because a probe's starting offset is put
-     * together from two bytes: 16384 slots, kept under half full, is 8191
-     * names. The one after them has to be refused rather than hashed into
+     * together from two bytes: 16384 slots, kept under three quarters
+     * full, is 12287 names. The one after them has to be refused rather than hashed into
      * slots the offset cannot reach -- a table that kept growing past that
      * would still answer, and answer wrongly. */
     {
@@ -179,7 +179,7 @@ int main(void)
         int left;
 
         interned += N;
-        left = 8191 - interned;
+        left = 12287 - interned;
         at_limit = 1;
         for (i = 0; i < left; i++) {
             sprintf(more, "g%d", i);

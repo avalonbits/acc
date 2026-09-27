@@ -449,6 +449,8 @@ void lex_init(void);
 void lex_open(const char *path);
 void lex_add_include(const char *dir);
 void lex_add_include_default(const char *dir);
+void name_table_free(void);         /* before an object is written */
+void sym_members_free(void);        /* once the source is read */
 void lex_define(const char *arg);       /* -D, as a #define would read it */
 void lex_undefine(const char *arg);     /* -U, as a #undef would */
 
@@ -584,12 +586,17 @@ enum {
  * rather than to file scope. */
 #define sym_kind_local(kind) ((unsigned) (kind) <= SYM_LOCAL_VLA)
 
-/* Ten bytes on the target: a name, a kind, one number whose meaning the
- * kind decides, a type with its extension, and its qualifiers. tinycc's
- * equivalent is 31, and at four hundred lines of input that difference was
- * 40 KB of a 206 KB budget. A width that is not a power of two costs no
- * multiply: a symbol is found by its byte offset into the table, not its
- * position. */
+/* Fifteen bytes on the target: a name, a kind, one number whose meaning
+ * the kind decides, a type with its extension, and its qualifiers; then
+ * what a function takes -- where its parameters' types start, how many --
+ * and the SYMF_* flags. tinycc's equivalent is 31, and at four hundred
+ * lines of input that difference was 40 KB of a 206 KB budget. A width that
+ * is not a power of two costs no multiply: a symbol is found by its byte
+ * offset into the table, not its position.
+ *
+ * The last three were a table of their own, as wide as this one so that
+ * the same offset found both: twenty bytes a symbol, in two tables that
+ * each doubled on their own. In one record it is fifteen, and one table. */
 typedef struct {
     NameRef       name;
     unsigned char kind;
@@ -597,6 +604,9 @@ typedef struct {
     Type          type;         /* fits in what was the pad byte */
     unsigned char ext;          /* the type's extension, when it has one */
     unsigned char quals;        /* SQ_* */
+    int           first;        /* the first parameter's type, or a count */
+    unsigned char count;        /* how many parameters */
+    unsigned char flags;        /* SYMF_* */
 } Sym;
 
 /* What a symbol's declaration said beyond its type. */

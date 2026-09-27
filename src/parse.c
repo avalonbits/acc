@@ -9657,6 +9657,8 @@ int main(int argc, char **argv)
         bss_end();
         gen_finish();
         lex_close();
+        sym_members_free();             /* room for writing the object */
+        name_table_free();
         obj_write(out);
         if (relocs)
             out_relocs_write(relocs);
@@ -9672,6 +9674,7 @@ int main(int argc, char **argv)
         lex_end();
         bss_end();
         lex_close();                    /* its window is room for the link */
+        sym_members_free();
         link_inputs(objs, nobjs);
         gen_finish();
         if (relocs)
