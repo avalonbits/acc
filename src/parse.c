@@ -9074,7 +9074,7 @@ static void link_object(const char *path)
 {
     Object o;
 
-    obj_read(path, &o);
+    obj_read(path, &o, 1);
     place_object(&o, path);
 }
 
@@ -9147,6 +9147,21 @@ static void link_map_item(const Object *o, int i, int at, const char *path)
                       obj_item(o, i));
 }
 
+/* The `n` bytes of an object's text from `at`, into the image: from the
+ * text in hand, or for an object read with its front only, which is placed
+ * whole and in order, the next `n` from its file. */
+__attribute__((noinline))
+static void copy_text(Object *o, int at, int n)
+{
+    while ((unsigned) (out_limit - out_put) < (unsigned) n)
+        out_grow();
+    if (o->text)
+        memcpy(out_put, o->text + at, (size_t) n);
+    else if ((int) fread(out_put, 1, (size_t) n, (FILE *) o->file) != n)
+        acc_error("short read on '%s'", o->path);
+    out_put += n;
+}
+
 static void take_items(Object *op, Taken *t, const char *name, const char *path)
 {
     Object o = *op;
@@ -9193,7 +9208,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
                 want_bss = 1;
             if (which != 0)
                 continue;
-            next = item_of(&o, (int) obj_reloc_addend(&o, r));
+            next = item_of(&o, (int) obj_reloc_addend(&o, r, o.text + at));
             if (t->placed[next] < 0 && !want[next]) {
                 want[next] = 1;
                 queue[nqueue++] = next;
@@ -9202,7 +9217,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
     }
 
     for (i = 0; i != o.nitems; i++) {
-        int b, step = 1 << obj_item_align(&o, i);
+        int step = 1 << obj_item_align(&o, i);
 
         if (!want[i] || t->placed[i] >= 0)
             continue;
@@ -9210,8 +9225,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         while (out_here() & (step - 1))
             out_byte(0);
         t->placed[i] = out_here();
-        for (b = obj_item(&o, i); b < item_end(&o, i); b++)
-            out_byte(o.text[b]);
+        copy_text(&o, obj_item(&o, i), item_end(&o, i) - obj_item(&o, i));
         if (obj_link_map_on())
             link_map_item(&o, i, t->placed[i], path);
     }
@@ -9258,12 +9272,15 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
     for (r = 0; r != nrel; r++) {
         int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), item, dest;
         int kind = obj_reloc_kind(&o, r);
-        long a = obj_reloc_addend(&o, r);
+        long a;
 
         item = item_of(&o, at);
         if (!want[item])
             continue;
         dest = t->placed[item] + at - obj_item(&o, item);
+        /* Read from where the slot was copied to: an object read with its
+         * front only has no text in hand to read it from. */
+        a = obj_reloc_addend(&o, r, out_img + (dest - out_base));
         if (which == 0) {
             int target = item_of(&o, (int) a);
 

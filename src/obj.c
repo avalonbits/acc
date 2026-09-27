@@ -586,17 +586,38 @@ void obj_write(const char *path)
 /* ------------------------------------------------------------------ */
 /* reading                                                             */
 
-/* The whole file at once. An object is the size of the code it holds -- tens
- * of kilobytes at the outside -- and reading it in pieces would mean seeking
- * about on a card that is slow at exactly that. */
+/* The tables after the header, in the order Object holds them too: for
+ * each, where the header has how many entries it holds, and how wide they
+ * are. The strings come after them. */
+static const unsigned char tables[] = {
+    13, OBJ_SYM, 16, OBJ_RELOC, 28, OBJ_RELOC_A, 19, OBJ_DEP, 25, OBJ_ITEM,
+};
+
+/* Where the text of the object whose header is at `all` starts: after the
+ * header, the tables and the strings. With `o`, where each table is too. */
+static int text_start(unsigned char *all, Object *o)
+{
+    unsigned char **table = o ? &o->syms : NULL;
+    const unsigned char *p;
+    int at = OBJ_HEADER;
+
+    for (p = tables; p != tables + sizeof tables; p += 2) {
+        if (table)
+            *table++ = all + at;
+        at += get24(all + p[0]) * p[1];
+    }
+
+    return at + get24(all + 22);
+}
+
 /* Bytes already in hand, taken as an object: what a member of an archive is,
  * and what a file becomes once it has been read.
  *
  * `complain` is whether something that is not an object is an error. Linking
  * one says yes; asking whether an object is still current says no, because
  * there the answer is simply "make it again". */
-static int take_object(unsigned char *all, long size, const char *path,
-                       Object *o, int complain)
+static int take_object(unsigned char *all, int size, int have,
+                       const char *path, Object *o, int complain)
 {
     FILE *f = NULL;
     int at;
@@ -621,6 +642,7 @@ static int take_object(unsigned char *all, long size, const char *path,
 
     o->all = all;
     o->path = path;
+    o->file = NULL;
     o->build = get24(all + 4);
     o->text_len = get24(all + 7);
     o->bss_len = get24(all + 10) & LOW20;
@@ -632,26 +654,22 @@ static int take_object(unsigned char *all, long size, const char *path,
     o->nitems = get24(all + 25);
     o->nrelocs_a = get24(all + 28);
 
-    at = OBJ_HEADER;
-    o->syms = all + at;
-    at += o->nsyms * OBJ_SYM;
-    o->relocs = all + at;
-    at += o->nrelocs * OBJ_RELOC;
-    o->relocs_a = all + at;
-    at += o->nrelocs_a * OBJ_RELOC_A;
-    o->deps = all + at;
-    at += o->ndeps * OBJ_DEP;
-    o->items = all + at;
-    at += o->nitems * OBJ_ITEM;
-    o->strings = (char *) all + at;
-    at += o->strings_len;
+    at = text_start(all, o);
+    o->strings = (char *) all + at - o->strings_len;
+    /* The text, when it was read with the rest; a link that reads it as it
+     * places it was given what comes before it and nothing more. */
     o->text = all + at;
+    if (have != size) {
+        if (have != at)
+            REFUSE("'%s' is too short to be an object", path);
+        o->text = NULL;
+    }
     at += o->text_len;
 
     /* Checked once, here, so that nothing below has to: a file that says it
      * holds more than it does would otherwise be read past its end. */
-    if (at != (int) size || at < OBJ_HEADER)
-        REFUSE("'%s' says it holds %d bytes and holds %ld", path, at, size);
+    if (at != size || at < OBJ_HEADER)
+        REFUSE("'%s' says it holds %d bytes and holds %d", path, at, size);
 
     /* And what the format promises, checked here so that the linker can
      * take it on trust: an assembler writes these too. */
@@ -708,13 +726,17 @@ static int take_object(unsigned char *all, long size, const char *path,
 
 void obj_take(unsigned char *all, int len, const char *path, Object *o)
 {
-    (void) take_object(all, len, path, o, 1);
+    (void) take_object(all, len, len, path, o, 1);
 }
 
-static int read_object(const char *path, Object *o, int complain)
+/* The whole file; or, with `front`, only what comes before the text, with
+ * the file left open where the text starts. The text is most of an object,
+ * and a link that reads it straight into the image never holds it whole. */
+static int read_object(const char *path, Object *o, int complain, int front)
 {
     FILE *f = fopen(path, "rb");
-    long size = 0;
+    long end = 0;
+    int size, have, got;
     unsigned char *all;
 
     if (!f) {
@@ -723,37 +745,61 @@ static int read_object(const char *path, Object *o, int complain)
 
         return 0;
     }
-    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0
-        || fseek(f, 0, SEEK_SET) != 0 || size < 0) {
+    if (fseek(f, 0, SEEK_END) != 0 || (end = ftell(f)) < 0
+        || fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
         if (complain)
             acc_error("cannot read '%s'", path);
 
         return 0;
     }
-    all = malloc((size_t) (size > 0 ? size : 1));
+    size = (int) end;
+
+    /* The header first, since it says where the text starts. */
+    all = malloc(OBJ_HEADER);
     if (!all)
         acc_error("out of memory for '%s'", path);
-    if ((long) fread(all, 1, (size_t) size, f) != size) {
+    have = (unsigned) size < OBJ_HEADER ? size : OBJ_HEADER;
+    got = (int) fread(all, 1, (size_t) have, f);
+    if (got == OBJ_HEADER) {
+        have = size;
+        if (front && (unsigned) text_start(all, NULL) < (unsigned) size)
+            have = text_start(all, NULL);
+        all = realloc(all, (size_t) have);
+        if (!all)
+            acc_error("out of memory for '%s'", path);
+        got += (int) fread(all + OBJ_HEADER, 1, (size_t) (have - OBJ_HEADER), f);
+    }
+    if (got != have || !take_object(all, size, have, path, o, complain)) {
         fclose(f);
-        free(all);
-        if (complain)
-            acc_error("short read on '%s'", path);
+        if (got != have) {
+            free(all);
+            if (complain)
+                acc_error("short read on '%s'", path);
+        }
 
         return 0;
     }
-    fclose(f);
+    if (o->text)
+        fclose(f);
+    else
+        o->file = f;
 
-    return take_object(all, size, path, o, complain);
+    return 1;
 }
 
-void obj_read(const char *path, Object *o)
+/* With `front`, the text is left in the file, which is left open at its
+ * start: see read_object. */
+void obj_read(const char *path, Object *o, int front)
 {
-    (void) read_object(path, o, 1);
+    (void) read_object(path, o, 1, front);
 }
 
 void obj_free(Object *o)
 {
+    if (o->file)
+        fclose(o->file);
+    o->file = NULL;
     free(o->all);
     o->all = NULL;
 }
@@ -822,17 +868,16 @@ int obj_reloc_kind(const Object *o, int i)
 
 /* What is added to the target: the relocation's own when it is in relocs_a,
  * and otherwise what is in its slot -- as wide as the slot, and signed for a
- * PCREL8's one byte. */
-long obj_reloc_addend(const Object *o, int i)
+ * PCREL8's one byte. The slot's bytes are read from `slot`: in the text, or
+ * where a link has copied them to, since an object read with its front only
+ * has no text in hand. */
+long obj_reloc_addend(const Object *o, int i, const unsigned char *slot)
 {
-    const unsigned char *slot;
-
     if (i >= o->nrelocs) {
         long a = get24(reloc_entry(o, i) + 6);
 
         return a & 0x800000L ? a - 0x1000000L : a;
     }
-    slot = o->text + obj_reloc_at(o, i);
     switch (obj_reloc_kind(o, i)) {
     case REL_ABS24:  return get24(slot);
     case REL_ABS16:  return slot[0] | slot[1] << 8;
@@ -904,7 +949,7 @@ int obj_current(const char *path, const char *source)
     Object o;
     int i, ndeps, current = 1;
 
-    if (!read_object(path, &o, 0))
+    if (!read_object(path, &o, 0, 1))
         return 0;
 
     ndeps = o.ndeps;
@@ -1055,7 +1100,7 @@ void ar_write(const char *path, const char **members, int nmembers)
      * where the members go depends on how long all of it comes to. */
     for (i = 0; i != nmembers; i++) {
         name_at[i] = string_add(ar_base_name(members[i]));
-        obj_read(members[i], &o);
+        obj_read(members[i], &o, 0);
         len_of[i] = (int) (o.text + o.text_len - o.all);
         for (j = 0; j != o.nsyms; j++)
             if (obj_sym_flags(&o, j) & OBJ_DEFINED)

@@ -1234,6 +1234,7 @@ typedef struct {
     int            build;    /* the acc that made it: see src/build_id.sh */
     int            text_len, bss_len, bss_align, nsyms, nrelocs, nrelocs_a;
     int            ndeps, nitems, strings_len;
+    void          *file;     /* open at the text, when it was left to be read */
 } Object;
 
 /* What a relocation's slot is made of: see the note on the format in
@@ -1274,13 +1275,13 @@ int  obj_item(const Object *o, int i);  /* where item i starts in the text */
 int  obj_item_align(const Object *o, int i); /* log2 of its alignment */
 int  obj_nrelocs(const Object *o);      /* both tables of them together */
 int  obj_reloc_kind(const Object *o, int i);
-long obj_reloc_addend(const Object *o, int i);
+long obj_reloc_addend(const Object *o, int i, const unsigned char *slot);
 int  obj_reloc_width(int kind);         /* how many bytes its slot is */
 const char *obj_c_name(const char *in_object);  /* _f is f; g is @g */
 const char *obj_object_name(const char *in_acc);  /* and back */
 void obj_take(unsigned char *all, int len, const char *path, Object *o);
 int  obj_current(const char *path, const char *source);
-void obj_read(const char *path, Object *o);
+void obj_read(const char *path, Object *o, int front);
 void obj_free(Object *o);
 
 const char *obj_sym_name(const Object *o, int i);
