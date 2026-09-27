@@ -1,182 +1,161 @@
 # acc - a C compiler for the Agon
 
-A C compiler written for the Agon Light: one that runs **on** the machine,
-in the 448 KB it gives a program for code, data, heap and stack together.
+acc is a C compiler that runs on the Agon and produces MOS programs. It
+also builds and runs on Linux, where it produces the same programs and
+objects byte for byte.
 
-It is being written towards C99. What works today:
+It compiles C99 apart from `long double`, `_Complex`, and function
+definitions in the K&R style, and it comes with a C library of its own:
+every header of C99's hosted library, plus agondev's `<agon/...>` headers
+for MOS, the VDP, the keyboard, GPIO, joysticks and timers.
 
-  * every scalar type at agondev's widths, so a program compiled by either
-    comes out the same: `char`, `short`, `int` and their `unsigned` forms at
-    1, 2 and 3 bytes; `long` at 4; `long long` at 8; `float` and `double`,
-    which are both the same 4-byte IEEE 754 single there; `_Bool`; and
-    pointers, seven deep
-  * every operator C has, including `?:`, `&&`, `||`, the comma operator,
-    the compound assignments, `++` and `--`, `sizeof` and casts, at every
-    width -- and the constants among them are worked out by the compiler,
-    whatever their type, so a global may be initialised with any of them
-  * `if`, `while`, `for`, `do`, `switch`, `break`, `continue`, `goto` and
-    labels, and blocks with declarations anywhere in them
-  * functions, prototypes, recursion, forward references, pointers to
-    functions, and variable arguments with `va_list`
-  * `struct`, `union`, `enum`, `typedef`, bit-fields, flexible array
-    members, arrays of any dimension -- including ones whose length the
-    program works out -- initialisers with braces, designated initialisers
-    (`{ .x = 1 }`, `{ [2] = 7 }`), compound literals, and structs passed,
-    returned and assigned by value
-  * `static`, `extern`, `const`, `volatile`, `register`, `auto` and
-    `inline`, with `const` checked through pointers, elements and members,
-    and `static` and the qualifiers inside a parameter's brackets
-  * string and character literals with their escapes, `__func__`,
-    `_Static_assert`, `__builtin_offsetof`, `__attribute__` (read and
-    thrown away: there is no optimiser here for it to advise), and both
-    comment forms
+## Installing on the Agon
 
-Of the preprocessor there is `#include` -- a quoted name is looked for
-beside the file that asked for it and then in the `-I` directories, an
-angled one only in those -- and `#define` and `#undef` for a name standing
-for some text or taking parameters, with `#` and `##` and a variable number
-of arguments, and the conditionals -- `#if` and `#elif` on an expression,
-with `defined`, as well as `#ifdef`, `#ifndef`, `#else` and `#endif` --
-`#error`, `#pragma` and `#line`, and `__FILE__` and `__LINE__`. That is the
-whole of it. What is not here is `long double`, because libagon has no
-arithmetic for a double at all and half a type is worse than none; nor
-`_Complex`, or function definitions written the way K&R wrote them.
+Unzip `acc-<version>.zip` onto the root of the SD card. It holds:
 
-One `.c` file in, whatever it includes, a runnable MOS binary out.
-`* / % & | ^ << >>` have no eZ80 instruction on a 24-bit value, and nothing
-wider than a register has one at all, so acc carries those routines and emits
-the ones a program uses into that program's image.
+    /bin/acc.bin              the compiler
+    /lib/acc/libc.a           the C library
+    /lib/acc/include/         its headers, <stdio.h> to <agon/vdp.h>
 
-    $ cat t.c
-    int add(int a, int b) { return a + b; }
-    int main(void) { int x = 3; return add(x, 4) + 35; }
+acc looks in `/lib/acc/include` for every `#include`, and links
+`/lib/acc/libc.a` into every program, without being told. `/bin` is where
+MOS looks for a command, so `acc` works from any directory. It is tested
+on MOS 3.0.2.
 
-    $ bin/acc t.c -o t.bin -x
-    $ test/agon.sh t.bin ; echo $?
-    42
+## Using it on the Agon
+
+A program is compiled to an object and then linked into a program, which
+runs like any other MOS command:
+
+    */ type hello.c
+    #include <stdio.h>
+
+    int main(int argc, char **argv)
+    {
+        printf("hello, %s\n", argc > 1 ? argv[1] : "world");
+        return 0;
+    }
+    */ acc -c hello.c -o hello.o
+    */ acc hello.o -o hello.bin
+    */ hello Agon
+    hello, Agon
+
+A program that calls nothing from the library can also be compiled in one
+step, straight from the source:
+
+    */ acc add.c -o add.bin
+
+A program in several files is compiled a file at a time and linked
+together. An object records the files it was made from, so a second `-c`
+over unchanged sources does nothing:
+
+    */ acc -c main.c -o main.o
+    */ acc -c util.c -o util.o
+    */ acc main.o util.o -o prog.bin
+    */ acc -c main.c -o main.o
+    main.o is up to date
+    */ acc -v
+    acc 0.1.0 (build 7014277)
+
+Objects can be collected into a library, from which a link takes only the
+members a program uses:
+
+    */ acc -a mylib.a util.o parse.o
+    */ acc main.o mylib.a -o prog.bin
+
+Headers of your own are found beside the file that includes them, or in a
+directory given with `-I`, which is searched before `/lib/acc/include`:
+
+    */ acc -c main.c -o main.o -I /src/common
+
+Every compile and link ends by printing the time it took, as
+`Done in 0.04 seconds`; the examples leave that line out. An error prints
+as `file:line:column: error: text`, and acc stops at the first one.
+
+## Options
+
+    acc [-c] <source.c> -o <out> [-I <dir>]... [-D <name>[=<value>]]...
+                                 [-U <name>]... [-include <file>]
+    acc <file.o|lib.a>... -o <out.bin>
+    acc -a <lib.a> <file.o>...
+    acc -v
+
+| Option | Meaning |
+| --- | --- |
+| `-c` | Compile to an object, to be linked later |
+| `-o <out>` | The program or object to write |
+| `-a <lib.a>` | Put the objects that follow into a library |
+| `-I <dir>` | Look in `<dir>` for an `#include` |
+| `-D <name>[=<value>]` | Define a macro, as `#define` would; `-DN` is `-DN=1` |
+| `-U <name>` | Undefine a macro |
+| `-include <file>` | Read `<file>` before the source |
+| `-p` | Print what `main` returned, as six hex digits |
+| `-x` | Write what `main` returned to IO port 0, which stops an emulator with it as the exit status |
+| `-b <addr>` | Load the program at `<addr>`, in hexadecimal; the default is `40000` |
+| `-r <file>` | Write the offsets inside the image that `-b` moved |
+| `-map <file>` | Write where each function and variable went |
+| `-trigraphs` | Read the nine trigraphs |
+| `-errors <file>` | Also write an error to `<file>`, and fail with 100 rather than 1 |
+| `-v`, `--version` | Print the version and exit |
 
 What `main` returns goes back to MOS, as it does from a program agondev
-built, and nothing is printed. `-p` prints it first, as six hex digits --
-`00002A` -- which is how to read an answer at the Agon's prompt; `-x`
-writes its low byte to IO port 0 instead, which stops the emulator with it
-as the exit status, and is what the tests use.
+built.
 
-Or in pieces: `-c` compiles one file to an object, `-a` puts objects into a
-library, and naming objects and libraries instead of a source links them. An
-object records what it was built from, so a second `-c` over an unchanged
-source says so and does nothing.
+## The language
 
-    $ bin/acc -c t.c -o t.o
-    $ bin/acc t.o bin/libc.a -o t.bin
+- Every scalar type at agondev's widths: `char` 1 byte, `short` 2, `int` 3,
+  `long` 4, `long long` 8, `float` and `double` both 4-byte IEEE 754
+  single, `_Bool`, and pointers of 3 bytes.
+- Every operator and statement, blocks with declarations anywhere,
+  functions, prototypes, pointers to functions, and variable arguments.
+- `struct`, `union`, `enum`, `typedef`, bit-fields, flexible array
+  members, arrays of any dimension including variable-length ones,
+  designated initialisers, compound literals, and structs passed, returned
+  and assigned by value.
+- `static`, `extern`, `const`, `volatile`, `register`, `auto`, `inline`
+  and `restrict`.
+- The whole C99 preprocessor, plus `#pragma once`.
+- `__attribute__` is read and ignored.
 
-The library that comes with it is `bin/libc.a`, written in C and compiled by
-acc. It has every header of C99's hosted library, `<stdio.h>` to `<wchar.h>`
-and `<tgmath.h>`, checked against glibc's answers by `test/hosted.sh`.
-
-For the machine itself it has agondev's headers, name for name and byte for
-byte -- `<agon/mos.h>`, `<agon/vdp.h>`, `<agon/keyboard.h>`, `<agon/gpio.h>`,
-`<agon/joystick.h>`, `<agon/timer.h>` and `<agon/vdp_vdu.h>`, with
-`<ez80f92.h>`'s port numbers read and written through `io_in` and `io_out`
--- and past them, the rest of what MOS 3.0.2 and VDP 2.16.0
-take that libagon has no call for: the tile engine, every buffered command,
-the audio system's volume and rates, and more. Where libagon sends bytes
-the VDP does not read that way, acc sends what the VDP reads.
-`test/agonlib.sh` compares each call's bytes with libagon's and plays them
-into the VDP's own firmware to check that each command is exactly as long
-as the VDP takes it to be; `test/vdpreal.sh` runs programs against the real
-VDP and reads back what they drew.
-
-A program's `main` is handed the command line as `argc` and `argv`.
-
-## Why not tinycc
-
-There was a tinycc port first, and it worked: it compiled and linked on the
-Agon. What it could not do is fit.
-
-Measured on the machine, it compiled a 200-line source in about 8 seconds and
-did not finish a 400-line one at all -- its peak was 235 KB against the 206 KB
-of heap and stack it had. The cause was its data structures rather than its
-algorithms: 31 bytes for every symbol, and 75 KB of machinery for a
-preprocessor that had to be resident whether or not a program used one. That
-is not something tuning fixes.
-
-This compiler does 416 lines in under a second and its image is 28 KB, which
-leaves 439 KB for the heap and the stack. The port has been deleted; it was
-kept for a while as a known-correct reference, and the differential tests
-against agondev do that job better.
-
-## How it works
-
-One pass. No syntax tree, no intermediate representation. The parser emits
-eZ80 machine code as it reads, with a small stack of *descriptions* of values
--- a constant, a local at a frame offset, something already in a register --
-that are only turned into instructions when something needs them. That is
-tinycc's model, and it is kept because it is both the fastest way to compile C
-and the smallest.
-
-What is not kept is tinycc's memory: a symbol here is 10 bytes and a type is
-one, names live in one arena that is never freed, and the output is a flat
-MOS image written directly rather than ELF sections assembled and then
-relocated.
+How it stands against the conformance suites is in
+[docs/c99-status.md](docs/c99-status.md).
 
 ## What the code costs
 
-zap, the assembler this compiler is meant to build on the machine, is twelve
-files and 7,900 lines of C. acc compiles and links all of it, and what it
-produces assembles zap's own test sources to the byte that agondev's build
-of the same source produces. Against that build, at `-Oz`, on an emulated
-Agon:
+acc's output against agondev's at `-Oz`, on an emulated Agon, as acc's
+size or time over agondev's:
 
-| | agondev | acc | |
+| | code | whole image | time to run |
 | --- | --- | --- | --- |
-| the image | 84,893 bytes | 168,582 bytes | 2.0x |
-| assembling a 6 KB source, six runs | 0.64s | 3.12s | 4.9x |
+| the benchmark programs, mean | 1.33 | 1.06 | 1.18 |
+| zap, the assembler | 1.22 | 1.20 | 1.58 |
+| acc itself | 1.24 | 1.25 | |
 
-Both figures are the assembler's own, taken alternately in one boot so that
-neither side pays for a warm-up the other did not.
+`test/size.sh` and `test/perf.sh` produce these tables.
 
-The size is the one that bites, and not because of the disc. A program gets
-448 KB for everything, so every byte of image is a byte of heap: zap has
-about 250 KB to allocate from where the reference build has about 360 KB.
+On the Agon, acc compiles about 30 KB of C a second.
 
-It used to be 310,820 bytes and 113 KB, which was not enough to assemble a
-25 KB source at all. What closed most of that gap was leaving things out
-rather than emitting them better -- the functions a file does not use, which
-a header full of `static inline` helpers has a great many of, and the value
-a comparison makes when all that was wanted was the branch.
+## Building
 
-## Testing, without an oracle
+On Linux, with a C compiler and make:
 
-zap could be checked against ez80asm byte for byte. Two C compilers may emit
-different code and both be right, so there is no such oracle here.
+    make                # bin/acc and bin/libc.a
+    make test           # the test suites
 
-There is a reference *answer*. Every test is compiled twice -- once with acc,
-once with agondev -- run on an emulated Agon, and required to report the same
-result. That pins the semantics this target actually has, like where a 24-bit
-`int` wraps, to the implementation that defines them.
+acc on the host has no default include directory or library, so name them:
 
-A program reports by writing a byte to IO port 0, which the emulator turns
-into its exit status. No C library, no linker, nothing to print with.
+    bin/acc -c hello.c -o hello.o -Iinclude
+    bin/acc hello.o bin/libc.a -o hello.bin
 
-    make test
+The Agon build needs [AgonDev](https://github.com/AgonPlatform/agondev) in
+`~/agondev` (or `AGONDEV=<dir>`):
 
-## Where it is going
+    make -f Makefile.agon       # bin/acc.bin
+    ./mkrelease.sh 0.1.0        # acc-0.1.0.zip, the SD card layout
 
-Each step is meant to be finished and measured before the next one starts.
-
-| | |
-| --- | --- |
-| functions, `int`, `+ - ~`, calls, locals | done |
-| the operators the chip lacks: `* / % & \| ^ << >>` | done |
-| `if`, `while`, `for`, comparisons | done |
-| globals, `char`, `short`, pointers, arrays | done |
-| `struct`, `union`, `enum`, `typedef` | done |
-| `long`, `float`, `long long`, `_Bool` | done |
-| bit-fields, pointers to functions, `...` and `va_list` | done |
-| designated initialisers, compound literals, arrays with a length worked out | done |
-| a preprocessor | done |
-| objects, a linker, and a C library of its own | done |
-| compiling itself on the machine | next |
+`make test` runs every program it compiles on
+[fab-agon-emulator](https://github.com/tomm/fab-agon-emulator), and checks
+each answer against agondev's build of the same source.
 
 ## License
 

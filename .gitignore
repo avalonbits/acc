@@ -21,3 +21,6 @@ __pycache__/
 test/conformance/cache/
 # test/size.sh fetches vi here: GPL, never committed.
 test/perf/cache/
+
+# mkrelease.sh output.
+/acc-*.zip
