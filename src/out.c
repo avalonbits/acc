@@ -396,6 +396,100 @@ void out_relocs_write(const char *path)
     fclose(file);
 }
 
+/* Where the image lives.
+ *
+ * On the Agon, at the top of the heap, out of malloc's way. agondev's
+ * realloc never extends a block: it mallocs the new one, copies, and frees
+ * the old, so an image doubling from 32 KB held 96 KB at once -- the peak of
+ * compiling one of zap's or vi's larger files -- and a link's image of a
+ * hundred kilobytes could never grow to its size. At the top it grows
+ * downwards by moving its bytes within what is then its own: growing costs
+ * the new bytes and nothing more. malloc's break is kept below it by acc's
+ * own sbrk, which is what malloc calls (the link says --wrap=_sbrk; see
+ * Makefile.agon). A move changes out_img as realloc did.
+ *
+ * On the host, malloc and realloc: memory is not short there, and every
+ * test whose program outgrows 4 KB moves the image, which is what shows up
+ * code that keeps a pointer into it across a write. So too when acc builds
+ * itself for the Agon (test/selfbuild.sh): that links acc's own library,
+ * whose malloc is not libagon's. */
+#if defined(AGONDEV) && defined(__clang__)     /* agondev's build, libagon's malloc */
+extern char *_sbrkbase;                 /* libagon's break, set by crt0 */
+extern char __heaptop[];                /* ___heaptop: see src/agon.ld */
+
+static unsigned char *img_low;          /* the image's first byte, or null */
+
+/* malloc's sbrk: libagon's, with the image's bottom as the top of the heap.
+ * As libagon's does, it answers null when there is no room, and keeps the
+ * break strictly below the top. */
+void *_wrap__sbrk(int incr)
+{
+    char *was = _sbrkbase;
+    char *top = img_low ? (char *) img_low : __heaptop;
+
+    if (incr >= top - was)
+        return NULL;
+    _sbrkbase = was + incr;
+
+    return was;
+}
+
+static unsigned char *img_take(int want)
+{
+    unsigned char *low = (unsigned char *) __heaptop - want;
+
+    if (low <= (unsigned char *) _sbrkbase)
+        return NULL;
+    img_low = low;
+
+    return low;
+}
+
+/* Twice as big, or failing that as big as there is room for, so long as
+ * that is a kilobyte more. */
+static unsigned char *img_grow(unsigned char *img, int used, int *capp)
+{
+    int want = *capp * 2;
+    unsigned char *low = (unsigned char *) __heaptop - want;
+
+    if (low <= (unsigned char *) _sbrkbase) {
+        low = (unsigned char *) _sbrkbase + 1;
+        want = (int) ((unsigned char *) __heaptop - low);
+        if (want < *capp + 1024)
+            return NULL;
+    }
+    memmove(low, img, (size_t) used);
+    img_low = low;
+    *capp = want;
+
+    return low;
+}
+
+static void img_free(unsigned char *img)
+{
+    (void) img;
+    img_low = NULL;
+}
+#else
+static unsigned char *img_take(int want)
+{
+    return malloc((size_t) want);
+}
+
+static unsigned char *img_grow(unsigned char *img, int used, int *capp)
+{
+    (void) used;
+    *capp *= 2;
+
+    return realloc(img, (size_t) *capp);
+}
+
+static void img_free(unsigned char *img)
+{
+    free(img);
+}
+#endif
+
 extern int out_start_cap;
 
 /* `header` is whether MOS's is wanted: a program has one and an object does
@@ -407,7 +501,7 @@ void out_open(const char *path, int header)
     const char *base, *scan;
 
     cap = out_start_cap;
-    out_img = malloc(cap);
+    out_img = img_take(cap);
     if (!out_img)
         acc_error("out of memory for the output");
     out_put = out_img;
@@ -487,8 +581,7 @@ void out_grow(void)
 
     /* One doubling is always enough: cap starts at 4096 or more and the largest
      * single write is the four bytes of out_opcode24. */
-    cap *= 2;
-    out_img = realloc(out_img, cap);
+    out_img = img_grow(out_img, used, &cap);
     if (!out_img)
         acc_error("out of memory for the output");
     out_put = out_img + used;
@@ -614,7 +707,7 @@ void out_patch24(int at, int value)
  * object writer wants, having written the same bytes itself. */
 void out_free(void)
 {
-    free(out_img);
+    img_free(out_img);
     out_img = NULL;
     free(out_relocs);
     out_relocs = out_reloc_put = out_reloc_limit = NULL;
