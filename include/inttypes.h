@@ -10,6 +10,7 @@
  * anything narrower than an int arrives as one, so those have no length;
  * scanf stores through a pointer and has to be told.
  */
+#pragma once
 #ifndef ACC_INTTYPES_H
 #define ACC_INTTYPES_H
 

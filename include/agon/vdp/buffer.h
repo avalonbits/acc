@@ -21,6 +21,7 @@
  * top bit (VDP_OFFSET_BLOCK) is set a 16-bit block number follows it and the
  * offset counts from the start of that block.
  */
+#pragma once
 #ifndef ACC_AGON_VDP_BUFFER_H
 #define ACC_AGON_VDP_BUFFER_H
 

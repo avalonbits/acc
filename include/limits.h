@@ -11,6 +11,7 @@
  *
  * char is signed, as it is on this chip.
  */
+#pragma once
 #ifndef ACC_LIMITS_H
 #define ACC_LIMITS_H
 

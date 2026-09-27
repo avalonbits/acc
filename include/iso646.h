@@ -7,6 +7,7 @@
  * For keyboards and character sets that lack the punctuation. One of the
  * headers C99 requires of a freestanding implementation.
  */
+#pragma once
 #ifndef ACC_ISO646_H
 #define ACC_ISO646_H
 

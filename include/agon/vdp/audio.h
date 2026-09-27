@@ -14,6 +14,7 @@
  * The names down to vdp_audio_set_waveform_parameter are libagon's; the
  * ones after are the rest of what VDP 2.16.0 takes, named the same way.
  */
+#pragma once
 #ifndef ACC_AGON_VDP_AUDIO_H
 #define ACC_AGON_VDP_AUDIO_H
 

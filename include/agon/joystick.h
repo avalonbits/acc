@@ -10,6 +10,7 @@
  * bits are the buttons. A pin reads 0 while its switch is closed, which is
  * why each test below is a NOT.
  */
+#pragma once
 #ifndef ACC_AGON_JOYSTICK_H
 #define ACC_AGON_JOYSTICK_H
 

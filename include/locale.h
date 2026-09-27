@@ -10,6 +10,7 @@
  * localeconv answers with the C locale's values: a point for the decimal
  * point and nothing for the rest.
  */
+#pragma once
 #ifndef ACC_LOCALE_H
 #define ACC_LOCALE_H
 

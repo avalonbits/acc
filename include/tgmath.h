@@ -15,6 +15,7 @@
  *
  * nexttoward is missing, since its second argument is a long double.
  */
+#pragma once
 #ifndef ACC_TGMATH_H
 #define ACC_TGMATH_H
 

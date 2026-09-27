@@ -23,6 +23,7 @@
  * operation is carried out in its own type, which here is always the four
  * bytes.
  */
+#pragma once
 #ifndef ACC_FLOAT_H
 #define ACC_FLOAT_H
 

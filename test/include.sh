@@ -340,5 +340,33 @@ int main(void) { return offsetof((int) sizeof(ptrdiff_t) + (int) sizeof(wchar_t)
 EOF
 compiles "headers leave <stddef.h>'s other names" -Iinclude "$tmp/src/names.c"
 
+# Every header acc ships says #pragma once before anything else, so a
+# second #include of it is not opened at all: <agon/vdp.h>'s headers each
+# include <stdint.h> and <agon/mos.h> again, and read through to their
+# #endif those were a fifth of compiling a program that uses them. Except
+# <assert.h>, which C has read again on every include (7.2).
+once_first() {    # what comes first in the file, comments aside
+    python3 -c '
+import re, sys
+t = re.sub(r"/\*.*?\*/", "", open(sys.argv[1]).read(), flags=re.S)
+t = re.sub(r"//[^\n]*", "", t)
+print(t.split("\n", 1)[0] if t.strip() == "" else t.strip().split("\n", 1)[0])
+' "$1"
+}
+for h in $(find include -name '*.h' | sort); do
+    first=$(once_first "$h")
+    if [ "$h" = include/assert.h ]; then
+        if grep -q 'pragma once' "$h"; then
+            bad "assert.h is read again" "it says #pragma once"
+        else
+            ok
+        fi
+    elif [ "$first" = "#pragma once" ]; then
+        ok
+    else
+        bad "#pragma once first in $h" "it starts: $first"
+    fi
+done
+
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

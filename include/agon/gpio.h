@@ -10,6 +10,7 @@
  * alternate function, both 0 for a plain pin. A pin ID is a port and a mask
  * of pins together, for the calls that do several of one port at once.
  */
+#pragma once
 #ifndef ACC_AGON_GPIO_H
 #define ACC_AGON_GPIO_H
 

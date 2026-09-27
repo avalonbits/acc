@@ -10,6 +10,7 @@
  * exists to be included and not to define them. A program that includes it
  * gets what it asked for either way, which is what portable source expects.
  */
+#pragma once
 #ifndef ACC_STDARG_H
 #define ACC_STDARG_H
 #endif

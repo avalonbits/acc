@@ -5160,6 +5160,21 @@ typedef struct {
 static ExternFix *externs;
 static int        nexterns, externs_cap;
 
+/* Room for `n` in all, at once. What goes in at the end of a compile to an
+ * object -- one for each call and address still waiting on a name, and one
+ * for each call to a helper -- is counted before it is added, and one block
+ * the right size is taken: doubling towards it held the table twice over,
+ * which on the Agon was what an Agon program's largest file ran out on. */
+static void extern_reserve(int n)
+{
+    if (n <= externs_cap)
+        return;
+    externs_cap = n;
+    externs = realloc(externs, (size_t) externs_cap * sizeof *externs);
+    if (!externs)
+        acc_error("out of memory for the calls out of this file");
+}
+
 static void extern_add(int at, int fn)
 {
     if (nexterns == externs_cap) {
@@ -6496,6 +6511,7 @@ void gen_finish(void)
      * the blob stays here: one copy of it goes into the program that is
      * linked, rather than one into every object that multiplies. */
     if (gen_objects) {
+        extern_reserve(nexterns + nrt_fixups + nfixups);
         for (i = 0; i < nrt_fixups; i++)
             extern_add(rt_fixups[i].at, rt_symbol(rt_fixups[i].which));
     } else {

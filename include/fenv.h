@@ -14,6 +14,7 @@
  * testing or raising no exceptions, and setting the rounding mode to the one
  * it is. Asking for another mode fails, as C says it must.
  */
+#pragma once
 #ifndef ACC_FENV_H
 #define ACC_FENV_H
 

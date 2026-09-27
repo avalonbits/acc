@@ -11,6 +11,7 @@
  * An 8-bit bitmap number n is the bitmap in buffer 64000 + n; the calls
  * named vdp_adv_ take the 16-bit buffer ID itself.
  */
+#pragma once
 #ifndef ACC_AGON_VDP_BITMAP_H
 #define ACC_AGON_VDP_BITMAP_H
 

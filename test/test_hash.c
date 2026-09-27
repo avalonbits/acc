@@ -100,7 +100,7 @@ int main(void)
         name_intern("g000000000", 10);
         is("the short name ends the arena", (long) name_intern("s000000", 7) + 8, 1024);
         before = name_probes;
-        name_intern("a_longer_name_1059", 18);
+        name_intern("a_longer_name_5480", 18);
         is("and a longer one's probe passes it", name_probes - before >= 2, 1);
         interned = 86;              /* 83 + 1 + the short one + the long one */
     }
@@ -117,6 +117,11 @@ int main(void)
          * table as it starts: the one rehash is name_init's. */
         if (interned + i + 1 == 400)
             is("400 names need no rehash", (long) name_rehashes, 1);
+
+        /* Nor two thousand: an Agon program's headers come to two or three
+         * thousand names, and each rehash hashes all of them again. */
+        if (interned + i + 1 == 2000)
+            is("2000 names need no rehash", (long) name_rehashes, 1);
     }
 
     for (i = 0; i < N; i++) {

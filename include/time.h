@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+#pragma once
 #ifndef ACC_TIME_H
 #define ACC_TIME_H
 
