@@ -427,7 +427,9 @@ void *_wrap__sbrk(int incr)
     char *was = _sbrkbase;
     char *top = img_low ? (char *) img_low : __heaptop;
 
-    if (incr >= top - was)
+    /* Unsigned: neither can be negative, and a signed compare is a call
+     * to repair the flags after it. */
+    if ((unsigned) incr >= (unsigned) (top - was))
         return NULL;
     _sbrkbase = was + incr;
 
@@ -455,7 +457,7 @@ static unsigned char *img_grow(unsigned char *img, int used, int *capp)
     if (low <= (unsigned char *) _sbrkbase) {
         low = (unsigned char *) _sbrkbase + 1;
         want = (int) ((unsigned char *) __heaptop - low);
-        if (want < *capp + 1024)
+        if ((unsigned) want < (unsigned) *capp + 1024)
             return NULL;
     }
     memmove(low, img, (size_t) used);

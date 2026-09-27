@@ -1343,11 +1343,11 @@ static int reg_alloc(void)
 {
     int reg;
 
-    for (reg = 0; reg < NREGS; reg++)
+    for (reg = 0; reg != NREGS; reg++)
         if (!reg_busy(reg))
             return reg;
     spill_one();
-    for (reg = 0; reg < NREGS; reg++)
+    for (reg = 0; reg != NREGS; reg++)
         if (!reg_busy(reg))
             return reg;
     acc_error("internal: no register after spilling");
@@ -1361,11 +1361,11 @@ static int reg_alloc_other(int avoid)
 {
     int reg;
 
-    for (reg = 0; reg < NREGS; reg++)
+    for (reg = 0; reg != NREGS; reg++)
         if (reg != avoid && !reg_busy(reg))
             return reg;
     spill_one_other(avoid);
-    for (reg = 0; reg < NREGS; reg++)
+    for (reg = 0; reg != NREGS; reg++)
         if (reg != avoid && !reg_busy(reg))
             return reg;
     acc_error("internal: no register after spilling");
@@ -1463,7 +1463,7 @@ static int free_reg_other(int avoid)
 {
     int reg;
 
-    for (reg = 0; reg < NREGS; reg++)
+    for (reg = 0; reg != NREGS; reg++)
         if (reg != avoid && !reg_busy(reg))
             return reg;
 
@@ -2372,7 +2372,7 @@ void gen_settle(int sym)
 {
     int i, kept = 0;
 
-    for (i = 0; i < nfixups; i++) {
+    for (i = 0; i != nfixups; i++) {
         if (fixups[i].fn != sym) {
             fixups[kept++] = fixups[i];
             continue;
@@ -2932,7 +2932,7 @@ static void copy_long(int to, int from, int n)
 
     if (!disp_fits(from) || !disp_fits(from + n - 1)
         || !disp_fits(to) || !disp_fits(to + n - 1)) {
-        for (i = 0; i < n; i++) {               /* one of them is out of reach */
+        for (i = 0; i != n; i++) {               /* one of them is out of reach */
             ld_a_ix(from + i);
             ld_ix_a(to + i);
         }
@@ -2955,7 +2955,7 @@ static void copy_long(int to, int from, int n)
 
         return;
     }
-    for (i = 0; i < n; i++) {
+    for (i = 0; i != n; i++) {
         out_byte3(0xdd, 0x7e, from + i);        /* ld a, (ix+d) */
         out_byte3(0xdd, 0x77, to + i);          /* ld (ix+d), a */
     }
@@ -3218,7 +3218,7 @@ static void wide_through_hl(int slot, int n, int store)
 
         return;
     }
-    for (i = 0; i < n; i++) {
+    for (i = 0; i != n; i++) {
         if (store) {
             ld_a_ix(slot + i);
             ld_hl_a();
@@ -3244,7 +3244,7 @@ static void wide_bytes_at(int disp, uint64_t bits, int n)
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
     unsigned char bytes[8];
 
-    for (i = 0; i < 8; i++)
+    for (i = 0; i != 8; i++)
         bytes[i] = (unsigned char) (bits >> (i * 8));
 #else
     const unsigned char *bytes = (const unsigned char *) &bits;
@@ -3271,7 +3271,7 @@ static void wide_bytes_at(int disp, uint64_t bits, int n)
 
         return;
     }
-    for (i = 0; i < n; i++) {
+    for (i = 0; i != n; i++) {
         out_byte(0x3e);                         /* ld a, n */
         out_byte(bytes[i]);
         ld_ix_a(disp + i);
@@ -3599,7 +3599,7 @@ static void ld_rr_pool(int reg, uint64_t v, int n)
 {
     int e;
 
-    for (e = 0; e < npool; e++)
+    for (e = 0; e != npool; e++)
         if (pool_val[e] == v && pool_n[e] == n)
             break;
     if (e == npool) {
@@ -3631,9 +3631,9 @@ static void pool_emit(void)
 {
     int e, i;
 
-    for (e = 0; e < npool; e++)
+    for (e = 0; e != npool; e++)
         pool_addr[e] = -1;
-    for (i = 0; i < npool_sites; i++) {
+    for (i = 0; i != npool_sites; i++) {
         e = pool_site_entry[i];
         if (pool_addr[e] < 0) {
             unsigned char b[8];
@@ -3641,7 +3641,7 @@ static void pool_emit(void)
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
             int j;
 
-            for (j = 0; j < 8; j++)
+            for (j = 0; j != 8; j++)
                 b[j] = (unsigned char) (pool_val[e] >> (j * 8));
 #else
             memcpy(b, &pool_val[e], sizeof b);
@@ -3708,7 +3708,7 @@ static int long_const_bytes(int op, Type result)
         return 0;
     c = const_as(r, result);
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    for (i = 0; i < 8; i++)
+    for (i = 0; i != 8; i++)
         b[i] = (unsigned char) (c >> (i * 8));
 #else
     memcpy(b, &c, sizeof b);
@@ -3716,7 +3716,7 @@ static int long_const_bytes(int op, Type result)
 
     switch (op) {
     case TK_AMP:
-        for (i = 0; i < 4; i++)
+        for (i = 0; i != 4; i++)
             if (b[i] == 0)
                 zeros++;
             else if (b[i] != 0xff)
@@ -3724,11 +3724,11 @@ static int long_const_bytes(int op, Type result)
         cost += zeros ? 1 + 3 * zeros : 0;
         break;
     case TK_PIPE:
-        for (i = 0; i < 4; i++)
+        for (i = 0; i != 4; i++)
             cost += b[i] == 0 ? 0 : b[i] == 0xff ? 4 : 8;
         break;
     case TK_CARET:
-        for (i = 0; i < 4; i++)
+        for (i = 0; i != 4; i++)
             cost += b[i] == 0 ? 0 : b[i] == 0xff ? 7 : 8;
         break;
     case TK_SHL:
@@ -3771,7 +3771,7 @@ static int long_const_bytes(int op, Type result)
 
     switch (op) {
     case TK_AMP:
-        for (i = 0; i < 4; i++)
+        for (i = 0; i != 4; i++)
             if (b[i] != 0 && b[i] != 0xff) {
                 ld_a_ix(left + i);
                 and_a_imm(b[i]);
@@ -3779,14 +3779,14 @@ static int long_const_bytes(int op, Type result)
             }
         if (zeros) {
             out_byte(0xaf);                             /* xor a, a */
-            for (i = 0; i < 4; i++)
+            for (i = 0; i != 4; i++)
                 if (b[i] == 0)
                     ld_ix_a(left + i);
         }
         break;
     case TK_PIPE:
     case TK_CARET:
-        for (i = 0; i < 4; i++) {
+        for (i = 0; i != 4; i++) {
             if (b[i] == 0)
                 continue;
             if (op == TK_PIPE && b[i] == 0xff) {
@@ -4663,7 +4663,7 @@ static int logic_chain(void)
 {
     int i;
 
-    for (i = 0; i < nlogic_holes; i++)
+    for (i = 0; i != nlogic_holes; i++)
         put24(out_img + (logic_holes[i] - out_base),
               i + 1 < nlogic_holes ? logic_holes[i + 1] : 0);
 
@@ -4966,7 +4966,7 @@ static void rt_syms_init(void)
 {
     int i;
 
-    for (i = 0; i < RT_COUNT; i++)
+    for (i = 0; i != RT_COUNT; i++)
         rt_syms[i] = SYM_NONE;
 }
 
@@ -4976,7 +4976,7 @@ static int rt_which(const char *name)
 {
     int i;
 
-    for (i = 0; i < RT_COUNT; i++)
+    for (i = 0; i != RT_COUNT; i++)
         if (strcmp(rt_name[i], name) == 0)
             return i;
 
@@ -5063,12 +5063,12 @@ static void rt_map(void)
 {
     int i, j;
 
-    for (i = 0; i < RT_COUNT; i++) {
+    for (i = 0; i != RT_COUNT; i++) {
         int g = rt_entry_group[i], end = rt_group_start[g + 1];
 
         if (rt_new_at[g] < 0)
             continue;
-        for (j = 0; j < RT_COUNT; j++)
+        for (j = 0; j != RT_COUNT; j++)
             if (rt_entry[j] > rt_entry[i] && rt_entry[j] < end)
                 end = rt_entry[j];
         obj_link_map_item(rt_entry_moved(i), end - rt_entry[i],
@@ -5090,9 +5090,9 @@ static void rt_emit_used(void)
      * frame, and a function taken out calls nothing. And the helpers an
      * object named, which have a symbol. */
     rt_unwant_to(0);
-    for (i = 0; i < nrt_fixups; i++)
+    for (i = 0; i != nrt_fixups; i++)
         rt_wanted(rt_fixups[i].which);
-    for (i = 0; i < RT_COUNT; i++)
+    for (i = 0; i != RT_COUNT; i++)
         if (rt_syms[i] != SYM_NONE)
             rt_wanted(i);
     if (!rt_nused)
@@ -5101,10 +5101,10 @@ static void rt_emit_used(void)
     /* The groups wanted and everything they need, in the blob's order. */
     memset(need, 0, sizeof need);
     for (i = 0; i < rt_nused; i++)
-        for (g = 0; g < RT_NEED_BYTES; g++)
+        for (g = 0; g != RT_NEED_BYTES; g++)
             need[g] |= rt_group_needs[rt_used_log[i]][g];
     rt_base = out_here();
-    for (g = 0; g < RT_NGROUPS; g++) {
+    for (g = 0; g != RT_NGROUPS; g++) {
         rt_new_at[g] = -1;
         if (!(need[g >> 3] & (1 << (g & 7))))
             continue;
@@ -5117,7 +5117,7 @@ static void rt_emit_used(void)
     /* The calls the routines make to each other, now that each has an
      * address -- those in the groups that were laid down, whose targets
      * were laid down with them. */
-    for (i = 0; i < RT_NFIX; i++) {
+    for (i = 0; i != RT_NFIX; i++) {
         int at;
 
         if (rt_new_at[rt_fix_group_at[i]] < 0)
@@ -5128,7 +5128,7 @@ static void rt_emit_used(void)
     }
 
     /* And the calls the compiled program makes to them. */
-    for (i = 0; i < nrt_fixups; i++)
+    for (i = 0; i != nrt_fixups; i++)
         out_patch24(rt_fixups[i].at, rt_entry_moved(rt_fixups[i].which));
 
     if (obj_link_map_on())
@@ -5136,7 +5136,7 @@ static void rt_emit_used(void)
 
     /* The ones that came in by name have a symbol, and the fixups waiting on
      * it are filled in with the rest of them below. */
-    for (i = 0; i < RT_COUNT; i++)
+    for (i = 0; i != RT_COUNT; i++)
         if (rt_syms[i] != SYM_NONE && rt_new_at[rt_entry_group[i]] >= 0) {
             sym_at(rt_syms[i])->val = rt_entry_moved(i);
             sym_set_flags(rt_syms[i], SYMF_DEFINED);
@@ -5332,7 +5332,7 @@ int gen_bss_offset(int sym)
 {
     int i;
 
-    for (i = 0; i < nbss_syms; i++)
+    for (i = 0; i != nbss_syms; i++)
         if (bss_syms[i].sym == sym)
             return bss_syms[i].at;
 
@@ -5363,7 +5363,7 @@ void gen_bss_move(int at, int bytes, int to)
 {
     int i, kept = 0;
 
-    for (i = 0; i < nbss_fixups; i++) {
+    for (i = 0; i != nbss_fixups; i++) {
         int slot = bss_fixups[i], was = out_read24(slot);
 
         if (was < at || was > at + bytes) {
@@ -5382,7 +5382,7 @@ void gen_bss_forget(int sym)
 {
     int i;
 
-    for (i = 0; i < nbss_syms; i++)
+    for (i = 0; i != nbss_syms; i++)
         if (bss_syms[i].sym == sym) {
             bss_syms[i] = bss_syms[--nbss_syms];
 
@@ -5436,7 +5436,7 @@ static void bss_emit(void)
         }
         out_byte(0xc9);                         /* ret */
 
-        for (i = 0; i < nbss_syms; i++) {
+        for (i = 0; i != nbss_syms; i++) {
             sym_at(bss_syms[i].sym)->val = base + bss_syms[i].at;
             sym_set_flags(bss_syms[i].sym, SYMF_DEFINED);
         }
@@ -5452,7 +5452,7 @@ static void bss_emit(void)
      * the argument routine keeps is one of them, and it is there whether the
      * program left anything at zero or not -- so this runs even when there
      * was nothing to clear. */
-    for (i = 0; i < nbss_fixups; i++)
+    for (i = 0; i != nbss_fixups; i++)
         out_patch24(bss_fixups[i], out_read24(bss_fixups[i]) + base);
 
     bss_top = base + bss_len + bss_extra;
@@ -5674,7 +5674,7 @@ static void late_fill(int bss_base)
 {
     int i;
 
-    for (i = 0; i < nlate; i++) {
+    for (i = 0; i != nlate; i++) {
         long target;
 
         if (late[i].sym < 0) {
@@ -5832,7 +5832,7 @@ static void sort_by_sym(void)
         if (!by_sym)
             acc_error("out of memory ordering the file's own functions");
     }
-    for (i = 0; i < nstatic_fns; i++) {
+    for (i = 0; i != nstatic_fns; i++) {
         int at = static_fns[i].sym, j = i;
 
         while (j > 0 && static_fns[by_sym[j - 1]].sym > at) {
@@ -5878,7 +5878,7 @@ static void mark_live(unsigned char *live)
 {
     int *head, *next, *stack, top = 0, i;
 
-    for (i = 0; i < nstatic_fns; i++)
+    for (i = 0; i != nstatic_fns; i++)
         live[i] = (sym_flags(static_fns[i].sym) & SYMF_USED) != 0;
     if (!nwants)
         return;
@@ -5890,14 +5890,14 @@ static void mark_live(unsigned char *live)
     if (!head || !next || !stack)
         acc_error("out of memory taking the unused functions out");
 
-    for (i = 0; i < nstatic_fns; i++)
+    for (i = 0; i != nstatic_fns; i++)
         head[i] = -1;
-    for (i = 0; i < nwants; i++) {
+    for (i = 0; i != nwants; i++) {
         next[i] = head[wants[i].from];
         head[wants[i].from] = i;
     }
 
-    for (i = 0; i < nstatic_fns; i++)
+    for (i = 0; i != nstatic_fns; i++)
         if (live[i])
             stack[top++] = i;
 
@@ -5923,7 +5923,7 @@ static int dead_statics(Cut *cuts, const unsigned char *live)
 {
     int i, n = 0;
 
-    for (i = 0; i < nstatic_fns; i++) {
+    for (i = 0; i != nstatic_fns; i++) {
         if (live[i] || !static_fns[i].len)
             continue;
         cuts[n].at = static_fns[i].at;
@@ -6164,7 +6164,7 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
     /* Which of the runtime blob's groups are wanted, asked again of what
      * is left: a function that has gone is not multiplying anything. */
     rt_unwant_to(0);
-    for (i = 0; i < nrt_fixups; i++)
+    for (i = 0; i != nrt_fixups; i++)
         rt_wanted(rt_fixups[i].which);
 
     for (i = 0; i < sym_nglobals(); i += (int) sizeof(Sym)) {
@@ -6485,7 +6485,8 @@ static void drop_unused_statics(void)
 
 void gen_finish(void)
 {
-    int i;
+    Fixup   *f, *end;
+    RtFixup *r, *rend;
 
 #ifndef ACC_NODROP
     drop_unused_statics();
@@ -6494,16 +6495,20 @@ void gen_finish(void)
     /* A helper wanted by name, which is how one arrives from an object: that
      * object used it and did not carry the blob. Claimed before anything is
      * laid down, so that the blob knows how much of itself to be. */
+    /* The loops below walk the fixups by pointer: indexed, each use was a
+     * multiply by the entry's width, and a call in between meant it was
+     * worked out again. Nothing in them adds a fixup, so the table stays
+     * where it is. */
     if (!gen_objects)
-        for (i = 0; i < nfixups; i++) {
+        for (f = fixups, end = fixups + nfixups; f != end; f++) {
             int which;
 
-            if (!no_address(fixups[i].fn))
+            if (!no_address(f->fn))
                 continue;
-            which = rt_which(name_text(sym_at(fixups[i].fn)->name));
+            which = rt_which(name_text(sym_at(f->fn)->name));
             if (which < 0)
                 continue;
-            rt_syms[which] = fixups[i].fn;
+            rt_syms[which] = f->fn;
             rt_wanted(which);
         }
 
@@ -6512,8 +6517,8 @@ void gen_finish(void)
      * linked, rather than one into every object that multiplies. */
     if (gen_objects) {
         extern_reserve(nexterns + nrt_fixups + nfixups);
-        for (i = 0; i < nrt_fixups; i++)
-            extern_add(rt_fixups[i].at, rt_symbol(rt_fixups[i].which));
+        for (r = rt_fixups, rend = rt_fixups + nrt_fixups; r != rend; r++)
+            extern_add(r->at, rt_symbol(r->which));
     } else {
         rt_emit_used();
         args_emit();
@@ -6532,8 +6537,8 @@ void gen_finish(void)
 
         /* And the ones the link itself answers for, now that there is an
          * answer: everything else has been laid down. */
-        for (i = 0; i < nfixups; i++) {
-            int sym = fixups[i].fn, at;
+        for (f = fixups, end = fixups + nfixups; f != end; f++) {
+            int sym = f->fn, at;
 
             if (!no_address(sym) || (at = link_given(sym)) == 0)
                 continue;
@@ -6542,24 +6547,24 @@ void gen_finish(void)
         }
     }
 
-    for (i = 0; i < nfixups; i++) {
-        Sym *fn = sym_at(fixups[i].fn);
+    for (f = fixups, end = fixups + nfixups; f != end; f++) {
+        Sym *fn = sym_at(f->fn);
 
-        if (no_address(fixups[i].fn)) {
+        if (no_address(f->fn)) {
             if (gen_objects) {
-                extern_add(fixups[i].at, fixups[i].fn);
+                extern_add(f->at, f->fn);
                 continue;
             }
         }
 
         /* A weak reference nothing else wanted is at zero, and so is what
          * reads it as a pointer: see do_pragma. */
-        if (no_address(fixups[i].fn) && name_weak(fn->name)) {
+        if (no_address(f->fn) && name_weak(fn->name)) {
             fn->val = 0;
             if (fn->kind == SYM_FUNC)
-                sym_set_flags(fixups[i].fn, SYMF_DEFINED);
+                sym_set_flags(f->fn, SYMF_DEFINED);
         }
-        if (no_address(fixups[i].fn)) {
+        if (no_address(f->fn)) {
             if (fn->kind == SYM_FUNC)
                 acc_error("'%s' is called but never defined",
                           name_text(fn->name));
@@ -6581,22 +6586,22 @@ void gen_finish(void)
          * call or a register load and is the amount added for an address in
          * a global's bytes: `int *p = &g + 1` puts the one there, because
          * where g is was not known when the bytes were written. */
-        if (fixups[i].declared) {
-            out_patch24(fixups[i].at, fn->val + out_read24(fixups[i].at));
+        if (f->declared) {
+            out_patch24(f->at, fn->val + out_read24(f->at));
             continue;
         }
         if (fn->type == TY_VOID)
-            acc_error_pos(fixups[i].line, fixups[i].col,
+            acc_error_pos(f->line, f->col,
                           "'%s' returns void and is called before it is "
                           "defined, which declares it as returning int; move "
                           "its definition above the call",
                           name_text(fn->name));
         if (RETURNS_IN_A(fn->type))
-            acc_error_pos(fixups[i].line, fixups[i].col,
+            acc_error_pos(f->line, f->col,
                           "'%s' returns a one-byte type and is called before "
                           "it is defined; move its definition above the call",
                           name_text(fn->name));
-        out_patch24(fixups[i].at, fn->val + out_read24(fixups[i].at));
+        out_patch24(f->at, fn->val + out_read24(f->at));
     }
     late_fill(bss_start);
 }
@@ -6807,7 +6812,7 @@ void gen_startup(int ending, const char *program)
     exec_name = program;
 
     base = out_here();
-    for (i = 0; i < n; i++)
+    for (i = 0; i != n; i++)
         out_byte(stub[i]);
 
     /* The two routines that are written at the end, once there is an address
@@ -6861,7 +6866,7 @@ void gen_startup(int ending, const char *program)
     {
         int mos_sp = out_here();
 
-        for (i = 0; i < ACC_INT_SIZE; i++)
+        for (i = 0; i != ACC_INT_SIZE; i++)
             out_byte(0);
         out_reloc(base + STUB_MOS_SP_AT);
         out_patch24(base + STUB_MOS_SP_AT, mos_sp);
@@ -7134,7 +7139,7 @@ static int spill_free_from(void)
         if (start >= 0 && start + size > floor)
             floor = start + size;
     }
-    for (i = 0; i < nspill_pending; i++)
+    for (i = 0; i != nspill_pending; i++)
         if (spill_pending[i].end > floor)
             floor = spill_pending[i].end;
 
@@ -7208,7 +7213,7 @@ static void vpush_scratch(Type type, int slot)
     unsigned char i;
 
     vpush(VAL_LOCAL, type, slot);
-    for (i = 0; i < nspill_pending; i++)
+    for (i = 0; i != nspill_pending; i++)
         if (spill_pending[i].disp == slot) {
             spill_pending[i] = spill_pending[--nspill_pending];
 
@@ -7441,7 +7446,7 @@ void gen_return(int line, const char *spot)
         if (val_number((vsp - 1)->kind)) {
             int v = (vsp - 1)->val, i, kept = 0;
 
-            for (i = 0; i < nconst_rets; i++)
+            for (i = 0; i != nconst_rets; i++)
                 if (out_rewind_floor >= const_ret_end[i]) {
                     const_ret_val[kept] = const_ret_val[i];
                     const_ret_at[kept] = const_ret_at[i];
@@ -7449,7 +7454,7 @@ void gen_return(int line, const char *spot)
                 }
             nconst_rets = kept;
             out_rewind_floor = INT_MAX;
-            for (i = 0; i < nconst_rets; i++)
+            for (i = 0; i != nconst_rets; i++)
                 if (const_ret_val[i] == v) {
                     vdrop();
                     gen_jump_to(const_ret_at[i]);
@@ -7761,7 +7766,7 @@ static void gen_want(const char *name)
 {
     int i;
 
-    for (i = 0; i < nwants_named; i++)
+    for (i = 0; i != nwants_named; i++)
         if (!strcmp(wants_named[i], name))
             return;
     if (nwants_named < (int) (sizeof wants_named / sizeof *wants_named))
@@ -7790,7 +7795,7 @@ static void call_to(const Callee *callee, int nargs, int params_first,
      * about to be pushed and consumed. */
     save_regs_below(nargs);
 
-    for (i = 0; i < nargs; i++) {
+    for (i = 0; i != nargs; i++) {
         /* Converted to the type the parameter was declared with. The
          * arguments come off the stack last one first, so this is the
          * parameter that many from the end. */
