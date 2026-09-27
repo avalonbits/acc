@@ -49,6 +49,16 @@ int main(int argc, char **argv)
     return 0;
 }
 EOF
+# The README's obey example, as it is written there.
+printf 'int square(int n);\n' > "$sd/util.h"
+printf '#include "util.h"\n\nint square(int n)\n{\n    return n * n;\n}\n' \
+    > "$sd/util.c"
+printf '#include <stdio.h>\n#include "util.h"\n\nint main(void)\n{\n    printf("7 squared is %%d\\n", square(7));\n    return 0;\n}\n' \
+    > "$sd/main.c"
+printf 'acc -c main.c\r\nacc -c util.c\r\nacc main.o util.o -o prog.bin\r\n' \
+    > "$sd/build.obey"
+# main.c edited, for the second run: only it is compiled again.
+sed 's/7 squared/Seven squared/' "$sd/main.c" > "$sd/main2.c"
 mkdir -p "$sd/common"
 echo '#define GREETING "hello"' > "$sd/common/greet.h"
 
@@ -60,6 +70,12 @@ hello Agon
 acc -c hello.c -o hello.o -I common
 acc one.c
 one Agon
+obey build.obey
+prog
+delete main.c
+rename main2.c main.c
+obey build.obey
+prog
 stop
 EOF
 sed -i 's/$/\r/' "$sd/autoexec.txt"
@@ -82,6 +98,9 @@ expect "acc -v on the Agon"                  "acc $version (build $build)"
 expect "a program linked with the defaults"  "hello, Agon"
 expect "a current object is left alone"      "hello.o is up to date"
 expect "one step, named after the source"    "one step, Agon"
+expect "the README's obey build"             "7 squared is 49"
+expect "run again, an unchanged file is kept" "util.o is up to date"
+expect "and the edited one compiled again"   "Seven squared is 49"
 
 echo "  $pass passed, $fail failed"
 [ $fail -eq 0 ] || { sed 's/^/    | /' "$host/out.txt" | tail -15; exit 1; }

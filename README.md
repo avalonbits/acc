@@ -52,6 +52,47 @@ from, so a second `-c` over unchanged sources does nothing:
     */ acc -c main.c
     main.o is up to date
 
+The steps go well in an obey file, which MOS runs a line at a time. Here is
+a program in two files and the script that builds it:
+
+    */ type util.h
+    int square(int n);
+    */ type util.c
+    #include "util.h"
+
+    int square(int n)
+    {
+        return n * n;
+    }
+    */ type main.c
+    #include <stdio.h>
+    #include "util.h"
+
+    int main(void)
+    {
+        printf("7 squared is %d\n", square(7));
+        return 0;
+    }
+    */ type build.obey
+    acc -c main.c
+    acc -c util.c
+    acc main.o util.o -o prog.bin
+    */ obey build.obey
+    */ prog
+    7 squared is 49
+
+So the script can be run after every edit: `acc -c` compiles a file again
+only if something it was made from has changed, and says so when nothing
+has. After editing only `main.c`:
+
+    */ obey build.obey
+    util.o is up to date
+
+`main.c` is compiled and the program linked again; `util.c` is not
+compiled. What counts is the source, every header it includes, and the
+`-D`, `-U` and `-I` options given. A change means different contents, not
+a newer date, so saving a file unchanged compiles nothing.
+
 A source can also be named with objects and libraries, which are linked
 after it:
 
