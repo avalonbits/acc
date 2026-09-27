@@ -8797,6 +8797,16 @@ static struct {
 
 static int ncmdline;
 
+/* Where the release puts the headers and the library on the Agon's SD card.
+ * A build can name others with -DACC_INCLUDE_DIR=... and -DACC_LIBC=...; the
+ * host build names none, and is given -I and the library by path. */
+#if defined(AGONDEV) && !defined(ACC_INCLUDE_DIR)
+#define ACC_INCLUDE_DIR "/lib/acc/include"
+#endif
+#if defined(AGONDEV) && !defined(ACC_LIBC)
+#define ACC_LIBC "/lib/acc/libc.a"
+#endif
+
 static void usage(void)
 {
     fprintf(stderr,
@@ -8807,6 +8817,7 @@ static void usage(void)
         "                                    [-include <file>]\n"
         "       acc <file.o|lib.a>... -o <out.bin> [-x]\n"
         "       acc -a <lib.a> <file.o>...\n"
+        "       acc -v\n"
         "\n"
         "  -a  put the objects that follow into that library rather than\n"
         "      into a program. A link takes from a library only the\n"
@@ -8826,7 +8837,13 @@ static void usage(void)
         "  -trigraphs  read ?\?( as [ and the other eight, as C99 has them.\n"
         "      Off unless asked, as in gcc and clang: nothing uses them.\n"
         "  -I  a directory to look in for an #include, after the one the\n"
-        "      including file is in.\n"
+        "      including file is in."
+#ifdef ACC_INCLUDE_DIR
+        " " ACC_INCLUDE_DIR " is looked in last.\n"
+#else
+        "\n"
+#endif
+
         "  -b  the address the image is loaded at, in hexadecimal. The\n"
         "      default is 40000, where MOS loads a program.\n"
         "  -r  write the addresses inside the image that -b moved, one\n"
@@ -8835,6 +8852,11 @@ static void usage(void)
         "  -p  print it as six hex digits too, before returning.\n"
         "  -x  report it to IO port 0 instead, which stops an emulator\n"
         "      with the low byte as its exit status.\n"
+#ifdef ACC_LIBC
+        "  A link takes what it needs from " ACC_LIBC " after the\n"
+        "  objects and libraries it is given.\n"
+#endif
+        "  -v  print the version and stop; --version too.\n"
         "  -errors  write an error to that file too, as\n"
         "      `file:line:column: error: text`, and fail with 100 rather\n"
         "      than 1: for a program that runs acc and reads what went\n"
@@ -9285,6 +9307,21 @@ static void place_object(Object *op, const char *path)
     obj_free(op);
 }
 
+#ifdef ACC_LIBC
+/* Whether the default library is there: a card without it links what it is
+ * given, as a host build does. */
+static int file_exists(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+
+    if (!f)
+        return 0;
+    fclose(f);
+
+    return 1;
+}
+#endif
+
 /* A library, which is asked only for what the link is short of.
  *
  * Round and round until it has nothing more to offer: what is taken may
@@ -9374,7 +9411,11 @@ int main(int argc, char **argv)
         acc_error("out of memory for the inputs");
 
     for (i = 1; i < argc; i++) {
-        if (argv[i][0] == '-' && argv[i][1] == 'o') {
+        if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
+            obj_print_version();
+
+            return 0;
+        } else if (argv[i][0] == '-' && argv[i][1] == 'o') {
             if (argv[i][2])
                 out = argv[i] + 2;
             else if (++i < argc)
@@ -9472,6 +9513,9 @@ int main(int argc, char **argv)
         usage();
     if (to_archive && (!nobjs || to_object))
         usage();
+#ifdef ACC_INCLUDE_DIR
+    lex_add_include(ACC_INCLUDE_DIR);   /* after every -I */
+#endif
 
     begin = clock();
     stack_paint();
@@ -9509,6 +9553,10 @@ int main(int argc, char **argv)
             else
                 link_object(objs[i]);
         }
+#ifdef ACC_LIBC
+        if (file_exists(ACC_LIBC))
+            link_archive(ACC_LIBC);
+#endif
         gen_finish();
         obj_link_map_close();
         out_close();

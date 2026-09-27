@@ -1251,6 +1251,7 @@ void        ar_member(const Archive *a, int i, Object *o);
 const char *ar_member_name(const Archive *a, int i);
 
 void obj_write(const char *path);
+void obj_print_version(void);     /* -v */
 extern const char *obj_map_path;  /* -map: the items by name, beside the object */
 void obj_link_map_open(void);           /* and for a link, where each went */
 int  obj_link_map_on(void);

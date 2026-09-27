@@ -11,6 +11,7 @@
 
 #include "acc.h"
 #include "acc_build.h"
+#include "version.h"
 
 /* Zero when the build could not work out what it is -- see src/build_id.sh.
  * A compiler that cannot say which one it is cannot vouch for an object it
@@ -18,6 +19,13 @@
 #ifndef ACC_BUILD
 #define ACC_BUILD 0
 #endif
+
+/* What -v prints: the release, and the build of it, which is what an object
+ * records to say which compiler made it. */
+void obj_print_version(void)
+{
+    printf("acc %s (build %d)\r\n", ACC_VERSION, ACC_BUILD);
+}
 
 /* The shape of the file. Every number in it is three bytes, lowest first --
  * the width of an address on this machine, and what put24 and get24 already

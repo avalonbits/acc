@@ -10,7 +10,7 @@ CC      ?= cc
 CFLAGS  ?= -O2 -g
 WARN     = -Wall -Wextra -Wno-unused-parameter
 SRC      = src/obj.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c
-HDR      = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h
+HDR      = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h
 
 # -fsigned-char because char is signed on the eZ80, so the host build should
 # read a source file the same way the target build does.
@@ -153,6 +153,7 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/mos.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/args.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/lib.sh
+	@test/defaults.sh
 	@test/conformance.sh --check || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/printf.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/hosted.sh || [ $$? -eq 77 ]
@@ -167,6 +168,8 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/selfbuild.sh
 	@if [ -f $(BIN)/acc.bin ]; then test/target.sh || [ $$? -eq 77 ]; \
 	 else echo "  [no Agon build: the target test is skipped]"; fi
+	@if [ -f $(BIN)/acc.bin ]; then test/release.sh || [ $$? -eq 77 ]; \
+	 else echo "  [no Agon build: the release test is skipped]"; fi
 
 # The Agon build, through its own makefile so there is one recipe for it.
 #
