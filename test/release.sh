@@ -64,6 +64,14 @@ sed 's/7 squared/Seven squared/' "$sd/main.c" > "$sd/main2.c"
 printf '#include <agon/mos.h>\n\nint main(void)\n{\n    mos_putstring("mos in one step\\r\\n");\n    return 0;\n}\n' \
     > "$sd/mosone.c"
 
+# The files acc writes besides the program -- a compile's map, a link's
+# map, and -r's offsets -- for a program big enough to fill the heap, which
+# is when a link ran out of memory on the Agon and left its map half
+# written. Each has to be what the host writes, byte for byte.
+mkdir -p "$sd/maps" "$host/maps"
+cp test/cases/305_byte_compare.c "$sd/maps/t.c"
+cp test/cases/305_byte_compare.c "$host/maps/t.c"
+
 # A compile that fails, in an obey file: the line after it must not run,
 # and MOS must not add a message of its own. It stops the autoexec too, so
 # it is the last line, and the run ends at the prompt rather than at stop.
@@ -84,6 +92,9 @@ acc one.c
 one Agon
 acc mosone.c
 mosone
+acc -c maps/t.c -o maps/t.o -map maps/t.map
+acc maps/t.o -o maps/t.bin -map maps/l.map
+acc -r maps/x.txt maps/t.c -o maps/u.bin
 obey build.obey
 prog
 delete main.c
@@ -130,6 +141,20 @@ expect "one step with <agon/mos.h>"          "mos in one step"
 expect "the README's obey build"             "7 squared is 49"
 expect "run again, an unchanged file is kept" "util.o is up to date"
 expect "and the edited one compiled again"   "Seven squared is 49"
+
+(cd "$host" && "$OLDPWD/bin/acc" -c maps/t.c -o maps/t.o -map maps/t.map \
+    && "$OLDPWD/bin/acc" maps/t.o -o maps/t.bin -map maps/l.map \
+    && "$OLDPWD/bin/acc" -r maps/x.txt maps/t.c -o maps/u.bin) >/dev/null 2>&1 \
+    || { echo "  FAIL the host's maps"; exit 2; }
+for f in t.map l.map x.txt t.bin u.bin; do
+    if cmp -s "$sd/maps/$f" "$host/maps/$f"; then
+        printf '  ok   %-40s\n' "$f as the host writes it"; pass=$((pass + 1))
+    else
+        printf '  FAIL %-40s %s\n' "$f as the host writes it" \
+            "$([ -f "$sd/maps/$f" ] && echo differs || echo missing)"
+        fail=$((fail + 1))
+    fi
+done
 
 echo "  $pass passed, $fail failed"
 [ $fail -eq 0 ] || { sed 's/^/    | /' "$host/out.txt" | tail -15; exit 1; }
