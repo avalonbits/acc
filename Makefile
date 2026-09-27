@@ -140,6 +140,7 @@ test: all unit agon
 	@test/frames.sh || [ $$? -eq 77 ]
 	@test/budget.sh || [ $$? -eq 77 ]
 	@test/msgpack.sh
+	@test/forget.sh
 	@test/startup.sh || [ $$? -eq 77 ]
 	@test/flags.sh || [ $$? -eq 77 ]
 	@test/buffer.sh

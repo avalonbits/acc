@@ -1012,6 +1012,7 @@ void gen_startup(int ending, const char *program); /* the entry stub */
 void out_open(const char *path, int header);
 void out_close(void);
 void out_free(void);                /* let it go without writing it */
+void out_forget(void);          /* a function's cut runs, given back */
 int  out_len(void);                 /* bytes written so far */
 
 /* Where the image is loaded. Set before out_open and not after: every address
