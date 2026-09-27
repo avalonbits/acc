@@ -9090,18 +9090,21 @@ typedef struct {
  * before it. */
 static int item_of(const Object *o, int at)
 {
-    int low = 0, high = o->nitems - 1;
+    unsigned low = 0, high = (unsigned) o->nitems - 1;
 
+    /* Unsigned, and halved by a shift: `/ 2` of a signed int is a call to
+     * the runtime's signed divide, which was a third of linking a hello
+     * world. */
     while (low < high) {
-        int mid = (low + high + 1) / 2;
+        unsigned mid = (low + high + 1) >> 1;
 
-        if (obj_item(o, mid) <= at)
+        if (obj_item(o, (int) mid) <= at)
             low = mid;
         else
             high = mid - 1;
     }
 
-    return low;
+    return (int) low;
 }
 
 static int item_end(const Object *o, int i)
