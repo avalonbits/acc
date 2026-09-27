@@ -89,7 +89,8 @@ else
 fi
 
 # A jump backwards to a label, which is the other way one is written: not a
-# hole filled in later but an address that is already known.
+# hole filled in later but an address that is already known. Any jr will
+# do: `if (a) goto again;` is one conditional jump, jr nz.
 back=$(text_of 'int f(int a) { int t = 0;
 again:
     t += a;
@@ -108,7 +109,7 @@ again:
     "$ACC" -c "$tmp/x.c" -o "$tmp/x.o" >/dev/null 2>&1
     n=$(od -An -tu1 -j7 -N3 "$tmp/x.o" | awk '{ print $1 + $2 * 256 + $3 * 65536 }')
     if tail -c "$n" "$tmp/x.o" | od -An -tx1 -v | tr -s ' \n' ' ' \
-       | tr ' ' '\n' | grep -qE '^18$'; then
+       | tr ' ' '\n' | grep -qE '^(18|20|28|30|38)$'; then
         printf '  ok   %-34s %d bytes\n' "a goto that goes backwards" "$back"
         ok
     else

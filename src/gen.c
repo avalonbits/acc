@@ -6051,6 +6051,16 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
 {
     int *slots, *p, *seen_at, npending, seen = 0, i;
 
+    /* Taking bytes out moves everything after them, as a rewind does, and
+     * a mark left on bytes before this -- the code generator's marks, each
+     * good only while out_rewinds is what it was -- could come to stand on
+     * others: a load that ended at an address the next function's code
+     * then reached was made a different instruction. Counted here and not
+     * in out_cut, whose only caller this is: agondev compiled out_cut with
+     * the count in it into an Agon build of acc that hung writing objects.
+     * test/target.sh caught it; this is the same count. */
+    out_rewinds++;
+
     out_cut_sum(cuts, ncuts);
     slots = pending_slots(&npending, from);
     seen_at = slots;
@@ -6215,6 +6225,47 @@ static int            relax_cap;
  * gen_func_end: cut with the jumps, in order among them. */
 static int *arr_cut_at, narr_cuts, arr_cuts_cap;
 
+/* A conditional jump over an unconditional one -- `if (x) continue;`,
+ * `if (x) break;`, and a return jumping back to a constant already
+ * returned -- made one jump the other way: jp z past a jp to L is jp nz to
+ * L, and the jump it went over is taken out with the jumps' operands. Not
+ * where anything else jumps to the one taken out. A conditional jump's
+ * opposite is its opcode with bit 3 turned over, every one of them. */
+#define JP_GONE 0               /* a jump taken out: see branch_over */
+
+/* Whether any of the n jumps at `at` goes to `u`. */
+static int jumped_to(const int *at, int n, int u)
+{
+    for (; n; n--, at++)
+        if (get24(out_img + (*at + 1 - out_base)) == u)
+            return 1;
+
+    return 0;
+}
+
+static void branch_over(int *at, unsigned char *cc, int n)
+{
+    int i;
+
+    /* Found first, which is a look at neighbours; the question of whether
+     * anything jumps to the one jumped over is a walk of every jump, and
+     * is asked only of those. Most functions have none. */
+    for (i = 0; i + 1 < n; i++) {
+        unsigned char *j;
+
+        if (cc[i] == JP_ANY || cc[i + 1] != JP_ANY || at[i + 1] != at[i] + 4)
+            continue;
+        j = out_img + (at[i] - out_base);
+        if (get24(j + 1) != at[i] + 8 || jumped_to(at, n, at[i + 1]))
+            continue;
+        cc[i] ^= 0x08;                  /* the other way */
+        j[0] = cc[i];
+        put24(j + 1, get24(j + 5));     /* to where the other went */
+        cc[i + 1] = JP_GONE;
+        i++;
+    }
+}
+
 static void relax_function(const Mark *from, int frame_at)
 {
     Cut *cuts;
@@ -6242,6 +6293,9 @@ static void relax_function(const Mark *from, int frame_at)
     target = relax_target;
     slot = relax_slot;
     shrink = relax_short;
+
+    if (n >= 2)
+        branch_over(jump_at + from->jump, jump_cc + from->jump, n);
 
     /* Where each jump goes, and which of them will reach in one byte.
      *
@@ -6279,6 +6333,14 @@ static void relax_function(const Mark *from, int frame_at)
                 ncuts++;
             }
             *put++ = to;
+            if (*cc == JP_GONE) {
+                *fits++ = 0;
+                cut->at = *at;          /* all four bytes of it */
+                cut->len = 4;
+                cut++;
+                ncuts++;
+                continue;
+            }
             *fits++ = jr_of(*cc) && JR_REACHES(d);
             if (!fits[-1])
                 continue;
@@ -6351,6 +6413,8 @@ static void relax_function(const Mark *from, int frame_at)
             to = *want - g;
             at = out_img + (now - out_base);
 
+            if (*cc == JP_GONE)
+                continue;               /* taken out with its run */
             if (*fits) {
                 int d = to - (now + 2);
 

@@ -459,5 +459,10 @@ emits "if (x), a long, no 0 or 1 made"  ddb6..21000000 no \
 emits "1000 + x, no constant in a slot" fd21e80300 no \
     'long f(long x) { return 1000L + x; }'
 
+# A condition guarding only a jump is one jump the other way: no jump on
+# the condition over an unconditional one -- jr z, +2; jr.
+emits "if (p[i]) continue, one jump"    280218 no \
+    'int f(const char *p, int n) { int i, c = 0; for (i = 0; i < n; i++) { if (p[i]) continue; c++; } return c; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
