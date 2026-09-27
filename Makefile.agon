@@ -61,7 +61,7 @@ SRCS = src/obj.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c
 # the host build emitted and not the one the Agon build did, and target.sh
 # reported eighty-one programs where the two builds disagreed -- which they
 # did, about a runtime one of them had not been told about.
-HDRS = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h
+HDRS = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h
 
 OBJS = $(patsubst src/%.c,$(OBJ)/%.o,$(SRCS)) $(OBJ)/marks.o
 
@@ -93,9 +93,9 @@ $(OBJ)/marks.o: src/marks.s | $(OBJ)
 	@echo [assembling $<]
 	$(TOOLS)/ez80-none-elf-as -march=ez80+full $< -o $@
 
-# Only the one file that reads them, so that editing the lexer does not
-# rebuild the whole compiler for the Agon.
-$(OBJ)/obj.o: src/acc_build.h src/version.h
+# Only the one file that reads it, so that editing the lexer does not rebuild
+# the whole compiler for the Agon.
+$(OBJ)/obj.o: src/acc_build.h
 
 size: $(BIN)/$(NAME).bin
 	@echo "[$$(stat -c%s $(BIN)/$(NAME).bin) bytes of image, of 458752 available]"
