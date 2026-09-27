@@ -9,8 +9,9 @@
 CC      ?= cc
 CFLAGS  ?= -O2 -g
 WARN     = -Wall -Wextra -Wno-unused-parameter
-SRC      = src/obj.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c
-HDR      = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h
+SRC      = src/obj.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c \
+           src/fmt.c
+HDR      = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
 
 # -fsigned-char because char is signed on the eZ80, so the host build should
 # read a source file the same way the target build does.
@@ -135,6 +136,7 @@ $(BIN):
 test: all unit agon
 	@test/abi.sh || [ $$? -eq 77 ]
 	@test/helpers.sh || [ $$? -eq 77 ]
+	@test/fmt_agon.sh || [ $$? -eq 77 ]
 	@test/startup.sh || [ $$? -eq 77 ]
 	@test/flags.sh || [ $$? -eq 77 ]
 	@test/buffer.sh
@@ -202,6 +204,8 @@ unit: | $(BIN)
 	@$(BIN)/test_sym
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_float test/test_float.c src/float.c -lm
 	@$(BIN)/test_float
+	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_fmt test/test_fmt.c src/fmt.c
+	@$(BIN)/test_fmt
 
 clean:
 	$(RM) -r $(BIN)
