@@ -294,20 +294,26 @@ static void put_num(FILE *f, int value)
 }
 
 /* The front of an object -- the header and every table -- gathered here
- * and written in one call. A call per number was one each for thousands of
- * them, and on the Agon each goes through the whole of the file layer: that
- * and not the tables was what a compile to an object spent writing them. */
-static unsigned char *front;
-static int            front_len, front_cap;
+ * and written a kilobyte at a time. A call per number was one each for
+ * thousands of them, and on the Agon each goes through the whole of the file
+ * layer. The buffer is static and flushed as it fills, so the tables of a
+ * large object take no heap. */
+static unsigned char front[1024];
+static int           front_len;
+static FILE         *front_file;
+static const char   *front_path;
+
+static void front_flush(void)
+{
+    if ((int) fwrite(front, 1, (size_t) front_len, front_file) != front_len)
+        acc_error("short write on '%s'", front_path);
+    front_len = 0;
+}
 
 static void front_byte(int c)
 {
-    if (front_len == front_cap) {
-        front_cap = front_cap ? front_cap * 2 : 1024;
-        front = realloc(front, (size_t) front_cap);
-        if (!front)
-            acc_error("out of memory for the object");
-    }
+    if (front_len == (int) sizeof front)
+        front_flush();
     front[front_len++] = (unsigned char) c;
 }
 
@@ -469,6 +475,8 @@ void obj_write(const char *path)
     if (!f)
         acc_error("cannot write '%s'", path);
 
+    front_file = f;
+    front_path = path;
     front_len = 0;
     front_byte('A');
     front_byte('C');
@@ -549,8 +557,7 @@ void obj_write(const char *path)
     for (i = 0; i < nitems; i++)
         front_num(items[i]);
 
-    if ((int) fwrite(front, 1, (size_t) front_len, f) != front_len)
-        acc_error("short write on '%s'", path);
+    front_flush();
     if (strings_len
         && (int) fwrite(strings, 1, (size_t) strings_len, f) != strings_len)
         acc_error("short write on '%s'", path);
