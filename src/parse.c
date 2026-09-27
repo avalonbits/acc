@@ -16,6 +16,7 @@
 #include "acc.h"
 #include "ctype.h"
 #include "timing.h"
+#include "version.h"
 
 const char *lex_path(void);
 
@@ -33,14 +34,28 @@ const char *lex_path(void);
  * that can't find a symbol, say -- is `acc:0:0: error: text`. A compile that
  * works removes the file, so a reader never finds a stale error.
  *
- * It also changes how acc fails: with 100 rather than 1 (or 2 for usage).
- * On the Agon MOS reads a program's result as one of its own errors and
- * rewrites 1, 4 and 5 into "Invalid command" -- a failed compile then looks
- * like acc isn't there at all. 100 is past MOS's table: MOS hands it back
- * unchanged and prints nothing for it. */
+ * It also changes how acc fails: with 100, whatever went wrong. On the Agon
+ * MOS reads a program's result as one of its own errors and rewrites 1, 4
+ * and 5 into "Invalid command" -- a failed compile then looks like acc isn't
+ * there at all. 100 is past MOS's table: MOS hands it back unchanged and
+ * prints nothing for it. */
 static const char *errors_path;
 static int errors_asked;
 #define ERRORS_EXIT 100
+
+/* How acc fails without -errors. On the host, 1 for an error and 2 for a
+ * command line it does not take, as a compiler does. On the Agon an error
+ * is 100 as well: acc has said what went wrong, 1 would add "Invalid
+ * command" under it, and a code past MOS's table still stops an obey file
+ * at the line that failed. A command line is 19, whose message, "Invalid
+ * parameter", is the right one. */
+#ifdef AGONDEV
+#define ERROR_EXIT  ERRORS_EXIT
+#define USAGE_EXIT  19
+#else
+#define ERROR_EXIT  1
+#define USAGE_EXIT  2
+#endif
 
 __attribute__((noreturn)) static void fail(const char *file, int line, int col,
                                            const char *msg)
@@ -53,7 +68,7 @@ __attribute__((noreturn)) static void fail(const char *file, int line, int col,
             fclose(f);
         }
     }
-    exit(errors_asked ? ERRORS_EXIT : 1);
+    exit(errors_asked ? ERRORS_EXIT : ERROR_EXIT);
 }
 
 /* An error at a line and a column, which is printed as gcc prints one:
@@ -8807,65 +8822,57 @@ static int ncmdline;
 #define ACC_LIBC "/lib/acc/libc.a"
 #endif
 
-static void usage(void)
+/* What acc prints about itself. Both fit a screen of 30 rows, which is what
+ * the Agon has with an 8x16 font: text that scrolls off the top before it
+ * can be read is no help. */
+static void summary(FILE *f)
 {
-    fprintf(stderr,
-        "usage: acc [-c] <source.c> [<file.o|lib.a>]... [-o <out>]\n"
-        "                                    [-I <dir>]... [-b <addr>]\n"
-        "                                    [-D <name>[=<value>]]...\n"
-        "                                    [-U <name>]...\n"
-        "                                    [-r <file>] [-x] [-trigraphs]\n"
-        "                                    [-include <file>]\n"
-        "       acc <file.o|lib.a>... [-o <out.bin>] [-x]\n"
-        "       acc -a <lib.a> <file.o>...\n"
-        "       acc -v\n"
-        "\n"
-        "  -a  put the objects that follow into that library rather than\n"
-        "      into a program. A link takes from a library only the\n"
-        "      members it turns out to need.\n"
-        "  -c  compile to an object rather than to a program, to be\n"
-        "      linked with others later. An object also records what the\n"
-        "      compile read, so that a build can tell whether it has to\n"
-        "      be made again.\n"
-        "  -o  the file to write. Without it, the first input's name with\n"
-        "      .bin, or .o with -c, beside it.\n"
-        "  Objects and libraries named with a source are linked after it.\n"
-        "  -D  define a name before the file is read, as #define would:\n"
-        "      `-DN` is `-DN=1`, and `-D\'N(a,b)=...\'` takes parameters.\n"
-        "  -U  undefine one, as #undef would.\n"
-        "  -include  read a file before the source, as if it began with an\n"
-        "      #include of it.\n"
-        "  -map  with -c, write each function and variable the object holds,\n"
-        "      static ones too, as `name offset size`, to a file. On a link,\n"
-        "      where each went: `address size name object offset`.\n"
-        "  -trigraphs  read ?\?( as [ and the other eight, as C99 has them.\n"
-        "      Off unless asked, as in gcc and clang: nothing uses them.\n"
-        "  -I  a directory to look in for an #include, after the one the\n"
-        "      including file is in."
-#ifdef ACC_INCLUDE_DIR
-        " " ACC_INCLUDE_DIR " is looked in last.\n"
-#else
-        "\n"
-#endif
+    fprintf(f,
+        "acc " ACC_VERSION ", a C compiler for the Agon\r\n"
+        "\r\n"
+        "  acc prog.c                  compile and link prog.bin\r\n"
+        "  acc -c prog.c               compile to prog.o\r\n"
+        "  acc main.o util.o           link main.bin\r\n"
+        "  acc main.c util.o lib.a     compile main.c, link all three\r\n"
+        "  acc -a lib.a a.o b.o        put objects in a library\r\n"
+        "  acc -h                      every option\r\n");
+}
 
-        "  -b  the address the image is loaded at, in hexadecimal. The\n"
-        "      default is 40000, where MOS loads a program.\n"
-        "  -r  write the addresses inside the image that -b moved, one\n"
-        "      hexadecimal offset a line.\n"
-        "  The program returns what main returned to MOS, as agondev's do.\n"
-        "  -p  print it as six hex digits too, before returning.\n"
-        "  -x  report it to IO port 0 instead, which stops an emulator\n"
-        "      with the low byte as its exit status.\n"
-#ifdef ACC_LIBC
-        "  A link takes what it needs from " ACC_LIBC " after the\n"
-        "  objects and libraries it is given.\n"
+__attribute__((noreturn)) static void help(void)
+{
+    printf(
+        "usage: acc [-c] <file.c> [<file.o|lib.a>]... [options]\r\n"
+        "       acc <file.o|lib.a>... [options]\r\n"
+        "       acc -a <lib.a> <file.o>...\r\n"
+        "\r\n"
+        "  -o <file>       what to write; else the input's name, .bin or .o\r\n"
+        "  -c              compile to an object, to be linked later\r\n"
+        "  -a <lib.a>      put the objects that follow in a library\r\n"
+        "  -I <dir>        look in <dir> for #include, after the source's own\r\n"
+        "  -D <n>[=<v>]    define a macro, as #define; -U <n> undefines one\r\n"
+        "  -include <f>    read <f> before the source\r\n"
+        "  -b <hex>        the address to load at; 40000 unless given\r\n"
+        "  -r <file>       write the offsets inside the image -b moved\r\n"
+        "  -map <file>     write where each function and variable went\r\n"
+        "  -p              print what main returned, as six hex digits\r\n"
+        "  -x              write what main returned to IO port 0\r\n"
+        "  -trigraphs      read ?\?( and the eight others\r\n"
+        "  -errors <file>  write an error to <file> too, and fail with 100\r\n"
+        "  -v              print the version; -h prints this\r\n"
+#if defined(ACC_INCLUDE_DIR) && defined(ACC_LIBC)
+        "\r\n"
+        "Headers from " ACC_INCLUDE_DIR ", the library " ACC_LIBC ".\r\n"
 #endif
-        "  -v  print the version and stop; --version too.\n"
-        "  -errors  write an error to that file too, as\n"
-        "      `file:line:column: error: text`, and fail with 100 rather\n"
-        "      than 1: for a program that runs acc and reads what went\n"
-        "      wrong. A compile that works removes the file.\n");
-    exit(errors_asked ? ERRORS_EXIT : 2);
+        );
+    exit(0);
+}
+
+/* A command line acc does not take: the summary, and a failure. On the
+ * Agon that is MOS's "Invalid parameter", which MOS then prints. */
+__attribute__((noreturn)) static void usage(void)
+{
+    summary(stderr);
+    exit(errors_asked ? ERRORS_EXIT : USAGE_EXIT);
 }
 
 #if defined(AGONDEV) && defined(ACC_CYCLES)
@@ -9479,8 +9486,15 @@ int main(int argc, char **argv)
     if (!objs)
         acc_error("out of memory for the inputs");
 
+    if (argc < 2) {
+        summary(stdout);
+
+        return 0;
+    }
     for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
+        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+            help();
+        } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
             obj_print_version();
 
             return 0;
@@ -9567,6 +9581,7 @@ int main(int argc, char **argv)
                 usage();
             errors_path = argv[i];
         } else if (argv[i][0] == '-') {
+            fprintf(stderr, "acc: '%s' is not an option\r\n\r\n", argv[i]);
             usage();
         } else if (is_object(argv[i]) || is_archive(argv[i])) {
             objs[nobjs++] = argv[i];

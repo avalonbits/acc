@@ -112,7 +112,7 @@ directory given with `-I`, which is searched before `/lib/acc/include`:
 `acc -v` prints the version:
 
     */ acc -v
-    acc 0.1.0 (build 5441504)
+    acc 0.1.0 (build 6332943)
 
 Every compile and link ends by printing the time it took, as
 `Done in 0.04 seconds`; the examples leave that line out. An error prints
@@ -125,6 +125,7 @@ as `file:line:column: error: text`, and acc stops at the first one.
     acc <file.o|lib.a>... [-o <out.bin>]
     acc -a <lib.a> <file.o>...
     acc -v
+    acc -h
 
 | Option | Meaning |
 | --- | --- |
@@ -141,11 +142,19 @@ as `file:line:column: error: text`, and acc stops at the first one.
 | `-r <file>` | Write the offsets inside the image that `-b` moved |
 | `-map <file>` | Write where each function and variable went |
 | `-trigraphs` | Read the nine trigraphs |
-| `-errors <file>` | Also write an error to `<file>`, and fail with 100 rather than 1 |
+| `-errors <file>` | Also write an error to `<file>`, and fail with 100 |
 | `-v`, `--version` | Print the version and exit |
+| `-h`, `--help` | List the options, in one screen |
+
+`acc` on its own prints a short summary of how to use it.
 
 What `main` returns goes back to MOS, as it does from a program agondev
 built.
+
+When acc fails on the Agon, what it prints is all there is: it returns a
+code MOS has no message for, so MOS adds nothing, and an obey file stops at
+the line that failed. A command line acc does not take is MOS's "Invalid
+parameter". On the host an error is 1, and a command line 2.
 
 ## The language
 
