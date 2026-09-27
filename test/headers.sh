@@ -12,7 +12,8 @@
 #
 # And aed, if ~/code/aed is there (AED_SRC to point elsewhere): a real
 # program of 23 files, compiled a file at a time. AED_OVER is how many may
-# run out of memory: none.
+# run out of memory: none. And zap's eleven files, from its checkout at
+# ZAP_REV, none of which may either.
 #
 #   test/headers.sh [acc.bin]           # default bin/acc.bin
 set -u
@@ -23,6 +24,8 @@ cd "$(dirname "$0")/.."
 ACC=${1:-bin/acc.bin}
 AED_SRC=${AED_SRC:-$HOME/code/aed/src}
 AED_OVER=0
+ZAP=${ZAP:-$HOME/code/zap}
+ZAP_REV=${ZAP_REV:-v1.1.0}
 
 emu_available || exit 77
 [ -f "$ACC" ] || { echo "no $ACC -- run make -f Makefile.agon" >&2; exit 2; }
@@ -118,6 +121,21 @@ if [ -d "$AED_SRC" ]; then
     done
 fi
 
+# And zap, the assembler, at the tag test/size.sh takes it from, its eleven
+# files compiled as test/size.sh compiles them.
+nzap=0
+if git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}" >/dev/null 2>&1; then
+    mkdir -p "$sd/zap"
+    git -C "$ZAP" archive "$ZAP_REV" src | tar -x -C "$sd/zap" --strip-components=1
+    rm -f "$sd/zap/zmalloc.c" "$sd/zap/zmalloc.h"
+    for f in "$sd"/zap/*.c; do
+        b=$(basename "$f" .c)
+        printf 'echo FILE zap/%s\r\ntry acc -c zap/%s.c -o zap/%s.o -DAGONDEV\r\n' \
+            "$b" "$b" "$b" >> "$sd/autoexec.txt"
+        nzap=$((nzap + 1))
+    done
+fi
+
 ACC_EMU_PROMPT=1 ACC_EMU_TIMEOUT=600 emu_run "$sd" -z -u > "$host/console.txt" 2>&1
 tr -d '\r' < "$host/console.txt" > "$host/out.txt"
 
@@ -165,6 +183,20 @@ if [ "$naed" -gt 0 ]; then
     grep '^aed/' "$host/errors.txt" | sed 's/^/         /'
 else
     echo "  [no aed at $AED_SRC: skipped]"
+fi
+
+if [ "$nzap" -gt 0 ]; then
+    over=$(grep -c '^zap/' "$host/errors.txt")
+    if [ "$over" -eq 0 ]; then
+        printf '  ok   %-40s %s\n' "zap on the Agon" "$nzap of $nzap files compile"
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-40s %s\n' "zap on the Agon" "$over of $nzap run out"
+        fail=$((fail + 1))
+    fi
+    grep '^zap/' "$host/errors.txt" | sed 's/^/         /'
+else
+    echo "  [no zap at $ZAP ($ZAP_REV): skipped]"
 fi
 
 echo "  $pass passed, $fail failed"
