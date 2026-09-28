@@ -99,7 +99,14 @@ $(PP)/.stamp: $(SRCS) src/msgpack.py | $(OBJ)
 	python3 src/msgpack.py $(PP) $(SRCS)
 	@touch $@
 
-$(PP)/%.c: $(PP)/.stamp ;
+# Kept, not deleted as intermediates once their objects are built: the stamp
+# stays, so an object remade later would find its copy gone. And a copy gone
+# all the same -- from a tree built before they were kept -- is packed again
+# rather than compiled from nothing. test/agonpp.sh.
+$(PP)/%.c: $(PP)/.stamp
+	@test -f $@ || python3 src/msgpack.py $(PP) $(SRCS)
+
+.PRECIOUS: $(PP)/%.c
 
 $(OBJ)/%.o: $(PP)/%.c $(HDRS) $(PP)/.stamp | $(OBJ)
 	@echo [compiling $<]
