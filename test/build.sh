@@ -77,6 +77,8 @@ if [ -x bin/acc ] && [ -f bin/libc.a ]; then
     cp -a bin/acc bin/zap bin/libc.a bin/lib "$tmp/bin/"
     members=$(make -s --no-print-directory -f Makefile -f - print-LIBSRC \
               <<<'print-%: ; @echo $($*)')
+    asm=$(make -s --no-print-directory -f Makefile -f - print-LIBASM \
+          <<<'print-%: ; @echo $($*)')      # the library's assembly, with it
     fewer=$(printf '%s\n' $members | grep -v '^lib/timer\.c$' | tr '\n' ' ')
     mk() { make -s --no-print-directory BIN="$tmp/bin" "$@" "$tmp/bin/libc.a" 2>&1; }
 
@@ -84,7 +86,7 @@ if [ -x bin/acc ] && [ -f bin/libc.a ]; then
     check "an unchanged library is left alone" "$(mk)" ""
     touch "$tmp/bin/lib/gone.o"
     case $(mk LIBSRC="$fewer") in
-      *"from $(( $(wc -w <<<"$members") - 1 )) objects"*) got=remade ;;
+      *"from $(( $(wc -w <<<"$members $asm") - 1 )) objects"*) got=remade ;;
       *)                                                  got="left alone" ;;
     esac
     check "a member taken out remakes it" "$got" remade
