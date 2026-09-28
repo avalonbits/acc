@@ -669,6 +669,24 @@ mkdir -p "$tmp/prlib" "$tmp/prcut"
 ok "printf takes no sprintf with it" \
     "$(wc -c < "$tmp/prlib/p.bin")" "$(wc -c < "$tmp/prcut/p.bin")"
 
+# And no long long divide: printf's digits come from an int's divide, a byte
+# at a time past an int, so the runtime's largest routine -- the 64-bit
+# divide, which is in rt_llmul.o -- stays out of a program that prints, even
+# one that prints a long long.
+printf '#include <stdio.h>\nint main(void) { printf("%%llu\\n", 12345678901234ULL); return 42; }\n' > "$tmp/pll.c"
+"$ACC" -c "$tmp/pll.c" -o "$tmp/pll.o" -Iinclude >/dev/null 2>&1
+"$NODEF" "$tmp/pll.o" "$LIB" "$RT" -o "$tmp/prlib/pll.bin" -map "$tmp/pll.map" -x >/dev/null 2>&1
+ok "printing takes no long long divide" \
+    "$(grep -c 'lludivmod\|rt_llmul' "$tmp/pll.map")" 0
+
+# Nor, for a float, a long multiply or divide: its digits are worked out in
+# 16-bit limbs, and a limb's arithmetic fits an int. Both are in rt_lmul.o.
+printf '#include <stdio.h>\nint main(void) { printf("%%f\\n", 2.5); return 42; }\n' > "$tmp/pfl.c"
+"$ACC" -c "$tmp/pfl.c" -o "$tmp/pfl.o" -Iinclude >/dev/null 2>&1
+"$NODEF" "$tmp/pfl.o" "$LIB" "$RT" -o "$tmp/prlib/pfl.bin" -map "$tmp/pfl.map" -x >/dev/null 2>&1
+ok "printing a float takes no long divide" \
+    "$(grep -c 'rt_lmul' "$tmp/pfl.map")" 0
+
 # The floating conversions are in a file printf reaches through a weak
 # reference. A program that prints only integers is the size it is
 # against a library without that file, so it does not carry them.

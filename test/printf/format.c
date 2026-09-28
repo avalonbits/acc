@@ -83,6 +83,14 @@ int main(void)
      * calling for it. */
     printf("[%llu] [%lld]\n", 12345678901234ULL, -12345678901234LL);
     printf("[%llx] [%#llX]\n", 81985529216486895ULL, 81985529216486895ULL);
+    /* Past an int, digits come a byte at a time from the top byte that is
+     * not zero, and back to an int's divide once the value fits one: the
+     * edges of both, in each base. */
+    printf("[%llu] [%llu] [%llx] [%llo]\n", 16777215ULL, 16777216ULL,
+           0x100000000000000ULL, 0x100000000000000ULL);
+    printf("[%llu] [%llo] [%llX]\n", 18446744073709551615ULL,
+           18446744073709551615ULL, 18446744073709551615ULL);
+    printf("[%lu] [%lo] [%lu]\n", 16777216UL, 16777216UL, 4294967295UL);
     printf("[%s] [%10s] [%-10s]\n", "abc", "abc", "abc");
     printf("[%.2s] [%.0s] [%.10s]\n", "abcdef", "abcdef", "abc");
     printf("[%*d] [%-*d] [%.*d]\n", 6, 42, 6, 42, 5, 42);
