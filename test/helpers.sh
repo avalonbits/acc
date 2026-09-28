@@ -54,16 +54,18 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 #              or as adds to an int that clang folds into one, each is
 #              __imulu.
 checks=(
-    "gen.c __setflag vpush_const vpush_local vpush_reg vdrop vtype vtype_at
-           vconst_top vdup ld_ix_rr push_rr pop_rr add_hl_rr sbc_hl_rr"
+    "vstack.c __setflag vpush_const vpush_local vpush_reg vdrop vtype vtype_at
+           vconst_top"
+    "lvalue.c __setflag vdup"
+    "insn.c __setflag ld_ix_rr push_rr pop_rr add_hl_rr sbc_hl_rr"
     "image.c __setflag out_word24"
     "parse.c __iand expr primary postfix_statement name_operand string_value
            function_declarator call_rest block"
     "sym.c __imulu ext_bytes ext_elem ext_elem_x ext_count member_find
            member_type member_offset member_next"
     "sym.c __ishl sym_param_type sym_param_ext"
-    "gen.c __llsh wide_bytes_at"
-    "gen.c __ishl vbinop"
+    "wide.c __llsh wide_bytes_at"
+    "arith.c __ishl vbinop"
     "parse.c __iand binary_rest"
     "parse.c __setflag binary_rest"
     "parse.c +binary_rest logical_rest"
