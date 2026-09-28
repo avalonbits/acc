@@ -588,7 +588,7 @@ typedef struct {
                                  * one: see bitfield_at */
 } Member;
 
-/* In chunks that never move, as the names are (see names_chunk in lex.c):
+/* In chunks that never move, as the names are (see names_chunk in names.c):
  * a member is its offset from `members`, which is the first chunk and stays
  * put, and a struct's members are a chain through their `next` offsets, so
  * nothing needs them side by side. Grown as one block by realloc, the

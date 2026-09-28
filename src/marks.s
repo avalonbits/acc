@@ -5,7 +5,7 @@
 ; SPDX-License-Identifier: LGPL-2.1-or-later
 ;
 ; Only the Agon build assembles this: the host build has the C loop in
-; lex.c, which this does exactly, and test/target.sh holds the two builds'
+; source.c, which this does exactly, and test/target.sh holds the two builds'
 ; objects -- which record the marks -- to the same bytes.
 ;
 ; Every byte of every file acc reads is folded in here. agondev's clang kept

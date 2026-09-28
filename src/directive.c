@@ -105,7 +105,7 @@ static int logical_line(void)
              * follows the close is still part of it too. Read as text, the
              * body kept the comment's opening and the lines under it were
              * compiled as though they were code, which is what a define with
-             * a comment laid out over two lines did to acc's own gen.c. */
+             * a comment laid out over two lines did to acc's own code generator. */
             if (comment) {
                 skip_comment();
                 body[len++] = ' ';

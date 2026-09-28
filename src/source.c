@@ -524,7 +524,7 @@ static void unsplice(char **end)
 
 /* A parameter's array size, kept as the text it was written as for a
  * function's definition to read again when it is entered: see vla_texts in
- * parse.c. lex_record_from starts it after the current token, and the text
+ * type.c. lex_record_from starts it after the current token, and the text
  * is copied out to lex_record when it is about to go -- the window refilled
  * -- and when it is taken. A macro's expansion is read from a window of its
  * own and leaves this one where it was, so what is kept is the macro's name
@@ -590,7 +590,7 @@ char *lex_record_take(void)
 
 /* The same, to the `;` that is the current token: a function's return
  * expression, kept to be read again where the function is called (see
- * inline_keep in parse.c). The end, or NULL. */
+ * inline_keep in inline.c). The end, or NULL. */
 char *lex_record_take_semi(void)
 {
     char *start = record_first, *end;
@@ -608,7 +608,7 @@ char *lex_record_take_semi(void)
 }
 
 /* The same, to the `)` that is the current token: a for loop's step, kept
- * to be read again after the body (see for_statement in parse.c). */
+ * to be read again after the body (see for_statement in stmt.c). */
 char *lex_record_take_paren(void)
 {
     char *start = record_first, *end;

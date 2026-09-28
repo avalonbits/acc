@@ -500,7 +500,7 @@ unsigned out_rewinds;
 int out_rewind_floor = INT_MAX;
 
 /* Told of every rewind, if set: what the code generator keeps that a
- * rewind can take back. A pointer rather than a call, so that out.c stands
+ * rewind can take back. A pointer rather than a call, so that the image stands
  * on its own. */
 void (*out_on_rewind)(int here);
 

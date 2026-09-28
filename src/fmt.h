@@ -18,7 +18,7 @@ int fmt_vfprintf(FILE *file, const char *fmt, va_list ap);
 
 #if defined(AGONDEV) && defined(__clang__)
 /* Where stdout and stderr go when the command line redirects them: the
- * console otherwise. See agon_redirect in parse.c. */
+ * console otherwise. See agon_redirect in main.c. */
 extern FILE *fmt_console;
 #endif
 
