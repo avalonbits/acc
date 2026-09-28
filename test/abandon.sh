@@ -4,8 +4,9 @@
 # On the Agon, vi.c ran out of memory while its object was being written,
 # and left the object there with nothing in it; the link after it then said
 # the object was "too short to be an object", which is not what went wrong.
-# Here a host acc whose allocations fail once it has opened a file to write
-# (test/failalloc.c) compiles a file and makes a library, and each has to
+# Here a host acc that fails once it has opened a file to write -- its next
+# allocation, file opened to read or write (test/failalloc.c) -- compiles a
+# file and makes a library, and each has to
 # fail and leave nothing behind -- while the same two, with nothing
 # failing, make both.
 set -uo pipefail
@@ -18,7 +19,7 @@ fail=0
 # shellcheck disable=SC2046
 "$CC" -O1 -fsigned-char -Isrc -o "$tmp/acc" \
     $(sed -n 's/^SRC *= //p; /^           src/p' Makefile | tr -d '\\') \
-    test/failalloc.c -Wl,--wrap=fopen,--wrap=malloc,--wrap=calloc,--wrap=realloc \
+    test/failalloc.c -Wl,--wrap=fopen,--wrap=fwrite,--wrap=malloc,--wrap=calloc,--wrap=realloc \
     || { echo "  FAIL the failing acc does not build"; exit 1; }
 
 echo 'int f(void) { return 1; }' > "$tmp/a.c"

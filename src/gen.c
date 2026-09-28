@@ -5156,8 +5156,23 @@ typedef struct {
     int at, fn;
 } ExternFix;
 
-static ExternFix *externs;
-static int        nexterns, externs_cap;
+static ExternFix *externs, *externs_put, *externs_limit;
+static ExternFix *externs_helpers_end;  /* the first run: see gen_finish */
+static int        nexterns;
+
+/* The table as `bytes` of room, what is in it kept. Counted in bytes and
+ * walked by a pointer, as the relocations are: an index into six-byte
+ * entries is a multiply, which is a call into the runtime at every site. */
+static void externs_room(size_t bytes)
+{
+    size_t used = (size_t) ((char *) externs_put - (char *) externs);
+
+    externs = realloc(externs, bytes);
+    if (!externs)
+        acc_error("out of memory for the calls out of this file");
+    externs_put = (ExternFix *) (void *) ((char *) externs + used);
+    externs_limit = (ExternFix *) (void *) ((char *) externs + bytes);
+}
 
 /* Room for `n` in all, at once. What goes in at the end of a compile to an
  * object -- one for each call and address still waiting on a name, and one
@@ -5166,30 +5181,57 @@ static int        nexterns, externs_cap;
  * which on the Agon was what an Agon program's largest file ran out on. */
 static void extern_reserve(int n)
 {
-    if (n <= externs_cap)
-        return;
-    externs_cap = n;
-    externs = realloc(externs, (size_t) externs_cap * sizeof *externs);
-    if (!externs)
-        acc_error("out of memory for the calls out of this file");
+    size_t bytes = (size_t) n * sizeof *externs;
+
+    if (bytes > (size_t) ((char *) externs_limit - (char *) externs))
+        externs_room(bytes);
 }
 
 static void extern_add(int at, int fn)
 {
-    if (nexterns == externs_cap) {
-        externs_cap = externs_cap ? externs_cap * 2 : 16;
-        externs = realloc(externs, (size_t) externs_cap * sizeof *externs);
-        if (!externs)
-            acc_error("out of memory for the calls out of this file");
+    if (externs_put == externs_limit) {
+        size_t used = (size_t) ((char *) externs_put - (char *) externs);
+
+        externs_room(used ? used + used : 16 * sizeof *externs);
     }
-    externs[nexterns].at = at;
-    externs[nexterns].fn = fn;
+    externs_put->at = at;
+    externs_put->fn = fn;
+    externs_put++;
     nexterns++;
 }
 
 int gen_nexterns(void)
 {
     return nexterns;
+}
+
+/* The entries from `from` to `to` in the order of their slots. They nearly
+ * are already -- they were recorded as the code was written -- but an
+ * initialiser with designators writes a global's bytes out of order, and
+ * the addresses in them with it. So an insertion sort, which costs a
+ * compare an entry when nothing is out of place, and needs no room. */
+static void externs_sort(ExternFix *from, ExternFix *to)
+{
+    ExternFix *e;
+
+    for (e = from; e != to; e++) {
+        ExternFix x = *e, *p = e;
+
+        while (p != from && (unsigned) p[-1].at > (unsigned) x.at) {
+            *p = p[-1];
+            p--;
+        }
+        *p = x;
+    }
+}
+
+/* How many of the calls out are the helpers', which come first: the two
+ * runs are each in the order of their slots (see externs_sort), and the
+ * object writer walks them that way. */
+int gen_externs_helpers(void)
+{
+    return (int) ((char *) externs_helpers_end - (char *) externs)
+           / (int) sizeof *externs;
 }
 
 int gen_extern_at(int i)
@@ -6518,6 +6560,8 @@ void gen_finish(void)
         extern_reserve(nexterns + nrt_fixups + nfixups);
         for (r = rt_fixups, rend = rt_fixups + nrt_fixups; r != rend; r++)
             extern_add(r->at, rt_symbol(r->which));
+        externs_helpers_end = externs_put;
+        externs_sort(externs, externs_put);
     } else {
         rt_emit_used();
         args_emit();
@@ -6602,6 +6646,8 @@ void gen_finish(void)
                           name_text(fn->name));
         out_add24(f->at, fn->val);
     }
+    if (gen_objects)
+        externs_sort(externs_helpers_end, externs_put);
     late_fill(bss_start);
 }
 

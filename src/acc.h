@@ -999,6 +999,7 @@ int gen_no_address(int sym);
 /* -c: what this file could not resolve, for the object to hand on. */
 extern int gen_objects;
 int gen_nexterns(void);
+int gen_externs_helpers(void);        /* the first so many are helpers' */
 int gen_extern_at(int i);
 int gen_extern_sym(int i);
 /* What the entry stub does with main's result: returns it to MOS, as
