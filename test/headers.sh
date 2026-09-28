@@ -39,7 +39,7 @@ sd=$(emu_card); host=$(mktemp -d); trap 'rm -rf "$sd" "$host"' EXIT
 
 cp "$ACC" "$sd/bin/acc.bin"
 mkdir -p "$sd/lib/acc"
-cp bin/libc.a "$sd/lib/acc/"
+cp bin/libc.a bin/rt.a "$sd/lib/acc/"
 cp -r include "$sd/lib/acc/include"
 
 # One file per combination, named for it.

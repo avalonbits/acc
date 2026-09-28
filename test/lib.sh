@@ -639,6 +639,7 @@ SRC=$(sed -n 's/^SRC *= //p; /^           src/p' Makefile | tr -d '\\')
 # shellcheck disable=SC2086
 ${CC:-cc} -O1 -fsigned-char -Isrc -o "$tmp/acc-nodefault" $SRC || exit 2
 NODEF=$tmp/acc-nodefault
+RT=$(dirname "$LIB")/rt.a                 # the runtime, which it names too
 
 # And a program that calls exit by name takes nothing from the library for
 # it: linked against the library it is the size it is linked against the
@@ -646,9 +647,8 @@ NODEF=$tmp/acc-nodefault
 printf '#include <stdlib.h>\nint main(void) { exit(42); }\n' > "$tmp/ex.c"
 "$ACC" -c "$tmp/ex.c" -o "$tmp/ex.o" -Iinclude >/dev/null 2>&1
 mkdir -p "$tmp/exlib" "$tmp/exnone"
-"$ACC" -a "$tmp/exnone/rt.a" "$(dirname "$LIB")"/lib/rt_*.o >/dev/null 2>&1
-"$NODEF" "$tmp/ex.o" "$LIB" -o "$tmp/exlib/ex.bin" -x >/dev/null 2>&1
-"$NODEF" "$tmp/ex.o" "$tmp/exnone/rt.a" -o "$tmp/exnone/ex.bin" -x >/dev/null 2>&1
+"$NODEF" "$tmp/ex.o" "$LIB" "$RT" -o "$tmp/exlib/ex.bin" -x >/dev/null 2>&1
+"$NODEF" "$tmp/ex.o" "$RT" -o "$tmp/exnone/ex.bin" -x >/dev/null 2>&1
 ok "a call to exit takes no member" \
     "$(wc -c < "$tmp/exlib/ex.bin")" "$(wc -c < "$tmp/exnone/ex.bin")"
 
@@ -664,8 +664,8 @@ sed '/^\/\* sprintf is snprintf told/,$d' lib/printf.c > "$tmp/printf_cut.c"
 mkdir -p "$tmp/prlib" "$tmp/prcut"
 "$ACC" -a "$tmp/prcut/cut.a" "$tmp/printf.o" \
     $(ls "$(dirname "$LIB")"/lib/*.o | grep -v '/printf\.o$') >/dev/null 2>&1
-"$NODEF" "$tmp/pr.o" "$LIB" -o "$tmp/prlib/p.bin" -x >/dev/null 2>&1
-"$NODEF" "$tmp/pr.o" "$tmp/prcut/cut.a" -o "$tmp/prcut/p.bin" -x >/dev/null 2>&1
+"$NODEF" "$tmp/pr.o" "$LIB" "$RT" -o "$tmp/prlib/p.bin" -x >/dev/null 2>&1
+"$NODEF" "$tmp/pr.o" "$tmp/prcut/cut.a" "$RT" -o "$tmp/prcut/p.bin" -x >/dev/null 2>&1
 ok "printf takes no sprintf with it" \
     "$(wc -c < "$tmp/prlib/p.bin")" "$(wc -c < "$tmp/prcut/p.bin")"
 
@@ -683,15 +683,15 @@ printf '#include <stdio.h>\n#include <string.h>\nint main(void) { char b[16]; sp
 mkdir -p "$tmp/fl1" "$tmp/fl0"
 "$ACC" -a "$tmp/fl0/nofloat.a" \
     $(ls "$(dirname "$LIB")"/lib/*.o | grep -v '/printf_float\.o$') >/dev/null 2>&1
-"$NODEF" "$tmp/pi.o" "$LIB" -o "$tmp/fl1/pi.bin" -x >/dev/null 2>&1
-"$NODEF" "$tmp/pi.o" "$tmp/fl0/nofloat.a" -o "$tmp/fl0/pi.bin" -x >/dev/null 2>&1
+"$NODEF" "$tmp/pi.o" "$LIB" "$RT" -o "$tmp/fl1/pi.bin" -x >/dev/null 2>&1
+"$NODEF" "$tmp/pi.o" "$tmp/fl0/nofloat.a" "$RT" -o "$tmp/fl0/pi.bin" -x >/dev/null 2>&1
 ok "printing integers takes no floats" \
     "$(wc -c < "$tmp/fl1/pi.bin")" "$(wc -c < "$tmp/fl0/pi.bin")"
 if emu_available >/dev/null 2>&1; then
-    "$NODEF" "$tmp/pf.o" "$LIB" -o "$tmp/fl1/pf.bin" -x >/dev/null 2>&1
+    "$NODEF" "$tmp/pf.o" "$LIB" "$RT" -o "$tmp/fl1/pf.bin" -x >/dev/null 2>&1
     test/agon.sh "$tmp/fl1/pf.bin" >/dev/null 2>&1
     ok "passing a float brings them" "$?" 42
-    if "$NODEF" "$tmp/pf.o" "$tmp/fl0/nofloat.a" -o "$tmp/fl0/pf.bin" -x >/dev/null 2>&1; then
+    if "$NODEF" "$tmp/pf.o" "$tmp/fl0/nofloat.a" "$RT" -o "$tmp/fl0/pf.bin" -x >/dev/null 2>&1; then
         test/agon.sh "$tmp/fl0/pf.bin" >/dev/null 2>&1
         ok "and without them, a question mark" "$?" 43
     else

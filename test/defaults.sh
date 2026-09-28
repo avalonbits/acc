@@ -66,10 +66,11 @@ else
     ok "the host build names no include directory"
 fi
 
-# The reference: everything named. An image holds its own name, so every
-# link below writes p.bin and the answer is moved aside.
+# The reference: everything named, in the order a link reads them by
+# default -- the runtime, then the C library. An image holds its own name,
+# so every link below writes p.bin and the answer is moved aside.
 bin/acc -c "$tmp/hello.c" -o "$tmp/ref.o" -Iinclude >/dev/null || exit 2
-bin/acc "$tmp/ref.o" bin/libc.a -o "$tmp/p.bin" >/dev/null || exit 2
+bin/acc "$tmp/ref.o" bin/rt.a bin/libc.a -o "$tmp/p.bin" >/dev/null || exit 2
 mv "$tmp/p.bin" "$tmp/ref.bin"
 
 if "$tmp/acc" -c "$tmp/hello.c" -o "$tmp/hello.o" >/dev/null 2>&1; then
@@ -87,7 +88,7 @@ else
 fi
 
 rm -f "$tmp/p.bin"
-if "$tmp/acc" "$tmp/hello.o" bin/libc.a -o "$tmp/p.bin" >/dev/null 2>&1 \
+if "$tmp/acc" "$tmp/hello.o" bin/rt.a bin/libc.a -o "$tmp/p.bin" >/dev/null 2>&1 \
    && cmp -s "$tmp/p.bin" "$tmp/ref.bin"; then
     ok "naming the library as well changes nothing"
 else

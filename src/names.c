@@ -351,6 +351,24 @@ int name_weak(NameRef ref)
     return (name_is_macro(ref) & NAME_WEAK) != 0;
 }
 
+/* That the library a link is reading has no member defining the name: so
+ * that the link asks it once, and not again on every pass it makes through
+ * the library. Taken off each name when the link is done with it. */
+#define NAME_MISSED 16
+
+int name_missed(NameRef ref)
+{
+    return (name_is_macro(ref) & NAME_MISSED) != 0;
+}
+
+void name_set_missed(NameRef ref, int missed)
+{
+    if (missed)
+        name_is_macro(ref) |= NAME_MISSED;
+    else
+        name_is_macro(ref) = (char) (name_is_macro(ref) & ~NAME_MISSED);
+}
+
 /* Weak is a name every reference to which is weak, whichever order the
  * references come in: once one that is not has been seen, it never is
  * again. `weak` 1 is a weak reference, 0 one that is not. */

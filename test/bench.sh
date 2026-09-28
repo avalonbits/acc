@@ -112,7 +112,7 @@ sd=$(emu_card); trap 'rm -rf "$sd"' EXIT
 cp "$ACC" "$sd/bin/acc.bin"
 mkdir -p "$sd/lib/acc"                  # where the Agon build looks
 cp -r include "$sd/lib/acc/include"
-cp bin/libc.a "$sd/lib/acc/"            # and the runtime every program calls
+cp bin/libc.a bin/rt.a "$sd/lib/acc/"            # and the runtime every program calls
 
 # A counting build says so in its own bytes: the format it reports with.
 # Any other is timed whole, between the two programs that start and stop

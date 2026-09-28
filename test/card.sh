@@ -28,7 +28,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$SD/bin" "$SD/testc/cases" "$SD/testc/errors"
 cp bin/acc.bin "$SD/bin/acc.bin"
 mkdir -p "$SD/lib/acc"
-cp bin/libc.a "$SD/lib/acc/"        # the library, with the runtime every program calls
+cp bin/libc.a bin/rt.a "$SD/lib/acc/"        # the library, with the runtime every program calls
 [ -f "$ZAP" ] && cp "$ZAP" "$SD/bin/zap.bin"
 cp test/demos/*.c "$SD/testc/"
 cp test/cases/*.c "$SD/testc/cases/"

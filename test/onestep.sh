@@ -66,9 +66,9 @@ else
     ok "a call nothing defines is still refused"
 fi
 
-# Every program waits on the runtime, which the library has; with it named
-# first, nothing is left waiting for the one after it.
-if acc "$tmp/plain.c" "$LIB" "$tmp/junk.a" -o "$tmp/junk.bin"; then
+# Every program waits on the runtime, which rt.a beside the library has;
+# with it named first, nothing is left waiting for the one after it.
+if acc "$tmp/plain.c" "$(dirname "$LIB")/rt.a" "$tmp/junk.a" -o "$tmp/junk.bin"; then
     ok "a library nothing needs is not read"
 else
     bad "a library nothing needs is not read" "the compile failed"

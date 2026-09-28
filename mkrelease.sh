@@ -4,6 +4,7 @@
 #
 #   bin/acc.bin              MOS searches /bin, so `acc` works as a command
 #   lib/acc/libc.a           the C library, linked into every program
+#   lib/acc/rt.a             acc's runtime, which every program calls
 #   lib/acc/include/         its headers, searched for every #include
 #
 # The library is the host build's: the host and Agon builds of acc produce
@@ -38,7 +39,7 @@ fi
 make >/dev/null
 make -f Makefile.agon >/dev/null
 
-for f in bin/acc.bin bin/libc.a; do
+for f in bin/acc.bin bin/libc.a bin/rt.a; do
     if [ ! -f "$f" ]; then
         echo "mkrelease: $f does not exist" >&2
 
@@ -52,7 +53,7 @@ trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$STAGE/bin" "$STAGE/lib/acc"
 cp bin/acc.bin "$STAGE/bin/"
-cp bin/libc.a "$STAGE/lib/acc/"
+cp bin/libc.a bin/rt.a "$STAGE/lib/acc/"
 cp -r include "$STAGE/lib/acc/include"
 
 rm -f "$OUT"

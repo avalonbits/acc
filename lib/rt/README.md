@@ -3,8 +3,11 @@
 What the code acc generates calls for the operations the eZ80 has no
 instruction for, and what C cannot write at all. They are eZ80 assembly,
 assembled by [zap](https://github.com/avalonbits/zap) into acc's object
-format and put in `libc.a`, where a link takes them like any other member:
-a program carries the ones it calls and nothing else.
+format and put in `rt.a`, a library beside `libc.a` (`/lib/acc/rt.a` on the
+Agon), where a link takes them like any other member: a program carries the
+ones it calls and nothing else. A link reads `rt.a` first, since every
+program calls it and its index is short, then `libc.a` only if a name is
+still waiting, and `rt.a` again for what the C library's members call.
 
 - **Operators.** A 24-bit AND is not an instruction: AND is eight bits wide
   and the upper byte of HL has no name. Shifts are a loop over the bits,
@@ -44,7 +47,7 @@ floating-point routines.
 
 zap takes the GNU spellings of its directives (`.global`, `.section`) as well
 as its own, and `test/rtlib.sh` checks that every file assembles and that
-what each defines is in `libc.a`.
+what each defines is in `rt.a`.
 
 ## The licence
 

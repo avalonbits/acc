@@ -1,12 +1,13 @@
 #!/bin/bash
-# acc's runtime, in the library: lib/rt/*.s, assembled by zap into libc.a.
+# acc's runtime: lib/rt/*.s, assembled by zap into rt.a, the library beside
+# libc.a that a link reads first.
 #
 # The code generator calls a routine by name, and the link takes it from
 # the library, one object a routine or a few that share code. So:
 #
 #   - every name the compiler can call (rt_names, in src/runtime.c) is a
-#     routine lib/rt exports, and everything lib/rt exports is in the
-#     library's index -- a name either side of that is a link that fails,
+#     routine lib/rt exports, and everything lib/rt exports is in rt.a's
+#     index -- a name either side of that is a link that fails,
 #     or a program that cannot be built, and only on the code path that
 #     calls it;
 #   - a program carries the runtime it calls and not the rest: one that
@@ -15,7 +16,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 ACC=${ACC:-bin/acc}
-LIB=${LIB:-bin/libc.a}
+LIB=${LIB:-bin/rt.a}
 [ -x "$ACC" ] && [ -f "$LIB" ] || { echo "run make first" >&2; exit 2; }
 export ASAN_OPTIONS=detect_leaks=0
 

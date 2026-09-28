@@ -24,7 +24,8 @@ rest of acc needs from it and an internal header its own files share:
 
 [`acc.h`](../src/acc.h) includes the public headers, and is what a file outside a part
 includes. The runtime the generated code calls is eZ80 assembly in
-[`lib/rt/`](../lib/rt), assembled by zap into the C library (section 12).
+[`lib/rt/`](../lib/rt), assembled by zap into a library of its own,
+`rt.a`, beside the C library (section 12).
 The C library acc links programs against is in [`lib/`](../lib) and
 [`include/`](../include), and its C is compiled by acc itself. The
 program's entry stubs are in [`src/rt/startup.s`](../src/rt/startup.s),
@@ -90,13 +91,13 @@ flowchart TD
 [`gen_finish()`](../src/finish.c#L751) ·
 [`obj_write()`](../src/obj.c#L434) ·
 [`gen_startup()`](../src/finish.c#L1046) ·
-[`link_inputs()`](../src/link.c#L497) ·
+[`link_inputs()`](../src/link.c#L509) ·
 [`out_close()`](../src/image.c#L818)
 
 The one-step build is a compile whose image is then linked in place: the
 program's own code is laid down first, after the entry stub, and the
 objects and libraries it names -- and then the default library,
-`/lib/acc/libc.a` on the Agon -- are placed after it, exactly as a link of
+`/lib/acc/rt.a` and `/lib/acc/libc.a` on the Agon -- are placed after it, exactly as a link of
 its object would place them.
 
 A compile to an object is based at address 0, so that every address in it
@@ -547,9 +548,12 @@ pool laid down after the function's code ([`ld_rr_pool()`](../src/wide.c#L702)).
 
 Operations the eZ80 does not have -- multiply, divide, shifts by a
 variable, 24-bit logic, every long, long long and float operation, the
-prologue -- are routines in the C library, written in eZ80 assembly in
-[`lib/rt/`](../lib/rt) and assembled by zap into acc's object format
-([`lib/rt/README.md`](../lib/rt/README.md)). The helper convention is left
+prologue -- are routines in `rt.a`, a library beside the C library,
+written in eZ80 assembly in [`lib/rt/`](../lib/rt) and assembled by zap
+into acc's object format ([`lib/rt/README.md`](../lib/rt/README.md)). A
+link reads it first, since every program calls it and its index is a few
+names, then the C library only if a name is still waiting, and `rt.a` again
+for what the C library's members call ([`link_inputs()`](../src/link.c#L509)). The helper convention is left
 operand in HL, right in BC, result in HL, everything else kept.
 
 Each file is one object: one routine, or several that share code. A link
@@ -560,12 +564,12 @@ has the multiply and not the floating point.
 [`rt_call()`](../src/runtime.c#L91) emits `call 0` and records which routine and where:
 a call is not made a fixup against a symbol as it is emitted, since a
 file-scope symbol pushed while a function is being compiled would move its
-locals. Once the compile is done, [`rt_name_all()`](../src/runtime.c#L110) makes a symbol
+locals. Once the compile is done, [`rt_name_all()`](../src/runtime.c#L118) makes a symbol
 for each routine called, and the link finds them in the library like any
 other name, in the order of their slots among the program's other calls
-([`waits_next()`](../src/link.c#L393)) -- so a program built in one step takes the same
+([`waits_next()`](../src/link.c#L379)) -- so a program built in one step takes the same
 members in the same order as one compiled to an object and then linked.
-[`rt_fill_all()`](../src/runtime.c#L164) then fills the calls in: those still in memory
+[`rt_fill_all()`](../src/runtime.c#L177) then fills the calls in: those still in memory
 now, and those in the image's file as a second list of additions the sweep
 makes as it passes (section 14). A compile to an object leaves each call as
 a reference to the routine's name.
@@ -660,7 +664,7 @@ compiled:
 
 1. **Unused statics** are dropped (section 13).
 2. **The runtime**: every call into it is filled in with where the link
-   put the routine ([`rt_fill_all()`](../src/runtime.c#L164), section 12).
+   put the routine ([`rt_fill_all()`](../src/runtime.c#L177), section 12).
 3. **argc and argv**: [`args_emit()`](../src/finish.c#L563) lays down the code that splits
    MOS's command line into words, as agondev's startup does, up to sixteen.
    It is there whether `main` takes them or not: a link cannot tell.
@@ -711,17 +715,21 @@ flowchart TD
 ```
 
 [`gen_startup()`](../src/finish.c#L1046) ·
-[`link_object()`](../src/link.c#L76) ·
-[`place_object()`](../src/link.c#L322) ·
-[`copy_text()`](../src/link.c#L158) ·
-[`link_short()`](../src/link.c#L424) ·
-[`link_archive()`](../src/link.c#L442) ·
-[`ar_find()`](../src/archive.c#L244) ·
-[`take_items()`](../src/link.c#L169) ·
+[`link_object()`](../src/link.c#L77) ·
+[`place_object()`](../src/link.c#L323) ·
+[`copy_text()`](../src/link.c#L159) ·
+[`link_short()`](../src/link.c#L410) ·
+[`link_archive()`](../src/link.c#L433) ·
+[`ar_find()`](../src/archive.c#L250) ·
+[`take_items()`](../src/link.c#L170) ·
 [`gen_finish()`](../src/finish.c#L751)
 
 A library is asked for names in the order of the slots that wait on them
-([`waits_next()`](../src/link.c#L393)). An object named on the command line is placed whole. Its text is read
+([`waits_next()`](../src/link.c#L379)), each routine of the runtime once, at its first
+call. It is kept open while the link reads it, since opening a file on the
+card is a search of its directory, and a name it does not have is marked
+([`name_set_missed()`](../src/names.c#L364)) so that it is not asked again on the next
+pass. An object named on the command line is placed whole. Its text is read
 straight from the file into the image, after only its front (header,
 symbols and relocations) has been read. From a library, a link takes only
 the items that the wanted name is in and what they reach through their

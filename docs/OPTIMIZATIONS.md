@@ -399,7 +399,7 @@ at the end of the file ([`drop_unused_statics()`](../src/relax.c#L782)), working
 from what is used so that mutually recursive dead functions go too. A
 header of `static inline` helpers costs a file only the ones it calls.
 
-**Runtime routines.** The runtime is in the library, one object for each
+**Runtime routines.** The runtime is a library, `rt.a`, one object for each
 routine or group of routines that share code ([`lib/rt/`](../lib/rt)), and
 a link takes the objects a program calls and no others. One multiply does
 not bring the float routines with it.
@@ -411,7 +411,7 @@ room on the card, and are cleared by the startup with `ld (hl),0` and an
 
 **Library members.** A link takes from a library only the items -- single
 functions and objects -- that are wanted, and what they reach
-([`take_items()`](../src/link.c#L169)).
+([`take_items()`](../src/link.c#L170)).
 
 ## 14. Smaller things
 

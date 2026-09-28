@@ -120,10 +120,17 @@ FORCE:
 # The objects of members that are gone are removed with them, so that what
 # is in $(BIN)/lib is what is in the library -- test/lib.sh builds libraries
 # of its own from that directory.
+#
+# The runtime is a library of its own beside it, rt.a, which a link reads
+# first: every program calls the runtime, and its index is a few names where
+# the C library's is a thousand, so a program that calls nothing in the C
+# library does not read that one at all.
 $(BIN)/libc.a: $(LIBOBJ) $(RTOBJ) $(BIN)/lib/members $(BIN)/acc
 	@$(RM) $(filter-out $(LIBOBJ) $(RTOBJ),$(wildcard $(BIN)/lib/*.o))
-	@$(BIN)/acc -a $@ $(LIBOBJ) $(RTOBJ) >/dev/null
-	@echo "[$@: $$(stat -c%s $@) bytes from $(words $(LIBOBJ) $(RTOBJ)) objects]"
+	@$(BIN)/acc -a $@ $(LIBOBJ) >/dev/null
+	@$(BIN)/acc -a $(BIN)/rt.a $(RTOBJ) >/dev/null
+	@echo "[$@: $$(stat -c%s $@) bytes from $(words $(LIBOBJ)) objects]"
+	@echo "[$(BIN)/rt.a: $$(stat -c%s $(BIN)/rt.a) bytes from $(words $(RTOBJ)) objects]"
 
 # The compiler is where the bugs are, so the tests drive a sanitized build of
 # it rather than a sanitized unit test beside it. It found the use-after-

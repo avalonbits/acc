@@ -103,38 +103,47 @@ void rt_call(int which)
     nrt_fixups++;
 }
 
+/* Each routine called, once, at the slot of its first call: what the link
+ * asks a library for, in the order of their slots among the other calls, as
+ * a link of this file's object would meet them. Once and not a call at a
+ * time, since a file that works in floats makes thousands of calls to a
+ * dozen routines, and the link asks again on every pass through a library. */
+static int rt_first_at[RT_COUNT], rt_first_sym[RT_COUNT], nrt_first;
+static unsigned char rt_named[RT_COUNT];   /* a byte a routine: no multiply */
+
 /* Every routine the compile called, named: before the objects and
  * libraries are read, so that the link looks for them there. The file's
  * unused static functions go first, as they do from an object, so that
  * what only they called is not taken from the library. */
 void rt_name_all(void)
 {
-    int i;
+    /* Walked by pointer: an index into three-byte entries is a multiply,
+     * which is a call into the runtime on this target. */
+    const RtFixup *r = rt_fixups, *end = rt_fixups + nrt_fixups;
+    int *at = rt_first_at, *sym = rt_first_sym;
 
 #ifndef ACC_NODROP
     drop_unused_statics();
 #endif
-
-    for (i = 0; i != nrt_fixups; i++)
-        rt_symbol(rt_fixups[i].which);
+    end = rt_fixups + nrt_fixups;       /* the drop may have cut some */
+    for (; r != end; r++) {
+        if (rt_named[r->which])
+            continue;
+        rt_named[r->which] = 1;
+        *sym++ = rt_symbol(r->which);
+        *at++ = r->at;
+    }
+    nrt_first = (int) (at - rt_first_at);
 }
 
-/* The calls into the runtime, for the link: how many, where each is, and
- * what it calls -- which it asks of a library in the order of their slots,
- * among the other calls, as a link of this file's object would. */
-int gen_nrt(void)
+/* The routines named, in the order of their first calls' slots: where
+ * each first call is, and its symbol. */
+int gen_rt_first(const int **at, const int **sym)
 {
-    return nrt_fixups;
-}
+    *at = rt_first_at;
+    *sym = rt_first_sym;
 
-int gen_rt_at(int i)
-{
-    return rt_fixups[i].at;
-}
-
-int gen_rt_sym(int i)
-{
-    return rt_syms[rt_fixups[i].which];
+    return nrt_first;
 }
 
 /* The slot of the k-th call, with the address of its routine to be added:

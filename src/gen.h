@@ -281,9 +281,7 @@ int gen_no_address(int sym);
 extern int gen_objects;
 int gen_nexterns(void);
 void rt_name_all(void);                /* the runtime, named for the link */
-int  gen_nrt(void);                    /* its calls: see runtime.c */
-int  gen_rt_at(int i);
-int  gen_rt_sym(int i);
+int  gen_rt_first(const int **at, const int **sym); /* see runtime.c */
 int  gen_fixup_at(int i);
 int gen_externs_helpers(void);        /* the first so many are helpers' */
 int gen_extern_at(int i);
