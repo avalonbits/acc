@@ -112,11 +112,15 @@ directory given with `-I`, which is searched before `/lib/acc/include`:
 `acc -v` prints the version:
 
     */ acc -v
-    acc 0.1.0 (build 6332943)
+    acc 0.2.0 (build 440616)
 
 Every compile and link ends by printing the time it took, as
 `Done in 0.04 seconds`; the examples leave that line out. An error prints
 as `file:line:column: error: text`, and acc stops at the first one.
+
+What acc prints can be sent to a file, as a MOS command's can: `acc main.c
+> log.txt`, or `>>` to add to it. A command line may be as long as MOS
+takes, so a program of dozens of objects links in one command.
 
 ## Options
 
@@ -175,6 +179,17 @@ parameter". On the host an error is 1, and a command line 2.
 How it stands against the conformance suites is in
 [docs/c99-status.md](docs/c99-status.md).
 
+## How it works
+
+acc compiles in one pass: the parser emits eZ80 code as it reads, with no
+syntax tree, and a program's image goes to the card as it is made rather
+than being held in memory. acc's own sources compile and link on the Agon.
+
+- [docs/DESIGN.md](docs/DESIGN.md) walks through the compiler: its parts,
+  how a source becomes a program, and how it fits in the Agon's memory.
+- [docs/OPTIMIZATIONS.md](docs/OPTIMIZATIONS.md) describes each
+  optimization acc makes in the code it generates.
+
 ## What the code costs
 
 acc's output against agondev's at `-Oz`, on an emulated Agon, as acc's
@@ -186,7 +201,8 @@ size or time over agondev's:
 | zap, the assembler | 1.22 | 1.20 | 1.58 |
 | acc itself | 1.24 | 1.25 | |
 
-`test/size.sh` and `test/perf.sh` produce these tables.
+`test/size.sh` and `test/perf.sh` produce these tables; each program's
+figures are in [docs/performance.md](docs/performance.md).
 
 On the Agon, acc compiles about 30 KB of C a second.
 
@@ -205,7 +221,7 @@ The Agon build needs [AgonDev](https://github.com/AgonPlatform/agondev) in
 `~/agondev` (or `AGONDEV=<dir>`):
 
     make -f Makefile.agon       # bin/acc.bin
-    ./mkrelease.sh 0.1.0        # acc-0.1.0.zip, the SD card layout
+    ./mkrelease.sh 0.2.0        # acc-0.2.0.zip, the SD card layout
 
 `make test` runs every program it compiles on
 [fab-agon-emulator](https://github.com/tomm/fab-agon-emulator), and checks
