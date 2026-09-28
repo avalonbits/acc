@@ -124,7 +124,7 @@ void add_hl_rr(int reg);
 void sbc_hl_rr(int reg);
 void or_a_a(void);
 void mov_rr(int dst, int src);
-int far_base(int disp);
+void far_op(int prefix, int op, int disp);  /* a slot past (ix+d): see far_base */
 __attribute__((noinline, noreturn)) void void_used(void);
 __attribute__((noinline, noreturn)) void struct_used(void);
 void frame_byte(int op, int disp);
@@ -152,6 +152,11 @@ int and_a_imm(int v);
 int or_a_imm(int v);
 int xor_a_imm(int v);
 void add_hl_hl(void);
+void iy_save(void);
+void iy_restore(void);
+void out_iy(int op);
+void out_iy_d(int op, int disp);
+void lea_rr_iy(int reg, int disp);
 int shr_hl_16(int count, int is_unsigned);
 extern const unsigned powers_of_two[16];
 void load_narrow_into(int reg, int disp, Type type);
@@ -329,7 +334,7 @@ void ld_rr_ix(int reg, int disp)           /* ld rr, (ix+d) */
     if (disp_fits(disp))
         out_byte3(0xdd, 0x07 + reg_code[reg], disp);
     else
-        out_byte3(0xfd, 0x07 + reg_code[reg], far_base(disp));
+        far_op(0xfd, 0x07 + reg_code[reg], disp);
 }
 
 /* Always inlined: every value the compiler handles is pushed through here,

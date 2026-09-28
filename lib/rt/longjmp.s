@@ -14,10 +14,9 @@
 
 ; void longjmp(jmp_buf env, int val)
 _longjmp:
-	ld	iy, 0
-	add	iy, sp
-	ld	de, (iy+6)		; val
-	ld	hl, (iy+3)		; env
+	pop	bc			; our own return address, not wanted
+	pop	hl			; env
+	pop	de			; val
 	ld	bc, (hl)		; where setjmp was called from
 	inc	hl
 	inc	hl
@@ -26,12 +25,19 @@ _longjmp:
 	inc	hl
 	inc	hl
 	inc	hl
-	ld	hl, (hl)
+	push	de			; val, while DE takes the stack
+	ld	de, (hl)
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	iy, (hl)
+	pop	hl			; val
+	ex	de, hl
 	ld	sp, hl
 	inc	sp			; past the return address, as ret leaves it
 	inc	sp
 	inc	sp
-	ex	de, hl
+	ex	de, hl			; val
 	ld	de, 0
 	or	a, a
 	sbc	hl, de

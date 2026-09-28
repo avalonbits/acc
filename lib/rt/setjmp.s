@@ -17,23 +17,26 @@
 ; the frame pointer, put back. Named as C names them rather than as acc_rt_
 ; helpers, since a program calls them itself.
 ;
-; A jmp_buf is three words: where setjmp was called from, IX -- the one
+; A jmp_buf is four words: where setjmp was called from, IX -- the one
 ; register a callee must give back, so the only one the caller can have
-; anything in across the call -- and the stack pointer as it was at the
-; call, pointing at the return address. Everything else a function holds
-; across a call it holds in its frame, and the frame is where IX says.
+; anything in across the call -- the stack pointer as it was at the call,
+; pointing at the return address, and IY. Everything else a function holds
+; across a call it holds in its frame, and the frame is where IX says; IY
+; is the one local acc keeps in a register, which a call to setjmp does not
+; save around it (see keeps_iy in src/func.c), so it is kept here, and
+; setjmp itself leaves IY as it found it.
 ;
-; longjmp puts IX and the stack back, drops the return address as `ret`
+; longjmp puts IX, the stack and IY back, drops the return address as `ret`
 ; would have, and goes to it with the value -- or 1 for a 0, since C says
 ; setjmp may not appear to return 0 twice.
 
 
 ; int setjmp(jmp_buf env)
 _setjmp:
-	ld	iy, 0
-	add	iy, sp
-	ld	hl, (iy+3)		; env
-	ld	de, (iy+0)		; where to come back to
+	pop	de			; where to come back to
+	pop	hl			; env
+	push	hl
+	push	de
 	ld	(hl), de
 	inc	hl
 	inc	hl
@@ -42,6 +45,14 @@ _setjmp:
 	inc	hl
 	inc	hl
 	inc	hl
-	ld	(hl), iy		; the stack, at the return address
+	ex	de, hl
+	ld	hl, 0
+	add	hl, sp			; the stack, at the return address
+	ex	de, hl
+	ld	(hl), de
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	(hl), iy
 	ld	hl, 0			; and 0, the first time
 	ret

@@ -42,6 +42,7 @@ static void convert_in_hl(Type to)
     /* The low byte is kept in IY, the backend's own scratch, rather than
      * in E: DE may be holding a value, and this would have cost it its low
      * byte. */
+    iy_save();
     out_byte3(0xe5, 0xfd, 0xe1);        /* push hl; pop iy */
     ld_a_h();
     if (type_unsigned(to))
@@ -50,6 +51,7 @@ static void convert_in_hl(Type to)
         fill_hl_with_sign_of_a();
     ld_h_a();
     out_byte3(0xfd, 0x7d, 0x6f);        /* ld a, iyl; ld l, a */
+    iy_restore();
 }
 
 /* The type this function was declared to return, so that `char f()` giving
@@ -206,6 +208,67 @@ void vpush_bss(int at, Type type)
 void vpush_local(int offset, Type type)
 {
     vpush(VAL_LOCAL, type, offset);
+    if (offset == iy_local) {
+        (vsp - 1)->kind = VAL_IY;
+        (vsp - 1)->val = 0;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* the local in IY                                                     */
+
+/* A local that lives in IY for the whole of its function, rather than in its
+ * frame slot: read with lea rr, iy+0 and written with ld iy or a push and a
+ * pop, where every other local is ld rr, (ix+d) and ld (ix+d), rr at each
+ * use -- which is most of the difference between acc's code and agondev's,
+ * whose register allocator keeps the variables a loop walks in registers.
+ *
+ * One per function, and one that is declared register, so that its address
+ * is never taken: the value has no bytes in memory to point at. It keeps
+ * its frame slot, unused, so that its offset still names it; iy_local is
+ * that offset. vpush_local and vstore_local turn the offset into IY, and
+ * everything else reaches it through them.
+ *
+ * On the value stack it is VAL_IY, with a displacement: the value is IY
+ * plus val. A small constant added to it only changes the displacement
+ * (vbinop), so `p + 1` is no code, a store of it back is `inc iy`, the
+ * old value of `p++` is IY - 1 without a copy, and reading or writing
+ * through it is (iy+d) -- `*p++` is ld a, (iy-1).
+ *
+ * IY was the backend's own scratch, and still is where no local holds it:
+ * in a function where one does, each of those uses saves it and puts it
+ * back (iy_save), and so does every call, since the callee may use it. */
+int iy_local;
+int iy_any;
+
+/* Whether a local of this type can: one register's worth, so a pointer or
+ * an int, and nothing that is not a number to begin with. */
+int gen_iy_can(Type type)
+{
+    return type_size(type) == ACC_INT_SIZE && !type_float(type)
+           && !type_wide(type) && !type_is_struct(type);
+}
+
+/* A local as it is declared, with its qualifiers: whether it is the one. */
+void gen_iy_claim(int offset, Type type, int quals)
+{
+    if (iy_local == 0 && ((quals & SQ_REGISTER) || iy_any)
+        && gen_iy_can(type))
+        iy_local = offset;
+}
+
+/* A parameter as the list is read: its offset if it is the one, else 0. */
+int gen_iy_pick(int offset, Type type, int quals)
+{
+    return ((quals & SQ_REGISTER) || iy_any) && gen_iy_can(type) ? offset : 0;
+}
+
+/* A parameter arrives in its slot above the frame pointer, so it is loaded
+ * into IY once, as the body begins. */
+void gen_iy_param(int offset)
+{
+    iy_local = offset;
+    frame_byte(0x31, offset);           /* ld iy, (ix+d) */
 }
 
 void vpush_reg(int reg)
@@ -746,6 +809,17 @@ int force_reg(Value *val)
     if (val->kind == VAL_REG)
         return val->val;
 
+    if (val->kind == VAL_IYADDR)
+        acc_error_at(tok_line, "internal: the address of the local in IY");
+    if (val->kind == VAL_IY) {
+        reg = reg_alloc();
+        lea_rr_iy(reg, val->val);
+        val->kind = VAL_REG;
+        val->val = reg;
+
+        return reg;
+    }
+
     if (val->kind == VAL_ACC) {
         /* Widen out of A. This is the escape hatch that makes the byte path
          * safe: anything that does not understand VAL_ACC forces a register
@@ -906,6 +980,10 @@ void force_into(Value *target, int want)
     } else if (target->kind == VAL_REG) {
         if (target->val != want)
             mov_rr(want, target->val);
+    } else if (target->kind == VAL_IYADDR) {
+        acc_error_at(tok_line, "internal: the address of the local in IY");
+    } else if (target->kind == VAL_IY) {
+        lea_rr_iy(want, target->val);
     } else if (val_const(target->kind)) {
         if (target->kind == VAL_ADDR)
             out_reloc(out_here() + 1);
@@ -941,6 +1019,9 @@ int vpop_reg(void)
 
 void gen_init(void)
 {
+#ifndef AGONDEV
+    iy_any = getenv("ACC_IY_ANY") != NULL;      /* see test/iyany.sh */
+#endif
     vtop = 0;
     vsp = vstack;
     rt_syms_init();

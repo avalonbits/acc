@@ -408,6 +408,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
     arrays_size = 0;
     narrays = 0;
     narray_patches = 0;
+    iy_local = 0;
     in_function = 1;
 
     /* ld hl, -frame / call acc_rt_frameset: the frame agondev's __frameset
@@ -451,6 +452,7 @@ void gen_func_end(void)
 
     out_patch24(frame_patch, -frame_size());
     in_function = 0;
+    iy_local = 0;
 
     /* Each local array's address, now that the frame is laid out: where
      * it is within a displacement's reach, the ten bytes vaddr_array wrote
@@ -987,10 +989,27 @@ const char *gen_want_name(int i)
     return wants_named[i];
 }
 
+/* Whether IY is kept across a call to this function: always, in a function
+ * with a local in it, since the callee may use IY -- except around setjmp,
+ * whose second return, from longjmp, comes back with the stack the pop
+ * would read long since written over. setjmp keeps IY in the jmp_buf, and
+ * longjmp puts it back. */
+static int keeps_iy(const Callee *callee)
+{
+    static NameRef setjmp_name;
+
+    if (!iy_local)
+        return 0;
+    if (!setjmp_name)
+        setjmp_name = name_intern("setjmp", 6);
+
+    return callee->fn == SYM_NONE || sym_at(callee->fn)->name != setjmp_name;
+}
+
 static void call_to(const Callee *callee, int nargs, int params_first,
                     int nparams)
 {
-    int i, argslots = 0;
+    int i, argslots = 0, keep_iy = keeps_iy(callee);
 
     /* Anything still live in a register has to come out before the call.
      * The result comes back in HL and the callee is free with the rest, so a
@@ -998,6 +1017,8 @@ static void call_to(const Callee *callee, int nargs, int params_first,
      * f's answer the moment g was called. The arguments are exempt: they are
      * about to be pushed and consumed. */
     save_regs_below(nargs);
+    if (keep_iy)
+        iy_save();
 
     for (i = 0; i != nargs; i++) {
         /* Converted to the type the parameter was declared with. The
@@ -1109,6 +1130,8 @@ static void call_to(const Callee *callee, int nargs, int params_first,
 
         for (i = 0; i < argslots; i++)
             out_byte2(0xfd, 0xe1);              /* pop iy */
+        if (keep_iy)
+            iy_restore();                       /* the local */
         ld_ix_rr(slot, R_HL);
         ld_ix_rr(slot + ACC_INT_SIZE, R_DE);
         out_byte(0x79);                         /* ld a, c */
@@ -1123,6 +1146,8 @@ static void call_to(const Callee *callee, int nargs, int params_first,
 
     for (i = 0; i < argslots; i++)
         pop_rr(type_wide(callee->type) ? R_BC : R_DE);
+    if (keep_iy)
+        iy_restore();
 
     if (type_wide(callee->type)) {
         /* HL with the high byte in E; put it where every long lives. */

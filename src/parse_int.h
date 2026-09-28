@@ -412,6 +412,8 @@ void declaration(void)
         if (ext)
             vm_maybe(ext);              /* `int (*p)[n]` */
         sym_at(sym)->quals = decl_quals | (bc ? SQ_CONST : 0);
+        if (!far)
+            gen_iy_claim(off, type, decl_quals);
         if (stars != base ? stars_const : bc)
             sym_at(sym)->kind = far ? SYM_LOCAL_FAR : SYM_LOCAL_CONST;
         if (accept(TK_ASSIGN)) {
