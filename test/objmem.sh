@@ -9,6 +9,10 @@
 # nothing that long. Here a host acc whose allocations of more than 8 KB
 # fail once the object is open (test/failalloc.c) has to write the object
 # of a file with 3,000 calls out of it, and write it as the real one does.
+#
+# And with nothing over 4 KB: the file's image went to `<output>~` as it
+# was made (out_flush), and copying it out is done through a piece of 8 KB
+# or, when there is no block that big, of one (piece in out.c).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -38,4 +42,10 @@ if ! cmp -s -i 7 "$tmp/t.o" "$tmp/want.o"; then
     echo "  FAIL objmem: the object differs from the one bin/acc writes"
     exit 1
 fi
-echo "  objmem: 3000 calls out written with no block over 8 KB"
+if ! out=$(FAILALLOC_OVER=4096 "$tmp/acc" -c "$tmp/t.c" -o "$tmp/t4.o" 2>&1) \
+   || ! cmp -s -i 7 "$tmp/t4.o" "$tmp/want.o"; then
+    echo "  FAIL objmem: with no block over 4 KB, the object was not written as bin/acc writes it"
+    printf '%s\n' "$out" | grep error | sed 's/^/         /'
+    exit 1
+fi
+echo "  objmem: 3000 calls out written with no block over 8 KB, and over 4 KB"

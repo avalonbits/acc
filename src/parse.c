@@ -9764,7 +9764,7 @@ int main(int argc, char **argv)
          * of finding it. Nothing in it is moved once it is written, so what
          * is done goes to the file as the link goes. */
         out_open(out, 1);
-        out_may_flush = 1;
+        out_may_flush = OUT_FLUSH_IN_PLACE;
         if (obj_map_path)
             obj_link_map_open();
         gen_startup(ending, out);
@@ -9794,6 +9794,7 @@ int main(int argc, char **argv)
         lex_want_deps();
         out_base = 0;
         out_open(out, 0);
+        out_may_flush = OUT_FLUSH_COPY;
         lex_open(in);
         translation_unit();
         lex_end();
@@ -9802,8 +9803,11 @@ int main(int argc, char **argv)
 #ifdef ACC_TABLE_STATS
         {
             unsigned gen_table_bytes(void);
+            extern int out_nflushes, out_nspill_cuts, out_nresidents;
 
             fprintf(stderr, "tables %u\n", gen_table_bytes());
+            fprintf(stderr, "spill %d flushes %d cuts %d reads\n", out_nflushes,
+                    out_nspill_cuts, out_nresidents);
         }
 #endif
         lex_close();
@@ -9818,6 +9822,7 @@ int main(int argc, char **argv)
          * and libraries named with it -- and from the default library --
          * linked in after it, as a link of its object would. */
         out_open(out, 1);
+        out_may_flush = OUT_FLUSH_COPY;
         gen_startup(ending, out);
         lex_open(in);
         translation_unit();
@@ -9827,6 +9832,14 @@ int main(int argc, char **argv)
         sym_members_free();
         link_inputs(objs, nobjs);
         gen_finish();
+#ifdef ACC_TABLE_STATS
+        {
+            extern int out_nflushes, out_nspill_cuts, out_nresidents;
+
+            fprintf(stderr, "spill %d flushes %d cuts %d reads\n", out_nflushes,
+                    out_nspill_cuts, out_nresidents);
+        }
+#endif
         if (relocs)
             out_relocs_write(relocs);
         out_close();

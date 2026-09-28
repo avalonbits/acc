@@ -1014,9 +1014,17 @@ void gen_startup(int ending, const char *program); /* the entry stub */
 void out_open(const char *path, int header);
 void out_close(void);
 void out_free(void);                /* let it go without writing it */
-void out_flush(void);               /* a link's image, into its file so far */
+void out_flush(void);               /* the image, into its file so far */
 void out_abandon(void);             /* and taken out again, on an error */
 extern int out_may_flush;           /* whether out_flush may: see src/out.c */
+#define OUT_FLUSH_IN_PLACE 1        /* a link: the file is the output */
+#define OUT_FLUSH_COPY     2        /* a compile: copied out at the end */
+extern int out_flushed;             /* how much of the image is in it */
+void out_resident(int at);          /* from `at` on, in memory again */
+int  out_slot_get(int off);         /* a slot in the file, for cut_out */
+void out_slot_put(int off, int value);
+void out_cut_prepare(void);         /* before the file's addresses move */
+void out_write_text(void *to);      /* the image, file and memory: a FILE */
 void out_forget(void);          /* a function's cut runs, given back */
 int  out_len(void);                 /* bytes written so far */
 
