@@ -10,9 +10,9 @@ CC      ?= cc
 CFLAGS  ?= -O2 -g
 WARN     = -Wall -Wextra -Wno-unused-parameter
 LEX_SRC  = src/names.c src/source.c src/macro.c src/directive.c src/lex.c
-SRC      = src/obj.c src/names.c src/source.c src/macro.c src/directive.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c \
+SRC      = src/obj.c src/archive.c src/names.c src/source.c src/macro.c src/directive.c src/lex.c src/float.c src/sym.c src/gen.c src/image.c src/reloc.c src/parse.c \
            src/fmt.c
-HDR      = src/acc.h src/lex_int.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
+HDR      = src/acc.h src/lex_int.h src/out_int.h src/obj_int.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
 
 # -fsigned-char because char is signed on the eZ80, so the host build should
 # read a source file the same way the target build does.
@@ -209,7 +209,7 @@ unit: | $(BIN)
 	@$(BIN)/test_hash
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_ctype test/test_ctype.c
 	@$(BIN)/test_ctype
-	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_out test/test_out.c src/out.c -Wl,--wrap=realloc
+	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_out test/test_out.c src/image.c src/reloc.c -Wl,--wrap=realloc
 	@$(BIN)/test_out
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -DACC_HASH_STATS -o $(BIN)/test_sym test/test_sym.c src/sym.c $(LEX_SRC) src/float.c
 	@$(BIN)/test_sym
