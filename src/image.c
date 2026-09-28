@@ -92,6 +92,17 @@ void out_add_later(const OutAdd *(*add_at)(int k), int n)
     nlater = n;
 }
 
+/* And the calls into the runtime gen_finish fills, a second list in the
+ * order of its slots: see rt_fill_all. */
+static const OutAdd *(*later2)(int k);
+static int           nlater2;
+
+void out_add_later2(const OutAdd *(*add_at)(int k), int n)
+{
+    later2 = add_at;
+    nlater2 = n;
+}
+
 static int (*later_slot)(int k);
 static int  nlater_slots, later_base;
 
@@ -681,7 +692,7 @@ static void patches_free(void)
  * that started before them wrote in them -- so a slot is never split. */
 static void sweep(FILE *to, unsigned char *buf, int room)
 {
-    int from = 0, have = 0, k = 0, s = 0;
+    int from = 0, have = 0, k = 0, k2 = 0, s = 0;
 
     while (from != out_flushed) {
         int n = out_flushed - from, stop;
@@ -703,6 +714,14 @@ static void sweep(FILE *to, unsigned char *buf, int room)
         /* And the additions, which are in the order of their slots. */
         for (; k != nlater; k++) {
             const OutAdd *add = later(k);
+
+            if ((unsigned) (add->at - out_base - from) >= (unsigned) (stop - from))
+                break;
+            patch_apply(buf + (add->at - out_base - from), add->value,
+                        PATCH_ADD24);
+        }
+        for (; k2 != nlater2; k2++) {
+            const OutAdd *add = later2(k2);
 
             if ((unsigned) (add->at - out_base - from) >= (unsigned) (stop - from))
                 break;
@@ -769,6 +788,7 @@ void out_free(void)
     nlater = 0;
     later_slot = NULL;
     nlater_slots = 0;
+    nlater2 = 0;
     free(out_relocs);
     out_relocs = out_reloc_put = out_reloc_limit = NULL;
 }
@@ -785,13 +805,13 @@ int out_npatches(void)
         n += (int) ((b == patch_last ? patch_put : b->bytes + PATCH_BLOCK)
                     - b->bytes) / PATCH_WIDE;
 
-    return n + nlater + nlater_slots;   /* the additions wait on it too */
+    return n + nlater + nlater2 + nlater_slots; /* the additions wait on it too */
 }
 
 /* How many of those are additions, and not patches: test/linkfixups.sh. */
 int out_nadds(void)
 {
-    return nlater + nlater_slots;
+    return nlater + nlater2 + nlater_slots;
 }
 #endif
 

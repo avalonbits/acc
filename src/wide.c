@@ -12,7 +12,7 @@
 #include <string.h>
 
 #include "acc.h"
-#include "rt_helpers.h"
+#include "runtime.h"
 #include "gen_int.h"
 
 static void wide_bytes_at(int disp, uint64_t bits, int n);

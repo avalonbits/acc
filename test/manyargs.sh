@@ -48,6 +48,8 @@ mv "$sd/many.bin" "$tmp/many.bin"
 mv "$sd/many.bin" "$tmp/quoted.bin"
 
 cp "$ACC" "$sd/bin/acc.bin"
+mkdir -p "$sd/lib/acc"
+cp bin/libc.a "$sd/lib/acc/"        # the runtime, as the release puts it
 echo 'int main(void) { return 0; }' > "$tmp/stop.c"
 bin/acc "$tmp/stop.c" -o "$sd/bin/stop.bin" -x >/dev/null || exit 2
 mkdir -p "$sd/one" "$sd/two"

@@ -12,7 +12,7 @@ WARN     = -Wall -Wextra -Wno-unused-parameter
 LEX_SRC  = src/names.c src/source.c src/macro.c src/directive.c src/lex.c
 SRC      = src/obj.c src/archive.c src/names.c src/source.c src/macro.c src/directive.c src/lex.c src/float.c src/sym.c src/insn.c src/vstack.c src/arith.c src/wide.c src/branch.c src/runtime.c src/finish.c src/relax.c src/func.c src/lvalue.c src/image.c src/reloc.c src/diag.c src/expr.c src/inline.c src/type.c src/init.c src/decl.c src/stmt.c src/link.c src/main.c \
            src/fmt.c
-HDR      = src/acc.h src/types.h src/diag.h src/names.h src/lex.h src/sym.h src/gen.h src/out.h src/obj.h src/lex_int.h src/out_int.h src/obj_int.h src/gen_int.h src/parse_int.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
+HDR      = src/acc.h src/types.h src/diag.h src/names.h src/lex.h src/sym.h src/gen.h src/out.h src/obj.h src/lex_int.h src/out_int.h src/obj_int.h src/gen_int.h src/parse_int.h src/timing.h src/ctype.h src/runtime.h src/version.h src/fmt.h
 
 # -fsigned-char because char is signed on the eZ80, so the host build should
 # read a source file the same way the target build does.
@@ -61,19 +61,26 @@ LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 # as "the test does not cover this" when the truth is "that binary is old".
 all: $(BIN)/acc $(BIN)/acc-asan $(BIN)/libc.a
 
-# The runtime helpers are assembly, and the table acc emits them from is
-# generated rather than transcribed: getting a byte wrong in a page of opcodes
-# is not something review catches. Regenerated only when the assembly is newer
-# and agondev is installed -- the header is committed, so a host without the
-# toolchain still builds.
-AGONDEV ?= $(HOME)/agondev
+# acc's runtime is eZ80 assembly, lib/rt/*.s, assembled by zap into acc's
+# object format and put in the library with the C: see lib/rt/README.md.
+# zap is built here from its source, a checkout of
+# https://github.com/avalonbits/zap -- ZAP_SRC, or ZAP for a zap already built.
+ZAP_SRC ?= $(HOME)/code/zap
+ZAP     ?= $(BIN)/zap
+ZAPSRCS  = $(addprefix $(ZAP_SRC)/src/,zap.c symtab.c scan.c expr.c macro.c \
+             directive.c insn.c object.c buf_reader.c value.c conv.c isa_table.c) \
+           $(ZAP_SRC)/test/stubs/agon_stubs.c
 
-src/rt_helpers.h: src/rt/helpers.s src/rt/embed.py
-	@if [ -x $(AGONDEV)/bin/ez80-none-elf-as ]; then \
-	    python3 src/rt/embed.py $< $@ $(AGONDEV)/bin; \
-	else \
-	    echo "[no agondev: keeping the committed $@]"; touch $@; \
-	fi
+$(BIN)/zap: | $(BIN)
+	@[ -f $(ZAP_SRC)/src/zap.c ] || { echo "no zap source at $(ZAP_SRC): set ZAP_SRC, or ZAP" >&2; exit 1; }
+	$(CC) -std=gnu11 -O2 -fsigned-char -w -include $(ZAP_SRC)/test/stubs/host_types.h \
+	    -I$(ZAP_SRC)/src -I$(ZAP_SRC)/test/stubs -o $@ $(ZAPSRCS)
+
+RTSRC = $(wildcard lib/rt/*.s)
+RTOBJ = $(RTSRC:lib/rt/%.s=$(BIN)/lib/rt_%.o)
+
+$(BIN)/lib/rt_%.o: lib/rt/%.s $(ZAP) | $(BIN)/lib
+	@$(ZAP) $< $@ -f acc >/dev/null || { $(ZAP) $< $@ -f acc; exit 1; }
 
 # What this acc is, so that an object can say which compiler made it. The
 # rule runs on every build -- a checksum of a few hundred kilobytes is
@@ -86,8 +93,13 @@ src/acc_build.h: $(SRC) $(HDR) src/build_id.sh
 	@cmp -s $@.tmp $@ || mv $@.tmp $@
 	@$(RM) $@.tmp
 
+# The library a program is linked with unless a link names others first, as
+# /lib/acc/libc.a is on the Agon: the one built here, which holds the runtime
+# every program calls.
+HOSTLIB = -DACC_LIBC='"$(CURDIR)/$(BIN)/libc.a"'
+
 $(BIN)/acc: $(SRC) $(HDR) src/acc_build.h | $(BIN)
-	$(CC) $(CFLAGS) $(WARN) -Isrc -o $@ $(SRC)
+	$(CC) $(CFLAGS) $(WARN) $(HOSTLIB) -Isrc -o $@ $(SRC)
 
 $(BIN)/lib:
 	@mkdir -p $@
@@ -101,17 +113,17 @@ $(BIN)/lib/%.o: lib/%.c $(LIBHDR) $(BIN)/acc | $(BIN)/lib
 # member that is gone. Its recipe runs every time; the library is remade
 # only when the file it writes is new.
 $(BIN)/lib/members: FORCE | $(BIN)/lib
-	@echo '$(LIBOBJ)' | cmp -s - $@ || echo '$(LIBOBJ)' > $@
+	@echo '$(LIBOBJ) $(RTOBJ)' | cmp -s - $@ || echo '$(LIBOBJ) $(RTOBJ)' > $@
 
 FORCE:
 
 # The objects of members that are gone are removed with them, so that what
 # is in $(BIN)/lib is what is in the library -- test/lib.sh builds libraries
 # of its own from that directory.
-$(BIN)/libc.a: $(LIBOBJ) $(BIN)/lib/members $(BIN)/acc
-	@$(RM) $(filter-out $(LIBOBJ),$(wildcard $(BIN)/lib/*.o))
-	@$(BIN)/acc -a $@ $(LIBOBJ) >/dev/null
-	@echo "[$@: $$(stat -c%s $@) bytes from $(words $(LIBOBJ)) objects]"
+$(BIN)/libc.a: $(LIBOBJ) $(RTOBJ) $(BIN)/lib/members $(BIN)/acc
+	@$(RM) $(filter-out $(LIBOBJ) $(RTOBJ),$(wildcard $(BIN)/lib/*.o))
+	@$(BIN)/acc -a $@ $(LIBOBJ) $(RTOBJ) >/dev/null
+	@echo "[$@: $$(stat -c%s $@) bytes from $(words $(LIBOBJ) $(RTOBJ)) objects]"
 
 # The compiler is where the bugs are, so the tests drive a sanitized build of
 # it rather than a sanitized unit test beside it. It found the use-after-
@@ -120,7 +132,7 @@ $(BIN)/libc.a: $(LIBOBJ) $(BIN)/lib/members $(BIN)/acc
 # the Agon the block was reused and 'main' came out undefined. Built by `all`:
 # see the note there.
 $(BIN)/acc-asan: $(SRC) $(HDR) | $(BIN)
-	$(CC) $(SAN) $(WARN) -Isrc -o $@ $(SRC)
+	$(CC) $(SAN) $(WARN) $(HOSTLIB) -Isrc -o $@ $(SRC)
 
 $(BIN):
 	@mkdir -p $(BIN)

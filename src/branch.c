@@ -11,7 +11,7 @@
 #include <string.h>
 
 #include "acc.h"
-#include "rt_helpers.h"
+#include "runtime.h"
 #include "gen_int.h"
 
 /* ------------------------------------------------------------------ */

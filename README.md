@@ -208,14 +208,17 @@ On the Agon, acc compiles about 30 KB of C a second.
 
 ## Building
 
-On Linux, with a C compiler and make:
+On Linux, with a C compiler and make, and a checkout of
+[zap](https://github.com/avalonbits/zap) in `~/code/zap` (or
+`ZAP_SRC=<dir>`), which assembles acc's runtime into the library:
 
-    make                # bin/acc and bin/libc.a
+    make                # bin/acc, bin/zap and bin/libc.a
     make test           # the test suites
 
-acc on the host has no default include directory or library, so name them:
+acc on the host links `bin/libc.a` by default and has no default include
+directory, so name it:
 
-    bin/acc hello.c bin/libc.a -Iinclude
+    bin/acc hello.c -Iinclude
 
 The Agon build needs [AgonDev](https://github.com/AgonPlatform/agondev) in
 `~/agondev` (or `AGONDEV=<dir>`):

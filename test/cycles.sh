@@ -61,6 +61,8 @@ echo "  cycles: $count for long.c, past two passes of the timer"
 . test/emu.sh
 sd=$(emu_card)
 cp bin/acc-cycles.bin "$sd/bin/acc.bin"
+mkdir -p "$sd/lib/acc"
+cp bin/libc.a "$sd/lib/acc/"        # the runtime, as the release puts it
 cp test/bench/names.c "$sd/in.c"
 echo 'int main(void) { return 0; }' > "$tmp/stop.c"
 bin/acc "$tmp/stop.c" -o "$sd/bin/stop.bin" -x >/dev/null || exit 1

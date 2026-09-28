@@ -289,6 +289,11 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
             int target = item_of(&o, (int) a);
 
             gen_slot(dest, kind, t->placed[target] + a - obj_item(&o, target));
+            /* An address in the image, which -r has to name as it does the
+             * compiler's own: a jump inside a routine of the runtime, a
+             * call to a static function of a member. */
+            if (kind == REL_ABS24)
+                out_reloc(dest);
         } else if (which == 1 && kind == REL_ABS24) {
             out_patch24(dest, (int) a + t->bss);
             gen_bss_fixup(dest);
@@ -358,23 +363,59 @@ static int file_exists(const char *path)
 }
 #endif
 
-/* The name the i-th of what a link waits on is still waiting for, or -1:
- * the n calls and addresses, then the nl slots of the kinds an assembly
+/* What a link waits on, in the order it asks a library for it: the calls
+ * and addresses and a compile's calls into the runtime together, in the
+ * order of their slots -- the order a link of the file's object meets them
+ * in, so that building a program in one step and in two takes the same
+ * members in the same order -- then the slots of the kinds an assembly
  * object has (gen_late_fixup), then what objects want.
  *
  * A variable whose room is in a bss has no address until the link ends, and
  * is defined all the same. A weak name is not looked for on its own
  * account. A slot that wants the bss is not waiting on a name at all. */
-static int waiting_on(int i, int n, int nl)
+typedef struct {
+    int i, n, r, nr, l, nl, k;
+} Waits;
+
+/* One walk at a time, and static: in link_archive's frame it took the frame
+ * past what (ix+d) reaches. */
+static Waits waits;
+
+static void waits_start(Waits *w)
 {
-    int sym = i < n ? gen_fixup_sym(i)
-            : i < n + nl ? gen_late_sym(i - n) : wanted[i - n - nl];
+    w->i = w->r = w->l = w->k = 0;
+    w->n = gen_nfixups();
+    w->nr = gen_nrt();
+    w->nl = gen_nlate();
+}
 
-    if (sym < 0 || !gen_no_address(sym) || gen_bss_offset(sym) >= 0
-        || (i < n + nl && name_weak(sym_at(sym)->name)))
-        return -1;
+/* The next name still waited on, or -2 when there are no more. */
+static int waits_next(Waits *w)
+{
+    for (;;) {
+        int sym, weak = 1;
 
-    return sym;
+        if (w->i != w->n || w->r != w->nr) {
+            if (w->r != w->nr
+                && (w->i == w->n
+                    || (unsigned) gen_rt_at(w->r) < (unsigned) gen_fixup_at(w->i)))
+                sym = gen_rt_sym(w->r++);
+            else
+                sym = gen_fixup_sym(w->i++);
+        } else if (w->l != w->nl) {
+            sym = gen_late_sym(w->l++);
+        } else if (w->k != nwanted) {
+            sym = wanted[w->k++];
+            weak = 0;
+        } else {
+            return -2;
+        }
+        if (sym < 0 || !gen_no_address(sym) || gen_bss_offset(sym) >= 0
+            || (weak && name_weak(sym_at(sym)->name)))
+            continue;
+
+        return sym;
+    }
 }
 
 /* Whether anything is still waiting on a name: a program that calls
@@ -382,13 +423,9 @@ static int waiting_on(int i, int n, int nl)
  * index is 19 KB of heap for libc.a. */
 static int link_short(void)
 {
-    int i, n = gen_nfixups(), nl = gen_nlate();
+    waits_start(&waits);
 
-    for (i = 0; i != n + nl + nwanted; i++)
-        if (waiting_on(i, n, nl) >= 0)
-            return 1;
-
-    return 0;
+    return waits_next(&waits) != -2;
 }
 
 /* A library, which is asked only for what the link is short of.
@@ -414,16 +451,14 @@ static void link_archive(const char *path)
         acc_error("out of memory for '%s'", path);
 
     while (again) {
-        int i, n = gen_nfixups(), nl = gen_nlate();
+        int sym;
 
         again = 0;
-        for (i = 0; i != n + nl + nwanted; i++) {
-            int sym = waiting_on(i, n, nl);
+        waits_start(&waits);
+        while ((sym = waits_next(&waits)) != -2) {
             const char *name;
             Object o;
 
-            if (sym < 0)
-                continue;
             name = obj_object_name(name_text(sym_at(sym)->name));
             m = ar_find(&a, name);
             if (m < 0)

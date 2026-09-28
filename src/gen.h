@@ -204,7 +204,6 @@ typedef struct {
     int    at, nfixups, nrt_fixups, nbss_fixups, narray_patches, spill_used;
     int    spill_locked, vtop;
     int    nwide_consts;
-    int    rt_nused;         /* how many runtime groups were wanted */
     Value *saved;
 } GenMark;
 
@@ -281,6 +280,11 @@ int gen_no_address(int sym);
 /* -c: what this file could not resolve, for the object to hand on. */
 extern int gen_objects;
 int gen_nexterns(void);
+void rt_name_all(void);                /* the runtime, named for the link */
+int  gen_nrt(void);                    /* its calls: see runtime.c */
+int  gen_rt_at(int i);
+int  gen_rt_sym(int i);
+int  gen_fixup_at(int i);
 int gen_externs_helpers(void);        /* the first so many are helpers' */
 int gen_extern_at(int i);
 int gen_extern_sym(int i);

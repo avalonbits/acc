@@ -19,9 +19,9 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE_MAX=245461        # bytes of acc.bin
-HEAP_MIN=182205         # bytes from ___heapbot to ___heaptop
-SETFLAG_MAX=551
+IMAGE_MAX=235923        # bytes of acc.bin
+HEAP_MIN=192057         # bytes from ___heapbot to ___heaptop
+SETFLAG_MAX=538
 IMULU_MAX=301
 
 AGONDEV=${AGONDEV:-$HOME/agondev}

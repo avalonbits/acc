@@ -36,7 +36,7 @@ if [ "$after" -ge "$before" ]; then
 fi
 
 # shellcheck disable=SC2046
-"$CC" -O1 -fsigned-char -DACC_MSG_PACKED -DACC_FMT_WRAP -I"$tmp/pp" -Isrc \
+"$CC" -O1 -fsigned-char -DACC_LIBC="\"$PWD/bin/libc.a\"" -DACC_MSG_PACKED -DACC_FMT_WRAP -I"$tmp/pp" -Isrc \
     -o "$tmp/acc" "$tmp"/pp/*.c || { echo "  FAIL the packed acc does not build"; exit 1; }
 out=$(ACC="$tmp/acc" test/errors.sh 2>&1)
 if printf '%s\n' "$out" | tail -1 | grep -q ' 0 failed'; then

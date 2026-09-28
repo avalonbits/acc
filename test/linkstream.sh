@@ -30,12 +30,12 @@ sed -i 's/^int out_flush_at = 2048;/int out_flush_at = 1 << 24;/' "$tmp/late/ima
 grep -q '^int out_flush_at = 1 << 24;' "$tmp/late/image.c" \
     || { echo "  FAIL linkstream: cannot make an acc whose compile holds its image"; exit 1; }
 # shellcheck disable=SC2046
-"$CC" -O1 -fsigned-char -I"$tmp/late" -o "$tmp/peak" \
+"$CC" -O1 -fsigned-char -DACC_LIBC="\"$PWD/bin/libc.a\"" -I"$tmp/late" -o "$tmp/peak" \
     $(printf '%s\n' $SRCS | sed "s|^src/|$tmp/late/|") test/peak.c \
     -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free \
     || { echo "  FAIL the measuring acc does not build"; exit 1; }
 # shellcheck disable=SC2086
-"$CC" -O1 -fsigned-char -DACC_TABLE_STATS -Isrc -o "$tmp/count" $SRCS \
+"$CC" -O1 -fsigned-char -DACC_LIBC="\"$PWD/bin/libc.a\"" -DACC_TABLE_STATS -Isrc -o "$tmp/count" $SRCS \
     || { echo "  FAIL the counting acc does not build"; exit 1; }
 
 compile() {    # compile <name> <source text>

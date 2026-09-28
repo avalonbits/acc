@@ -50,10 +50,9 @@ done
 
 # And that the Agon build is told about the same headers the host build is.
 #
-# Its objects listed only src/acc.h, so regenerating src/rt_helpers.h from
-# src/rt/helpers.s rebuilt the host compiler and not the Agon one. The two
-# then emitted different runtimes, and target.sh reported eighty-one programs
-# where the builds disagreed -- correctly, about a compiler that had not been
+# Its objects listed only src/acc.h, so a changed header rebuilt the host
+# compiler and not the Agon one, and target.sh reported programs where the
+# builds disagreed -- correctly, about a compiler that had not been
 # recompiled. Compared as lists rather than by building anything, because
 # finding out by timestamp means touching a source in the middle of a run.
 host_hdrs=$(sed -n 's/^HDR *= *//p' Makefile | tr ' ' '\n' | grep -v '^\\*$' | sort -u)
@@ -75,9 +74,10 @@ check "the Agon objects depend on them" "$got" yes
 if [ -x bin/acc ] && [ -f bin/libc.a ]; then
     tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
     mkdir "$tmp/bin"
-    cp -a bin/acc bin/libc.a bin/lib "$tmp/bin/"
+    cp -a bin/acc bin/zap bin/libc.a bin/lib "$tmp/bin/"
     members=$(make -s --no-print-directory -f Makefile -f - print-LIBSRC \
               <<<'print-%: ; @echo $($*)')
+    runtime=$(ls lib/rt/*.s | wc -l)     # and the runtime's, one a file
     fewer=$(printf '%s\n' $members | grep -v '^lib/timer\.c$' | tr '\n' ' ')
     mk() { make -s --no-print-directory BIN="$tmp/bin" "$@" "$tmp/bin/libc.a" 2>&1; }
 
@@ -85,7 +85,7 @@ if [ -x bin/acc ] && [ -f bin/libc.a ]; then
     check "an unchanged library is left alone" "$(mk)" ""
     touch "$tmp/bin/lib/gone.o"
     case $(mk LIBSRC="$fewer") in
-      *"from $(( $(wc -w <<<"$members") - 1 )) objects"*) got=remade ;;
+      *"from $(( $(wc -w <<<"$members") - 1 + runtime )) objects"*) got=remade ;;
       *)                                                  got="left alone" ;;
     esac
     check "a member taken out remakes it" "$got" remade

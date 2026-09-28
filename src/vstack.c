@@ -16,7 +16,7 @@
 #include <string.h>
 
 #include "acc.h"
-#include "rt_helpers.h"
+#include "runtime.h"
 #include "gen_int.h"
 
 static int  reg_owner(int reg, const Value *except);
@@ -960,7 +960,6 @@ void gen_mark(GenMark *m)
     m->spill_locked = spill_locked;
     m->nwide_consts = nwide_consts;
     m->vtop = vtop;
-    m->rt_nused = rt_nused;
     m->saved = NULL;
     if (vtop) {
         m->saved = malloc((size_t) vtop * sizeof *m->saved);
@@ -989,7 +988,6 @@ void gen_rollback(GenMark *m)
     nwide_consts = m->nwide_consts;
     vtop = m->vtop;
     vsp = vstack + vtop;
-    rt_unwant_to(m->rt_nused);
     if (m->saved) {
         memcpy(vstack, m->saved, (size_t) vtop * sizeof *m->saved);
         free(m->saved);
