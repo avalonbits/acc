@@ -4,11 +4,15 @@
 #
 #   test/bench.sh [runs] [source.c ...]     # default 10, all of test/bench
 #
-# What is timed is the whole of an invocation: MOS finding acc and loading
-# it, acc's startup, the compile or the link, writing the output, and exit.
-# Two small programs on the card start and stop the emulator's cycle counter
-# (IO ports 0x40 and 0x41), one on each side of the command; the same pair
-# with nothing between them is timed too, and taken off. A count is exact
+# What is timed is the whole of an invocation but what MOS costs any
+# command: acc's loading, its startup, the compile or the link, writing the
+# output, and exit. Two small programs on the card start and stop the
+# emulator's cycle counter (IO ports 0x40 and 0x41), one on each side of the
+# command; the same pair around a program that does nothing is timed too,
+# and taken off -- which takes off the pair and MOS's own cost with it. That
+# is the same for every program, 147 ms of MOS 3.0.2 finding and starting
+# one and coming back, and nothing acc does can change it; it is reported
+# once, as (MOS). A count is exact
 # and does not care how fast the host runs the machine, so the emulator
 # runs unthrottled (-u). That needs an emulator that counts (fab-agon-emulator
 # 2037657 on: point ACC_EMU at a build of it), and without one there is no
@@ -316,13 +320,24 @@ ms() {
     printf '%d.%d' $(($1 / (CLOCK / 1000))) $(($1 * 10 / (CLOCK / 1000) % 10))
 }
 
-# The counts of a card run timed whole: the first is the two switches with
-# nothing between them, and it is taken off each of the next RUNS.
+# What starts every card run timed whole: the two switches with nothing
+# between them, and then around a program that does nothing.
+WHOLE_START='tick40\r\ntick41\r\ntick40\r\nnop\r\ntick41\r\n'
+
+# The counts of such a run: the second of those is taken off each of the
+# next RUNS, which leaves what the command cost past what any command does.
 whole_counts() {
     printf '%s' "$1" \
         | sed -n 's/.*Debug OUT(0x41): \([0-9][0-9]*\) CPU cycles.*/\1/p' \
-        | awk -v runs="$RUNS" 'NR == 1 { base = $1; next }
-                               NR <= runs + 1 { print $1 - base }'
+        | awk -v runs="$RUNS" 'NR == 1 { next } NR == 2 { base = $1; next }
+                               NR <= runs + 2 { print $1 - base }'
+}
+
+# And what MOS costs any command: the second of them less the first.
+mos_count() {
+    printf '%s' "$1" \
+        | sed -n 's/.*Debug OUT(0x41): \([0-9][0-9]*\) CPU cycles.*/\1/p' \
+        | awk 'NR == 1 { a = $1 } NR == 2 { print $1 - a; exit }'
 }
 
 status=0
@@ -374,7 +389,8 @@ for SRC in $SRCS; do
     # answer -- which is what a spread of nine million cycles was saying.
     : > "$sd/autoexec.txt"
     rm -f "$sd"/out*.o
-    [ -z "$whole" ] || printf 'tick40\r\ntick41\r\n' >> "$sd/autoexec.txt"
+    # shellcheck disable=SC2059
+    [ -z "$whole" ] || printf "$WHOLE_START" >> "$sd/autoexec.txt"
     for i in $(seq $((RUNS + 1))); do
         [ -z "$whole" ] || printf 'tick40\r\n' >> "$sd/autoexec.txt"
         if [ "$unit" = 1 ]; then
@@ -459,15 +475,15 @@ for SRC in $SRCS; do
         $((total * (CLOCK / 100) / (RUNS * bytes)))
 done
 
-# Whole programs, timed whole: a program that does nothing, which is what
-# MOS costs any command before it is acc's; hello.c to an object, hello.o linked,
+# Whole programs, timed whole: hello.c to an object, hello.o linked,
 # hello.c built in one step, and zap linked from the objects the host acc
 # makes of it -- the objects being what a link reads, whoever made them.
 # Only when every input was asked for, as the real-code ones are.
 program() {    # program <name> <setup line> <command, with %s for the run>
     local name=$1 setup=$2 cmd=$3 i out cycles csum
 
-    printf '%s\r\ntick40\r\ntick41\r\n' "$setup" > "$sd/autoexec.txt"
+    # shellcheck disable=SC2059
+    printf "%s\r\n$WHOLE_START" "$setup" > "$sd/autoexec.txt"
     for i in $(seq $((RUNS + 1))); do
         # shellcheck disable=SC2059
         printf "tick40\r\n$cmd\r\ntick41\r\n" "$i" >> "$sd/autoexec.txt"
@@ -485,12 +501,16 @@ program() {    # program <name> <setup line> <command, with %s for the run>
     csum=$(printf '%s\n' "$cycles" | awk '{t+=$1} END {printf "%d", t}')
     printf '%-16s %-14s %2d runs  %d cycles each, %s ms\n' \
         "$(basename "$ACC")" "$name" "$RUNS" $((csum / RUNS)) "$(ms $((csum / RUNS)))"
+    if [ "$name" = "hello -c" ]; then
+        mos=$(mos_count "$out")
+        printf '%-16s %-14s %2d runs  %d cycles each, %s ms, in every figure but taken off\n' \
+            "$(basename "$ACC")" "(MOS)" 1 "$mos" "$(ms "$mos")"
+    fi
 }
 
 if [ -n "$whole" ] && [ -z "${ACC_BENCH_SRC:-}" ] && [ "$ALL_INPUTS" = 1 ]; then
     printf '#include <stdio.h>\nint main(void) { printf("hello\\n"); return 0; }\n' \
         > "$sd/hello.c"
-    program "(nothing)" "" "nop"
     program "hello -c" "" "acc -c hello.c -o h%s.o"
     program "hello link" "acc -c hello.c -o hello.o" "acc hello.o -o h%s.bin"
     program "hello" "" "acc hello.c -o h%s.bin"
