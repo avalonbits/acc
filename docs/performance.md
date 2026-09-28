@@ -1,7 +1,7 @@
 # The code acc generates: size and speed
 
 What acc makes of a program, against what agondev makes of the same C,
-measured at d268584 on 2026-09-28. How acc gets there is in
+measured at 486780a on 2026-09-28. How acc gets there is in
 [OPTIMIZATIONS.md](OPTIMIZATIONS.md).
 
 Two scripts measure it, neither part of `make test`:
@@ -60,9 +60,9 @@ BASIC in 1.58 times agondev's time, 6.5 seconds of the Agon's time against
 | sort | 1,290 | 1,000 | 1,114 | 1.29 | 8,136 | 8,085 | 8,199 | 1.01 |
 | wide64 | 1,110 | 821 | 897 | 1.35 | 7,437 | 8,543 | 8,640 | 0.87 |
 | words | 1,082 | 838 | 820 | 1.29 | 8,019 | 7,930 | 7,912 | 1.01 |
-| acc | 261,373 | 211,617 | - | 1.24 | 277,870 | 222,771 | - | 1.25 |
+| acc | 261,373 | 211,617 | - | 1.24 | 277,555 | 222,771 | - | 1.25 |
 | zap | 97,269 | 80,033 | 96,551 | 1.22 | 106,628 | 88,744 | 106,546 | 1.20 |
-| vi | 33,838 | 31,141 | 56,166 | 1.09 | 51,019 | 42,076 | 67,091 | 1.21 |
+| vi | 33,838 | 31,141 | 56,166 | 1.09 | 50,837 | 42,076 | 67,091 | 1.21 |
 | **mean** | | | | **1.33** | | | | **1.06** |
 
 agondev cannot build acc at `-O2`: clang writes assembly for the code

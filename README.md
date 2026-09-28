@@ -114,7 +114,7 @@ directory given with `-I`, which is searched before `/lib/acc/include`:
 `acc -v` prints the version:
 
     */ acc -v
-    acc 0.2.0 (build 440616)
+    acc 0.2.1 (build 6059204)
 
 Every compile and link ends by printing the time it took, as
 `Done in 0.04 seconds`; the examples leave that line out. An error prints
@@ -226,7 +226,7 @@ The Agon build needs [AgonDev](https://github.com/AgonPlatform/agondev) in
 `~/agondev` (or `AGONDEV=<dir>`):
 
     make -f Makefile.agon       # bin/acc.bin
-    ./mkrelease.sh 0.2.0        # acc-0.2.0.zip, the SD card layout
+    ./mkrelease.sh 0.2.1        # acc-0.2.1.zip, the SD card layout
 
 `make test` runs every program it compiles on
 [fab-agon-emulator](https://github.com/tomm/fab-agon-emulator), and checks
