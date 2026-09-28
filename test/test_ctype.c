@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 
+#define ACC_CTYPE_TABLE                 /* the table itself, as lex.c has it */
 #include "ctype.h"
 
 static int failures = 0;

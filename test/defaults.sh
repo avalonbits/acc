@@ -19,7 +19,8 @@ pass=0; fail=0
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf '  FAIL %-40s %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
-SRC="src/obj.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c"
+# The compiler's sources, as the Makefile lists them.
+SRC=$(sed -n 's/^SRC *= //p; /^           src/p' Makefile | tr -d '\\')
 # shellcheck disable=SC2086
 "$CC" -O1 -fsigned-char -Isrc -o "$tmp/acc" $SRC \
     -DACC_INCLUDE_DIR="\"$PWD/include\"" -DACC_LIBC="\"$PWD/bin/libc.a\"" \

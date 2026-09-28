@@ -9,9 +9,10 @@
 CC      ?= cc
 CFLAGS  ?= -O2 -g
 WARN     = -Wall -Wextra -Wno-unused-parameter
-SRC      = src/obj.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c \
+LEX_SRC  = src/names.c src/source.c src/macro.c src/directive.c src/lex.c
+SRC      = src/obj.c src/names.c src/source.c src/macro.c src/directive.c src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c \
            src/fmt.c
-HDR      = src/acc.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
+HDR      = src/acc.h src/lex_int.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
 
 # -fsigned-char because char is signed on the eZ80, so the host build should
 # read a source file the same way the target build does.
@@ -204,13 +205,13 @@ agon:
 unit: | $(BIN)
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_timing test/test_timing.c
 	@$(BIN)/test_timing
-	@$(CC) $(SAN) $(WARN) -Isrc -Itest -DACC_HASH_STATS -o $(BIN)/test_hash test/test_hash.c src/lex.c src/float.c
+	@$(CC) $(SAN) $(WARN) -Isrc -Itest -DACC_HASH_STATS -o $(BIN)/test_hash test/test_hash.c $(LEX_SRC) src/float.c
 	@$(BIN)/test_hash
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_ctype test/test_ctype.c
 	@$(BIN)/test_ctype
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_out test/test_out.c src/out.c -Wl,--wrap=realloc
 	@$(BIN)/test_out
-	@$(CC) $(SAN) $(WARN) -Isrc -Itest -DACC_HASH_STATS -o $(BIN)/test_sym test/test_sym.c src/sym.c src/lex.c src/float.c
+	@$(CC) $(SAN) $(WARN) -Isrc -Itest -DACC_HASH_STATS -o $(BIN)/test_sym test/test_sym.c src/sym.c $(LEX_SRC) src/float.c
 	@$(BIN)/test_sym
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_float test/test_float.c src/float.c -lm
 	@$(BIN)/test_float

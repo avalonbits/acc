@@ -34,7 +34,13 @@
 #define CH_DIGIT 2
 #define CH_SPACE 4
 
-static const unsigned char ctype[256] = {
+/* One copy of it, in lex.c, which says ACC_CTYPE_TABLE before it includes
+ * this: made static here, every file that included it had its own 256
+ * bytes of it, and on the Agon every byte of acc.bin is heap. */
+#ifndef ACC_CTYPE_TABLE
+extern const unsigned char ctype[256];
+#else
+const unsigned char ctype[256] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 4, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -52,6 +58,7 @@ static const unsigned char ctype[256] = {
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
 };
+#endif
 
 #define is_digit(c) (ctype[(unsigned char) (c)] & CH_DIGIT)
 #define is_alpha(c) (ctype[(unsigned char) (c)] & CH_ALPHA)

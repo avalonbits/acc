@@ -20,6 +20,8 @@
 #include <string.h>
 
 #include "acc.h"
+#define ACC_CTYPE_TABLE                 /* float.c reads it: see ctype.h */
+#include "ctype.h"
 
 static int failures = 0;
 static long checks = 0;

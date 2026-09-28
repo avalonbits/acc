@@ -34,7 +34,8 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 fail=0
 checked=0
-for src in src/lex.c src/float.c src/sym.c src/gen.c src/out.c src/parse.c; do
+# Every source the Agon build compiles, as Makefile.agon lists them.
+for src in $(sed -n 's/^SRCS = //p; /^       src/p' Makefile.agon | tr -d '\\'); do
     "$CC" -mllvm -z80-gas-style -nostdinc -Isrc -isystem "$AGONDEV/include" \
         -target ez80-none-elf -DAGONDEV -Oz -S -o "$tmp/out.s" "$src" || exit 1
 
