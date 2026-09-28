@@ -59,23 +59,27 @@ checks=(
     "lvalue.c __setflag vdup"
     "insn.c __setflag ld_ix_rr push_rr pop_rr add_hl_rr sbc_hl_rr"
     "image.c __setflag out_word24"
-    "parse.c __iand expr primary postfix_statement name_operand string_value
-           function_declarator call_rest block"
+    "expr.c __iand expr primary postfix_statement name_operand string_value
+           call_rest"
+    "decl.c __iand function_declarator"
+    "stmt.c __iand block"
     "sym.c __imulu ext_bytes ext_elem ext_elem_x ext_count member_find
            member_type member_offset member_next"
     "sym.c __ishl sym_param_type sym_param_ext"
     "wide.c __llsh wide_bytes_at"
     "arith.c __ishl vbinop"
-    "parse.c __iand binary_rest"
-    "parse.c __setflag binary_rest"
-    "parse.c +binary_rest logical_rest"
+    "expr.c __iand binary_rest"
+    "expr.c __setflag binary_rest"
+    "expr.c +binary_rest logical_rest"
     "lex.c +next not_punct"
-    "parse.c - starts_decl"
+    "expr.c - starts_decl"
+    "type.c - starts_decl"
+    "stmt.c - starts_decl"
     "lex.c +next lex_two"
-    "parse.c +base_type type_specifier_slow"
+    "type.c +base_type type_specifier_slow"
     "obj.c __imulu obj_item obj_item_align obj_reloc_at obj_reloc_sym
            obj_reloc_kind obj_reloc_addend"
-    "parse.c __idivs item_of"
+    "link.c __idivs item_of"
 )
 
 fail=0
