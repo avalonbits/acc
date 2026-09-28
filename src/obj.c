@@ -265,31 +265,21 @@ static int reloc_wants_bss(int at, int *bss)
     return *bss < gen_nbss_fixups() && gen_bss_fixup_at(*bss) == at;
 }
 
-/* For each relocation, the symbol it wants if it is a call out of this
- * file, or 0: each call looked for among the relocations, which are in
- * order. The calls out were once a handful and were walked for every
- * relocation; every function's prologue calls into the runtime, which an
- * object leaves to the link, and that walk became most of writing one. */
-static void reloc_calls(int *wants, int nrelocs, const int *slot_of,
-                        int nexterns)
+/* The symbol the relocation at `at` wants if it is a call or an address out
+ * of this file, or 0. The calls out are two runs, each in the order of the
+ * relocations -- the helpers' and then the rest (see gen_externs_helpers)
+ * -- so each is walked beside the relocations with a cursor of its own, and
+ * no table the length of the relocations is needed: one was 12 KB of vi.c,
+ * the size of block a full heap no longer has. */
+static int reloc_call(int at, int *helper, int helpers_end, int *other,
+                      int nexterns, const int *slot_of)
 {
-    int i;
+    if (*helper != helpers_end && gen_extern_at(*helper) == at)
+        return slot_of[(*helper)++];
+    if (*other != nexterns && gen_extern_at(*other) == at)
+        return slot_of[(*other)++];
 
-    for (i = 0; i != nexterns; i++) {
-        unsigned at = (unsigned) gen_extern_at(i);
-        int lo = 0, hi = nrelocs;
-
-        while (lo < hi) {
-            int mid = (int) ((unsigned) (lo + hi) / 2);
-
-            if ((unsigned) out_reloc_at(mid) < at)
-                lo = mid + 1;
-            else
-                hi = mid;
-        }
-        if (lo < nrelocs && (unsigned) out_reloc_at(lo) == at)
-            wants[lo] = slot_of[i];
-    }
+    return 0;
 }
 
 static void put_num(FILE *f, int value)
@@ -454,7 +444,8 @@ void obj_write(const char *path)
     int nglobals = sym_nglobals(), step = (int) sizeof(Sym);
     int nsyms = 0, nrelocs = out_nrelocs(), ndeps = lex_ndeps();
     int nexterns = gen_nexterns(), nwalk = nglobals / step;
-    int *name_at, *index_of, *dep_at, *slot_of, *items, *want_at, *wants;
+    int *name_at, *index_of, *dep_at, *slot_of, *items, *want_at;
+    int helper, other, helpers_end;
     char *used;
     int i, s, n, nitems = 0, nwants;
 
@@ -572,17 +563,19 @@ void obj_write(const char *path)
         front_byte(OBJ_WANT | OBJ_FUNC);
     }
 
-    wants = calloc((size_t) nrelocs + 1, sizeof *wants);
-    if (!wants)
-        acc_error("out of memory for the object");
-    reloc_calls(wants, nrelocs, slot_of, nexterns);
+    helper = 0;
+    other = helpers_end = gen_externs_helpers();
     for (i = 0, n = 0; i < nrelocs; i++) {
         int at = out_reloc_at(i);
+        int call = reloc_call(at, &helper, helpers_end, &other, nexterns,
+                              slot_of);
 
         front_num(at);
-        front_num(reloc_wants_bss(at, &n) ? 1 : wants[i]);
+        front_num(reloc_wants_bss(at, &n) ? 1 : call);
     }
-    free(wants);
+    /* Every call out found its relocation, or a run was out of order. */
+    if (helper != helpers_end || other != nexterns)
+        acc_error("internal: a call out of this file has no relocation");
 
     for (i = 0; i != ndeps; i++) {
         unsigned size, sum, weighted;
