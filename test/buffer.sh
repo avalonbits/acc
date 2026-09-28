@@ -24,8 +24,8 @@ mkdir -p "$tmp/ref" "$tmp/pad"
 
 # The window's size, from the lexer. Read rather than repeated, so that
 # changing it there moves this sweep with it.
-cap=$(sed -n 's/^#define SRC_CAP  *\([0-9]*\).*/\1/p' src/lex.c)
-[ -n "$cap" ] || { echo "  FAIL cannot find SRC_CAP in src/lex.c"; exit 1; }
+cap=$(sed -n 's/^#define SRC_CAP  *\([0-9]*\).*/\1/p' src/source.c)
+[ -n "$cap" ] || { echo "  FAIL cannot find SRC_CAP in src/source.c"; exit 1; }
 
 # What goes after the padding: one of everything whose scan walks forward
 # over characters, so that each in turn is the thing the edge lands in.
