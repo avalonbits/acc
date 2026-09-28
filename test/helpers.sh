@@ -56,7 +56,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 checks=(
     "gen.c __setflag vpush_const vpush_local vpush_reg vdrop vtype vtype_at
            vconst_top vdup ld_ix_rr push_rr pop_rr add_hl_rr sbc_hl_rr"
-    "out.c __setflag out_word24"
+    "image.c __setflag out_word24"
     "parse.c __iand expr primary postfix_statement name_operand string_value
            function_declarator call_rest block"
     "sym.c __imulu ext_bytes ext_elem ext_elem_x ext_count member_find
