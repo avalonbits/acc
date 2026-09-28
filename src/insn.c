@@ -62,7 +62,7 @@ void ld_ix_rr(int disp, int reg)    /* ld (ix+d), rr */
         stored_reg = reg;
         stored_epoch = out_rewinds;
     } else {
-        out_byte3(0xfd, 0x0f + reg_code[reg], far_base(disp));
+        far_op(0xfd, 0x0f + reg_code[reg], disp);
     }
 }
 
@@ -112,8 +112,11 @@ void mov_rr(int dst, int src)
  * of bytes in one slot -- which is what every eight-byte value is -- could
  * pay for the pointer once. It does not yet: each access lays its own down,
  * which is the simple thing and is only paid by the functions that were
- * refused before. */
-int far_base(int disp)
+ * refused before.
+ *
+ * far_op lays down the whole access: the pointer, then `prefix op d` on it.
+ * In a function with a local in IY, IY is saved around the two. */
+static int far_base(int disp)
 {
     int step = disp < 0 ? -128 : 127;
 
@@ -125,6 +128,14 @@ int far_base(int disp)
     }
 
     return disp;
+}
+
+__attribute__((noinline)) void far_op(int prefix, int op, int disp)
+{
+    iy_save();
+    disp = far_base(disp);
+    out_byte3(prefix, op, disp);
+    iy_restore();
 }
 
 /* The result of a void function, used as though it were a value. Found where
@@ -169,7 +180,7 @@ void frame_byte(int op, int disp)
     if (disp_fits(disp))
         out_byte3(0xdd, op, disp);
     else
-        out_byte3(0xfd, op, far_base(disp));
+        far_op(0xfd, op, disp);
 }
 
 void ld_a_ix(int disp)   { frame_byte(0x7e, disp); }
@@ -253,6 +264,42 @@ int xor_a_imm(int v)  { out_byte2(0xee, v & 0xff); return 0; }
  * Returns 0 for a constant that would take more code than it saves, and for
  * a negative one, which would want a negation on the end. */
 void add_hl_hl(void) { out_byte(0x29); }
+
+/* IY around the backend's own uses of it -- a narrowing, a two-byte load,
+ * a long moved three bytes at a time, a slot out of (ix+d)'s reach -- in a
+ * function where it holds a local: pushed before and popped after, and
+ * nothing at all in any other function. */
+void iy_save(void)
+{
+    if (iy_local)
+        out_iy(0xe5);                           /* push iy */
+}
+
+void iy_restore(void)
+{
+    if (iy_local)
+        out_iy(0xe1);                           /* pop iy */
+}
+
+/* An instruction on IY, and one with a displacement from it: calls rather
+ * than the inlined emitters, since each of those is fifty bytes of agondev's
+ * code at every place it is written. */
+__attribute__((noinline)) void out_iy(int op)
+{
+    out_byte2(0xfd, op);
+}
+
+__attribute__((noinline)) void out_iy_d(int op, int disp)
+{
+    out_byte3(0xfd, op, disp);
+}
+
+/* lea rr, iy+d: the local in IY, plus d, copied into a register -- the
+ * register's code, as ld rr, (ix+d) has it, and three. */
+void lea_rr_iy(int reg, int disp)
+{
+    out_byte3(0xed, 0x03 + reg_code[reg], disp);
+}
 
 /* HL = HL >> (16 + count), count 0 to 7, written out: push hl; inc sp;
  * pop af; dec sp leaves HL's top byte in A, which is shifted by the rest

@@ -355,7 +355,7 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
                                int line, const char *spot)
 {
     int fn, declared, params = 1, unnamed = 0, mark, variadic = 0;
-    int nparams = 0, argoff, params_first;
+    int nparams = 0, argoff, params_first, iy_param = 0;
     int incomplete_line = 0, incomplete_x = 0;
     const char *incomplete_spot = NULL;
     unsigned seen = nested_lists;
@@ -449,6 +449,8 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
                 seen = nested_lists;
             }
             sym_param_add(ptype, pext);
+            if (pname && !iy_param)
+                iy_param = gen_iy_pick(argoff, ptype, pquals);
 
             /* Every argument occupies whole slots: one however narrow it is,
              * two for a long, and as many as a struct fills. That is what
@@ -551,7 +553,10 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
     sym_set_flags(fn, SYMF_DECLARED | SYMF_PARAMS | SYMF_DEFINED | variadic
                       | (decl_static ? SYMF_STATIC : 0));
     current_fn = fn;
+
     gen_func_begin(fn, nparams, ret_type);
+    if (iy_param)
+        gen_iy_param(iy_param);
 
     if (nstruct_params)
         struct_params_copy();

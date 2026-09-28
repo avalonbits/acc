@@ -58,6 +58,7 @@ static int bitwise_const(int op, int value)
             ld_a_l();
             if (c0 != 0xff)
                 and_a_imm(c0);
+            iy_save();
             out_byte2(0xfd, 0x6f);      /* ld iyl, a */
         }
         ld_a_h();
@@ -70,6 +71,7 @@ static int bitwise_const(int op, int value)
         ld_h_a();
         if (c0 != 0x00) {
             out_byte2(0xfd, 0x7d);      /* ld a, iyl */
+            iy_restore();
             ld_l_a();
         } else {
             flags_say_nonzero(at);
@@ -430,12 +432,14 @@ static int bitwise_narrow(int op, int lw, int rw)
     }
     ld_a_l();                                   /* an AND, of three by two */
     out_byte(alu + 1);                          /* and c */
+    iy_save();
     out_byte2(0xfd, 0x6f);                      /* ld iyl, a */
     ld_a_h();
     out_byte(alu);                              /* and b */
     sbc_hl_hl();
     ld_h_a();
     out_byte2(0xfd, 0x7d);                      /* ld a, iyl */
+    iy_restore();
     ld_l_a();
 
     return 2;
@@ -511,6 +515,23 @@ void vbinop(int op)
         vdrop();
 
         return;
+    }
+
+    /* The local in IY and a constant added to it or taken from it: still IY,
+     * the difference kept as the displacement a use reads -- (iy+d) or
+     * lea rr, iy+d -- so `p + 1` is no code at all. */
+    if ((op == TK_PLUS || op == TK_MINUS) && lhs->kind == VAL_IY
+        && val_number(rhs->kind) && !type_float(lhs->type)) {
+        int d = lhs->val + (op == TK_PLUS ? rhs->val : -rhs->val);
+
+        if (disp_fits(d)) {
+            result = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
+            vdrop();
+            (vsp - 1)->val = d;
+            (vsp - 1)->type = result;
+
+            return;
+        }
     }
 
     /* An address the link fills in, just loaded, and a constant added to

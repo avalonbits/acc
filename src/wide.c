@@ -27,7 +27,7 @@ void lea_rr_ix(int reg, int disp)
     if (disp_fits(disp))
         out_byte3(0xed, lea_code[reg], disp);
     else
-        out_byte3(0xed, lea_code[reg] + 1, far_base(disp));  /* from iy */
+        far_op(0xed, lea_code[reg] + 1, disp);          /* from iy */
 }
 
 /* Copy n bytes from one frame slot to another.
@@ -58,12 +58,14 @@ static void copy_long(int to, int from, int n)
      * already hold -- twelve bytes of code where a byte at a time was
      * twenty-four. */
     if (n >= ACC_INT_SIZE && (to + n <= from || from + n <= to)) {
+        iy_save();
         for (i = 0; i < n; i += ACC_INT_SIZE) {
             if (i > n - ACC_INT_SIZE)
                 i = n - ACC_INT_SIZE;
             out_byte3(0xdd, 0x31, from + i);    /* ld iy, (ix+d) */
             out_byte3(0xdd, 0x3e, to + i);      /* ld (ix+d), iy */
         }
+        iy_restore();
 
         return;
     }
@@ -312,6 +314,7 @@ void wide_through_hl(int slot, int n, int store)
     int i, at = 0;
 
     if (n >= ACC_INT_SIZE && disp_fits(slot) && disp_fits(slot + n - 1)) {
+        iy_save();
         for (i = 0; i < n; i += ACC_INT_SIZE) {
             if (i > n - ACC_INT_SIZE)
                 i = n - ACC_INT_SIZE;
@@ -327,6 +330,7 @@ void wide_through_hl(int slot, int n, int store)
                 out_byte3(0xdd, 0x3e, slot + i);    /* ld (ix+d), iy */
             }
         }
+        iy_restore();
 
         return;
     }
@@ -368,6 +372,7 @@ static void wide_bytes_at(int disp, uint64_t bits, int n)
     if (n >= ACC_INT_SIZE && disp_fits(disp) && disp_fits(disp + n - 1)) {
         int last = -1;
 
+        iy_save();
         for (i = 0; i < n; i += ACC_INT_SIZE) {
             if (i > n - ACC_INT_SIZE)
                 i = n - ACC_INT_SIZE;
@@ -380,6 +385,7 @@ static void wide_bytes_at(int disp, uint64_t bits, int n)
             out_byte3(0xdd, 0x3e, disp + i);    /* ld (ix+d), iy */
             last = i;
         }
+        iy_restore();
 
         return;
     }
@@ -919,8 +925,10 @@ static int long_const_bytes(int op, Type result)
             break;
         }
         k /= 8;
+        iy_save();
         out_byte3(0xdd, 0x31, src + 1 - k);             /* ld iy, (ix+d) */
         out_byte3(0xdd, 0x3e, left + 1);                /* ld (ix+d), iy */
+        iy_restore();
         out_byte(0xaf);                                 /* xor a, a */
         for (i = 0; i < k; i++)
             ld_ix_a(left + i);
@@ -942,8 +950,10 @@ static int long_const_bytes(int op, Type result)
             ld_a_ix(src + 3);
             out_byte2(0x17, 0x9f);                      /* rla; sbc a, a */
         }
+        iy_save();
         out_byte3(0xdd, 0x31, src + k);                 /* ld iy, (ix+d) */
         out_byte3(0xdd, 0x3e, left);                    /* ld (ix+d), iy */
+        iy_restore();
         for (i = 4 - k; i < 4; i++)
             ld_ix_a(left + i);
         break;

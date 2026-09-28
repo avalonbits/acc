@@ -17,10 +17,49 @@
 static void bitfield_read(void);
 static void bitfield_write(void);
 
+/* The value on top into IY, where the local that lives there is: see
+ * iy_local. The value stays on the stack as the assignment's answer.
+ *
+ * Another read of the local still waiting on the stack would read what is
+ * written here instead of what was there, so it is taken first -- `x++`
+ * reads it that way already, and nothing else is ordered between its read
+ * and a write. */
+__attribute__((noinline)) static void vstore_iy(void)
+{
+    Value *top = vsp - 1, *v;
+
+    if (top->kind == VAL_IY && top->val == 0)
+        return;
+    for (v = vstack; v < top; v++)
+        if (v->kind == VAL_IY)
+            force_reg(v);
+    if (top->kind == VAL_IY) {
+        /* The local and a step: a step, and the answer is what it now is.
+         * inc iy and dec iy for one, lea iy, iy+d for the rest. */
+        if (top->val == 1 || top->val == -1)
+            out_iy(top->val == 1 ? 0x23 : 0x2b);
+        else
+            out_byte3(0xed, 0x33, top->val);
+        top->val = 0;
+    } else if (top->kind == VAL_LOCAL && !top->bits
+               && type_size(top->type) == ACC_INT_SIZE) {
+        frame_byte(0x31, top->val);             /* ld iy, (ix+d) */
+    } else {
+        push_rr(force_reg(top));
+        out_iy(0xe1);                           /* pop iy */
+    }
+}
+
 void vstore_local(int offset, Type type)
 {
     gen_effects++;
     int reg;
+
+    if (offset == iy_local) {
+        vstore_iy();
+
+        return;
+    }
 
     /* An assignment converts the value to the type of the object, and
      * between a float and an integer that is arithmetic rather than a
@@ -210,6 +249,16 @@ void vaddr_local(int offset, Type type)
     if (type_ptr_depth(type) == TY_PTR_MAX)
         acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                      TY_PTR_MAX);
+    /* The local in IY has no address, but the parser asks for one where a
+     * name is an object rather than a value -- `(x) = v`, `sizeof x` -- and
+     * only ever reads or writes through it: vderef turns this back into the
+     * local, and vstore_indirect writes the local. Loading it as a number
+     * is what `&x` would do, which `register` rules out. */
+    if (offset == iy_local) {
+        vpush(VAL_IYADDR, type_ptr_to(type), 0);
+
+        return;
+    }
 
     reg = reg_alloc();
     lea_rr_ix(reg, offset);
@@ -247,6 +296,12 @@ void vderef(void)
     if (to == TY_VOID)
         acc_error_at(tok_line, "a 'void *' does not say what it points at, so "
                                "it cannot be read through");
+    if (top->kind == VAL_IYADDR) {
+        top->kind = VAL_IY;
+        top->type = to;
+
+        return;
+    }
 
     /* What a pointer to an array points at is an array, and an array is the
      * address of its first element: the same address, as a pointer to the
@@ -283,6 +338,14 @@ void vderef(void)
         deref_quals = top->quals;
     }
 
+    /* Through the local in IY: read at (iy+d), with no copy of the pointer
+     * made first -- ld a, (iy+d) for a byte and ld hl, (iy+d) for three. */
+    if (top->kind == VAL_IY && !type_wide(to) && type_size(to) != 2) {
+        evict_reg(R_HL);
+        out_iy_d(type_size(to) == 1 ? 0x7e : 0x27, top->val);
+        goto read;
+    }
+
     force_into(top, R_HL);
 
     if (type_wide(to)) {
@@ -312,15 +375,19 @@ void vderef(void)
         ld_hl_ind_hl();
     } else if (type_size(to) == 1) {
         ld_a_hl();
-        widen_loaded(to);
+read:
+        if (type_size(to) == 1)
+            widen_loaded(to);
     } else {
         /* Two bytes, read through IY: loading either into H or into L would
          * overwrite the pointer before the other had been read, and keeping
          * the low one in E, as this once did, overwrote whatever the
          * allocator was holding in DE. IY is the backend's own scratch. */
+        iy_save();
         out_byte3(0xe5, 0xfd, 0xe1);    /* push hl; pop iy */
         out_byte3(0xfd, 0x7e, 0x01);    /* ld a, (iy+1) */
         widen_loaded(to);
+        iy_restore();
     }
 
     vdrop();
@@ -434,6 +501,12 @@ void vstore_indirect(void)
     }
 
     vconvert(to);
+    if ((vsp - 2)->kind == VAL_IYADDR) {
+        vstore_iy();
+        vstore_leave_value();
+
+        return;
+    }
 
     if (type_wide(to)) {
         int n = type_wide_bytes(to);
@@ -467,6 +540,28 @@ void vstore_indirect(void)
         wide_through_hl(slot, n, 1);
         vdrop();
         vpush_scratch(to, slot);
+
+        return;
+    }
+
+    /* Through the local in IY: written at (iy+d), from A for a byte or from
+     * any register for three, and the pointer is not copied at all. */
+    if ((vsp - 2)->kind == VAL_IY && type_size(to) != 2) {
+        Value *val = vsp - 1;
+        int d = (vsp - 2)->val;
+
+        if (val->kind == VAL_ACC && type_size(to) == 1) {
+            out_iy_d(0x77, d);                          /* ld (iy+d), a */
+        } else {
+            static const unsigned char low_of[NREGS] = { 0x75, 0x73, 0x71 };
+            int reg = force_reg(val);
+
+            /* ld (iy+d), rr for three bytes, as ld (ix+d), rr has it, and
+             * ld (iy+d), l, e or c for one. */
+            out_iy_d(type_size(to) == ACC_INT_SIZE ? 0x0f + reg_code[reg]
+                                                   : low_of[reg], d);
+        }
+        vstore_leave_value();
 
         return;
     }
@@ -778,6 +873,11 @@ static void vsnapshot(void)
 {
     Value *top = vsp - 1;
 
+    if (top->kind == VAL_IY) {
+        force_reg(top);
+
+        return;
+    }
     if (top->kind != VAL_LOCAL)
         return;
 

@@ -479,5 +479,16 @@ emits "1000 + x, no constant in a slot" fd21e80300 no \
 emits "if (p[i]) continue, one jump"    280218 no \
     'int f(const char *p, int n) { int i, c = 0; for (i = 0; i < n; i++) { if (p[i]) continue; c++; } return c; }'
 
+# A register local lives in IY: `*p++` reads at iy-1 without a copy of p --
+# ld a, (iy-1) -- or writes there. Without register it is in the frame, and
+# the read is not there. (Not inc iy, `fd23`, for the step: in frame code
+# those bytes are a displacement of -3 and an inc hl.)
+emits "register p: *p++ is (iy-1)"      fd7eff yes \
+    'int f(register const char *p) { int n = 0; while (*p++) n++; return n; }'
+emits "register p: *p++ = 0 at (iy-1)"  fd7[135]ff yes \
+    'void f(register char *p, int n) { while (n--) *p++ = 0; }'
+emits "no register: no (iy-1)"          fd7eff no \
+    'int f(const char *p) { int n = 0; while (*p++) n++; return n; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

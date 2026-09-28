@@ -48,7 +48,9 @@ enum {
     VAL_REG,        /* already in register val */
     VAL_ACC,        /* in A, still narrow: see the note on byte arithmetic */
     VAL_VOID,       /* what a void function returned, which is nothing */
-    VAL_WIDE        /* a constant too wide for val: see wide_const */
+    VAL_WIDE,       /* a constant too wide for val: see wide_const */
+    VAL_IY,         /* the local that lives in IY, plus val: see iy_local */
+    VAL_IYADDR      /* and where it is, which is nowhere: see vaddr_local */
 };
 
 /* Whether a value is a constant of any of the three kinds. VAL_CONST is
@@ -104,6 +106,17 @@ enum { R_HL = 0, R_DE, R_BC, NREGS };
 
 void gen_init(void);
 void gen_func_begin(int fn, int nparams, Type returns);
+
+/* The one local of a function that lives in IY rather than in its frame
+ * slot: the slot's offset, or 0 for none -- 0 is the saved IX, which no
+ * local is. See gen_iy_claim. */
+extern int iy_local;
+extern int iy_any;                    /* test builds: the first that can, not
+                                       * only a register one */
+int  gen_iy_can(Type type);           /* whether a local of this type may */
+void gen_iy_claim(int offset, Type type, int quals);
+int  gen_iy_pick(int offset, Type type, int quals);  /* a parameter */
+void gen_iy_param(int offset);        /* and once the prologue is laid */
 void gen_func_end(void);
 extern int gen_effects;               /* side effects compiled so far */
 int  gen_local(int size);
