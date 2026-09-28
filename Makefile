@@ -146,6 +146,7 @@ test: all unit agon
 	@test/manyargs.sh || [ $$? -eq 77 ]
 	@test/abandon.sh
 	@test/objmem.sh
+	@test/spill.sh
 	@test/startup.sh || [ $$? -eq 77 ]
 	@test/flags.sh || [ $$? -eq 77 ]
 	@test/buffer.sh

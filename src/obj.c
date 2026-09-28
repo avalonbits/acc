@@ -594,9 +594,7 @@ void obj_write(const char *path)
     if (strings_len
         && (int) fwrite(strings, 1, (size_t) strings_len, f) != strings_len)
         acc_error("short write on '%s'", path);
-    if (out_len()
-        && (int) fwrite(out_img, 1, (size_t) out_len(), f) != out_len())
-        acc_error("short write on '%s'", path);
+    out_write_text(f);
     write_done();
 
     free(name_at);

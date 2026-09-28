@@ -6129,9 +6129,15 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
      *
      * The relocations are in order and so is the list of slots to leave
      * alone, so telling them apart is one step through that list per slot. */
+    /* A slot may be in the file the image has gone to (out_flush), for the
+     * cut that leaves the file's unused functions out: read and written
+     * there, once what waits to be written in it has been. A function's
+     * own jumps are all in memory. */
+    if (!holes)
+        out_cut_prepare();
     out_cut_rewind();
     for (p = out_relocs + 1 + from->reloc; p < out_reloc_put; p++) {
-        int slot = out_base + *p, to;
+        int slot = out_base + *p, to, infile;
 
         while (seen < npending && *seen_at < slot)
             seen++, seen_at++;
@@ -6139,14 +6145,18 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
             continue;
         if (out_cut_next(slot) < 0)
             continue;                   /* going away with the code it is in */
-        to = out_cut_moved(get24(out_img + *p));
+        infile = (unsigned) *p < (unsigned) out_flushed;
+        to = out_cut_moved(infile ? out_slot_get(*p) : get24(out_img + *p));
         if (to < 0) {
             if (holes)
                 continue;
             acc_error("internal: %06x holds the address of a function "
                       "nothing was said to want", slot);
         }
-        put24(out_img + *p, to);
+        if (infile)
+            out_slot_put(*p, to);
+        else
+            put24(out_img + *p, to);
     }
 
     out_cut(cuts, ncuts, from->reloc);
@@ -7419,6 +7429,7 @@ void gen_func_end(void)
     pool_emit();
     static_end();
     gen_forget();
+    out_flush();
 }
 
 /* The tables a function needs while it is compiled, given back once it is:

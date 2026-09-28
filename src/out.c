@@ -40,14 +40,23 @@ unsigned char        *out_limit;        /* one past the last it may use */
 static int            cap;
 static const char    *out_path;
 
-/* A link's image, which is the whole program, goes to its file as it is
- * made. The first `flushed` bytes are there, and memory holds the rest, from
- * out_img + flushed: out_img is where the first byte would be, so that an
- * address is found the same way whichever part it is in. What is written
- * to a byte already in the file waits in `patches` until out_close. */
-static int            flushed;
-static FILE          *spill;            /* the output, once it is written to */
-int                   out_may_flush;    /* set by a link: see out_flush */
+/* The image goes to a file as it is made, a function or an object at a
+ * time, rather than being held whole: see out_flush. The first
+ * `out_flushed` bytes are in the file, and memory holds the rest, from
+ * out_img + out_flushed: out_img is where the first byte would be, so that
+ * an address is found the same way whichever part it is in. What is written
+ * to a byte in the file waits in `patches`, and is made when the file is
+ * copied out or, for a link, in the file itself.
+ *
+ * A link's file is its output, patched where it stands at the end. A
+ * compile's is `<output>~`, and its bytes are copied to the output at the
+ * end: an object's text comes after tables not known until then, and
+ * leaving out a file's unused functions takes bytes out of the middle of
+ * what is in the file (see out_cut). */
+int                   out_flushed;
+static FILE          *spill;            /* the file, once it is written to */
+static char          *spill_name;       /* and its name */
+int                   out_may_flush;    /* OUT_FLUSH_*: see out_flush */
 
 /* Each is PATCH_WIDE bytes: the offset, the value, and the kind. Walked
  * by a pointer, as the relocations are: an index into seven-byte entries
@@ -69,6 +78,40 @@ typedef struct PatchBlock {
 
 static PatchBlock    *patches, *patch_last;
 static unsigned char *patch_put, *patch_limit;
+
+#ifdef ACC_TABLE_STATS
+/* How often the file was written to, cut, and read back: test/spill.sh. */
+int out_nflushes, out_nspill_cuts, out_nresidents;
+#define COUNT(n) ((n)++)
+#else
+#define COUNT(n) ((void) 0)
+#endif
+
+/* What the file is read and written through, a piece at a time: each read
+ * and write is a call through the whole of MOS's file layer, so a piece of
+ * a kilobyte cost a compile that went to a file 5 to 9% where one of 8 KB
+ * costs it 3. */
+#define SLOTS_ROOM 8192
+
+/* A piece to read the file through, of SLOTS_ROOM, or when the heap has no
+ * block that big -- the end of a big compile, when it is in pieces itself
+ * -- of a kilobyte: said in *room. */
+static unsigned char *piece(int *room)
+{
+    unsigned char *buf = malloc(SLOTS_ROOM);
+
+    *room = SLOTS_ROOM;
+    if (!buf) {
+        buf = malloc(1024);
+        *room = 1024;
+    }
+    if (!buf)
+        acc_error("out of memory for the output");
+
+    return buf;
+}
+
+static void spill_io(int off, unsigned char *buf, int n, int write);
 
 #define OUT_LEN ((int) (out_put - out_img))
 
@@ -392,14 +435,47 @@ int out_cut_next(int a)
  * function says where that function's relocations begin and the rest of the
  * table is not walked at all -- which is what keeps doing it a function at a
  * time from being the whole table once per function. */
+static void slots_done(void);
+
+/* The runs among the first `n` that are in the file, taken out of it: what
+ * follows each is copied down over it, in the file, a kilobyte at a time --
+ * down, so what is read is always past what has been written. What is gone
+ * from the file; the bytes in memory are then where the file ends. */
+static int spill_cut(const Cut *cuts, const Cut *stop)
+{
+    int w = cuts->at - out_base, room;
+    unsigned char *buf = piece(&room);
+
+    COUNT(out_nspill_cuts);
+    for (; cuts != stop; cuts++) {
+        int r = cuts->at + cuts->len - out_base;
+        int end = cuts + 1 != stop ? cuts[1].at - out_base : out_flushed;
+
+        if ((unsigned) r > (unsigned) out_flushed)
+            acc_error("internal: a run cut out of the file runs past it");
+        while (r != end) {
+            int k = (unsigned) (end - r) < (unsigned) room ? end - r : room;
+
+            spill_io(r, buf, k, 0);
+            spill_io(w, buf, k, 1);
+            r += k;
+            w += k;
+        }
+    }
+    free(buf);
+
+    return out_flushed - w;
+}
+
 void out_cut(const Cut *cuts, int n, int first)
 {
     int *put = out_relocs + 1 + first, *scan = put;
     unsigned char *dst;
-    int i;
+    int i, infile = 0, gone = 0;
 
     if (!n)
         return;
+    slots_done();
 
     /* The table holds offsets and the runs are addresses, so each entry goes
      * out to one and comes back as the other. */
@@ -412,6 +488,25 @@ void out_cut(const Cut *cuts, int n, int first)
     }
     out_reloc_put = put;
 
+    /* The runs in the file first, in the file. */
+    {
+        const Cut *c = cuts;
+
+        while (infile != n && (unsigned) (c->at - out_base)
+                              < (unsigned) out_flushed)
+            infile++, c++;
+        if (infile)
+            gone = spill_cut(cuts, c);
+        cuts = c;
+        n -= infile;
+    }
+    if (!n) {
+        out_img += gone;
+        out_flushed -= gone;
+
+        return;
+    }
+
     dst = out_img + (cuts[0].at - out_base);
     for (i = 0; i < n; i++, cuts++) {
         unsigned char *from = out_img + (cuts->at + cuts->len - out_base);
@@ -423,6 +518,10 @@ void out_cut(const Cut *cuts, int n, int first)
         dst += to - from;
     }
     out_put = dst;
+
+    /* And the bytes in memory start where the file now ends. */
+    out_img += gone;
+    out_flushed -= gone;
 }
 
 /* The table, written out as one hexadecimal offset a line.
@@ -623,19 +722,19 @@ int out_capacity(void)
 }
 
 /* The image as `held`, of cap bytes, `used` of them written: past the
- * `flushed` bytes in the file. */
+ * `out_flushed` bytes in the file. */
 static void hold(unsigned char *held, int used)
 {
     if (!held)
         acc_error("out of memory for the output");
-    out_img = held - flushed;
+    out_img = held - out_flushed;
     out_put = held + used;
     out_limit = held + cap;
 }
 
 void out_grow(void)
 {
-    unsigned char *held = out_img + flushed;
+    unsigned char *held = out_img + out_flushed;
     int used = (int) (out_put - held);
 
     /* One doubling is enough for any one write: cap starts at 4096 or more
@@ -643,30 +742,159 @@ void out_grow(void)
     hold(img_grow(held, used, &cap), used);
 }
 
-/* What memory holds of a link's image, written to its file and let go of
- * once it is half the room the image starts with: a link calls this between
- * objects, which is where nothing written can be reached for again but
- * through out_patch and out_add24. A program compiled from a source is not
- * flushed, since leaving out its unused functions moves what came before.
+/* The file the image goes to, opened the first time it is needed: the
+ * output itself for a link, `<output>~` for a compile. */
+static void spill_open(void)
+{
+    size_t n = strlen(out_path);
+
+    spill_name = (char *) out_path;
+    if (out_may_flush == OUT_FLUSH_COPY) {
+        spill_name = malloc(n + 2);
+        if (!spill_name)
+            acc_error("out of memory for the output");
+        memcpy(spill_name, out_path, n);
+        spill_name[n] = '~';
+        spill_name[n + 1] = '\0';
+    }
+    spill = fopen(spill_name, "w+b");
+    if (!spill)
+        acc_error("cannot write '%s'", spill_name);
+}
+
+/* `n` bytes at `off` in the file, read into `buf`, or with `write`
+ * written from it. */
+static void spill_io(int off, unsigned char *buf, int n, int write)
+{
+    if (fseek(spill, off, SEEK_SET) != 0
+        || (int) (write ? fwrite(buf, 1, (size_t) n, spill)
+                        : fread(buf, 1, (size_t) n, spill)) != n)
+        acc_error("short %s on '%s'", write ? "write" : "read", spill_name);
+}
+
+/* How much of the image memory holds before out_flush writes it to the
+ * file. On the Agon 32 KB: a compile whose image is smaller -- most of
+ * them, and every input of test/bench.sh -- never writes one and pays
+ * nothing, and one that is bigger has a file of a hundred kilobytes and
+ * more to go to. On the host 2 KB, so that the tests go to a file all the
+ * time: they are what shows the file's bytes to be the image's. */
+#ifdef AGONDEV
+int out_flush_at = 32768;
+#else
+int out_flush_at = 2048;
+#endif
+
+/* What memory holds of the image, written to its file and let go of once
+ * it is out_flush_at. Called where nothing written
+ * so far will be written again but through out_patch and out_add24, or read
+ * but through out_resident: between a link's objects, and at the end of
+ * each function a compile writes -- a function's jumps, its constants and
+ * its frame are all settled within it.
  *
  * The image starts again at its first size, and on the Agon what it grew to
  * goes back to malloc. */
 void out_flush(void)
 {
-    unsigned char *held = out_img + flushed;
+    unsigned char *held = out_img + out_flushed;
     int used = (int) (out_put - held);
 
-    if (!out_may_flush || (unsigned) used < (unsigned) out_start_cap / 2)
+    if (!out_may_flush || (unsigned) used < (unsigned) out_flush_at)
         return;
-    if (!spill && !(spill = fopen(out_path, "w+b")))
-        acc_error("cannot write '%s'", out_path);
-    if ((int) fwrite(held, 1, (size_t) used, spill) != used)
-        acc_error("short write on '%s'", out_path);
-    flushed += used;
+    if (!spill)
+        spill_open();
+    COUNT(out_nflushes);
+    spill_io(out_flushed, held, used, 1);
+    out_flushed += used;
     img_free(held);
     cap = out_start_cap;
     hold(img_take(cap), 0);
 }
+
+/* Before the file is read back or cut: nothing waiting to be written in
+ * it, since a patch says where its bytes are now. A compile fills its
+ * slots only at its end (gen_finish), after both, so none is waiting; one
+ * that was would be written in the wrong place, and is refused. */
+void out_cut_prepare(void)
+{
+    if (out_flushed && patches)
+        acc_error("internal: the file is moved with patches waiting on it");
+}
+
+/* The image from `at` on, in memory again: what a global defined a second
+ * time writes over (out_seek), or what a variable moved out of the bss
+ * reads back (gen_bss_move). Both are rare, and both may reach bytes a
+ * function ago; so the file's tail from `at` is read back in and taken off
+ * it. */
+void out_resident(int at)
+{
+    int off = at - out_base, need = out_flushed - off;
+    unsigned char *held = out_img + out_flushed;
+    int used = (int) (out_put - held);
+
+    if ((unsigned) off >= (unsigned) out_flushed)
+        return;
+    COUNT(out_nresidents);
+    out_cut_prepare();
+    while ((unsigned) (cap - used) < (unsigned) need)
+        hold(held = img_grow(held, used, &cap), used);
+    memmove(held + need, held, (size_t) used);
+    spill_io(off, held, need, 0);
+    out_img += need;
+    out_put += need;
+    out_flushed = off;
+}
+
+/* The three bytes of a slot in the file, for the walk that moves every
+ * address when a file's unused functions are left out (cut_out): read and
+ * written through a kilobyte of the file held here, since the walk goes
+ * through the slots in order. */
+static unsigned char *slots;
+static int            slots_at, slots_len, slots_dirty, slots_room;
+
+static void slots_write_back(void)
+{
+    if (slots_dirty)
+        spill_io(slots_at, slots, slots_len, 1);
+    slots_dirty = 0;
+}
+
+static unsigned char *slot_bytes(int off)
+{
+    if (!slots_len
+        || (unsigned) (off - slots_at) > (unsigned) (slots_len - 3)) {
+        slots_write_back();
+        if (!slots)
+            slots = piece(&slots_room);
+        slots_at = off;
+        slots_len = (unsigned) (out_flushed - off) < (unsigned) slots_room
+                    ? out_flushed - off : slots_room;
+        spill_io(off, slots, slots_len, 0);
+    }
+
+    return slots + (off - slots_at);
+}
+
+int out_slot_get(int off)
+{
+    return get24(slot_bytes(off));
+}
+
+void out_slot_put(int off, int value)
+{
+    put24(slot_bytes(off), value);
+    slots_dirty = 1;
+}
+
+/* Done with the slots: what changed written back, and the kilobyte let go. */
+static void slots_done(void)
+{
+    slots_write_back();
+    free(slots);
+    slots = NULL;
+    slots_len = 0;
+}
+
+
 
 
 
@@ -710,6 +938,8 @@ void (*out_on_rewind)(int here);
 
 void out_rewind(int here)
 {
+    if ((unsigned) (here - out_base) < (unsigned) out_flushed)
+        acc_error("internal: a rewind to %06x, which is in the file", here);
     out_rewinds++;
     if (here < out_rewind_floor)
         out_rewind_floor = here;
@@ -728,6 +958,7 @@ void out_rewind(int here)
  * and all -- so this is not out_rewind, which forgets. */
 void out_seek(int here)
 {
+    out_resident(here);
     out_put = out_img + (here - out_base);
 }
 
@@ -736,11 +967,13 @@ void out_seek(int here)
  * buffer the walk builds. */
 void out_copy(int at, unsigned char *to, int len)
 {
-    int off = at - out_base;
+    int off;
 
     if (len <= 0)
         return;                 /* nothing written yet, and `to` may be null */
-    if (off < flushed || off + len > OUT_LEN)
+    out_resident(at);
+    off = at - out_base;
+    if (off < out_flushed || off + len > OUT_LEN)
         acc_error("internal: a read at %06x is outside the image", at);
     memcpy(to, out_img + off, (size_t) len);
 }
@@ -752,7 +985,8 @@ int out_read24(int at)
 {
     int off = at - out_base;
 
-    if (off < flushed || off + 3 > OUT_LEN)
+    out_resident(at);
+    if (off < out_flushed || off + 3 > OUT_LEN)
         acc_error("internal: a read at %06x is outside the image", at);
 
     return get24(out_img + off);
@@ -776,10 +1010,10 @@ static void patch(int at, int value, int kind)
 
     if ((unsigned) off >= (unsigned) OUT_LEN
         || (unsigned) (OUT_LEN - off) < (unsigned) width
-        || ((unsigned) off < (unsigned) flushed
-            && (unsigned) (off + width) > (unsigned) flushed))
+        || ((unsigned) off < (unsigned) out_flushed
+            && (unsigned) (off + width) > (unsigned) out_flushed))
         acc_error("internal: patch at %06x is outside the image", at);
-    if ((unsigned) off >= (unsigned) flushed) {
+    if ((unsigned) off >= (unsigned) out_flushed) {
         patch_apply(out_img + off, value, kind);
 
         return;
@@ -830,11 +1064,8 @@ void out_add24(int at, int delta)
 
 /* The image and its table let go of, without writing anything: what the
  * object writer wants, having written the same bytes itself. */
-void out_free(void)
+static void patches_free(void)
 {
-    img_free(out_img + flushed);
-    out_img = NULL;
-    flushed = 0;
     while (patches) {
         PatchBlock *next = patches->next;
 
@@ -843,6 +1074,84 @@ void out_free(void)
     }
     patch_last = NULL;
     patch_put = patch_limit = NULL;
+}
+
+/* The file's bytes from 0 to out_flushed, with the patches waiting on them
+ * made: written to `to`, or with `to` null back where they are, a piece at a
+ * time through `buf`, of `room`. Each patch is made in the order it was
+ * made, in the piece it starts in, short of the piece's last two bytes;
+ * those are carried to the front of the next piece -- with what a patch
+ * that started before them wrote in them -- so a slot is never split. */
+static void sweep(FILE *to, unsigned char *buf, int room)
+{
+    int from = 0, have = 0;
+
+    while (from != out_flushed) {
+        int n = out_flushed - from, stop;
+        const PatchBlock *b;
+
+        if ((unsigned) n > (unsigned) room)
+            n = room;
+        spill_io(from + have, buf + have, n - have, 0);
+        stop = from + n == out_flushed ? out_flushed : from + n - 2;
+        for (b = patches; b; b = b->next) {
+            const unsigned char *p = b->bytes;
+            const unsigned char *end = b == patch_last ? patch_put
+                                                       : p + PATCH_BLOCK;
+
+            for (; p != end; p += PATCH_WIDE)
+                if ((unsigned) (get24(p) - from) < (unsigned) (stop - from))
+                    patch_apply(buf + (get24(p) - from), get24(p + 3), p[6]);
+        }
+        if (!to)
+            spill_io(from, buf, stop - from, 1);
+        else if ((int) fwrite(buf, 1, (size_t) (stop - from), to) != stop - from)
+            acc_error("short write on '%s'", out_path);
+        have = from + n - stop;
+        memmove(buf, buf + (stop - from), (size_t) have);
+        from = stop;
+    }
+}
+
+/* The image, written to `to`: from the file and then from memory, or all
+ * from memory when none of it went to a file. */
+void out_write_text(void *to)
+{
+    unsigned char *held = out_img + out_flushed;
+    int used = (int) (out_put - held);
+
+    if (spill) {
+        int room;
+        unsigned char *buf = piece(&room);
+
+        sweep((FILE *) to, buf, room);
+        free(buf);
+    }
+    if (used && (int) fwrite(held, 1, (size_t) used, (FILE *) to) != used)
+        acc_error("short write on '%s'", out_path);
+}
+
+/* A compile's file, which is copied out and no longer wanted. */
+static void spill_remove(void)
+{
+    if (!spill)
+        return;
+    fclose(spill);
+    spill = NULL;
+    remove(spill_name);
+    if (spill_name != out_path)
+        free(spill_name);
+    spill_name = NULL;
+}
+
+void out_free(void)
+{
+    if (out_may_flush == OUT_FLUSH_COPY)
+        spill_remove();
+    img_free(out_img + out_flushed);
+    out_img = NULL;
+    out_flushed = 0;
+    patches_free();
     free(out_relocs);
     out_relocs = out_reloc_put = out_reloc_limit = NULL;
 }
@@ -862,64 +1171,38 @@ int out_npatches(void)
 }
 #endif
 
-/* The patches kept for the bytes in the file, made there: a piece at a
- * time into `buf`, of `room`, each patch in the order it was made. The
- * pieces overlap by two bytes, and a patch is made in the piece it starts
- * in, short of the overlap: so a slot is never split between two pieces. */
-static void patch_file(unsigned char *buf, int room)
-{
-    int from = 0;
-
-    for (;;) {
-        int n = flushed - from, stop;
-        const PatchBlock *b;
-
-        if ((unsigned) n > (unsigned) room)
-            n = room;
-        stop = from + n == flushed ? flushed : from + n - 2;
-        if (fseek(spill, from, SEEK_SET) != 0
-            || (int) fread(buf, 1, (size_t) n, spill) != n)
-            acc_error("short read on '%s'", out_path);
-        for (b = patches; b; b = b->next) {
-            const unsigned char *p = b->bytes;
-            const unsigned char *end = b == patch_last ? patch_put : p + PATCH_BLOCK;
-
-            for (; p != end; p += PATCH_WIDE)
-                if ((unsigned) (get24(p) - from) < (unsigned) (stop - from))
-                    patch_apply(buf + (get24(p) - from), get24(p + 3), p[6]);
-        }
-        if (fseek(spill, from, SEEK_SET) != 0
-            || (int) fwrite(buf, 1, (size_t) n, spill) != n)
-            acc_error("short write on '%s'", out_path);
-        if (stop == flushed)
-            return;
-        from = stop;
-    }
-}
-
 void out_close(void)
 {
-    unsigned char *held = out_img + flushed;
+    unsigned char *held = out_img + out_flushed;
     int used = (int) (out_put - held);
-    FILE *file = spill ? spill : fopen(out_path, "wb");
+    FILE *file;
 
+    /* A link's file is the output: the rest written after it, and the
+     * patches made where they stand. */
+    if (spill && out_may_flush == OUT_FLUSH_IN_PLACE) {
+        spill_io(out_flushed, held, used, 1);
+        sweep(NULL, held, cap);
+        fclose(spill);
+        spill = NULL;
+        out_free();
+
+        return;
+    }
+    file = fopen(out_path, "wb");
     if (!file)
         acc_error("cannot write '%s'", out_path);
-    if ((int) fwrite(held, 1, (size_t) used, file) != used)
-        acc_error("short write on '%s'", out_path);
-    if (spill)
-        patch_file(held, cap);
+    out_write_text(file);
     fclose(file);
-    spill = NULL;
     out_free();
 }
 
-/* A link that fails leaves no program: what it wrote is not one. */
+/* A compile or a link that fails leaves no program: what it wrote is not
+ * one. */
 void out_abandon(void)
 {
     if (!spill)
         return;
     fclose(spill);
     spill = NULL;
-    remove(out_path);
+    remove(spill_name);
 }
