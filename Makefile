@@ -28,7 +28,7 @@ BIN = bin
 # The library acc links programs against, written in C and built by acc
 # itself -- which is what makes it something the Agon can build for itself,
 # and what keeps it honest: every line of it is a line acc has to compile.
-LIBSRC = lib/mem.c lib/str.c lib/strdup.c lib/stdio.c lib/printf.c lib/scanf.c lib/printf_float.c \
+LIBSRC = lib/str.c lib/strdup.c lib/stdio.c lib/printf.c lib/scanf.c lib/printf_float.c \
          lib/abort.c lib/exit.c lib/assert.c lib/ctype.c \
          lib/math.c lib/mathround.c lib/mathscale.c lib/mathfmod.c \
          lib/sqrt.c lib/cbrt.c lib/hypot.c \
@@ -51,9 +51,10 @@ LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
 LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 
 # And what of the library is eZ80 assembly, assembled by zap as the runtime
-# is (below): the string functions that the block instructions do in a
-# fifth of the time C takes.
-LIBASM    = lib/strlen.s lib/strcmp.s lib/strchr.s lib/strcpy.s
+# is (below): <string.h>, whose functions the block instructions do in a
+# fifth of the time C takes, but for strtok, strcoll and strxfrm.
+LIBASM    = lib/strlen.s lib/strcmp.s lib/strchr.s lib/strcpy.s lib/strncpy.s \
+            lib/strncat.s lib/strstr.s lib/strspn.s lib/strncasecmp.s lib/mem.s
 LIBASMOBJ = $(LIBASM:lib/%.s=$(BIN)/lib/%.o)
 
 .PHONY: all clean test unit agon
