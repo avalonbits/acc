@@ -144,6 +144,7 @@ test: all unit agon
 	@test/linkheap.sh
 	@test/linkstream.sh
 	@test/manyargs.sh || [ $$? -eq 77 ]
+	@test/abandon.sh
 	@test/startup.sh || [ $$? -eq 77 ]
 	@test/flags.sh || [ $$? -eq 77 ]
 	@test/buffer.sh

@@ -301,6 +301,40 @@ static void put_num(FILE *f, int value)
         acc_error("short write on the object");
 }
 
+/* The file an object or a library is being written to, while it is: an
+ * error before it is done takes it out again (obj_abandon), since what is
+ * there is not one -- and a link that read it later said "too short to be
+ * an object" about a compile that had run out of memory. */
+static FILE       *writing;
+static const char *writing_path;
+
+static FILE *write_open(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+
+    if (!f)
+        acc_error("cannot write '%s'", path);
+    writing = f;
+    writing_path = path;
+
+    return f;
+}
+
+static void write_done(void)
+{
+    fclose(writing);
+    writing = NULL;
+}
+
+void obj_abandon(void)
+{
+    if (!writing)
+        return;
+    fclose(writing);
+    writing = NULL;
+    remove(writing_path);
+}
+
 /* The front of an object -- the header and every table -- gathered here
  * and written a kilobyte at a time. A call per number was one each for
  * thousands of them, and on the Agon each goes through the whole of the file
@@ -479,9 +513,7 @@ void obj_write(const char *path)
     for (i = 0; i != nexterns; i++)
         slot_of[i] = index_of[gen_extern_sym(i) / step] + 2;
 
-    f = fopen(path, "wb");
-    if (!f)
-        acc_error("cannot write '%s'", path);
+    f = write_open(path);
 
     front_file = f;
     front_path = path;
@@ -572,7 +604,7 @@ void obj_write(const char *path)
     if (out_len()
         && (int) fwrite(out_img, 1, (size_t) out_len(), f) != out_len())
         acc_error("short write on '%s'", path);
-    fclose(f);
+    write_done();
 
     free(name_at);
     free(index_of);
@@ -1109,9 +1141,7 @@ void ar_write(const char *path, const char **members, int nmembers)
         obj_free(&o);
     }
 
-    f = fopen(path, "wb");
-    if (!f)
-        acc_error("cannot write '%s'", path);
+    f = write_open(path);
 
     fputc('A', f);
     fputc('C', f);
@@ -1146,7 +1176,7 @@ void ar_write(const char *path, const char **members, int nmembers)
         copy_member(in, f, left, members[i]);
         fclose(in);
     }
-    fclose(f);
+    write_done();
 
     free(name_at);
     free(len_of);

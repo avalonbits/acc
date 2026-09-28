@@ -1287,6 +1287,7 @@ const char *obj_object_name(const char *in_acc);  /* and back */
 void obj_take(unsigned char *all, int len, const char *path, Object *o);
 int  obj_current(const char *path, const char *source);
 void obj_read(const char *path, Object *o, int front);
+void obj_abandon(void);             /* an object or library half written */
 void obj_free(Object *o);
 
 const char *obj_sym_name(const Object *o, int i);

@@ -62,6 +62,7 @@ __attribute__((noreturn)) static void fail(const char *file, int line, int col,
                                            const char *msg)
 {
     out_abandon();
+    obj_abandon();
     if (errors_path) {
         FILE *f = fopen(errors_path, "w");
 
