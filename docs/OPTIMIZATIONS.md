@@ -12,7 +12,7 @@ function after the fact. What it does instead falls into three kinds:
 - **Looking back.** A sequence just emitted leaves a *mark* -- where it
   ended, and the count of rewinds, `out_rewinds`, when it was made. The
   next operation can check the mark, take the sequence back with
-  [`out_rewind()`](../src/image.c#L536), and emit something better. `x < y` followed by a
+  [`out_rewind()`](../src/image.c#L547), and emit something better. `x < y` followed by a
   branch becomes one conditional jump this way.
 - **Settling at the end.** A few things can only be decided once a
   function or a file is complete: which jumps reach with a short `jr`,
@@ -66,7 +66,7 @@ true.
 `&&`, `||` and `?:` with a constant condition fold in the parser
 ([`logical_rest()`](../src/expr.c#L1344), [`conditional_rest()`](../src/expr.c#L1978)): the side that is
 never evaluated is parsed under a `GenMark` and its code rolled back with
-[`gen_rollback()`](../src/vstack.c#L973). So `DEBUG && log(x)` costs nothing when `DEBUG`
+[`gen_rollback()`](../src/vstack.c#L972). So `DEBUG && log(x)` costs nothing when `DEBUG`
 is 0, and `1 && 1` is a constant expression.
 
 ### Operand order
@@ -150,7 +150,7 @@ value and the address are the other way round.
 
 **Externs plus a constant.** An extern's address is `ld hl,0` and a fixup.
 If a constant is added straight after (`g.b`, `arr[3]`), it goes into the
-slot ([`out_add24()`](../src/image.c#L657)), and the link adds the symbol to it: one
+slot ([`out_add24()`](../src/image.c#L668)), and the link adds the symbol to it: one
 load, where the add would be three instructions.
 
 **Locals.** `&local` is `lea rr,ix+d`. A slot past `(ix-128)` is reached
@@ -261,7 +261,7 @@ until an operator needs it in a register. Spilling
 ([`reg_alloc()`](../src/vstack.c#L687)) takes the oldest register value, and moves only
 the entry that is in the way, to a free register if there is one.
 
-**Reload after store.** [`ld_rr_ix()`](../src/gen_int.h#L327) skips `ld rr,(ix+d)` when
+**Reload after store.** [`ld_rr_ix()`](../src/gen_int.h#L323) skips `ld rr,(ix+d)` when
 the instruction before it was `ld (ix+d),rr` of the same register and
 slot, and no jump lands between them. The store that ends one statement
 and the load of the same variable that starts the next are a twentieth of
@@ -324,7 +324,7 @@ operand.
 
 **Short jumps.** Every jump is emitted as a 3-byte `jp` through
 [`jump_op()`](../src/branch.c#L76) and recorded. At the end of each function,
-[`relax_function()`](../src/relax.c#L615) shortens every one whose condition has a `jr`
+[`relax_function()`](../src/relax.c#L609) shortens every one whose condition has a `jr`
 form (always, Z, NZ, C, NC) and whose target is in reach, cutting the two
 bytes. Reach is judged before anything shrinks, and shrinking only brings
 targets closer, so one pass is enough. This saves about 4% of an image.
@@ -332,7 +332,7 @@ Doing it once per function rather than once per file keeps its cost small
 and its tables short.
 
 **A jump over a jump.** `jp cc,L1; jp L2; L1:` becomes `jp !cc,L2`
-([`branch_over()`](../src/relax.c#L592)) when nothing else jumps to the second jump. That
+([`branch_over()`](../src/relax.c#L586)) when nothing else jumps to the second jump. That
 is every `if (x) break;`, `if (x) continue;`, and a `return` that jumps to
 an earlier return of the same constant.
 
@@ -395,14 +395,14 @@ four, which also stops recursion.
 
 **Unused static functions.** A `static` or `static inline` function that
 nothing outside the unused ones calls or takes the address of is cut out
-at the end of the file ([`drop_unused_statics()`](../src/relax.c#L788)), working outward
+at the end of the file ([`drop_unused_statics()`](../src/relax.c#L782)), working outward
 from what is used so that mutually recursive dead functions go too. A
 header of `static inline` helpers costs a file only the ones it calls.
 
-**Runtime routines.** Only the groups of `src/rt/helpers.s` a program
-calls are laid down, with what they need ([`rt_emit_used()`](../src/runtime.c#L188)),
-worked out again at the end from the calls that survived. One multiply
-does not bring the float routines with it.
+**Runtime routines.** The runtime is a library, `rt.a`, one object for each
+routine or group of routines that share code ([`lib/rt/`](../lib/rt)), and
+a link takes the objects a program calls and no others. One multiply does
+not bring the float routines with it.
 
 **Zero-initialised globals** go in the bss, after the image: they take no
 room on the card, and are cleared by the startup with `ld (hl),0` and an
@@ -411,7 +411,7 @@ room on the card, and are cleared by the startup with `ld (hl),0` and an
 
 **Library members.** A link takes from a library only the items -- single
 functions and objects -- that are wanted, and what they reach
-([`take_items()`](../src/link.c#L169)).
+([`take_items()`](../src/link.c#L170)).
 
 ## 14. Smaller things
 

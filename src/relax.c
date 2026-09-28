@@ -11,7 +11,7 @@
 #include <string.h>
 
 #include "acc.h"
-#include "rt_helpers.h"
+#include "runtime.h"
 #include "gen_int.h"
 
 /* The file's own functions, and the run of bytes each of them is.
@@ -488,12 +488,6 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
     if (holes)
         return;                 /* a jump shortened moves nothing outside it */
 
-    /* Which of the runtime blob's groups are wanted, asked again of what
-     * is left: a function that has gone is not multiplying anything. */
-    rt_unwant_to(0);
-    for (i = 0; i != nrt_fixups; i++)
-        rt_wanted(rt_fixups[i].which);
-
     for (i = 0; i < sym_nglobals(); i += (int) sizeof(Sym)) {
         Sym *sym = sym_at(i);
         int to;
@@ -787,6 +781,14 @@ void relax_function(const Mark *from, int frame_at)
 
 void drop_unused_statics(void)
 {
+    static int dropped;
+
+    /* Once: a program built in one step drops them before its link (see
+     * rt_name_all), and gen_finish would ask again. */
+    if (dropped)
+        return;
+    dropped = 1;
+
     unsigned char *live;
     Cut *cuts;
     int ncuts;

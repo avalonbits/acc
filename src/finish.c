@@ -12,7 +12,7 @@
 #include <string.h>
 
 #include "acc.h"
-#include "rt_helpers.h"
+#include "runtime.h"
 #include "gen_int.h"
 
 /* ------------------------------------------------------------------ */
@@ -731,6 +731,11 @@ int gen_fixup_sym(int i)
     return fixup_at(i)->fn;
 }
 
+int gen_fixup_at(int i)
+{
+    return fixup_at(i)->at;
+}
+
 int gen_no_address(int sym)
 {
     return no_address(sym);
@@ -754,29 +759,12 @@ void gen_finish(void)
     drop_unused_statics();
 #endif
 
-    /* A helper wanted by name, which is how one arrives from an object: that
-     * object used it and did not carry the blob. Claimed before anything is
-     * laid down, so that the blob knows how much of itself to be. */
     /* The loops below walk the fixups by pointer: indexed, each use was a
      * multiply by the entry's width, and a call in between meant it was
      * worked out again. Nothing in them adds a fixup, so the table stays
      * where it is. */
-    if (!gen_objects)
-        for (i = 0, f = fixup_at(0); i != nfixups; i++, f = FIXUP_STEP(f, i)) {
-            int which;
-
-            if (!no_address(f->fn))
-                continue;
-            which = rt_which(name_text(sym_at(f->fn)->name));
-            if (which < 0)
-                continue;
-            rt_syms[which] = f->fn;
-            rt_wanted(which);
-        }
-
-    /* Compiling to an object, a call to a helper is a call to a name, and
-     * the blob stays here: one copy of it goes into the program that is
-     * linked, rather than one into every object that multiplies. */
+    /* Compiling to an object, a call into the runtime is a call to a name,
+     * which the link that makes a program finds in the library. */
     if (gen_objects) {
         extern_reserve(nexterns + nrt_fixups + nfixups);
         for (r = rt_fixups, rend = rt_fixups + nrt_fixups; r != rend; r++)
@@ -784,7 +772,7 @@ void gen_finish(void)
         externs_helpers_end = externs_put;
         externs_sort(externs, externs_put);
     } else {
-        rt_emit_used();
+        rt_fill_all();
         args_emit();
         bss_emit();
 
@@ -831,6 +819,8 @@ void gen_finish(void)
                 sym_set_flags(f->fn, SYMF_DEFINED);
         }
         if (no_address(f->fn)) {
+            if (!strncmp(name_text(fn->name), "acc_rt_", 7))
+                rt_missing(f->fn);
             if (fn->kind == SYM_FUNC)
                 acc_error("'%s' is called but never defined",
                           name_text(fn->name));

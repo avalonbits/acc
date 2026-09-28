@@ -11,7 +11,7 @@
 #define ACC_GEN_INT_H
 
 #include "acc.h"
-#include "rt_helpers.h"
+#include "runtime.h"
 
 /* That a frame offset fits the signed byte of (ix+d). Tested inline, because
  * it runs for every local touched and the call to test it opened a frame; as
@@ -255,18 +255,14 @@ extern int logic_from;
 __attribute__((noinline)) void bool_from(void);
 
 /* runtime.c */
-extern int rt_nused;
-void rt_unwant_to(int n);
 extern RtFixup *rt_fixups;
 extern int nrt_fixups, rt_fixups_cap;
-extern int rt_syms[RT_COUNT];
 void rt_syms_init(void);
-int rt_which(const char *name);
-void rt_wanted(int which);
 int rt_symbol(int which);
 int needs_helper(int op);
 void rt_call(int which);
-void rt_emit_used(void);
+void rt_fill_all(void);
+__attribute__((noreturn)) void rt_missing(int sym);
 
 /* finish.c */
 /* Kept in blocks of FIXUP_BLOCK, and a list of the blocks, rather than in

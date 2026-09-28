@@ -24,11 +24,12 @@ rest of acc needs from it and an internal header its own files share:
 
 [`acc.h`](../src/acc.h) includes the public headers, and is what a file outside a part
 includes. The runtime the generated code calls is eZ80 assembly in
-[`src/rt/helpers.s`](../src/rt/helpers.s), with the program's entry stubs
-in [`src/rt/startup.s`](../src/rt/startup.s); both are assembled on the
-host and embedded in acc as bytes (section 12). The C library acc links
-programs against is in [`lib/`](../lib) and [`include/`](../include), and
-is compiled by acc itself.
+[`lib/rt/`](../lib/rt), assembled by zap into a library of its own,
+`rt.a`, beside the C library (section 12).
+The C library acc links programs against is in [`lib/`](../lib) and
+[`include/`](../include), and its C is compiled by acc itself. The
+program's entry stubs are in [`src/rt/startup.s`](../src/rt/startup.s),
+assembled on the host and carried in acc as bytes.
 
 Code links in this document point at definitions.
 
@@ -39,8 +40,8 @@ Code links in this document point at definitions.
 Everything below is shaped by four facts about the machine:
 
 - **448 KB for everything.** acc's own image, its heap and its stack share
-  the RAM MOS gives a program. acc.bin is itself about 240 KB of that, so a
-  compile has roughly 190 KB for the source windows, the name and symbol
+  the RAM MOS gives a program. acc.bin is itself about 230 KB of that, so a
+  compile has roughly 200 KB for the source windows, the name and symbol
   tables, and the output. What does not fit is spilled to the SD card.
 - **An 18.432 MHz eZ80 with no cache.** Every instruction costs its bytes
   in memory cycles. A multiply, a shift by a variable, a signed compare,
@@ -87,16 +88,16 @@ flowchart TD
 [`obj_current()`](../src/obj.c#L963) ·
 [`translation_unit()`](../src/decl.c#L1050) ·
 [`bss_end()`](../src/decl.c#L832) ·
-[`gen_finish()`](../src/finish.c#L746) ·
+[`gen_finish()`](../src/finish.c#L751) ·
 [`obj_write()`](../src/obj.c#L434) ·
-[`gen_startup()`](../src/finish.c#L1056) ·
-[`link_inputs()`](../src/link.c#L462) ·
-[`out_close()`](../src/image.c#L798)
+[`gen_startup()`](../src/finish.c#L1046) ·
+[`link_inputs()`](../src/link.c#L509) ·
+[`out_close()`](../src/image.c#L818)
 
 The one-step build is a compile whose image is then linked in place: the
 program's own code is laid down first, after the entry stub, and the
 objects and libraries it names -- and then the default library,
-`/lib/acc/libc.a` on the Agon -- are placed after it, exactly as a link of
+`/lib/acc/rt.a` and `/lib/acc/libc.a` on the Agon -- are placed after it, exactly as a link of
 its object would place them.
 
 A compile to an object is based at address 0, so that every address in it
@@ -128,8 +129,8 @@ size at the moment it grows. acc is written around that:
 
 - **The output image lives at the top of the heap**, out of malloc's way,
   and grows downwards by moving its own bytes within what is then its own
-  ([`img_grow()`](../src/image.c#L187)). malloc's break is kept below it by acc's own
-  sbrk, [`_wrap__sbrk()`](../src/image.c#L160), which the Agon build links in place of
+  ([`img_grow()`](../src/image.c#L198)). malloc's break is kept below it by acc's own
+  sbrk, [`_wrap__sbrk()`](../src/image.c#L171), which the Agon build links in place of
   libagon's.
 - **Arenas grow in chunks that never move.** Names
   ([`names_chunk()`](../src/names.c#L206)), struct members ([`members_chunk()`](../src/sym.c#L615)) and
@@ -164,7 +165,7 @@ so that finding it costs one load rather than a table probe:
 | byte | holds | read by |
 |---|---|---|
 | `ref-4` | `NAME_MACRO`, `NAME_WIDE`, `NAME_WEAK`, `NAME_STRONG` | [`name_is_macro`](../src/lex_int.h#L99), [`name_weak()`](../src/names.c#L349) |
-| `ref-3 .. ref-1` | the file-scope symbol for this name, plus one — or, for a keyword, its token code at `ref-3` | [`name_global()`](../src/out.h#L174), [`next()`](../src/lex.c#L1007) |
+| `ref-3 .. ref-1` | the file-scope symbol for this name, plus one — or, for a keyword, its token code at `ref-3` | [`name_global()`](../src/out.h#L175), [`next()`](../src/lex.c#L1007) |
 
 The hash table uses open addressing with linear probing over 4-byte slots,
 kept at most three quarters full. The hash, [`name_home()`](../src/names.c#L124), is two
@@ -389,8 +390,8 @@ evaluated, and a `for` step that is compiled after the body. A `GenMark`
 ([`gen.h`](../src/gen.h)) saves the output position and the counts of every table the
 generator appends to -- fixups, runtime wants, bss slots, spill state,
 the wide constants, a copy of the value stack -- and
-[`gen_rollback()`](../src/vstack.c#L973) restores them all, rewinding the output with
-[`out_rewind()`](../src/image.c#L536).
+[`gen_rollback()`](../src/vstack.c#L972) restores them all, rewinding the output with
+[`out_rewind()`](../src/image.c#L547).
 
 `sizeof` parses its operand under a mark, reads its type, and rolls back,
 except for a VLA, whose size C99 says is evaluated.
@@ -428,7 +429,7 @@ when its declaration ends. A global with no initialiser gets room in the
 and is zeroed by the entry stub; its uses are offsets into the bss until
 the image's length is known (section 15). A global declared again with a
 value is written over the bytes it already has, reading them back from the
-card if they have gone there ([`out_resident()`](../src/image.c#L425)).
+card if they have gone there ([`out_resident()`](../src/image.c#L436)).
 
 ### Inline functions
 
@@ -518,7 +519,7 @@ frame size patched in at the end; a function with no frame calls
 `acc_rt_frameset0` and has no load. Every `return` jumps to one epilogue,
 `ld sp,ix; pop ix; ret`, which [`gen_func_end()`](../src/func.c#L430) lays down, along with
 the frame size, the local arrays' addresses, the function's shortened
-jumps ([`relax_function()`](../src/relax.c#L615)) and its wide constants
+jumps ([`relax_function()`](../src/relax.c#L609)) and its wide constants
 ([`pool_emit()`](../src/wide.c#L734)).
 
 A call to a function already defined is `call nn`; a call to one not yet
@@ -547,49 +548,61 @@ pool laid down after the function's code ([`ld_rr_pool()`](../src/wide.c#L702)).
 
 Operations the eZ80 does not have -- multiply, divide, shifts by a
 variable, 24-bit logic, every long, long long and float operation, the
-prologue -- are routines in [`src/rt/helpers.s`](../src/rt/helpers.s). The
-helper ABI is left operand in HL, right in BC, result in HL, everything
-else kept.
+prologue -- are routines in `rt.a`, a library beside the C library,
+written in eZ80 assembly in [`lib/rt/`](../lib/rt) and assembled by zap
+into acc's object format ([`lib/rt/README.md`](../lib/rt/README.md)). A
+link reads it first, since every program calls it and its index is a few
+names, then the C library only if a name is still waiting, and `rt.a` again
+for what the C library's members call ([`link_inputs()`](../src/link.c#L509)). The helper convention is left
+operand in HL, right in BC, result in HL, everything else kept.
 
-[`src/rt/embed.py`](../src/rt/embed.py) assembles them with agondev's
-assembler, pulls out the bytes and their relocations, and writes
-[`rt_helpers.h`](../src/rt_helpers.h): the code, each helper's entry, and **groups** -- runs of
-code that nothing jumps into from outside, 73 of them, with each group's
-closed set of the groups it needs. The routines share code, so they cannot
-be laid down one by one; a group is the smallest unit that can.
+Each file is one object: one routine, or several that share code. A link
+takes an object whole, so the files are cut where the routines stop sharing
+code, and a program carries the ones it calls -- one that multiplies an int
+has the multiply and not the floating point.
 
-[`rt_call()`](../src/runtime.c#L133) emits `call 0` and records which helper it wants.
-At the end, [`rt_emit_used()`](../src/runtime.c#L188) recomputes what is still wanted --
-code may have been rolled back or dropped since -- and lays down only those
-groups and what they need, in their original order, patching the calls.
-A compile to an object calls the helpers by name instead (`_acc_rt_mul`
-and so on), and the link lays down one copy.
+[`rt_call()`](../src/runtime.c#L91) emits `call 0` and records which routine and where:
+a call is not made a fixup against a symbol as it is emitted, since a
+file-scope symbol pushed while a function is being compiled would move its
+locals. Once the compile is done, [`rt_name_all()`](../src/runtime.c#L118) makes a symbol
+for each routine called, and the link finds them in the library like any
+other name, in the order of their slots among the program's other calls
+([`waits_next()`](../src/link.c#L379)) -- so a program built in one step takes the same
+members in the same order as one compiled to an object and then linked.
+[`rt_fill_all()`](../src/runtime.c#L177) then fills the calls in: those still in memory
+now, and those in the image's file as a second list of additions the sweep
+makes as it passes (section 14). A compile to an object leaves each call as
+a reference to the routine's name.
+
+The names the code generator calls are listed twice, in [`runtime.h`](../src/runtime.h) and
+in `rt_names` in [`runtime.c`](../src/runtime.c); [`test/rtlib.sh`](../test/rtlib.sh) checks
+that each is a routine `lib/rt` exports and that the library lists it.
 
 ## 13. Taking code back out
 
 Two things remove bytes after they are written:
 
 - **Short jumps.** Every jump is emitted as a 3-byte `jp` and recorded. At
-  the end of each function, [`relax_function()`](../src/relax.c#L615) turns each one whose
+  the end of each function, [`relax_function()`](../src/relax.c#L609) turns each one whose
   target is within reach into a 2-byte `jr`, and a conditional jump over
   an unconditional one into one inverted jump (OPTIMIZATIONS.md, section
   10).
 - **Unused static functions.** [`static_begin()`](../src/relax.c#L71) and
   [`static_end()`](../src/relax.c#L89) record each static function's bytes, and
   [`want()`](../src/relax.c#L53) each reference from one static function to another. At
-  the end of the file, [`drop_unused_statics()`](../src/relax.c#L788) marks everything
+  the end of the file, [`drop_unused_statics()`](../src/relax.c#L782) marks everything
   reachable from what is used outside them, and cuts out the rest.
 
 A cut ([`cut_out()`](../src/relax.c#L370)) moves every address past it: the relocations,
 the fixups, the bss slots, the symbols, and the bytes already on the card
-([`out_slot_get()`](../src/image.c#L474)). So cuts happen only where every table that
+([`out_slot_get()`](../src/image.c#L485)). So cuts happen only where every table that
 names an address can be walked.
 
 ### Marks and epochs
 
 Many of the generator's small improvements look back at code just written
 -- "the last thing emitted was a load of this slot", "this 0/1 value can
-become a jump" -- and take it back with [`out_rewind()`](../src/image.c#L536). Each such
+become a jump" -- and take it back with [`out_rewind()`](../src/image.c#L547). Each such
 mark records where the code ended and `out_rewinds`, a count of every
 rewind and cut. A mark is good only while both still match: after a
 rewind, the image can come back to the same address with different bytes
@@ -602,10 +615,10 @@ The image is a byte buffer written through [`out.h`](../src/out.h)'s inline emit
 every three-byte slot that holds an address inside the image. The eZ80 has
 no relative calls, so an address is written out in full wherever one is
 needed, and the table is what lets an object be placed anywhere.
-[`out_reloc()`](../src/out.h#L63) records one where the slot is emitted, so the table
+[`out_reloc()`](../src/out.h#L64) records one where the slot is emitted, so the table
 comes out in order.
 
-The image goes to the card as it is made. [`out_flush()`](../src/image.c#L385) writes
+The image goes to the card as it is made. [`out_flush()`](../src/image.c#L396) writes
 what is in memory and starts the buffer again:
 
 - **A compile** flushes after a function once 32 KB is waiting on the Agon
@@ -615,7 +628,7 @@ what is in memory and starts the buffer again:
 - **A link** flushes after every object, into the output itself.
 
 What is written to a byte already on the card becomes a **patch**, kept in
-1 KB blocks ([`patch()`](../src/image.c#L604)). At the end, [`sweep()`](../src/image.c#L682) reads the
+1 KB blocks ([`patch()`](../src/image.c#L615)). At the end, [`sweep()`](../src/image.c#L693) reads the
 file back a piece at a time, applies the patches, the additions the fixups
 became, and the bss base, in the order of their slots, and writes it out.
 
@@ -634,23 +647,24 @@ sequenceDiagram
     F->>F: sweep(): read a piece, apply patches<br/>and additions in slot order, write
 ```
 
-[`out_flush()`](../src/image.c#L385) ·
-[`spill_io()`](../src/image.c#L356) ·
-[`out_add24()`](../src/image.c#L657) ·
-[`out_patch24()`](../src/image.c#L650) ·
-[`gen_finish()`](../src/finish.c#L746) ·
-[`out_close()`](../src/image.c#L798) ·
-[`sweep()`](../src/image.c#L682)
+[`out_flush()`](../src/image.c#L396) ·
+[`spill_io()`](../src/image.c#L367) ·
+[`out_add24()`](../src/image.c#L668) ·
+[`out_patch24()`](../src/image.c#L661) ·
+[`gen_finish()`](../src/finish.c#L751) ·
+[`out_close()`](../src/image.c#L818) ·
+[`sweep()`](../src/image.c#L693)
 
-If acc stops on an error, [`out_abandon()`](../src/image.c#L825) removes the partial file.
+If acc stops on an error, [`out_abandon()`](../src/image.c#L845) removes the partial file.
 
 ## 15. The end of a file
 
-[`gen_finish()`](../src/finish.c#L746) settles what could not be settled as it was
+[`gen_finish()`](../src/finish.c#L751) settles what could not be settled as it was
 compiled:
 
 1. **Unused statics** are dropped (section 13).
-2. **The runtime** groups used are laid down (section 12).
+2. **The runtime**: every call into it is filled in with where the link
+   put the routine ([`rt_fill_all()`](../src/runtime.c#L177), section 12).
 3. **argc and argv**: [`args_emit()`](../src/finish.c#L563) lays down the code that splits
    MOS's command line into words, as agondev's startup does, up to sixteen.
    It is there whether `main` takes them or not: a link cannot tell.
@@ -663,7 +677,7 @@ compiled:
    it is handed to the image as an `OutAdd` for the sweep. In an object,
    one that is still unresolved becomes an external reference.
 
-The **entry stub** is laid down first, by [`gen_startup()`](../src/finish.c#L1056), from
+The **entry stub** is laid down first, by [`gen_startup()`](../src/finish.c#L1046), from
 [`src/rt/startup.s`](../src/rt/startup.s): it saves IY and MOS's stack
 pointer, clears the bss, builds argv, moves to its own stack at the top of
 RAM, calls `main`, and returns its result to MOS. `-x` makes a stub that
@@ -700,17 +714,22 @@ flowchart TD
     lib -->|"no"| fin["gen_finish()"]
 ```
 
-[`gen_startup()`](../src/finish.c#L1056) ·
-[`link_object()`](../src/link.c#L76) ·
-[`place_object()`](../src/link.c#L317) ·
-[`copy_text()`](../src/link.c#L158) ·
-[`link_short()`](../src/link.c#L383) ·
-[`link_archive()`](../src/link.c#L405) ·
-[`ar_find()`](../src/archive.c#L244) ·
-[`take_items()`](../src/link.c#L169) ·
-[`gen_finish()`](../src/finish.c#L746)
+[`gen_startup()`](../src/finish.c#L1046) ·
+[`link_object()`](../src/link.c#L77) ·
+[`place_object()`](../src/link.c#L323) ·
+[`copy_text()`](../src/link.c#L159) ·
+[`link_short()`](../src/link.c#L410) ·
+[`link_archive()`](../src/link.c#L433) ·
+[`ar_find()`](../src/archive.c#L250) ·
+[`take_items()`](../src/link.c#L170) ·
+[`gen_finish()`](../src/finish.c#L751)
 
-An object named on the command line is placed whole. Its text is read
+A library is asked for names in the order of the slots that wait on them
+([`waits_next()`](../src/link.c#L379)), each routine of the runtime once, at its first
+call. It is kept open while the link reads it, since opening a file on the
+card is a search of its directory, and a name it does not have is marked
+([`name_set_missed()`](../src/names.c#L364)) so that it is not asked again on the next
+pass. An object named on the command line is placed whole. Its text is read
 straight from the file into the image, after only its front (header,
 symbols and relocations) has been read. From a library, a link takes only
 the items that the wanted name is in and what they reach through their
@@ -800,9 +819,11 @@ agondev's.
 - **An instruction sequence.** Add the encoder to [`insn.c`](../src/insn.c). If it looks
   back at what was emitted, give its mark an `out_rewinds` epoch (section
   13).
-- **A runtime routine.** Write it in `src/rt/helpers.s`, run `make`, which
-  regenerates `rt_helpers.h` when agondev is installed, and call it with
-  [`rt_call()`](../src/runtime.c#L133).
+- **A runtime routine.** Write it in a file of its own in `lib/rt/`, or in
+  the file of the routines it shares code with, and export it with `XDEF`.
+  For the code generator to call it, add it to the enum in [`runtime.h`](../src/runtime.h)
+  and to `rt_names` in [`runtime.c`](../src/runtime.c), and call it with
+  [`rt_call()`](../src/runtime.c#L91); `test/rtlib.sh` checks the three agree.
 - **Something kept per function.** Free it in [`gen_forget()`](../src/func.c#L527); if it
   holds an address, move it in [`cut_out()`](../src/relax.c#L370); if it is appended to
   under a `GenMark`, save and restore its count there.

@@ -516,8 +516,8 @@ fi
 # come one after another in the order of the image, and at the address
 # the map gives an item is its object's bytes -- `twice`, which holds no
 # address to be moved but its prologue's call into the runtime, the three
-# bytes after its first, which the link fills in. The runtime is listed
-# when the program calls it.
+# bytes after its first, which the link fills in. The runtime is listed,
+# as the library's members it is in, when the program calls it.
 cat > "$tmp/la.c" <<'EOF2'
 static int sq(int x) { return x * x; }
 int twice(int x);
@@ -528,8 +528,11 @@ if "$ACC" -c "$tmp/la.c" -o "$tmp/la.o" -map "$tmp/la.map" >/dev/null 2>&1 \
    && "$ACC" -c "$tmp/lb.c" -o "$tmp/lb.o" -map "$tmp/lb.map" >/dev/null 2>&1 \
    && "$ACC" "$tmp/la.o" "$tmp/lb.o" -o "$tmp/l.bin" -map "$tmp/l.map" >/dev/null 2>&1; then
     got=$(python3 - "$tmp" <<'PY'
-import sys
+import re, sys
 t = sys.argv[1]
+
+def runtime(obj):               # a member of the library, from lib/rt
+    return re.match(r'^rt_\w+\.o$', obj) is not None
 
 def n3(d, at):
     return d[at] | d[at + 1] << 8 | d[at + 2] << 16
@@ -554,14 +557,14 @@ for at, size, name, obj, off in rows:
     if at < end:
         out.append('overlap at %s' % name)
     end = at + size
-    if obj != '(runtime)' and own.get((obj, off)) != size:
+    if not runtime(obj) and own.get((obj, off)) != size:
         out.append('%s is %d, its object says %s' % (name, size, own.get((obj, off))))
     if name == 'twice':
         body = image[at - 0x40000:at - 0x40000 + size]
         own_body = text(obj)[off:off + size]
         same = body[:1] == own_body[:1] == b'\xcd' and body[4:] == own_body[4:]
         out.append('twice ' + ('matches' if same else 'differs'))
-names = [r[2] for r in rows if r[3] != '(runtime)']
+names = [r[2] for r in rows if not runtime(r[3])]
 out.append(' '.join(names))
 out.append('runtime' if any(r[2] == 'acc_rt_mul' for r in rows) else 'no runtime')
 print('; '.join(out))
@@ -572,19 +575,18 @@ else
     ok "-map on a link writes a map"   "it failed" "a map"
 fi
 
-# The runtime goes in by the groups a program reaches: one that only
-# multiplies carries acc_rt_mul and the prologue it calls, and none of the
-# floating-point or long long routines, which a prefix of the blob that
-# reached as far as the multiply carried as well.
+# The runtime goes in by the library's members a program reaches: one that
+# only multiplies carries acc_rt_mul and the prologue it calls, and none of
+# the floating-point or long long routines.
 cat > "$tmp/rm.c" <<'EOF2'
 int f(int a, int b) { return a * b; }
 int main(void) { return f(6, 7); }
 EOF2
 if "$ACC" -c "$tmp/rm.c" -o "$tmp/rm.o" >/dev/null 2>&1 \
    && "$ACC" "$tmp/rm.o" -o "$tmp/rm.bin" -map "$tmp/rm.map" >/dev/null 2>&1; then
-    got=$(awk '$4 == "(runtime)" { print $3 }' "$tmp/rm.map" | sort | tr '\n' ' ')
+    got=$(awk '$4 ~ /^rt_[a-z0-9_]*\.o$/ { print $3 }' "$tmp/rm.map" | sort | tr '\n' ' ')
     ok "only the runtime it reaches"    "$got" "acc_rt_frameset0 acc_rt_mul "
-    rt=$(awk '$4 == "(runtime)" { s += $2 } END { print s + 0 }' "$tmp/rm.map")
+    rt=$(awk '$4 ~ /^rt_[a-z0-9_]*\.o$/ { s += $2 } END { print s + 0 }' "$tmp/rm.map")
     [ "$rt" -lt 400 ] && rt=small
     ok "a small runtime"                "$rt" "small"
 else

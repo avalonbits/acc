@@ -185,7 +185,8 @@ void ar_write(const char *path, const char **members, int nmembers)
 
 /* Everything but the members, which are read one at a time and only if the
  * link turns out to want them. */
-void ar_open(const char *path, Archive *a)
+/* The library at `path`, its list read: 0 if there is no file there. */
+int ar_open_if(const char *path, Archive *a)
 {
     FILE *f = fopen(path, "rb");
     unsigned char head[AR_HEADER];
@@ -193,7 +194,7 @@ void ar_open(const char *path, Archive *a)
     int front;
 
     if (!f)
-        acc_error("cannot open '%s'", path);
+        return 0;
     if (fread(head, 1, AR_HEADER, f) != AR_HEADER)
         acc_error("'%s' is too short to be a library", path);
     if (head[0] != 'A' || head[1] != 'C' || head[2] != 'R')
@@ -220,18 +221,23 @@ void ar_open(const char *path, Archive *a)
     if (fseek(f, AR_HEADER, SEEK_SET) != 0
         || (int) fread(a->front, 1, (size_t) front, f) != front)
         acc_error("short read on '%s'", path);
-    fclose(f);
+    a->file = f;
 
     a->members = a->front;
     a->defs = a->front + a->nmembers * AR_MEMBER;
     a->strings = (char *) a->defs + a->ndefs * AR_DEF;
     a->size = (int) size;
+
+    return 1;
 }
 
 void ar_close(Archive *a)
 {
     free(a->front);
     a->front = NULL;
+    if (a->file)
+        fclose((FILE *) a->file);
+    a->file = NULL;
 }
 
 const char *ar_member_name(const Archive *a, int i)
@@ -275,13 +281,10 @@ void ar_member(const Archive *a, int i, Object *o)
     all = malloc((size_t) len);
     if (!all)
         acc_error("out of memory for a member of '%s'", a->path);
-    f = fopen(a->path, "rb");
-    if (!f)
-        acc_error("cannot open '%s'", a->path);
+    f = (FILE *) a->file;
     if (fseek(f, at, SEEK_SET) != 0
         || (int) fread(all, 1, (size_t) len, f) != len)
         acc_error("short read on '%s'", a->path);
-    fclose(f);
 
     obj_take(all, len, ar_member_name(a, i), o);
 }

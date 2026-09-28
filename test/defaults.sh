@@ -3,10 +3,11 @@
 # a build can name (the Agon build names /lib/acc/include and
 # /lib/acc/libc.a, where the release puts them).
 #
-# The host build names neither, so this builds a host acc that names the
-# repository's include/ and bin/libc.a, and checks that it finds them, that
-# -I is still looked in first, and that naming the library as well changes
-# nothing. test/release.sh checks the Agon build's own paths on the Agon.
+# The host build names bin/libc.a, where acc's runtime is, and no include
+# directory. So this builds a host acc that names the repository's include/
+# as well, and checks that it finds them, that -I is still looked in first,
+# and that naming the library as well changes nothing. test/release.sh
+# checks the Agon build's own paths on the Agon.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -65,10 +66,11 @@ else
     ok "the host build names no include directory"
 fi
 
-# The reference: everything named. An image holds its own name, so every
-# link below writes p.bin and the answer is moved aside.
+# The reference: everything named, in the order a link reads them by
+# default -- the runtime, then the C library. An image holds its own name,
+# so every link below writes p.bin and the answer is moved aside.
 bin/acc -c "$tmp/hello.c" -o "$tmp/ref.o" -Iinclude >/dev/null || exit 2
-bin/acc "$tmp/ref.o" bin/libc.a -o "$tmp/p.bin" >/dev/null || exit 2
+bin/acc "$tmp/ref.o" bin/rt.a bin/libc.a -o "$tmp/p.bin" >/dev/null || exit 2
 mv "$tmp/p.bin" "$tmp/ref.bin"
 
 if "$tmp/acc" -c "$tmp/hello.c" -o "$tmp/hello.o" >/dev/null 2>&1; then
@@ -86,7 +88,7 @@ else
 fi
 
 rm -f "$tmp/p.bin"
-if "$tmp/acc" "$tmp/hello.o" bin/libc.a -o "$tmp/p.bin" >/dev/null 2>&1 \
+if "$tmp/acc" "$tmp/hello.o" bin/rt.a bin/libc.a -o "$tmp/p.bin" >/dev/null 2>&1 \
    && cmp -s "$tmp/p.bin" "$tmp/ref.bin"; then
     ok "naming the library as well changes nothing"
 else
@@ -103,17 +105,19 @@ else
     bad "one step from a source takes the defaults" "no image, or a different one"
 fi
 
-# The default library is read only when something waits on a name.
+# The default library is read for every program: the runtime is in it, and
+# even main's prologue is a call into the runtime.
 printf 'int main(void) { return 0; }\n' > "$tmp/plain.c"
 if "$tmp/acc-junk" "$tmp/plain.c" -o "$tmp/pj.bin" >/dev/null 2>&1; then
-    ok "a program that needs nothing leaves it unread"
+    bad "a program that calls nothing else reads it" "junk.a was passed over"
 else
-    bad "a program that needs nothing leaves it unread" "the compile failed"
+    ok "a program that calls nothing else reads it"
 fi
-if "$tmp/acc-junk" "$tmp/hello.c" -o "$tmp/hj.bin" >/dev/null 2>&1; then
-    bad "a program that needs it reads it" "junk.a was passed over"
+out=$("$tmp/acc-nolib" "$tmp/plain.c" -o "$tmp/pn.bin" 2>&1)
+if printf '%s' "$out" | grep -q "acc's runtime and is in libc.a"; then
+    ok "without it, the runtime is said to be missing"
 else
-    ok "a program that needs it reads it"
+    bad "without it, the runtime is said to be missing" "some other error"
 fi
 
 # -I first: a <stdio.h> of its own is the one read.
@@ -139,12 +143,13 @@ else
 fi
 rm -f "$tmp/plain.o"
 
-# With the library missing, a program that needs nothing from it links.
-if "$tmp/acc-nolib" -c "$tmp/plain.c" -o "$tmp/plain.o" >/dev/null 2>&1 \
-   && "$tmp/acc-nolib" "$tmp/plain.o" -o "$tmp/plain.bin" >/dev/null 2>&1; then
-    ok "a missing default library is passed over"
+# With the library missing, a link of an object says the runtime is.
+"$tmp/acc-nolib" -c "$tmp/plain.c" -o "$tmp/plain.o" >/dev/null 2>&1
+out=$("$tmp/acc-nolib" "$tmp/plain.o" -o "$tmp/plain.bin" 2>&1)
+if printf '%s' "$out" | grep -q "acc's runtime and is in libc.a"; then
+    ok "a link without the library says the runtime is missing"
 else
-    bad "a missing default library is passed over" "the link failed"
+    bad "a link without the library says the runtime is missing" "some other error"
 fi
 
 echo "  $pass passed, $fail failed"

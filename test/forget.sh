@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 CC=${CC:-cc}
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 # shellcheck disable=SC2046
-"$CC" -O1 -fsigned-char -DACC_TABLE_STATS -Isrc -o "$tmp/acc" \
+"$CC" -O1 -fsigned-char -DACC_LIBC="\"$PWD/bin/libc.a\"" -DACC_TABLE_STATS -Isrc -o "$tmp/acc" \
     $(sed -n 's/^SRC *= //p; /^           src/p' Makefile | tr -d '\\') \
     || { echo "  FAIL the counting acc does not build"; exit 1; }
 

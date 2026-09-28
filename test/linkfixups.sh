@@ -30,11 +30,11 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
 
 # shellcheck disable=SC2086
-"$CC" -O1 -fsigned-char -Isrc -o "$tmp/small" $SRCS test/failalloc.c \
+"$CC" -O1 -fsigned-char -DACC_LIBC="\"$PWD/bin/libc.a\"" -Isrc -o "$tmp/small" $SRCS test/failalloc.c \
     -Wl,--wrap=fopen,--wrap=fwrite,--wrap=malloc,--wrap=calloc,--wrap=realloc \
     || { echo "  FAIL the limited acc does not build"; exit 1; }
 # shellcheck disable=SC2086
-"$CC" -O1 -fsigned-char -DACC_TABLE_STATS -Isrc -o "$tmp/count" $SRCS \
+"$CC" -O1 -fsigned-char -DACC_LIBC="\"$PWD/bin/libc.a\"" -DACC_TABLE_STATS -Isrc -o "$tmp/count" $SRCS \
     || { echo "  FAIL the counting acc does not build"; exit 1; }
 
 K=16 N=800

@@ -59,13 +59,16 @@ else
     bad "a source and an object, in one step" "no image, or not the two steps' image"
 fi
 
-if acc "$tmp/hello.c" -o "$tmp/nolib.bin" -I"$INC"; then
+printf 'int nowhere(void);\nint main(void) { return nowhere(); }\n' > "$tmp/nowhere.c"
+if acc "$tmp/nowhere.c" -o "$tmp/nolib.bin"; then
     bad "a call nothing defines is still refused" "it compiled"
 else
     ok "a call nothing defines is still refused"
 fi
 
-if acc "$tmp/plain.c" "$tmp/junk.a" -o "$tmp/junk.bin"; then
+# Every program waits on the runtime, which rt.a beside the library has;
+# with it named first, nothing is left waiting for the one after it.
+if acc "$tmp/plain.c" "$(dirname "$LIB")/rt.a" "$tmp/junk.a" -o "$tmp/junk.bin"; then
     ok "a library nothing needs is not read"
 else
     bad "a library nothing needs is not read" "the compile failed"

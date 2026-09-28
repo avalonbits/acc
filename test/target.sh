@@ -35,6 +35,8 @@ fi
 
 sd=$(emu_card); host=$(mktemp -d); trap 'rm -rf "$sd" "$host"' EXIT
 cp "$ACC" "$sd/bin/acc.bin"
+mkdir -p "$sd/lib/acc"
+cp bin/libc.a bin/rt.a "$sd/lib/acc/"        # the runtime, as the release puts it
 
 # The machine is stopped by a program built with -x, as in bench.sh, compiled
 # by the host acc so that a broken candidate cannot leave the run hanging.

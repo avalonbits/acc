@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "acc.h"
 #include "ctype.h"
@@ -289,6 +290,11 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
             int target = item_of(&o, (int) a);
 
             gen_slot(dest, kind, t->placed[target] + a - obj_item(&o, target));
+            /* An address in the image, which -r has to name as it does the
+             * compiler's own: a jump inside a routine of the runtime, a
+             * call to a static function of a member. */
+            if (kind == REL_ABS24)
+                out_reloc(dest);
         } else if (which == 1 && kind == REL_ABS24) {
             out_patch24(dest, (int) a + t->bss);
             gen_bss_fixup(dest);
@@ -343,38 +349,63 @@ static void place_object(Object *op, const char *path)
     obj_free(op);
 }
 
-#ifdef ACC_LIBC
-/* Whether the default library is there: a card without it links what it is
- * given, as a host build does. */
-static int file_exists(const char *path)
-{
-    FILE *f = fopen(path, "rb");
-
-    if (!f)
-        return 0;
-    fclose(f);
-
-    return 1;
-}
-#endif
-
-/* The name the i-th of what a link waits on is still waiting for, or -1:
- * the n calls and addresses, then the nl slots of the kinds an assembly
+/* What a link waits on, in the order it asks a library for it: the calls
+ * and addresses and a compile's calls into the runtime together, in the
+ * order of their slots -- the order a link of the file's object meets them
+ * in, so that building a program in one step and in two takes the same
+ * members in the same order -- then the slots of the kinds an assembly
  * object has (gen_late_fixup), then what objects want.
  *
  * A variable whose room is in a bss has no address until the link ends, and
  * is defined all the same. A weak name is not looked for on its own
  * account. A slot that wants the bss is not waiting on a name at all. */
-static int waiting_on(int i, int n, int nl)
+typedef struct {
+    int i, n, l, nl, k;
+    const int *rat, *rsym, *rend;       /* the runtime's, walked by pointer */
+} Waits;
+
+/* One walk at a time, and static: in link_archive's frame it took the frame
+ * past what (ix+d) reaches. */
+static Waits waits;
+
+static void waits_start(Waits *w)
 {
-    int sym = i < n ? gen_fixup_sym(i)
-            : i < n + nl ? gen_late_sym(i - n) : wanted[i - n - nl];
+    int nr = gen_rt_first(&w->rat, &w->rsym);
 
-    if (sym < 0 || !gen_no_address(sym) || gen_bss_offset(sym) >= 0
-        || (i < n + nl && name_weak(sym_at(sym)->name)))
-        return -1;
+    w->rend = w->rat + nr;
+    w->i = w->l = w->k = 0;
+    w->n = gen_nfixups();
+    w->nl = gen_nlate();
+}
 
-    return sym;
+/* The next name still waited on, or -2 when there are no more. */
+static int waits_next(Waits *w)
+{
+    for (;;) {
+        int sym, weak = 1;
+
+        if (w->i != w->n || w->rat != w->rend) {
+            if (w->rat != w->rend
+                && (w->i == w->n
+                    || (unsigned) *w->rat < (unsigned) gen_fixup_at(w->i))) {
+                sym = *w->rsym++;
+                w->rat++;
+            } else
+                sym = gen_fixup_sym(w->i++);
+        } else if (w->l != w->nl) {
+            sym = gen_late_sym(w->l++);
+        } else if (w->k != nwanted) {
+            sym = wanted[w->k++];
+            weak = 0;
+        } else {
+            return -2;
+        }
+        if (sym < 0 || !gen_no_address(sym) || gen_bss_offset(sym) >= 0
+            || (weak && name_weak(sym_at(sym)->name)))
+            continue;
+
+        return sym;
+    }
 }
 
 /* Whether anything is still waiting on a name: a program that calls
@@ -382,13 +413,9 @@ static int waiting_on(int i, int n, int nl)
  * index is 19 KB of heap for libc.a. */
 static int link_short(void)
 {
-    int i, n = gen_nfixups(), nl = gen_nlate();
+    waits_start(&waits);
 
-    for (i = 0; i != n + nl + nwanted; i++)
-        if (waiting_on(i, n, nl) >= 0)
-            return 1;
-
-    return 0;
+    return waits_next(&waits) != -2;
 }
 
 /* A library, which is asked only for what the link is short of.
@@ -402,32 +429,63 @@ static int link_short(void)
  * What is taken from a member is only what the program reaches: see
  * take_items. An object named on the command line is placed whole, as a
  * program's own code is. */
-static void link_archive(const char *path)
+/* The names asked of the library being read that it has no member for: see
+ * name_set_missed. */
+static NameRef *missed, *missed_put, *missed_limit;
+
+/* Twice the room, counted in bytes as the image's tables are. */
+__attribute__((noinline))
+static void missed_grow(void)
+{
+    size_t used = (size_t) ((char *) missed_put - (char *) missed);
+    size_t room = used ? used + used : 32 * sizeof *missed;
+
+    missed = realloc(missed, room);
+    if (!missed)
+        acc_error("out of memory for a library's names");
+    missed_put = (NameRef *) (void *) ((char *) missed + used);
+    missed_limit = (NameRef *) (void *) ((char *) missed + room);
+}
+
+static void link_archive(const char *path, int must)
 {
     Archive a;
     Taken *taken;
     int again = 1, m;
 
-    ar_open(path, &a);
+    /* The default libraries may not be there: a card without them links
+     * what it is given, as the host build once did. Opened rather than
+     * asked after first, which is a second search of the directory. */
+    if (!ar_open_if(path, &a)) {
+        if (must)
+            acc_error("cannot open '%s'", path);
+
+        return;
+    }
     taken = calloc((size_t) a.nmembers + 1, sizeof *taken);
     if (!taken)
         acc_error("out of memory for '%s'", path);
 
     while (again) {
-        int i, n = gen_nfixups(), nl = gen_nlate();
+        int sym;
 
         again = 0;
-        for (i = 0; i != n + nl + nwanted; i++) {
-            int sym = waiting_on(i, n, nl);
+        waits_start(&waits);
+        while ((sym = waits_next(&waits)) != -2) {
             const char *name;
             Object o;
 
-            if (sym < 0)
+            if (name_missed(sym_at(sym)->name))
                 continue;
             name = obj_object_name(name_text(sym_at(sym)->name));
             m = ar_find(&a, name);
-            if (m < 0)
+            if (m < 0) {
+                if (missed_put == missed_limit)
+                    missed_grow();
+                *missed_put++ = sym_at(sym)->name;
+                name_set_missed(sym_at(sym)->name, 1);
                 continue;
+            }
             ar_member(&a, m, &o);
             if (!taken[m].placed) {
                 int k;
@@ -450,6 +508,8 @@ static void link_archive(const char *path)
             again = 1;
         }
     }
+    while (missed_put != missed)
+        name_set_missed(*--missed_put, 0);
     for (m = 0; m != a.nmembers; m++)
         free(taken[m].placed);
     free(taken);
@@ -467,10 +527,27 @@ void link_inputs(const char **objs, int nobjs)
         if (!is_archive(objs[i]))
             link_object(objs[i]);
         else if (link_short())
-            link_archive(objs[i]);
+            link_archive(objs[i], 1);
     }
 #ifdef ACC_LIBC
-    if (link_short() && file_exists(ACC_LIBC))
-        link_archive(ACC_LIBC);
+    /* The runtime first, from the library beside the C library: every
+     * program calls it, and its index is a few names, so a program that
+     * calls nothing in the C library does not read that one's thousand.
+     * Then the C library, if anything still waits, and the runtime again
+     * for what the C library's members call. */
+    {
+        static char rt[sizeof ACC_LIBC + 8];
+        const char *slash = strrchr(ACC_LIBC, '/');
+        int dir = slash ? (int) (slash - ACC_LIBC) + 1 : 0;
+
+        memcpy(rt, ACC_LIBC, (size_t) dir);
+        strcpy(rt + dir, "rt.a");
+        if (link_short())
+            link_archive(rt, 0);
+        if (link_short())
+            link_archive(ACC_LIBC, 0);
+        if (link_short())
+            link_archive(rt, 0);
+    }
 #endif
 }

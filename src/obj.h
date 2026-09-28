@@ -51,9 +51,11 @@ enum {
 
 /* A library: objects end to end, with a list of what each defines in front
  * of them. Only that list is read when one is opened; a member is read when
- * the link turns out to want it. */
+ * the link turns out to want it, from the file kept open for it -- opening
+ * one on the card is a search of its directory, and a link takes dozens. */
 typedef struct {
     const char    *path;
+    void          *file;                 /* a FILE, open until ar_close */
     unsigned char *front;                /* the list, as it is in the file */
     unsigned char *members, *defs;
     char          *strings;
@@ -61,7 +63,7 @@ typedef struct {
 } Archive;
 
 void        ar_write(const char *path, const char **members, int nmembers);
-void        ar_open(const char *path, Archive *a);
+int         ar_open_if(const char *path, Archive *a);  /* 0 if not there */
 void        ar_close(Archive *a);
 int         ar_find(const Archive *a, const char *name);  /* which member, or -1 */
 void        ar_member(const Archive *a, int i, Object *o);

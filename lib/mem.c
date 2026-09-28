@@ -51,20 +51,6 @@ void *memset(void *s, int c, size_t n)
     return s;
 }
 
-int memcmp(const void *a, const void *b, size_t n)
-{
-    const unsigned char *p = a, *q = b;
-
-    while (n--) {
-        if (*p != *q)
-            return *p - *q;
-        p++;
-        q++;
-    }
-
-    return 0;
-}
-
 void *memchr(const void *s, int c, size_t n)
 {
     const unsigned char *p = s;

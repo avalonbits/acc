@@ -25,7 +25,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
 
 # shellcheck disable=SC2086
-"$CC" -O1 -fsigned-char -DACC_TABLE_STATS -Isrc -o "$tmp/count" $SRCS \
+"$CC" -O1 -fsigned-char -DACC_LIBC="\"$PWD/bin/libc.a\"" -DACC_TABLE_STATS -Isrc -o "$tmp/count" $SRCS \
     || { echo "  FAIL the counting acc does not build"; exit 1; }
 mkdir -p "$tmp/whole"
 cp src/*.c src/*.h "$tmp/whole/"
@@ -33,7 +33,7 @@ sed -i 's/^int out_start_cap = 4096;/int out_start_cap = 1 << 24;/' "$tmp/whole/
 grep -q '^int out_start_cap = 1 << 24;' "$tmp/whole/image.c" \
     || { echo "  FAIL spill: cannot make the acc that holds its image whole"; exit 1; }
 # shellcheck disable=SC2046
-"$CC" -O1 -fsigned-char -I"$tmp/whole" -o "$tmp/whole/acc" \
+"$CC" -O1 -fsigned-char -DACC_LIBC="\"$PWD/bin/libc.a\"" -I"$tmp/whole" -o "$tmp/whole/acc" \
     $(printf '%s\n' $SRCS | sed "s|^src/|$tmp/whole/|") \
     || { echo "  FAIL the acc that holds its image whole does not build"; exit 1; }
 

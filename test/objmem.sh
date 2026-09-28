@@ -20,7 +20,7 @@ CC=${CC:-cc}
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 # shellcheck disable=SC2046
-"$CC" -O1 -fsigned-char -Isrc -o "$tmp/acc" \
+"$CC" -O1 -fsigned-char -DACC_LIBC="\"$PWD/bin/libc.a\"" -Isrc -o "$tmp/acc" \
     $(sed -n 's/^SRC *= //p; /^           src/p' Makefile | tr -d '\\') \
     test/failalloc.c -Wl,--wrap=fopen,--wrap=fwrite,--wrap=malloc,--wrap=calloc,--wrap=realloc \
     || { echo "  FAIL the limited acc does not build"; exit 1; }

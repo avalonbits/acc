@@ -35,6 +35,7 @@ typedef struct {
     int value, at;
 } OutAdd;
 void out_add_later(const OutAdd *(*add_at)(int k), int n);
+void out_add_later2(const OutAdd *(*add_at)(int k), int n);
 
 /* And one value added to each of the n slots `slot_at` names, in order:
  * the bss's start, to the slots that hold an offset into it. */

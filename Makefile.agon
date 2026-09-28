@@ -61,12 +61,11 @@ SRCS = src/obj.c src/archive.c src/names.c src/source.c src/macro.c src/directiv
        src/fmt.c
 
 # The same headers the host build lists. Naming only src/acc.h here left the
-# Agon build carrying whatever src/rt_helpers.h said when it was last
-# compiled: regenerating the runtime from src/rt/helpers.s changed the blob
-# the host build emitted and not the one the Agon build did, and target.sh
-# reported eighty-one programs where the two builds disagreed -- which they
-# did, about a runtime one of them had not been told about.
-HDRS = src/acc.h src/types.h src/diag.h src/names.h src/lex.h src/sym.h src/gen.h src/out.h src/obj.h src/lex_int.h src/out_int.h src/obj_int.h src/gen_int.h src/parse_int.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
+# Agon build carrying whatever the other headers said when it was last
+# compiled, and target.sh then reported programs where the two builds
+# disagreed -- which they did, about a header one of them had not been
+# told had changed.
+HDRS = src/acc.h src/types.h src/diag.h src/names.h src/lex.h src/sym.h src/gen.h src/out.h src/obj.h src/lex_int.h src/out_int.h src/obj_int.h src/gen_int.h src/parse_int.h src/timing.h src/ctype.h src/runtime.h src/version.h src/fmt.h
 
 OBJS = $(patsubst src/%.c,$(OBJ)/%.o,$(SRCS)) $(OBJ)/marks.o
 

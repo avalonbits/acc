@@ -20,6 +20,8 @@ NameRef     name_intern(const char *text, int len);
 const char *name_text(NameRef ref);
 int         name_weak(NameRef ref);             /* #pragma weak said so */
 void        name_set_weak(NameRef ref, int weak);
+int         name_missed(NameRef ref);           /* a library has it not */
+void        name_set_missed(NameRef ref, int missed);
 void        name_init(void);
 
 extern char *name_arena;    /* for name_global, further down */

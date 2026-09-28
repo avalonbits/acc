@@ -17,7 +17,7 @@ N=120000
 CC=${CC:-cc}
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 # shellcheck disable=SC2046
-"$CC" -O1 -fsigned-char -Isrc -o "$tmp/acc" \
+"$CC" -O1 -fsigned-char -DACC_LIBC="\"$PWD/bin/libc.a\"" -Isrc -o "$tmp/acc" \
     $(sed -n 's/^SRC *= //p; /^           src/p' Makefile | tr -d '\\') \
     test/peak.c -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free \
     || { echo "  FAIL the measuring acc does not build"; exit 1; }
