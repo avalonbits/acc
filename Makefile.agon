@@ -50,13 +50,10 @@ CFLAGS = -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
          -Oz -mllvm -inline-threshold=-10 \
          -Wa,-march=ez80+full -fno-threadsafe-statics $(EXTRA)
 
-# acc takes a command line, so it needs the argument splitting that agondev's
-# crt0 leaves to a defsym.
+# acc takes a command line, and splits it itself: see parse_option in
+# parse.c, which is what agondev's crt0 calls to split one.
 LDFLAGS = -defsym=RAM_START=0x40000 -defsym=RAM_SIZE=0x70000 \
           -defsym=_has_exit_handler=0 \
-          -defsym=_parse_option=___arg_processing \
-          -defsym=_putchar=_putchar_arg_processing \
-          -defsym=_getchar=_getchar_arg_processing \
           -T src/agon.ld --oformat binary \
           --wrap=_sbrk
 

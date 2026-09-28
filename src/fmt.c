@@ -211,11 +211,19 @@ int fmt_vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap)
     return (int) s.len;
 }
 
+#if defined(AGONDEV) && defined(__clang__)
+FILE *fmt_console;
+#endif
+
 int fmt_vfprintf(FILE *file, const char *fmt, va_list ap)
 {
     Sink s;
     Args args;
 
+#if defined(AGONDEV) && defined(__clang__)
+    if (fmt_console && (file == stdout || file == stderr))
+        file = fmt_console;
+#endif
     s.buf = NULL;
     s.cap = 0;
     s.len = 0;
