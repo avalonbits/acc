@@ -11,7 +11,9 @@
 #     or a program that cannot be built, and only on the code path that
 #     calls it;
 #   - a program carries the runtime it calls and not the rest: one that
-#     multiplies an int has the multiply and not the floating point.
+#     multiplies an int has the multiply and not the floating point;
+#   - what the C library has in assembly (lib/*.s: the string functions) is
+#     in libc.a, and not in rt.a with the runtime.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,7 +26,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
 
 # What the compiler calls, what lib/rt exports, and what the library lists.
-python3 - "$LIB" <<'PY' || fail=1
+python3 - "$LIB" "$(dirname "$LIB")/libc.a" <<'PY' || fail=1
 import glob, re, sys
 
 src = open('src/runtime.c').read()
@@ -38,16 +40,24 @@ for p in glob.glob('lib/rt/*.s'):
         exports.add(m.group(1))
 c_exports = {e[1:] for e in exports if e.startswith('_')}
 
-d = open(sys.argv[1], 'rb').read()
-g3 = lambda o: d[o] | d[o + 1] << 8 | d[o + 2] << 16
-assert d[:4] == b'ACR\x01', 'not an acc library'
-nmembers, ndefs, slen = g3(7), g3(10), g3(13)
-strings = 16 + nmembers * 9 + ndefs * 6
-def name(off):
-    end = d.index(b'\0', strings + off)
-    return d[strings + off:end].decode()
-index = {name(g3(16 + nmembers * 9 + i * 6)) for i in range(ndefs)}
-index = {n[1:] if n.startswith('_') else '@' + n for n in index}
+def listed(path):              # the names a library's index lists
+    d = open(path, 'rb').read()
+    g3 = lambda o: d[o] | d[o + 1] << 8 | d[o + 2] << 16
+    assert d[:4] == b'ACR\x01', 'not an acc library'
+    nmembers, ndefs = g3(7), g3(10)
+    strings = 16 + nmembers * 9 + ndefs * 6
+    def name(off):
+        end = d.index(b'\0', strings + off)
+        return d[strings + off:end].decode()
+    found = {name(g3(16 + nmembers * 9 + i * 6)) for i in range(ndefs)}
+    return {n[1:] if n.startswith('_') else '@' + n for n in found}
+index = listed(sys.argv[1])
+libc = listed(sys.argv[2])
+
+asm = set()
+for p in glob.glob('lib/*.s'):
+    for m in re.finditer(r'^\s*XDEF\s+_([\w.]+)', open(p).read(), re.M):
+        asm.add(m.group(1))
 
 bad = 0
 for n in sorted(calls - c_exports):
@@ -56,9 +66,20 @@ for n in sorted(calls - c_exports):
 for n in sorted(c_exports - index):
     print('  FAIL lib/rt exports %s, and the library does not list it' % n)
     bad = 1
+for n in sorted(asm - libc):
+    print('  FAIL lib/*.s defines %s, and libc.a does not list it' % n)
+    bad = 1
+for n in sorted(asm & index):
+    print('  FAIL %s is the C library\'s, and rt.a lists it' % n)
+    bad = 1
+if not asm:
+    print('  FAIL lib/*.s defines nothing')
+    bad = 1
 if not bad:
     print('  ok   all %d routines the compiler calls are in lib/rt, and all %d '
-          'it exports are in the library' % (len(calls), len(c_exports)))
+          'it exports are in rt.a' % (len(calls), len(c_exports)))
+    print('  ok   the %d functions lib/*.s defines are in libc.a and not in '
+          'rt.a' % len(asm))
 sys.exit(bad)
 PY
 

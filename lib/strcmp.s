@@ -1,10 +1,9 @@
 ;
 ; Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
-; SPDX-License-Identifier: LGPL-2.1-or-later WITH AdditionRef-acc-runtime-exception
+; SPDX-License-Identifier: LGPL-2.1-or-later
 ;
-; Part of acc's runtime, assembled by zap into libc.a: see lib/rt/README.md
-; for what the runtime is, its calling convention, and the exception to the
-; licence that lets a program carry it.
+; Part of the C library, written in eZ80 assembly and assembled by zap into
+; libc.a with the rest of it: see lib/strlen.s for why these are assembly.
 ;
 
 	XDEF	_memcmp

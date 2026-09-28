@@ -50,6 +50,12 @@ LIBHDR = include/stddef.h include/string.h include/stdio.h include/stdint.h \
          lib/vdp_emit.h
 LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 
+# And what of the library is eZ80 assembly, assembled by zap as the runtime
+# is (below): the string functions that the block instructions do in a
+# fifth of the time C takes.
+LIBASM    = lib/strlen.s lib/strcmp.s lib/strchr.s lib/strcpy.s
+LIBASMOBJ = $(LIBASM:lib/%.s=$(BIN)/lib/%.o)
+
 .PHONY: all clean test unit agon
 
 # acc-asan is part of the ordinary build and not only of `test`, because
@@ -80,6 +86,9 @@ RTSRC = $(wildcard lib/rt/*.s)
 RTOBJ = $(RTSRC:lib/rt/%.s=$(BIN)/lib/rt_%.o)
 
 $(BIN)/lib/rt_%.o: lib/rt/%.s $(ZAP) | $(BIN)/lib
+	@$(ZAP) $< $@ -f acc >/dev/null || { $(ZAP) $< $@ -f acc; exit 1; }
+
+$(LIBASMOBJ): $(BIN)/lib/%.o: lib/%.s $(ZAP) | $(BIN)/lib
 	@$(ZAP) $< $@ -f acc >/dev/null || { $(ZAP) $< $@ -f acc; exit 1; }
 
 # What this acc is, so that an object can say which compiler made it. The
@@ -113,7 +122,7 @@ $(BIN)/lib/%.o: lib/%.c $(LIBHDR) $(BIN)/acc | $(BIN)/lib
 # member that is gone. Its recipe runs every time; the library is remade
 # only when the file it writes is new.
 $(BIN)/lib/members: FORCE | $(BIN)/lib
-	@echo '$(LIBOBJ) $(RTOBJ)' | cmp -s - $@ || echo '$(LIBOBJ) $(RTOBJ)' > $@
+	@echo '$(LIBOBJ) $(LIBASMOBJ) $(RTOBJ)' | cmp -s - $@ || echo '$(LIBOBJ) $(LIBASMOBJ) $(RTOBJ)' > $@
 
 FORCE:
 
@@ -125,11 +134,11 @@ FORCE:
 # first: every program calls the runtime, and its index is a few names where
 # the C library's is a thousand, so a program that calls nothing in the C
 # library does not read that one at all.
-$(BIN)/libc.a: $(LIBOBJ) $(RTOBJ) $(BIN)/lib/members $(BIN)/acc
-	@$(RM) $(filter-out $(LIBOBJ) $(RTOBJ),$(wildcard $(BIN)/lib/*.o))
-	@$(BIN)/acc -a $@ $(LIBOBJ) >/dev/null
+$(BIN)/libc.a: $(LIBOBJ) $(LIBASMOBJ) $(RTOBJ) $(BIN)/lib/members $(BIN)/acc
+	@$(RM) $(filter-out $(LIBOBJ) $(LIBASMOBJ) $(RTOBJ),$(wildcard $(BIN)/lib/*.o))
+	@$(BIN)/acc -a $@ $(LIBOBJ) $(LIBASMOBJ) >/dev/null
 	@$(BIN)/acc -a $(BIN)/rt.a $(RTOBJ) >/dev/null
-	@echo "[$@: $$(stat -c%s $@) bytes from $(words $(LIBOBJ)) objects]"
+	@echo "[$@: $$(stat -c%s $@) bytes from $(words $(LIBOBJ) $(LIBASMOBJ)) objects]"
 	@echo "[$(BIN)/rt.a: $$(stat -c%s $(BIN)/rt.a) bytes from $(words $(RTOBJ)) objects]"
 
 # The compiler is where the bugs are, so the tests drive a sanitized build of

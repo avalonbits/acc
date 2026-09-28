@@ -18,9 +18,7 @@ still waiting, and `rt.a` again for what the C library's members call.
 - **The frame.** `acc_rt_frameset` and `acc_rt_frameset0`, which every
   function's prologue calls.
 - **Block moves.** `memcpy`, `memmove`, `memset` and `memchr`, which acc calls
-  in place of the library's where a program names them, and the string
-  functions of `<string.h>` that walk a string, done with `cpir`, `ldir` and
-  `cpi`.
+  in place of the library's where a program names them.
 - **The machine.** MOS calls, the eZ80's I/O ports, printing, `setjmp` and
   `longjmp`, and the handler kbuf installs for MOS to call on each key.
 
@@ -32,7 +30,7 @@ allocator may have live values in DE, and IY is its scratch. A `long`, a
 `long long` or a `float` lives in the frame; the routine takes the address
 of the destination and left operand in HL and of the right in DE.
 
-What is named as C names it (`_strlen`, `_setjmp`) is a C function: its
+What is named as C names it (`_setjmp`, `_longjmp`) is a C function: its
 arguments are three bytes each from `(sp+3)`, the answer is in HL, and only
 IX is kept. The names that start `_acc_rt_` are not C's to call.
 
