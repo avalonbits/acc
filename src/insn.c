@@ -254,6 +254,41 @@ int xor_a_imm(int v)  { out_byte2(0xee, v & 0xff); return 0; }
  * a negative one, which would want a negation on the end. */
 void add_hl_hl(void) { out_byte(0x29); }
 
+/* HL = HL >> (16 + count), count 0 to 7, written out: push hl; inc sp;
+ * pop af; dec sp leaves HL's top byte in A, which is shifted by the rest
+ * and widened -- or a, a; sbc hl, hl for zeros above it, or add a, a;
+ * sbc hl, hl; rra for its sign, the carry sbc leaves being the one it
+ * read -- into ld l, a. Each is a table with all seven shifts, and the ones
+ * not wanted are stepped over: the tables are smaller than the code that
+ * would put the pieces together. Answers is_unsigned, which is the type of
+ * the result too. */
+static const unsigned char shr_signed[23] = {
+    0xe5, 0x33, 0xf1, 0x3b,
+    0xcb, 0x2f, 0xcb, 0x2f, 0xcb, 0x2f, 0xcb, 0x2f,
+    0xcb, 0x2f, 0xcb, 0x2f, 0xcb, 0x2f,
+    0x87, 0xed, 0x62, 0x1f, 0x6f
+};
+static const unsigned char shr_unsigned[22] = {
+    0xe5, 0x33, 0xf1, 0x3b,
+    0xcb, 0x3f, 0xcb, 0x3f, 0xcb, 0x3f, 0xcb, 0x3f,
+    0xcb, 0x3f, 0xcb, 0x3f, 0xcb, 0x3f,
+    0xb7, 0xed, 0x62, 0x6f
+};
+
+int shr_hl_16(int count, int is_unsigned)
+{
+    const unsigned char *code = is_unsigned ? shr_unsigned : shr_signed;
+    unsigned char i, end = is_unsigned ? 22 : 23;
+
+    for (i = 0; i != end; i++) {
+        if (i == 4)
+            i = (unsigned char) (18 - 2 * count);
+        out_byte(code[i]);
+    }
+
+    return is_unsigned;
+}
+
 /* The powers of two a constant multiplier can hold, lowest first. */
 const unsigned powers_of_two[16] = {
     0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80,

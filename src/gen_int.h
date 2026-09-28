@@ -152,6 +152,7 @@ int and_a_imm(int v);
 int or_a_imm(int v);
 int xor_a_imm(int v);
 void add_hl_hl(void);
+int shr_hl_16(int count, int is_unsigned);
 extern const unsigned powers_of_two[16];
 void load_narrow_into(int reg, int disp, Type type);
 void store_narrow(int disp, Type type);

@@ -582,12 +582,30 @@ void vbinop(int op)
      * how `f(a,b,c) + f(1,2,3)` lost an argument. */
     force_into(vsp - 2, R_HL);
 
+    /* A right shift cannot be done a bit at a time as a left one is, below
+     * -- nothing shifts the third byte of HL right -- but one by 16 to 23 is
+     * HL's top byte shifted by the rest and widened, and the top byte can be
+     * reached through the stack: see shr_hl_16. About what loading the count
+     * and calling take, and not the helper's loop of sixteen or more rotates
+     * through memory, which was a third of printing a float, for its
+     * `cur >> 16`. */
+    if (op == TK_SHR && val_number(rhs->kind)
+        && rhs->val >= 16 && rhs->val <= 23) {
+        result = shr_hl_16(rhs->val - 16, type_unsigned(type_promote(lhs->type)))
+                 ? TY_UINT : TY_INT;
+        vdrop();
+        vdrop();
+        vpush_reg(R_HL);
+        (vsp - 1)->type = result;
+
+        return;
+    }
+
     /* A left shift by a constant of up to eight is add hl, hl a bit at a
-     * time, a byte each: no bigger than loading the count into BC and
-     * calling, and without the helper's loop. crc16 in test/perf's crc.c
-     * shifts by 1 eight times a byte and by 8 once, and those two calls
-     * were a third of its inner loop. A right shift cannot be done this
-     * way: nothing shifts the third byte of HL right. */
+     * time, a byte each: no bigger than loading the count and calling, and
+     * without the helper's loop. crc16 in test/perf's crc.c shifts by 1
+     * eight times a byte and by 8 once, and those two calls were a third of
+     * its inner loop. */
     if (op == TK_SHL && val_number(rhs->kind)
         && rhs->val >= 0 && rhs->val <= 8) {
         int count = rhs->val;
