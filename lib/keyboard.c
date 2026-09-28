@@ -5,54 +5,75 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
+#include <stdlib.h>
+#include <string.h>
+
 #include <agon/keyboard.h>
 #include <agon/mos.h>
 
-/* Read from the system variables rather than caught as it happens.
- *
- * MOS counts key packets in one of them, so a program can tell that
- * something arrived by watching that count -- which is what this does. What
- * it cannot do is queue them: two keys between one poll and the next look
- * like one, and the first is lost. libagon's is a handler MOS calls, which
- * does not lose them, and which needs a vector installed and a ring buffer
- * behind it.
- *
- * The queue is what buf_len is for, and there is none, so it is ignored. */
-static uint8_t last_count;
-static int     started;
+/* A ring of key events, filled by a handler MOS calls on every key packet,
+ * so that a program busy for a while between polls still gets every key it
+ * was sent, in order -- up to buf_len of them, past which the newest are
+ * dropped. The handler, and the ring's state it reads and writes, are
+ * acc's runtime: see the end of src/rt/helpers.s. The ring is here. */
+void acc_rt_kbuf_handler(void);
+unsigned char *acc_rt_kbuf_state(void);
+
+#define KB_SLOTS 0              /* the state's bytes: see helpers.s */
+#define KB_START 1
+#define KB_END   2
+#define KB_RING  3
+#define KB_EVENT 4              /* bytes an event takes in the ring */
+
+static uint8_t *ring;
 
 void kbuf_init(uint8_t buf_len)
 {
-    (void) buf_len;
-    last_count = mos_sysvars()[sysvar_vkeycount];
-    started = 1;
+    volatile uint8_t *s = acc_rt_kbuf_state();
+
+    if (ring)
+        kbuf_deinit();
+    ring = malloc(((size_t) buf_len + 1) * KB_EVENT);
+    if (!ring)
+        return;
+
+    s[KB_SLOTS] = (uint8_t) (buf_len + 1);
+    s[KB_START] = 0;
+    s[KB_END] = 0;
+    memcpy((void *) (s + KB_RING), &ring, 3);
+    mos_setkbvector(acc_rt_kbuf_handler, 0);
 }
 
 void kbuf_deinit(void)
 {
-    started = 0;
+    if (!ring)
+        return;
+
+    mos_setkbvector(NULL, 0);
+    free(ring);
+    ring = NULL;
 }
 
 void kbuf_clear(void)
 {
-    last_count = mos_sysvars()[sysvar_vkeycount];
+    volatile uint8_t *s = acc_rt_kbuf_state();
+
+    s[KB_START] = s[KB_END];
 }
 
 bool kbuf_poll_event(struct keyboard_event_t *e)
 {
-    uint8_t *v = mos_sysvars();
-    uint8_t now = v[sysvar_vkeycount];
+    volatile uint8_t *s = acc_rt_kbuf_state();
+    uint8_t start = s[KB_START];
 
-    if (!started)
-        kbuf_init(0);
-    if (now == last_count)
+    if (!ring || start == s[KB_END])
         return false;
 
-    last_count = now;
-    e->ascii = v[sysvar_keyascii];
-    e->kmod = v[sysvar_keymods];
-    e->vkey = v[sysvar_vkeycode];
-    e->isdown = v[sysvar_vkeydown];
+    memcpy(e, ring + start * KB_EVENT, KB_EVENT);
+    start++;
+    if (start == s[KB_SLOTS])
+        start = 0;
+    s[KB_START] = start;
 
     return true;
 }

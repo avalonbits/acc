@@ -3797,3 +3797,73 @@ _acc_rt_ftoll:
 	pop	iy
 	ret
 
+; ================================================================ the keyboard
+; kbuf's ring of key events, filled as MOS gets each key packet: see
+; lib/keyboard.c, which starts it, empties it and ends it. The handler is
+; what MOS calls, from its interrupt, with DE pointing at the packet's four
+; bytes -- ascii, modifiers, virtual key, down -- and it has to be assembly,
+; since nothing a C function is called with says where DE pointed.
+;
+; The ring is `slots` events of four bytes, `start` the next to read and
+; `end` the next to write; `start == end` is empty, and a packet that would
+; make `end` reach `start` is dropped, so it holds slots - 1 at most. Only
+; the handler moves `end` and only C moves `start`, a byte at a time, so
+; neither can see the other half done. slots of 0 is 256: the index wraps
+; there on its own.
+;
+; Last in the blob, so that the state after it falls into nothing: a
+; program carries it only when it calls kbuf_init.
+
+	.global _acc_rt_kbuf_handler
+	.global _acc_rt_kbuf_state
+
+; MOS saves nothing for a handler, and whatever this uses it gets back.
+_acc_rt_kbuf_handler:
+	push	af
+	push	bc
+	push	de
+	push	hl
+	ld	a, (.kbuf_end)
+	ld	bc, 0
+	ld	c, a
+	ld	hl, (.kbuf_ring)	; the slot: ring + end * 4
+	add	hl, bc
+	add	hl, bc
+	add	hl, bc
+	add	hl, bc
+	ex	de, hl
+	ld	bc, 4
+	ldir
+	inc	a			; the next end, round the ring
+	ld	hl, .kbuf_slots
+	cp	a, (hl)
+	jr	nz, .kbuf_not_round
+	xor	a, a
+.kbuf_not_round:
+	ld	hl, .kbuf_start
+	cp	a, (hl)
+	jr	z, .kbuf_full		; full: this one is dropped
+	ld	(.kbuf_end), a
+.kbuf_full:
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	ret
+
+; unsigned char *acc_rt_kbuf_state(void): where the ring's state is, for
+; lib/keyboard.c to set up and read -- slots, start and end, a byte each,
+; then the ring's address.
+_acc_rt_kbuf_state:
+	ld	hl, .kbuf_slots
+	ret
+
+.kbuf_slots:
+	.byte	0
+.kbuf_start:
+	.byte	0
+.kbuf_end:
+	.byte	0
+.kbuf_ring:
+	.byte	0, 0, 0
+
