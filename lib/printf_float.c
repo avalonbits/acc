@@ -48,11 +48,11 @@ static void float_digits(unsigned long bits)
 {
     static unsigned limb[LIMBS];
     int ex = (int) ((bits >> 23) & 0xff), e, i, n = 0, any;
-    unsigned long m = bits & 0x7fffffUL;
+    unsigned m = (unsigned) (bits & 0x7fffffUL), t;
     char *d = fdig;
 
     if (ex) {
-        m |= 0x800000UL;
+        m |= 0x800000u;
         e = ex - 150;
     } else {
         e = -149;
@@ -63,19 +63,28 @@ static void float_digits(unsigned long bits)
      * last first. */
     for (i = 0; i < LIMBS; i++)
         limb[i] = 0;
-    for (i = 0; i < 24; i++)
-        if ((m >> i) & 1 && i + e >= 0)
+    /* m's bits from the top, each tested with a constant and moved up by a
+     * shift left, which is add hl, hl: a variable shift or a variable AND is
+     * a call. */
+    for (i = 23, t = m; i >= 0; i--, t <<= 1)
+        if (t & 0x800000u && i + e >= 0)
             limb_set_bit(limb, i + e);
+    /* Both loops work in unsigned int, which is 24 bits here: a remainder
+     * under ten above a limb, and a limb times ten plus a carry under ten,
+     * are both under 655360, so neither needs a long -- and a long's
+     * multiply and divide are several times an int's. */
     do {
-        unsigned long rem = 0;
+        unsigned rem = 0;
 
         any = 0;
         for (i = LIMBS - 1; i >= 0; i--) {
-            unsigned long cur = rem << 16 | limb[i];
+            unsigned cur = rem << 16 | limb[i];
+            unsigned q = cur / 10;
 
-            limb[i] = (unsigned) (cur / 10);
-            rem = cur % 10;
-            any |= limb[i];
+            limb[i] = q;
+            rem = cur - q * 10;
+            if (q)
+                any = 1;
         }
         d[n++] = (char) ('0' + rem);
     } while (any);
@@ -92,19 +101,20 @@ static void float_digits(unsigned long bits)
      * ends, because a fraction of a power of two always does. */
     for (i = 0; i < LIMBS; i++)
         limb[i] = 0;
-    for (i = 0; i < 24; i++)
-        if ((m >> i) & 1 && i + e < 0)
+    for (i = 23, t = m; i >= 0; i--, t <<= 1)
+        if (t & 0x800000u && i + e < 0)
             limb_set_bit(limb, LIMBS * 16 + i + e);
     for (;;) {
-        unsigned long carry = 0;
+        unsigned carry = 0;
 
         any = 0;
         for (i = 0; i < LIMBS; i++) {
-            unsigned long cur = (unsigned long) limb[i] * 10 + carry;
+            unsigned cur = limb[i] * 10 + carry;
 
-            limb[i] = (unsigned) (cur & 0xffff);
+            limb[i] = cur & 0xffff;
             carry = cur >> 16;
-            any |= limb[i];
+            if (limb[i])
+                any = 1;
         }
         if (!any && !carry)
             break;

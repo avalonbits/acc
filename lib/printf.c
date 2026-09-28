@@ -20,6 +20,7 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -150,12 +151,41 @@ static void wide_string(const wchar_t *s, int width, int prec, int flags)
 static int digits_of(unsigned long long v, unsigned base, int upper, char *buf)
 {
     const char *alphabet = upper ? "0123456789ABCDEF" : "0123456789abcdef";
-    int len = 0;
+    unsigned char *b = (unsigned char *) &v;
+    int len = 0, top = 7, i;
+    unsigned u;
 
+    /* A value wider than an int is divided a byte at a time, from its top
+     * byte that is not zero: each step is the remainder so far and the next
+     * byte, under 256 times the base, which an int's divide takes. So
+     * printing never calls the long long divide -- the largest routine in
+     * the runtime -- and a program that prints does not carry it. The top
+     * byte says when what is left fits an int, without a long long
+     * compare. Then the int, a divide a digit, the remainder from the
+     * quotient. */
+    for (;;) {
+        unsigned r = 0;
+
+        while (top > 0 && !b[top])
+            top--;
+        if (top < 3)
+            break;
+        for (i = top; i >= 0; i--) {
+            unsigned cur = r << 8 | b[i];
+            unsigned q = cur / base;
+
+            b[i] = (unsigned char) q;
+            r = cur - q * base;
+        }
+        buf[len++] = alphabet[r];
+    }
+    u = (unsigned) v;
     do {
-        buf[len++] = alphabet[v % base];
-        v /= base;
-    } while (v);
+        unsigned q = u / base;
+
+        buf[len++] = alphabet[u - q * base];
+        u = q;
+    } while (u);
 
     return len;
 }
