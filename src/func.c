@@ -861,7 +861,6 @@ void vpush_global_addr(int sym)
     vpush_const(0, type_ptr_to(sym_at(sym)->type));
     force_reg(vsp - 1);
     fixup_add(sym, out_here() - ACC_INT_SIZE);
-    fixups[nfixups - 1].declared = 1;   /* an address: the type is no matter */
     gaddr_end = out_here();             /* see vbinop */
     gaddr_reg = (vsp - 1)->val;
     gaddr_epoch = out_rewinds;
@@ -902,7 +901,6 @@ void vpush_function(int fn)
     vpush_const(0, type_ptr_to(TY_FUNC));
     force_reg(vsp - 1);
     fixup_add(fn, out_here() - ACC_INT_SIZE);
-    fixups[nfixups - 1].declared = 1;   /* an address: the type is no matter */
 }
 
 /* The three bytes at `at`, in the image, are a function's address, which
@@ -910,7 +908,6 @@ void vpush_function(int fn)
 void gen_data_fixup(int fn, int at)
 {
     fixup_add(fn, at);
-    fixups[nfixups - 1].declared = 1;
 }
 
 /* The same for a link's slot, filled now if `fn` has its address already:
@@ -920,6 +917,16 @@ void gen_data_fixup(int fn, int at)
  * may be what it turns out to be. */
 void gen_link_fixup(int fn, int at)
 {
+    int bss = gen_bss_offset(fn);
+
+    /* A variable in the bss whose place in it is known: the slot gets that,
+     * and is one of the bss's, which bss_emit moves to where the bss went. */
+    if (bss != -1 && !name_weak(sym_at(fn)->name)) {
+        out_add24(at, bss);
+        gen_bss_fixup(at);
+
+        return;
+    }
     if (no_address(fn) || name_weak(sym_at(fn)->name)) {
         gen_data_fixup(fn, at);
 

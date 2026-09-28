@@ -18,25 +18,57 @@
 /* ------------------------------------------------------------------ */
 /* functions                                                           */
 
-Fixup *fixups;
-int    nfixups, fixups_cap;
+Fixup   **fixup_blocks;
+int       nfixups;
+static int nfixup_blocks, fixup_blocks_cap;
 
+/* A new block of `bytes` at the end of the list of them at *dir, of *n
+ * blocks with room for *cap: what the fixups and the bss's slots are kept
+ * in (fixup_at, bss_fixup). */
+static void *block_new(void ***dir, int *n, int *cap, size_t bytes)
+{
+    if (*n == *cap) {
+        *cap = *cap ? *cap * 2 : 8;
+        *dir = realloc(*dir, (size_t) *cap * sizeof **dir);
+        if (!*dir)
+            acc_error("out of memory for forward calls");
+    }
+    (*dir)[*n] = malloc(bytes);
+    if (!(*dir)[*n])
+        acc_error("out of memory for forward calls");
+
+    return (*dir)[(*n)++];
+}
+
+/* Where the next goes, while nfixups is what it was when it was worked
+ * out: a rollback or a compaction changes nfixups, and it is found again. */
+static Fixup *fixup_put;
+static int    fixup_put_at = -1;
+
+Fixup *fixup_at(int i)
+{
+    unsigned b = (unsigned) i >> 8;
+
+    return b < (unsigned) nfixup_blocks ? fixup_blocks[b] + (unsigned char) i
+                                        : NULL;
+}
+
+/* A slot to fill with `fn`'s address once it has one. */
 void fixup_add(int fn, int at)
 {
     want(fn);
-    if (nfixups == fixups_cap) {
-        fixups_cap = fixups_cap ? fixups_cap * 2 : 32;
-        fixups = realloc(fixups, fixups_cap * sizeof *fixups);
-        if (!fixups)
-            acc_error("out of memory for forward calls");
-    }
+    /* A block for this one when the last is full, kept from before when a
+     * rollback left it behind. */
+    if (!(unsigned char) nfixups && ((unsigned) nfixups >> 8) == (unsigned) nfixup_blocks)
+        block_new((void ***) &fixup_blocks, &nfixup_blocks, &fixup_blocks_cap,
+                  FIXUP_BLOCK * sizeof **fixup_blocks);
     out_reloc(at);
-    fixups[nfixups].fn = fn;
-    fixups[nfixups].at = at;
-    fixups[nfixups].line = tok_line;
-    fixups[nfixups].declared = (unsigned char) (sym_flags(fn) & SYMF_DECLARED);
-    fixups[nfixups].col = fixups[nfixups].declared ? 0 : lex_col();
-    nfixups++;
+    if (fixup_put_at != nfixups || !(unsigned char) nfixups)
+        fixup_put = fixup_at(nfixups);
+    fixup_put->fn = fn;
+    fixup_put->at = at;
+    fixup_put++;
+    fixup_put_at = ++nfixups;
 }
 
 /* The uses of `sym` so far, filled in now that it has an address rather
@@ -47,13 +79,16 @@ void fixup_add(int fn, int at)
 void gen_settle(int sym)
 {
     int i, kept = 0;
+    Fixup *f = fixup_at(0), *k = f;
 
-    for (i = 0; i != nfixups; i++) {
-        if (fixups[i].fn != sym) {
-            fixups[kept++] = fixups[i];
+    for (i = 0; i != nfixups; i++, f = FIXUP_STEP(f, i)) {
+        if (f->fn != sym) {
+            *k = *f;
+            kept++;
+            k = FIXUP_STEP(k, kept);
             continue;
         }
-        out_add24(fixups[i].at, sym_at(sym)->val);
+        out_add24(f->at, sym_at(sym)->val);
     }
     nfixups = kept;
 }
@@ -202,8 +237,18 @@ static int     bss_top;                 /* the first byte past everything */
  * fixups against a symbol, because there is no symbol -- every one of them
  * wants the same one number, and a block's `static` has no name outside the
  * function it is in to hang a symbol on. */
-int *bss_fixups;
-int  nbss_fixups, bss_fixups_cap;
+int      **bss_blocks;
+int        nbss_fixups;
+static int nbss_blocks, bss_blocks_cap;
+static int *bss_put, bss_put_at = -1;  /* as fixup_put */
+
+int *bss_fixup(int i)
+{
+    unsigned b = (unsigned) i >> 8;
+
+    return b < (unsigned) nbss_blocks ? bss_blocks[b] + (unsigned char) i
+                                      : NULL;
+}
 
 /* Kept in order of where they are, as the relocation table is and for the
  * same reason: the object writer walks the two together to say which of the
@@ -215,17 +260,26 @@ void gen_bss_fixup(int at)
 {
     int i;
 
-    if (nbss_fixups == bss_fixups_cap) {
-        bss_fixups_cap = bss_fixups_cap ? bss_fixups_cap * 2 : 32;
-        bss_fixups = realloc(bss_fixups,
-                             (size_t) bss_fixups_cap * sizeof *bss_fixups);
-        if (!bss_fixups)
-            acc_error("out of memory for the offsets into the bss");
-    }
+    if (!(unsigned char) nbss_fixups
+        && ((unsigned) nbss_fixups >> 8) == (unsigned) nbss_blocks)
+        block_new((void ***) &bss_blocks, &nbss_blocks, &bss_blocks_cap,
+                  256 * sizeof **bss_blocks);
     out_reloc(at);
-    for (i = nbss_fixups; i > 0 && bss_fixups[i - 1] > at; i--)
-        bss_fixups[i] = bss_fixups[i - 1];
-    bss_fixups[i] = at;
+    if (bss_put_at != nbss_fixups || !(unsigned char) nbss_fixups)
+        bss_put = bss_fixup(nbss_fixups);
+    /* In order, nearly always: the slot goes on the end. */
+    if (!nbss_fixups
+        || (unsigned) ((unsigned char) nbss_fixups ? bss_put[-1]
+                                                   : *bss_fixup(nbss_fixups - 1))
+           <= (unsigned) at) {
+        *bss_put++ = at;
+        bss_put_at = ++nbss_fixups;
+
+        return;
+    }
+    for (i = nbss_fixups; i && (unsigned) *bss_fixup(i - 1) > (unsigned) at; i--)
+        *bss_fixup(i) = *bss_fixup(i - 1);
+    *bss_fixup(i) = at;
     nbss_fixups++;
 }
 
@@ -236,7 +290,7 @@ int gen_nbss_fixups(void)
 
 int gen_bss_fixup_at(int i)
 {
-    return bss_fixups[i];
+    return *bss_fixup(i);
 }
 
 /* Room in the bss, and where in it. The linker asks for a whole object's
@@ -321,10 +375,10 @@ void gen_bss_move(int at, int bytes, int to)
     int i, kept = 0;
 
     for (i = 0; i != nbss_fixups; i++) {
-        int slot = bss_fixups[i], was = out_read24(slot);
+        int slot = *bss_fixup(i), was = out_read24(slot);
 
         if (was < at || was > at + bytes) {
-            bss_fixups[kept++] = slot;
+            *bss_fixup(kept++) = slot;
             continue;
         }
         out_patch24(slot, to + was - at);       /* relocated already: see */
@@ -409,8 +463,21 @@ static void bss_emit(void)
      * the argument routine keeps is one of them, and it is there whether the
      * program left anything at zero or not -- so this runs even when there
      * was nothing to clear. */
-    for (i = 0; i != nbss_fixups; i++)
-        out_add24(bss_fixups[i], base);
+    /* Those in the image's file are the first so many, the list being in
+     * the order of the slots: the image adds the start to them as it sweeps
+     * the file, rather than keeping a patch for each. */
+    {
+        int *p = bss_fixup(0);
+
+        for (i = 0; i != nbss_fixups
+                    && (unsigned) (*p - out_base) < (unsigned) out_flushed;
+             i++, p = BSS_STEP(p, i))
+            ;
+        if (i)
+            out_add_base_later(gen_bss_fixup_at, i, base);
+        for (; i != nbss_fixups; i++, p = BSS_STEP(p, i))
+            out_add24(*p, base);
+    }
 
     bss_top = base + bss_len + bss_extra;
     bss_start = base;
@@ -661,7 +728,7 @@ int gen_nfixups(void)
 
 int gen_fixup_sym(int i)
 {
-    return fixups[i].fn;
+    return fixup_at(i)->fn;
 }
 
 int gen_no_address(int sym)
@@ -669,9 +736,18 @@ int gen_no_address(int sym)
     return no_address(sym);
 }
 
+/* The k-th addition gen_finish left for the image's file, in the place
+ * of a fixup already read: see there. */
+static const OutAdd *add_at(int k)
+{
+    return (const OutAdd *) (const void *) fixup_at(k);
+}
+
 void gen_finish(void)
 {
-    Fixup   *f, *end;
+    OutAdd   add;
+    int      nadds = 0, last = 0, i;
+    Fixup   *f, *k;
     RtFixup *r, *rend;
 
 #ifndef ACC_NODROP
@@ -686,7 +762,7 @@ void gen_finish(void)
      * worked out again. Nothing in them adds a fixup, so the table stays
      * where it is. */
     if (!gen_objects)
-        for (f = fixups, end = fixups + nfixups; f != end; f++) {
+        for (i = 0, f = fixup_at(0); i != nfixups; i++, f = FIXUP_STEP(f, i)) {
             int which;
 
             if (!no_address(f->fn))
@@ -725,7 +801,7 @@ void gen_finish(void)
 
         /* And the ones the link itself answers for, now that there is an
          * answer: everything else has been laid down. */
-        for (f = fixups, end = fixups + nfixups; f != end; f++) {
+        for (i = 0, f = fixup_at(0); i != nfixups; i++, f = FIXUP_STEP(f, i)) {
             int sym = f->fn, at;
 
             if (!no_address(sym) || (at = link_given(sym)) == 0)
@@ -735,8 +811,10 @@ void gen_finish(void)
         }
     }
 
-    for (f = fixups, end = fixups + nfixups; f != end; f++) {
+    k = fixup_at(0);
+    for (i = 0, f = k; i != nfixups; i++, f = FIXUP_STEP(f, i)) {
         Sym *fn = sym_at(f->fn);
+
 
         if (no_address(f->fn)) {
             if (gen_objects) {
@@ -761,36 +839,32 @@ void gen_finish(void)
                       "pieces linked together", name_text(fn->name));
         }
 
-        /* The call was emitted before the definition was read, so it took C's
-         * word that an undeclared function returns int -- and read its answer
-         * from HL. A one-byte return comes back in A instead, which that call
-         * cannot know. There are no prototypes yet, so the only honest thing
-         * is to say so. */
-        /* And a void one conflicts with that int outright, as agondev
-         * says: it is the same function declared two ways. A call that had
-         * a prototype to go by knew the type, and read the answer from
-         * where it is. */
-        /* Plus whatever the slot was emitted with, which is nothing for a
-         * call or a register load and is the amount added for an address in
-         * a global's bytes: `int *p = &g + 1` puts the one there, because
-         * where g is was not known when the bytes were written. */
-        if (f->declared) {
+        /* The address is added to whatever the slot was emitted with, which
+         * is nothing for a call or a register load and is the amount added
+         * for an address in a global's bytes: `int *p = &g + 1` puts the one
+         * there, because where g is was not known when the bytes were
+         * written.
+         *
+         * A slot in memory is filled now. One in the image's file becomes
+         * the addition the file is to get, written over this fixup's own
+         * place or one before it, which have been read: so the fixups are
+         * the list of them, and there is no patch for each as well. They
+         * come in the order of their slots, as the code was written; one
+         * that does not -- the stack's top, in the stub at the image's start,
+         * asked for above -- is a patch of its own instead. */
+        if ((unsigned) (f->at - out_base) >= (unsigned) out_flushed
+            || (unsigned) f->at < (unsigned) last) {
             out_add24(f->at, fn->val);
             continue;
         }
-        if (fn->type == TY_VOID)
-            acc_error_pos(f->line, f->col,
-                          "'%s' returns void and is called before it is "
-                          "defined, which declares it as returning int; move "
-                          "its definition above the call",
-                          name_text(fn->name));
-        if (RETURNS_IN_A(fn->type))
-            acc_error_pos(f->line, f->col,
-                          "'%s' returns a one-byte type and is called before "
-                          "it is defined; move its definition above the call",
-                          name_text(fn->name));
-        out_add24(f->at, fn->val);
+        add.value = fn->val;
+        add.at = last = f->at;
+        memcpy((void *) k, &add, sizeof add);
+        nadds++;
+        k = FIXUP_STEP(k, nadds);
     }
+    if (nadds)
+        out_add_later(add_at, nadds);
     if (gen_objects)
         externs_sort(externs_helpers_end, externs_put);
     late_fill(bss_start);

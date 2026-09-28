@@ -272,8 +272,8 @@ static int *pending_slots(int *count, const Mark *from)
 {
     int n = (nfixups - from->fixup) + (nrt_fixups - from->rt)
           + (nbss_fixups - from->bss);
-    int *all, *put, *b, *b_end, *scan;
-    const Fixup *f, *f_end;
+    int *all, *put, b, b_end, *scan, f, f_end, *bp;
+    const Fixup *fp;
     const RtFixup *r, *r_end;
 
     /* Nothing is waiting, which is the usual answer once each function is
@@ -285,10 +285,12 @@ static int *pending_slots(int *count, const Mark *from)
     if (n <= 0)
         return pending;
 
-    b = bss_fixups + from->bss;
-    b_end = bss_fixups + nbss_fixups;
-    f = fixups + from->fixup;
-    f_end = fixups + nfixups;
+    b = from->bss;
+    b_end = nbss_fixups;
+    bp = bss_fixup(b);
+    f = from->fixup;
+    f_end = nfixups;
+    fp = fixup_at(f);
     r = rt_fixups + from->rt;
     r_end = rt_fixups + nrt_fixups;
 
@@ -302,18 +304,25 @@ static int *pending_slots(int *count, const Mark *from)
     all = put = pending;
 
     /* Walked with pointers and not indexed: an index into an array of
-     * anything three bytes wide is a multiply, and a multiply is a call. */
-    while (f < f_end || r < r_end || b < b_end) {
-        int x = f < f_end ? f->at : INT_MAX;
+     * anything three bytes wide is a multiply, and a multiply is a call.
+     * The fixups are in blocks, and found by fixup_at, which is not. */
+    while (f != f_end || r < r_end || b != b_end) {
+        int x = f != f_end ? fp->at : INT_MAX;
         int y = r < r_end ? r->at : INT_MAX;
-        int z = b < b_end ? *b : INT_MAX;
+        int z = b != b_end ? *bp : INT_MAX;
 
-        if (x <= y && x <= z)
-            *put++ = f++->at;
+        if (x <= y && x <= z) {
+            *put++ = x;
+            f++;
+            fp = FIXUP_STEP(fp, f);
+        }
         else if (y <= z)
             *put++ = r++->at;
-        else
-            *put++ = *b++;
+        else {
+            *put++ = z;
+            b++;
+            bp = BSS_STEP(bp, b);
+        }
     }
 
     for (scan = all + 1; scan < put; scan++) {
@@ -417,20 +426,22 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
      * there any more, and neither is whatever it would have asked a library
      * for. */
     {
-        Fixup *scan = fixups + from->fixup, *keep = scan;
+        int scan = from->fixup, keep = scan;
+        Fixup *f = fixup_at(scan), *k = f;
         RtFixup *rscan = rt_fixups + from->rt, *rkeep = rscan;
 
         out_cut_rewind();
-        for (; scan < fixups + nfixups; scan++) {
-            int to = out_cut_next(scan->at);
+        for (; scan != nfixups; scan++, f = FIXUP_STEP(f, scan)) {
+            int to = out_cut_next(f->at);
 
             if (to < 0)
                 continue;
-            *keep = *scan;
-            keep->at = to;
+            f->at = to;
+            *k = *f;
             keep++;
+            k = FIXUP_STEP(k, keep);
         }
-        nfixups = (int) (keep - fixups);
+        nfixups = keep;
 
         out_cut_rewind();
         for (; rscan < rt_fixups + nrt_fixups; rscan++) {
@@ -445,8 +456,22 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
         nrt_fixups = (int) (rkeep - rt_fixups);
     }
 
-    nbss_fixups = from->bss
-                + cut_positions(bss_fixups + from->bss, nbss_fixups - from->bss);
+    /* The bss's slots, which are in blocks: see bss_fixup. */
+    {
+        int scan = from->bss, keep = scan, *p = bss_fixup(scan), *k = p;
+
+        out_cut_rewind();
+        for (; scan != nbss_fixups; scan++, p = BSS_STEP(p, scan)) {
+            int to = out_cut_next(*p);
+
+            if (to == -1)
+                continue;
+            *k = to;
+            keep++;
+            k = BSS_STEP(k, keep);
+        }
+        nbss_fixups = keep;
+    }
 
     /* The function's uses of its constants' pool, which is laid down after
      * this: none of them is inside a run, a run being a jump's operand or

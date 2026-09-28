@@ -9,7 +9,10 @@
 # (test/peak.c, test/linkheap.sh) and one that counts what waited:
 #
 #   - four objects of 30,000 bytes each cost the link less heap than two of
-#     them would: the image in memory is one object, not the program;
+#     them would: the image in memory is one object, not the program. The
+#     acc measured holds a compile's image to 16 MB before it writes any
+#     (out_flush_at), as a link must not wait for: on the Agon a compile
+#     waits for 32 KB, and a link that did held that and an object besides;
 #   - a slot whose symbol was placed before it is filled as it is placed,
 #     and neither waits as a fixup nor becomes a patch;
 #   - a link that fails after writing some of the file leaves no file.
@@ -21,8 +24,14 @@ SRCS=$(sed -n 's/^SRC *= //p; /^           src/p' Makefile | tr -d '\\')
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
 
-# shellcheck disable=SC2086
-"$CC" -O1 -fsigned-char -Isrc -o "$tmp/peak" $SRCS test/peak.c \
+mkdir -p "$tmp/late"
+cp src/*.c src/*.h "$tmp/late/"
+sed -i 's/^int out_flush_at = 2048;/int out_flush_at = 1 << 24;/' "$tmp/late/image.c"
+grep -q '^int out_flush_at = 1 << 24;' "$tmp/late/image.c" \
+    || { echo "  FAIL linkstream: cannot make an acc whose compile holds its image"; exit 1; }
+# shellcheck disable=SC2046
+"$CC" -O1 -fsigned-char -I"$tmp/late" -o "$tmp/peak" \
+    $(printf '%s\n' $SRCS | sed "s|^src/|$tmp/late/|") test/peak.c \
     -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free \
     || { echo "  FAIL the measuring acc does not build"; exit 1; }
 # shellcheck disable=SC2086
@@ -64,7 +73,7 @@ int main(void) { return ${calls}0; }"
 compile pad "const char pad[$N] = {1};"
 counts() {     # counts <objects...>: "<fixups> <patches>" when they end
     (cd "$tmp" && ./count "$@" -o c.bin 2>&1 >/dev/null |
-     sed -n 's/^fixups \([0-9]*\) patches \([0-9]*\)$/\1 \2/p')
+     sed -n 's/^fixups \([0-9]*\) patches \([0-9]*\).*/\1 \2/p')
 }
 read -r fx pt <<< "$(counts f.o pad.o u.o)"
 if [ "${fx:-999}" -lt 10 ] && [ "${pt:-999}" -lt 10 ]; then

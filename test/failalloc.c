@@ -9,7 +9,8 @@
  *
  * With FAILALLOC_OVER set to a number, what fails instead is every
  * allocation of more than that many bytes once the file is open, and
- * nothing else: what test/objmem.sh holds the object writer to.
+ * nothing else: what test/objmem.sh holds the object writer to. And with
+ * FAILALLOC_FROM_START as well, from the start: test/linkfixups.sh.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,13 +25,26 @@ void *__real_realloc(void *p, size_t n);
 static int armed;
 static size_t over;             /* FAILALLOC_OVER, or 0 */
 
+__attribute__((constructor))
+static void from_start(void)
+{
+    const char *limit = getenv("FAILALLOC_OVER");
+
+    if (getenv("FAILALLOC_FROM_START") && limit) {
+        over = (size_t) atol(limit);
+        armed = 1;
+    }
+}
+
 /* Whether an allocation of `n` fails, now. */
 static int fails(size_t n)
 {
     if (!armed)
         return 0;
+    /* A reserve of 16 MB and more is the host's own -- the names' arena --
+     * and not something the Agon's build asks for at all. */
     if (over)
-        return n > over;
+        return n > over && n < ((size_t) 16 << 20);
     armed = 0;
 
     return 1;

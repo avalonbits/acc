@@ -81,6 +81,27 @@ typedef struct PatchBlock {
 static PatchBlock    *patches, *patch_last;
 static unsigned char *patch_put, *patch_limit;
 
+/* The additions gen_finish hands over, in the order of their slots: see
+ * out_add_later. */
+static const OutAdd *(*later)(int k);
+static int           nlater;
+
+void out_add_later(const OutAdd *(*add_at)(int k), int n)
+{
+    later = add_at;
+    nlater = n;
+}
+
+static int (*later_slot)(int k);
+static int  nlater_slots, later_base;
+
+void out_add_base_later(int (*slot_at)(int k), int n, int value)
+{
+    later_slot = slot_at;
+    nlater_slots = n;
+    later_base = value;
+}
+
 #ifdef ACC_TABLE_STATS
 /* How often the file was written to, cut, and read back: test/spill.sh. */
 int out_nflushes, out_nspill_cuts, out_nresidents;
@@ -366,7 +387,9 @@ void out_flush(void)
     unsigned char *held = out_img + out_flushed;
     int used = (int) (out_put - held);
 
-    if (!out_may_flush || (unsigned) used < (unsigned) out_flush_at)
+    if (!out_may_flush || !used
+        || (out_may_flush == OUT_FLUSH_COPY
+            && (unsigned) used < (unsigned) out_flush_at))
         return;
     if (!spill)
         spill_open();
@@ -376,6 +399,12 @@ void out_flush(void)
     img_free(held);
     cap = out_start_cap;
     hold(img_take(cap), 0);
+
+    /* A link cuts nothing and writes no table of its relocations, so the
+     * ones in what went to the file are no one's any more: the table keeps
+     * its sentinel and starts again. */
+    if (out_may_flush == OUT_FLUSH_IN_PLACE)
+        out_reloc_put = out_relocs + 1;
 }
 
 /* Before the file is read back or cut: nothing waiting to be written in
@@ -652,7 +681,7 @@ static void patches_free(void)
  * that started before them wrote in them -- so a slot is never split. */
 static void sweep(FILE *to, unsigned char *buf, int room)
 {
-    int from = 0, have = 0;
+    int from = 0, have = 0, k = 0, s = 0;
 
     while (from != out_flushed) {
         int n = out_flushed - from, stop;
@@ -670,6 +699,22 @@ static void sweep(FILE *to, unsigned char *buf, int room)
             for (; p != end; p += PATCH_WIDE)
                 if ((unsigned) (get24(p) - from) < (unsigned) (stop - from))
                     patch_apply(buf + (get24(p) - from), get24(p + 3), p[6]);
+        }
+        /* And the additions, which are in the order of their slots. */
+        for (; k != nlater; k++) {
+            const OutAdd *add = later(k);
+
+            if ((unsigned) (add->at - out_base - from) >= (unsigned) (stop - from))
+                break;
+            patch_apply(buf + (add->at - out_base - from), add->value,
+                        PATCH_ADD24);
+        }
+        for (; s != nlater_slots; s++) {
+            int at = later_slot(s) - out_base - from;
+
+            if ((unsigned) at >= (unsigned) (stop - from))
+                break;
+            patch_apply(buf + at, later_base, PATCH_ADD24);
         }
         if (!to)
             spill_io(from, buf, stop - from, 1);
@@ -720,12 +765,17 @@ void out_free(void)
     out_img = NULL;
     out_flushed = 0;
     patches_free();
+    later = NULL;
+    nlater = 0;
+    later_slot = NULL;
+    nlater_slots = 0;
     free(out_relocs);
     out_relocs = out_reloc_put = out_reloc_limit = NULL;
 }
 
 #ifdef ACC_TABLE_STATS
-/* How many patches wait for out_close: see test/linkstream.sh. */
+/* How many patches and additions wait for out_close: see
+ * test/linkstream.sh. */
 int out_npatches(void)
 {
     const PatchBlock *b;
@@ -735,7 +785,13 @@ int out_npatches(void)
         n += (int) ((b == patch_last ? patch_put : b->bytes + PATCH_BLOCK)
                     - b->bytes) / PATCH_WIDE;
 
-    return n;
+    return n + nlater + nlater_slots;   /* the additions wait on it too */
+}
+
+/* How many of those are additions, and not patches: test/linkfixups.sh. */
+int out_nadds(void)
+{
+    return nlater + nlater_slots;
 }
 #endif
 
