@@ -15,6 +15,7 @@
 
 #include "acc.h"
 #include "ctype.h"
+#include "fmt.h"
 #include "timing.h"
 #include "version.h"
 
@@ -9496,6 +9497,110 @@ static void link_inputs(const char **objs, int nobjs)
 #endif
 }
 
+#if defined(AGONDEV) && defined(__clang__)
+/* The command line, split by acc with no limit on how many words it has.
+ *
+ * agondev's startup has a splitter of its own (__arg_processing), which puts
+ * the words in an array of 16 -- the program's name and 15 words -- and
+ * drops every word past that without a word: a link of 23 objects lost the
+ * last eight, and said a function in one of them was never defined. So the
+ * startup's call to split the line (parse_option) only keeps the line, and
+ * main splits it here, with the quotes and the `>`, `>>` and `<` that
+ * agondev's understands. */
+static char *agon_line;                 /* what MOS passed */
+
+char parse_option(char *line, char **argv)
+{
+    (void) argv;
+    agon_line = line;
+
+    return 1;                           /* argv[0], which crt0 has put there */
+}
+
+/* A redirection: `>` or `>>` sends what acc prints to the file, through
+ * src/fmt.c, which is where all of it goes -- agondev's own stdout is the
+ * console whatever it is reopened as. acc reads nothing, so `<` is taken
+ * and has nothing to do. */
+static void agon_close_redirect(void)
+{
+    fclose(fmt_console);
+}
+
+static void agon_redirect(const char *how, char *file)
+{
+    if (how[0] == '<')
+        return;
+    fmt_console = fopen(file, how[1] == '>' ? "a" : "w");
+    if (!fmt_console)
+        acc_error("cannot write '%s'", file);
+    atexit(agon_close_redirect);
+}
+
+/* The words of agon_line, after `name`: a word in double quotes is the
+ * words inside them, and a redirection -- `>`, `>>` or `<`, with its file
+ * joined to it or the next word -- is made, and is not a word. */
+__attribute__((noinline))
+static char **agon_split(char *name, int *argcp)
+{
+    char *p = agon_line, **argv, **put;
+    size_t room = strlen(p) + 2;        /* words, at most: a word and a space */
+    int n = 1;
+
+    /* Walked by a pointer, and sized by calloc: a scale by an entry's three
+     * bytes is a multiply, which is a call into the runtime at every site. */
+    argv = calloc(room, sizeof *argv);
+    if (!argv)
+        acc_error("out of memory for the command line");
+    put = argv;
+    *put++ = name;
+    for (;;) {
+        char *word;
+        int redirect;
+
+        while (*p == ' ')
+            p++;
+        if (!*p)
+            break;
+        redirect = *p == '>' || *p == '<';
+        if (*p == '"') {
+            word = ++p;
+            while (*p && *p != '"')
+                p++;
+        } else {
+            word = p;
+            while (*p && *p != ' ')
+                p++;
+        }
+        if (*p)
+            *p++ = '\0';
+        if (!redirect) {
+            *put++ = word;
+            n++;
+            continue;
+        }
+        /* `>` alone, or `>>`, or `<`: the file is the next word. */
+        if (!word[1] || (word[1] == '>' && !word[2])) {
+            char *file;
+
+            while (*p == ' ')
+                p++;
+            file = p;
+            while (*p && *p != ' ')
+                p++;
+            if (*p)
+                *p++ = '\0';
+            agon_redirect(word, file);
+        } else {
+            agon_redirect(word, word + (word[1] == '>' ? 2 : 1));
+        }
+    }
+    *put = NULL;
+    *argcp = n;
+
+    return argv;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL, *relocs = NULL;
@@ -9506,6 +9611,9 @@ int main(int argc, char **argv)
     clock_t begin;
     unsigned cs;
 
+#if defined(AGONDEV) && defined(__clang__)
+    argv = agon_split(argv[0], &argc);
+#endif
     objs = malloc((size_t) argc * sizeof *objs);
     if (!objs)
         acc_error("out of memory for the inputs");

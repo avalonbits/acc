@@ -143,6 +143,7 @@ test: all unit agon
 	@test/forget.sh
 	@test/linkheap.sh
 	@test/linkstream.sh
+	@test/manyargs.sh || [ $$? -eq 77 ]
 	@test/startup.sh || [ $$? -eq 77 ]
 	@test/flags.sh || [ $$? -eq 77 ]
 	@test/buffer.sh

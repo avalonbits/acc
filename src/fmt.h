@@ -16,4 +16,10 @@
 int fmt_vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap);
 int fmt_vfprintf(FILE *file, const char *fmt, va_list ap);
 
+#if defined(AGONDEV) && defined(__clang__)
+/* Where stdout and stderr go when the command line redirects them: the
+ * console otherwise. See agon_redirect in parse.c. */
+extern FILE *fmt_console;
+#endif
+
 #endif
