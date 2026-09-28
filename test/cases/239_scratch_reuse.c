@@ -21,6 +21,8 @@
  * va_arg(ap, long) : va_arg(ap, int)` -- and it is what failed when the
  * scratch a `?:` is holding was not marked as held.
  */
+#include <stdarg.h>
+
 static long long q(long long v) { return v + 1LL; }
 static long long f8(void) { return 800000000000LL; }
 static long f4(void) { return 40000L; }

@@ -3,11 +3,11 @@
 # a build can name (the Agon build names /lib/acc/include and
 # /lib/acc/libc.a, where the release puts them).
 #
-# The host build names bin/libc.a, where acc's runtime is, and no include
-# directory. So this builds a host acc that names the repository's include/
-# as well, and checks that it finds them, that -I is still looked in first,
-# and that naming the library as well changes nothing. test/release.sh
-# checks the Agon build's own paths on the Agon.
+# The host build names bin/libc.a, with acc's runtime beside it, and the
+# repository's include/. So does the acc this builds, and it checks that
+# it finds them, that -I is still looked in first, and that naming the
+# library as well changes nothing. test/release.sh checks the Agon build's
+# own paths on the Agon.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -59,11 +59,12 @@ int main(void)
 }
 EOF
 
-# The host build has no default: <stdio.h> is not found without -I.
-if bin/acc -c "$tmp/hello.c" -o "$tmp/nodefault.o" >/dev/null 2>&1; then
-    bad "the host build names no include directory" "<stdio.h> was found"
+# The host build's default is the repository's include/, as the Agon's is
+# /lib/acc/include: <stdio.h> is found without -I.
+if bin/acc -c "$tmp/hello.c" -o "$tmp/hostdefault.o" >/dev/null 2>&1; then
+    ok "the host build finds its headers without -I"
 else
-    ok "the host build names no include directory"
+    bad "the host build finds its headers without -I" "<stdio.h> was not found"
 fi
 
 # The reference: everything named, in the order a link reads them by
@@ -142,6 +143,37 @@ else
     bad "the default directory leaves an object alone" "the objects differ"
 fi
 rm -f "$tmp/plain.o"
+
+# A header from the default directory is recorded by its name there, not by
+# the path the directory has -- /lib/acc/include on the Agon, include/ here
+# -- so an object that includes <stdio.h> is the same file wherever it was
+# made, and one made in one place is up to date in the other until the
+# header there changes.
+mkdir -p "$tmp/moved"
+cp -r include "$tmp/moved/include"
+# shellcheck disable=SC2086
+"$CC" -O1 -fsigned-char -Isrc -o "$tmp/acc-moved" $SRC \
+    -DACC_INCLUDE_DIR="\"$tmp/moved/include\"" -DACC_LIBC="\"$PWD/bin/libc.a\"" \
+    || exit 2
+bin/acc -c "$tmp/hello.c" -o "$tmp/here.o" >/dev/null || exit 2
+"$tmp/acc-moved" -c "$tmp/hello.c" -o "$tmp/there.o" >/dev/null 2>&1
+if cmp -s "$tmp/here.o" "$tmp/there.o"; then
+    ok "an object with <stdio.h> in it is the same made from either place"
+else
+    bad "an object with <stdio.h> in it is the same made from either place" \
+        "the objects differ"
+fi
+if "$tmp/acc-moved" -c "$tmp/hello.c" -o "$tmp/here.o" 2>&1 | grep -q "up to date"; then
+    ok "and one made here is up to date there"
+else
+    bad "and one made here is up to date there" "it was compiled again"
+fi
+echo '/* changed */' >> "$tmp/moved/include/stdio.h"
+if "$tmp/acc-moved" -c "$tmp/hello.c" -o "$tmp/here.o" 2>&1 | grep -q "up to date"; then
+    bad "until the header there changes" "it was still up to date"
+else
+    ok "until the header there changes"
+fi
 
 # With the library missing, a link of an object says the runtime is.
 "$tmp/acc-nolib" -c "$tmp/plain.c" -o "$tmp/plain.o" >/dev/null 2>&1

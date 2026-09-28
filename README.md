@@ -217,10 +217,10 @@ On Linux, with a C compiler and make, and a checkout of
     make                # bin/acc, bin/zap, bin/libc.a and bin/rt.a
     make test           # the test suites
 
-acc on the host links `bin/rt.a` and `bin/libc.a` by default and has no default include
-directory, so name it:
+acc on the host links `bin/rt.a` and `bin/libc.a` and finds its headers in
+`include/` by default, as the Agon build does from `/lib/acc`:
 
-    bin/acc hello.c -Iinclude
+    bin/acc hello.c
 
 The Agon build needs [AgonDev](https://github.com/AgonPlatform/agondev) in
 `~/agondev` (or `AGONDEV=<dir>`):

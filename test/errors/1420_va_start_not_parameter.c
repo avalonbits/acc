@@ -1,4 +1,5 @@
-/* expect: 5:18: error: va_start needs the function's last named parameter */
+/* expect: 6:5: error: va_start needs the function's last named parameter */
+#include <stdarg.h>
 int f(int n, ...) {
     va_list ap;
     int k = 0;

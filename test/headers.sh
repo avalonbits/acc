@@ -136,7 +136,7 @@ if git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}" >/dev/null 2>&1; then
     done
 fi
 
-ACC_EMU_PROMPT=1 ACC_EMU_TIMEOUT=600 emu_run "$sd" -z -u > "$host/console.txt" 2>&1
+ACC_EMU_PROMPT=1 ACC_EMU_TIMEOUT=180 emu_run "$sd" -z -u > "$host/console.txt" 2>&1
 tr -d '\r' < "$host/console.txt" > "$host/out.txt"
 
 # Each error line, with the file it was compiling.

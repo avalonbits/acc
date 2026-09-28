@@ -58,7 +58,7 @@ mkdir -p "$sd/one" "$sd/two"
     printf 'try acc m.o%s "a b/last.o" -o two/many.bin > log.txt\r\n' "${objs% f$N.o}"
     printf 'stop\r\n'
 } > "$sd/autoexec.txt"
-out=$(ACC_EMU_TIMEOUT=300 emu_run "$sd" -z -u 2>&1 | tr -d '\r')
+out=$(ACC_EMU_TIMEOUT=180 emu_run "$sd" -z -u 2>&1 | tr -d '\r')
 
 check() {     # check <what> <made> <want>
     if [ -f "$2" ] && cmp -s "$2" "$3"; then

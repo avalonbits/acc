@@ -62,12 +62,12 @@ int fwprintf(struct __acc_file *f, const wchar_t *fmt, ...);
 int fwscanf(struct __acc_file *f, const wchar_t *fmt, ...);
 int swprintf(wchar_t *s, size_t n, const wchar_t *fmt, ...);
 int swscanf(const wchar_t *s, const wchar_t *fmt, ...);
-int vfwprintf(struct __acc_file *f, const wchar_t *fmt, va_list ap);
-int vfwscanf(struct __acc_file *f, const wchar_t *fmt, va_list ap);
-int vswprintf(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap);
-int vswscanf(const wchar_t *s, const wchar_t *fmt, va_list ap);
-int vwprintf(const wchar_t *fmt, va_list ap);
-int vwscanf(const wchar_t *fmt, va_list ap);
+int vfwprintf(struct __acc_file *f, const wchar_t *fmt, __va_list ap);
+int vfwscanf(struct __acc_file *f, const wchar_t *fmt, __va_list ap);
+int vswprintf(wchar_t *s, size_t n, const wchar_t *fmt, __va_list ap);
+int vswscanf(const wchar_t *s, const wchar_t *fmt, __va_list ap);
+int vwprintf(const wchar_t *fmt, __va_list ap);
+int vwscanf(const wchar_t *fmt, __va_list ap);
 int wprintf(const wchar_t *fmt, ...);
 int wscanf(const wchar_t *fmt, ...);
 

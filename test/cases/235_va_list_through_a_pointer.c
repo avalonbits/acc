@@ -10,6 +10,8 @@
  * Where the object is, is what `&` asks of an operand, so these ask it the
  * same way: a name, a star, a subscript, a parenthesis.
  */
+#include <stdarg.h>
+
 /* Walks two ints off the caller's list. What it steps over has to be gone
  * when it comes back, which is the whole point of the pointer. */
 static int two(va_list *ap) {

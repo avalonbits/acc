@@ -37,6 +37,7 @@ sd=$(emu_card); host=$(mktemp -d); trap 'rm -rf "$sd" "$host"' EXIT
 cp "$ACC" "$sd/bin/acc.bin"
 mkdir -p "$sd/lib/acc"
 cp bin/libc.a bin/rt.a "$sd/lib/acc/"        # the runtime, as the release puts it
+cp -r include "$sd/lib/acc/include"          # and the headers, for <stdarg.h>
 
 # The machine is stopped by a program built with -x, as in bench.sh, compiled
 # by the host acc so that a broken candidate cannot leave the run hanging.
@@ -62,15 +63,17 @@ for src in test/cases/*.c test/bench/*.c; do
     cp "$src" "$sd/$id.c"
     cp "$src" "$host/$id.c"
     echo "$src" > "$host/$id.src"
-    printf 'acc %s.c -o %s.bin\r\n' "$id" "$id" >> "$sd/autoexec.txt"
+    # try: a compile that fails goes on to the next, where MOS would stop
+    # the autoexec and leave the machine waiting out the timeout.
+    printf 'try acc %s.c -o %s.bin\r\n' "$id" "$id" >> "$sd/autoexec.txt"
     case $src in
-      test/cases/*) printf 'acc -c %s.c -o %s.o\r\n' "$id" "$id" \
+      test/cases/*) printf 'try acc -c %s.c -o %s.o\r\n' "$id" "$id" \
                         >> "$sd/autoexec.txt" ;;
     esac
 done
 printf 'stop\r\n' >> "$sd/autoexec.txt"
 
-ACC_EMU_TIMEOUT=${ACC_TARGET_TIMEOUT:-900} emu_run "$sd" -z -u > "$host/console.txt"
+ACC_EMU_TIMEOUT=${ACC_TARGET_TIMEOUT:-180} emu_run "$sd" -z -u > "$host/console.txt"
 
 pass=0; fail=0
 for c in "$host"/t*.c; do

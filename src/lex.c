@@ -186,14 +186,17 @@ static void keywords_init(void)
     keyword("__restrict", 10, TK_KW_RESTRICT);
     keyword("__restrict__", 12, TK_KW_RESTRICT);
 
-    /* What <stdarg.h> would give, taken as words of the language: acc has
-     * no preprocessor to include it with, and a program that reads its
-     * variable arguments has no other way to. */
-    keyword("va_list", 7, TK_KW_VA_LIST);
-    keyword("va_start", 8, TK_KW_VA_START);
-    keyword("va_arg", 6, TK_KW_VA_ARG);
-    keyword("va_end", 6, TK_KW_VA_END);
-    keyword("va_copy", 7, TK_KW_VA_COPY);
+    /* What <stdarg.h> is made of, as words of the language: va_arg has to
+     * know the width of what it reads to step over it, which no macro
+     * written in C can tell it. Spelled as names reserved to the
+     * implementation, so that va_list and the rest are <stdarg.h>'s to
+     * define -- a type and four macros, as C99 7.15 has them -- and a
+     * program that does not include it may use the names for itself. */
+    keyword("__va_list", 9, TK_KW_VA_LIST);
+    keyword("__va_start", 10, TK_KW_VA_START);
+    keyword("__va_arg", 8, TK_KW_VA_ARG);
+    keyword("__va_end", 8, TK_KW_VA_END);
+    keyword("__va_copy", 9, TK_KW_VA_COPY);
     keyword("_Complex", 8, TK_KW_RESERVED);
     keyword("_Imaginary", 10, TK_KW_RESERVED);
 }
@@ -1176,7 +1179,7 @@ const char *tok_spelling(int token)
     case TK_KW_INLINE: return "'inline'";
     case TK_KW_BOOL:   return "'_Bool'";
     case TK_ELLIPSIS:  return "'...'";
-    case TK_KW_VA_LIST: return "'va_list'";
+    case TK_KW_VA_LIST: return "'va_list'";      /* as <stdarg.h> spells them */
     case TK_KW_VA_START: return "'va_start'";
     case TK_KW_VA_ARG: return "'va_arg'";
     case TK_KW_VA_END: return "'va_end'";

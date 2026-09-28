@@ -110,6 +110,19 @@ static int   ndeps, deps_cap;
 static int   want_deps;         /* see dep_add */
 static int src_dep = -1;        /* the file being read, or -1 for macro text */
 
+/* The build's include directory, whose headers a dependency names as
+ * <name>: see lex_add_include_default. */
+static const char *include_builtin;
+static int         include_builtin_len;
+static const char *dep_name(const char *path, char *buf, int cap);
+
+/* A dependency's name made, or made back into a path: one at a time, a
+ * compile's own or an object's being checked, so one buffer for both. The
+ * Agon's /lib/acc/include paths are a quarter of it; a longer path is cut,
+ * and a header not found where it was is a file that changed -- the object
+ * is made again, never kept wrongly. */
+static char dep_path[128];
+
 static int dep_add(const char *path)
 {
     char *keep;
@@ -120,6 +133,7 @@ static int dep_add(const char *path)
      * every byte read after that goes through one compare. */
     if (!want_deps)
         return -1;
+    path = dep_name(path, dep_path, (int) sizeof dep_path);
 
     /* A header that several others include is opened once for each of them,
      * and each time it reads the same bytes. One entry is enough, and it
@@ -227,6 +241,16 @@ int lex_file_marks(const char *path, unsigned *size, unsigned *sum,
         return 1;
     }
 
+    /* A header of the build's include directory, found there again. */
+    if (*path == '<') {
+        size_t len = strlen(path);
+
+        if (!include_builtin || len < 3 || path[len - 1] != '>')
+            return 0;
+        snprintf(dep_path, sizeof dep_path, "%s/%.*s", include_builtin,
+                 (int) len - 2, path + 1);
+        path = dep_path;
+    }
     f = fopen(path, "rb");
     if (!f)
         return 0;
@@ -275,20 +299,42 @@ int    depth;
 const char *include_dirs[INCLUDE_DIRS];
 int         ninclude_dirs;
 
-void lex_add_include(const char *dir)
-{
-    lex_add_include_default(dir);
-    opt_fold('I', dir);
-}
-
-/* A directory the build names rather than the command line: looked in the
- * same way, and not an option, so that an object made where it is looked in
- * is the same file as one made where it is not. */
-void lex_add_include_default(const char *dir)
+static void include_dir_add(const char *dir)
 {
     if (ninclude_dirs == INCLUDE_DIRS)
         acc_error("more than %d -I directories", INCLUDE_DIRS);
     include_dirs[ninclude_dirs++] = dir;
+}
+
+void lex_add_include(const char *dir)
+{
+    include_dir_add(dir);
+    opt_fold('I', dir);
+}
+
+/* The directory the build names rather than the command line -- the
+ * repository's include/ on the host, /lib/acc/include on the Agon: looked
+ * in the same way, and not an option, so that an object made where it is
+ * looked in is the same file as one made where it is not. A header found
+ * in it is recorded by its name there (see dep_add), for the same reason. */
+void lex_add_include_default(const char *dir)
+{
+    include_dir_add(dir);
+    include_builtin = dir;
+    include_builtin_len = (int) strlen(dir);
+}
+
+/* A path in the build's include directory as `<name>`, the way the source
+ * asked for it, and any other as it is: <stdio.h> is at one path on the
+ * host and another on the Agon, and an object records it the same on both. */
+static const char *dep_name(const char *path, char *buf, int cap)
+{
+    if (!include_builtin || strncmp(path, include_builtin, (size_t) include_builtin_len)
+        || path[include_builtin_len] != '/')
+        return path;
+    snprintf(buf, (size_t) cap, "<%s>", path + include_builtin_len + 1);
+
+    return buf;
 }
 
 /* More of the file, with what has not been read yet kept.

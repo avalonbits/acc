@@ -3,6 +3,8 @@
  * comparisons, conversion to and from the narrower types and to and from a
  * float, arguments and results, globals, arrays, members, a switch and
  * va_arg. */
+#include <stdarg.h>
+
 long long g = 0x1122334455667788LL;
 unsigned long long ug = 18446744073709551615ULL;
 long long table[3] = { -1LL, 0x7fffffffffffffffLL, 1LL };
