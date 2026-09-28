@@ -493,7 +493,12 @@ static const unsigned char rt_code[] = {
     0xcb, 0x01, 0x16, 0xfd, 0xcb, 0x02, 0x16, 0xfd, 0xcb, 0x03, 0x16, 0xfd,
     0xcb, 0x04, 0x16, 0xfd, 0xcb, 0x05, 0x16, 0xfd, 0xcb, 0x06, 0x16, 0xfd,
     0xcb, 0x07, 0x16, 0x10, 0xde, 0xcb, 0x79, 0xc4, 0xe7, 0x12, 0x00, 0xe1,
-    0xc1, 0xfd, 0xe1, 0xc9,
+    0xc1, 0xfd, 0xe1, 0xc9, 0xf5, 0xc5, 0xd5, 0xe5, 0x3a, 0xd8, 0x16, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x4f, 0x2a, 0xd9, 0x16, 0x00, 0x09, 0x09, 0x09,
+    0x09, 0xeb, 0x01, 0x04, 0x00, 0x00, 0xed, 0xb0, 0x3c, 0x21, 0xd6, 0x16,
+    0x00, 0xbe, 0x20, 0x01, 0xaf, 0x21, 0xd7, 0x16, 0x00, 0xbe, 0x28, 0x04,
+    0x32, 0xd8, 0x16, 0x00, 0xe1, 0xd1, 0xc1, 0xf1, 0xc9, 0x21, 0xd6, 0x16,
+    0x00, 0xc9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
 /* Where each entry point sits within rt_code. */
@@ -575,6 +580,8 @@ enum {
     RT_LLTOF,
     RT_ULLTOF,
     RT_FTOLL,
+    RT_KBUF_HANDLER,
+    RT_KBUF_STATE,
     RT_COUNT
 };
 
@@ -656,6 +663,8 @@ static const short rt_entry[RT_COUNT] = {
     5545,   /* lltof */
     5562,   /* ulltof */
     5667,   /* ftoll */
+    5788,   /* kbuf_handler */
+    5841,   /* kbuf_state */
 };
 
 /* What each one is called. An object that uses a helper and
@@ -742,6 +751,8 @@ static const char *const rt_name[RT_COUNT] = {
     "acc_rt_lltof",
     "acc_rt_ulltof",
     "acc_rt_ftoll",
+    "acc_rt_kbuf_handler",
+    "acc_rt_kbuf_state",
 };
 
 /* Calls from one routine to another: the address at `at` is the
@@ -762,7 +773,7 @@ typedef struct { short at, to; } RtFix;
  * after it, from rt_group_start[g] to the next one's start. A
  * group needs the ones its calls and addresses name, and those
  * theirs: rt_group_needs is that, closed, as a set of bits. */
-#define RT_NGROUPS 73
+#define RT_NGROUPS 75
 #define RT_NEED_BYTES 10
 
 static const short rt_group_start[RT_NGROUPS + 1] = {
@@ -840,6 +851,8 @@ static const short rt_group_start[RT_NGROUPS + 1] = {
     5545,
     5667,
     5788,
+    5841,
+    5852,
 };
 
 static const unsigned char rt_entry_group[RT_COUNT] = {
@@ -920,6 +933,8 @@ static const unsigned char rt_entry_group[RT_COUNT] = {
     71,
     71,
     72,
+    73,
+    74,
 };
 
 static const unsigned char rt_group_needs[RT_NGROUPS][RT_NEED_BYTES] = {
@@ -996,9 +1011,11 @@ static const unsigned char rt_group_needs[RT_NGROUPS][RT_NEED_BYTES] = {
     { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x44, 0x00 },
     { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x26, 0x40, 0x80, 0x00 },
     { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x40, 0x00, 0x01 },
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06 },
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04 },
 };
 
-#define RT_NFIX 120
+#define RT_NFIX 126
 
 static const RtFix rt_fix[RT_NFIX] = {
     { 180, 255 },
@@ -1121,6 +1138,12 @@ static const RtFix rt_fix[RT_NFIX] = {
     { 5628, 4489 },
     { 5694, 4582 },
     { 5780, 4839 },
+    { 5793, 5848 },
+    { 5802, 5849 },
+    { 5818, 5846 },
+    { 5826, 5847 },
+    { 5833, 5848 },
+    { 5842, 5846 },
 };
 
 static const unsigned char rt_fix_group_at[RT_NFIX] = {
@@ -1244,6 +1267,12 @@ static const unsigned char rt_fix_group_at[RT_NFIX] = {
     71,
     72,
     72,
+    73,
+    73,
+    73,
+    73,
+    73,
+    74,
 };
 
 static const unsigned char rt_fix_group_to[RT_NFIX] = {
@@ -1367,6 +1396,12 @@ static const unsigned char rt_fix_group_to[RT_NFIX] = {
     53,
     54,
     62,
+    74,
+    74,
+    74,
+    74,
+    74,
+    74,
 };
 
 #endif /* ACC_RT_HELPERS_H */

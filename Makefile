@@ -152,6 +152,7 @@ test: all unit agon
 	@test/startup.sh || [ $$? -eq 77 ]
 	@test/agonpp.sh || [ $$? -eq 77 ]
 	@test/flags.sh || [ $$? -eq 77 ]
+	@test/keyboard.sh || [ $$? -eq 77 ]
 	@test/buffer.sh
 	@test/include.sh
 	@ACC=$(BIN)/acc-asan test/macro.sh
