@@ -91,7 +91,7 @@ flowchart TD
 [`gen_finish()`](../src/finish.c#L751) ·
 [`obj_write()`](../src/obj.c#L434) ·
 [`gen_startup()`](../src/finish.c#L1046) ·
-[`link_inputs()`](../src/link.c#L509) ·
+[`link_inputs()`](../src/link.c#L522) ·
 [`out_close()`](../src/image.c#L818)
 
 The one-step build is a compile whose image is then linked in place: the
@@ -165,7 +165,7 @@ so that finding it costs one load rather than a table probe:
 | byte | holds | read by |
 |---|---|---|
 | `ref-4` | `NAME_MACRO`, `NAME_WIDE`, `NAME_WEAK`, `NAME_STRONG` | [`name_is_macro`](../src/lex_int.h#L99), [`name_weak()`](../src/names.c#L349) |
-| `ref-3 .. ref-1` | the file-scope symbol for this name, plus one — or, for a keyword, its token code at `ref-3` | [`name_global()`](../src/out.h#L175), [`next()`](../src/lex.c#L1007) |
+| `ref-3 .. ref-1` | the file-scope symbol for this name, plus one — or, for a keyword, its token code at `ref-3` | [`name_global()`](../src/out.h#L175), [`next()`](../src/lex.c#L1010) |
 
 The hash table uses open addressing with linear probing over 4-byte slots,
 kept at most three quarters full. The hash, [`name_home()`](../src/names.c#L124), is two
@@ -180,22 +180,22 @@ could read past the arena's end.
 
 Each file is read through a window rather than loaded whole, since several
 are open at once: 4 KB for the file named on the command line and 2 KB for
-each header. [`refill()`](../src/source.c#L710) keeps one invariant: **the window always
+each header. [`refill()`](../src/source.c#L750) keeps one invariant: **the window always
 holds whole lines**. It moves the unread tail to the front, reads to fill
 the window, then trims back to the last newline; a line longer than the
-window doubles it, up to 64 KB ([`window_grow()`](../src/source.c#L692)). A NUL is written
+window doubles it, up to 64 KB ([`window_grow()`](../src/source.c#L732)). A NUL is written
 after the last byte, so the scanners stop there without a bounds test.
 
 Because a line is never split, tokens point straight into the window, a
 `*/` is never cut in two, and a column is found only when an error needs
 one, by walking back from the token to its line's start
-([`column_of()`](../src/source.c#L1057)).
+([`column_of()`](../src/source.c#L1097)).
 
 Line splices and universal character names are dealt with once per window,
-in [`unsplice()`](../src/source.c#L463), before any scanner sees the text: a backslash-
+in [`unsplice()`](../src/source.c#L503), before any scanner sees the text: a backslash-
 newline is removed and its newline put back at the end of the logical line,
 so line numbers stay right, and `\uXXXX` is rewritten as UTF-8 in place.
-Trigraphs are replaced only with `-trigraphs` ([`untrigraph()`](../src/source.c#L437)).
+Trigraphs are replaced only with `-trigraphs` ([`untrigraph()`](../src/source.c#L477)).
 
 ```mermaid
 flowchart LR
@@ -207,23 +207,23 @@ flowchart LR
     stack["open_files[8]"] -.->|"push_source() / pop_source()"| win
 ```
 
-[`refill()`](../src/source.c#L710) ·
-[`unsplice()`](../src/source.c#L463) ·
-[`dep_bytes()`](../src/source.c#L203) ·
-[`next()`](../src/lex.c#L1007) ·
-[`push_source()`](../src/source.c#L775) ·
-[`pop_source()`](../src/source.c#L893)
+[`refill()`](../src/source.c#L750) ·
+[`unsplice()`](../src/source.c#L503) ·
+[`dep_bytes()`](../src/source.c#L211) ·
+[`next()`](../src/lex.c#L1010) ·
+[`push_source()`](../src/source.c#L815) ·
+[`pop_source()`](../src/source.c#L933)
 
 Files, and macro expansions, are a stack of `Source` levels, eight deep.
-[`push_source()`](../src/source.c#L775) saves the current window's state, notes the file
-offset, and **closes the file**; [`pop_source()`](../src/source.c#L893) reopens it and
+[`push_source()`](../src/source.c#L815) saves the current window's state, notes the file
+offset, and **closes the file**; [`pop_source()`](../src/source.c#L933) reopens it and
 seeks back. So however deep the includes go, one file is open at a time.
-[`push_text()`](../src/source.c#L847) pushes a window over text already in memory, which
+[`push_text()`](../src/source.c#L887) pushes a window over text already in memory, which
 is how a macro expansion is read (section 6).
 
-A window can also be recorded and replayed. [`lex_record_from()`](../src/source.c#L558)
+A window can also be recorded and replayed. [`lex_record_from()`](../src/source.c#L598)
 starts copying the raw text of what is read into a buffer, and
-[`lex_push_record()`](../src/source.c#L668) reads it back as a new level. The parser uses
+[`lex_push_record()`](../src/source.c#L708) reads it back as a new level. The parser uses
 this for three things that must be read twice: a `for` loop's step, which
 is compiled after the body (section 8); the return expression of a
 `static inline` function, which is expanded at each call; and the size of
@@ -234,8 +234,12 @@ function.
 
 An object records every file it was compiled from, with a checksum of its
 bytes -- the Agon has no clock that persists, so there are no timestamps.
-[`marks_fold()`](../src/source.c#L171) keeps two 24-bit sums, `sum += byte; weighted +=
-sum`, as [`refill()`](../src/source.c#L710) reads each window, so nothing is read twice.
+A header from the build's own include directory is recorded by its name
+there, `<stdio.h>`, and found again through whichever directory the acc
+checking has ([`dep_name()`](../src/source.c#L324)), so an object is the same file made on
+the host or the Agon.
+[`marks_fold()`](../src/source.c#L179) keeps two 24-bit sums, `sum += byte; weighted +=
+sum`, as [`refill()`](../src/source.c#L750) reads each window, so nothing is read twice.
 On the Agon it is eight instructions of hand-written assembly,
 [`src/marks.s`](../src/marks.s). `-D`, `-U` and `-I` are folded into a
 pseudo-file of their own. `acc -c` then answers "up to date" without
@@ -244,7 +248,7 @@ build of acc and every file it names still has the same size and sums.
 
 ## 6. The preprocessor
 
-The preprocessor is not a separate pass: [`next()`](../src/lex.c#L1007) runs it as it
+The preprocessor is not a separate pass: [`next()`](../src/lex.c#L1010) runs it as it
 goes.
 
 **Macros.** A name with the `NAME_MACRO` flag is looked up in a hash table
@@ -282,7 +286,7 @@ comments are looked at.
 
 ## 7. Tokens and symbols
 
-[`next()`](../src/lex.c#L1007) leaves the current token in globals the parser reads
+[`next()`](../src/lex.c#L1010) leaves the current token in globals the parser reads
 directly: `tok`, `tok_name`, `tok_val`, and the string in `str_buf`.
 `accept` and `expect` are macros in [`lex.h`](../src/lex.h), so the common case is a
 compare and no call.
@@ -291,7 +295,7 @@ compare and no call.
   `kw_limit`, and each keeps its token code at byte `ref-3` of its name.
   Recognising one is a compare and a load, however many keywords there are.
 - **Punctuators** go through a 256-entry table, `punct[]`.
-- **Numbers** are read by [`lex_number()`](../src/lex.c#L298), typed by C99's ladder of
+- **Numbers** are read by [`lex_number()`](../src/lex.c#L301), typed by C99's ladder of
   int, long and long long; a floating literal is converted by
   [`float_literal()`](../src/float.c#L392), acc's own correctly-rounded conversion, so the
   host and the Agon agree.
@@ -553,7 +557,7 @@ written in eZ80 assembly in [`lib/rt/`](../lib/rt) and assembled by zap
 into acc's object format ([`lib/rt/README.md`](../lib/rt/README.md)). A
 link reads it first, since every program calls it and its index is a few
 names, then the C library only if a name is still waiting, and `rt.a` again
-for what the C library's members call ([`link_inputs()`](../src/link.c#L509)). The helper convention is left
+for what the C library's members call ([`link_inputs()`](../src/link.c#L522)). The helper convention is left
 operand in HL, right in BC, result in HL, everything else kept.
 
 Each file is one object: one routine, or several that share code. A link
@@ -567,9 +571,9 @@ file-scope symbol pushed while a function is being compiled would move its
 locals. Once the compile is done, [`rt_name_all()`](../src/runtime.c#L118) makes a symbol
 for each routine called, and the link finds them in the library like any
 other name, in the order of their slots among the program's other calls
-([`waits_next()`](../src/link.c#L379)) -- so a program built in one step takes the same
+([`waits_next()`](../src/link.c#L382)) -- so a program built in one step takes the same
 members in the same order as one compiled to an object and then linked.
-[`rt_fill_all()`](../src/runtime.c#L177) then fills the calls in: those still in memory
+[`rt_fill_all()`](../src/runtime.c#L173) then fills the calls in: those still in memory
 now, and those in the image's file as a second list of additions the sweep
 makes as it passes (section 14). A compile to an object leaves each call as
 a reference to the routine's name.
@@ -664,7 +668,7 @@ compiled:
 
 1. **Unused statics** are dropped (section 13).
 2. **The runtime**: every call into it is filled in with where the link
-   put the routine ([`rt_fill_all()`](../src/runtime.c#L177), section 12).
+   put the routine ([`rt_fill_all()`](../src/runtime.c#L173), section 12).
 3. **argc and argv**: [`args_emit()`](../src/finish.c#L563) lays down the code that splits
    MOS's command line into words, as agondev's startup does, up to sixteen.
    It is there whether `main` takes them or not: a link cannot tell.
@@ -718,14 +722,14 @@ flowchart TD
 [`link_object()`](../src/link.c#L77) ·
 [`place_object()`](../src/link.c#L323) ·
 [`copy_text()`](../src/link.c#L159) ·
-[`link_short()`](../src/link.c#L410) ·
-[`link_archive()`](../src/link.c#L433) ·
+[`link_short()`](../src/link.c#L414) ·
+[`link_archive()`](../src/link.c#L450) ·
 [`ar_find()`](../src/archive.c#L250) ·
 [`take_items()`](../src/link.c#L170) ·
 [`gen_finish()`](../src/finish.c#L751)
 
 A library is asked for names in the order of the slots that wait on them
-([`waits_next()`](../src/link.c#L379)), each routine of the runtime once, at its first
+([`waits_next()`](../src/link.c#L382)), each routine of the runtime once, at its first
 call. It is kept open while the link reads it, since opening a file on the
 card is a search of its directory, and a name it does not have is marked
 ([`name_set_missed()`](../src/names.c#L364)) so that it is not asked again on the next

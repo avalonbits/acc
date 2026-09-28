@@ -73,7 +73,7 @@ emu_run() {
 
     local mos=() mos_bin=${ACC_EMU_MOS:-$EMU_MOS}
     [ -f "$mos_bin" ] && mos=(--mos "$mos_bin")
-    (cd "$EMU" && exec timeout "${ACC_EMU_TIMEOUT:-300}" ./agon-cli-emulator \
+    (cd "$EMU" && exec timeout "${ACC_EMU_TIMEOUT:-180}" ./agon-cli-emulator \
         --sdcard "$sd" "${mos[@]}" "$@" < "$fifo" > "$cap" 2>&1) & emu=$!
 
     # With ACC_EMU_PROMPT set, stopped as soon as MOS prints its prompt,

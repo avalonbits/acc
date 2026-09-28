@@ -2,6 +2,8 @@
  * any number past the named ones, and va_start, va_arg, va_end and va_copy
  * reading ints, longs, chars (which come as ints), pointers and structs --
  * and a va_list handed to another function. */
+#include <stdarg.h>
+
 struct pair { int a; char b; };
 
 int sum(int n, ...);

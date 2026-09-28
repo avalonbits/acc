@@ -45,9 +45,12 @@ for flag in -h --help; do
         bad "$flag lists the options, and succeeds" "rc $rc"
     fi
 done
-# 24 here, and two more on the Agon for where the defaults are.
-fits "$tmp/out" 24 && ok "-h fits a screen" \
-    || bad "-h fits a screen" "$(wc -l < "$tmp/out") lines"
+# 24, and two more for where the defaults are -- /lib/acc on the Agon, and
+# on the host wherever this checkout is, so as long as its path makes it:
+# they are left out of the measure.
+grep -v '^Headers from ' "$tmp/out" > "$tmp/help"
+fits "$tmp/help" 24 && ok "-h fits a screen" \
+    || bad "-h fits a screen" "$(wc -l < "$tmp/help") lines"
 
 run -z; rc=$?
 if [ $rc -eq 2 ] && grep -q "'-z' is not an option" "$tmp/err" \

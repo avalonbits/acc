@@ -402,7 +402,7 @@ for SRC in $SRCS; do
     done
     printf 'stop\r\n' >> "$sd/autoexec.txt"
 
-    out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-600} emu_run "$sd" -z $speed)
+    out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-180} emu_run "$sd" -z $speed)
 
     times=$(printf '%s' "$out" | sed -n 's/.*Done in \([0-9]*\)\.\([0-9][0-9]\) seconds.*/\1\2/p')
     n=$(printf '%s\n' "$times" | grep -c .)
@@ -489,7 +489,7 @@ program() {    # program <name> <setup line> <command, with %s for the run>
         printf "tick40\r\n$cmd\r\ntick41\r\n" "$i" >> "$sd/autoexec.txt"
     done
     printf 'stop\r\n' >> "$sd/autoexec.txt"
-    out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-600} emu_run "$sd" -z -u)
+    out=$(ACC_EMU_TIMEOUT=${ACC_BENCH_TIMEOUT:-180} emu_run "$sd" -z -u)
     cycles=$(whole_counts "$out")
     if [ "$(printf '%s\n' "$cycles" | grep -c .)" -ne "$RUNS" ] \
        || printf '%s' "$out" | grep -q 'error:'; then

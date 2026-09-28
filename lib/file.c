@@ -24,6 +24,7 @@
  * at once and never many, and the heap on this machine is worth more to
  * whatever the program is actually doing.
  */
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 

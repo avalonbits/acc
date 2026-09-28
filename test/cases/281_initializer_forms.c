@@ -7,6 +7,8 @@
  * - a subscript after va_arg (pr46130-1);
  * - a prototype naming a struct not yet complete (6.7.5.3p12, pr89211);
  * - a #pragma whose comment runs on to the next line (pragma-pack-3). */
+#include <stdarg.h>
+
 struct later;
 int size_of(struct later);
 struct later { char c[5]; };

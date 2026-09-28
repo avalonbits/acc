@@ -89,7 +89,7 @@ run() {
     sd=$(emu_card)
     cp "$1" "$sd/bin/p.bin"
     printf 'bin/p\r\n' > "$sd/autoexec.txt"
-    out=$(ACC_EMU_WATCH=perf_done ACC_EMU_TIMEOUT=${PERF_TIMEOUT:-600} emu_run "$sd" -z -u 2>&1)
+    out=$(ACC_EMU_WATCH=perf_done ACC_EMU_TIMEOUT=${PERF_TIMEOUT:-180} emu_run "$sd" -z -u 2>&1)
     rm -rf "$sd"
     cycles=$(printf '%s' "$out" | sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
     check=$(printf '%s' "$out" | tr -d '\r' | sed -n 's/^check \([0-9]*\).*/\1/p' | head -1)
@@ -207,7 +207,7 @@ if [ "$with_zap" = 1 ] && git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}
         cp "$z/t41.bin" "$sd/bin/tstop.bin"
         cp "$z/basic"/* "$sd/"
         printf 'tstart\r\nzap bbcbasicvez.s out.bin\r\ntstop\r\n' > "$sd/autoexec.txt"
-        out=$(ACC_EMU_WATCH=zap_done ACC_EMU_TIMEOUT=${PERF_TIMEOUT:-600} emu_run "$sd" -z -u 2>&1)
+        out=$(ACC_EMU_WATCH=zap_done ACC_EMU_TIMEOUT=${PERF_TIMEOUT:-180} emu_run "$sd" -z -u 2>&1)
         eval "cyc_$how=$(printf '%s' "$out" | sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)"
         eval "chk_$how=$( [ -f "$sd/out.bin" ] && md5sum < "$sd/out.bin" | cut -c1-8)"
         eval "size_$how=$(stat -c%s "$z/$how.bin")"

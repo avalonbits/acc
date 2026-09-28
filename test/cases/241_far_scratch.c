@@ -15,6 +15,8 @@
  * of them is for, and the recursion is there because a frame that came back
  * wrong would not come back at all.
  */
+#include <stdarg.h>
+
 static long long q(long long v) { return v + 1LL; }
 
 static int wide_frame(int a, int b, int c, long d) {

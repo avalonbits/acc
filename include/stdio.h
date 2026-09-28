@@ -103,19 +103,19 @@ int    ferror(FILE *f);
 void   perror(const char *s);
 
 int printf(const char *fmt, ...);
-int vprintf(const char *fmt, va_list ap);
+int vprintf(const char *fmt, __va_list ap);
 int sprintf(char *to, const char *fmt, ...);
-int vsprintf(char *to, const char *fmt, va_list ap);
+int vsprintf(char *to, const char *fmt, __va_list ap);
 int fprintf(FILE *f, const char *fmt, ...);
-int vfprintf(FILE *f, const char *fmt, va_list ap);
+int vfprintf(FILE *f, const char *fmt, __va_list ap);
 int snprintf(char *to, size_t n, const char *fmt, ...);
-int vsnprintf(char *to, size_t n, const char *fmt, va_list ap);
+int vsnprintf(char *to, size_t n, const char *fmt, __va_list ap);
 
 int scanf(const char *fmt, ...);
-int vscanf(const char *fmt, va_list ap);
+int vscanf(const char *fmt, __va_list ap);
 int sscanf(const char *s, const char *fmt, ...);
-int vsscanf(const char *s, const char *fmt, va_list ap);
+int vsscanf(const char *s, const char *fmt, __va_list ap);
 int fscanf(FILE *f, const char *fmt, ...);
-int vfscanf(FILE *f, const char *fmt, va_list ap);
+int vfscanf(FILE *f, const char *fmt, __va_list ap);
 
 #endif

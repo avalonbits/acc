@@ -104,9 +104,11 @@ src/acc_build.h: $(SRC) $(HDR) src/build_id.sh
 	@$(RM) $@.tmp
 
 # The library a program is linked with unless a link names others first, as
-# /lib/acc/libc.a is on the Agon: the one built here, which holds the runtime
-# every program calls.
-HOSTLIB = -DACC_LIBC='"$(CURDIR)/$(BIN)/libc.a"'
+# /lib/acc/libc.a is on the Agon: the one built here, with the runtime beside
+# it. And the headers an #include finds after every -I, as /lib/acc/include
+# is on the Agon: the ones here.
+HOSTLIB = -DACC_LIBC='"$(CURDIR)/$(BIN)/libc.a"' \
+          -DACC_INCLUDE_DIR='"$(CURDIR)/include"'
 
 $(BIN)/acc: $(SRC) $(HDR) src/acc_build.h | $(BIN)
 	$(CC) $(CFLAGS) $(WARN) $(HOSTLIB) -Isrc -o $@ $(SRC)
