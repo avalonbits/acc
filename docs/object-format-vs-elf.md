@@ -109,8 +109,8 @@ This was written in the zap session, measured against acc's tree as it was
 then, and added here unchanged apart from this section.
 
 1. ACC stays.
-2. Dropping unused externs: taken on in acc; see the commit that follows
-   this one for the measurement.
+2. Dropping unused externs: done in 8c2188b. An object carries only the
+   externs a relocation uses.
 3. v1: proposed from acc, agreed with zap, and built. src/obj.c's note on
    the format is the specification both sides work from, and
    test/accobj.py writes it independently of acc's writer, for test/accobj.sh

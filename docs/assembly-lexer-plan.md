@@ -9,8 +9,11 @@ out of it in C has either lost or flipped between good and bad with
 changes that should not matter. This is the plan for writing the whole
 lookup in assembly, with the C kept for the host build.
 
-No code yet. A prototype of half of it was built and measured; its numbers
+Not built. A prototype of half of it was built and measured; its numbers
 are below, along with why it lost and what the full version would change.
+The figures are from c823b79 and count the compile alone; `test/bench.sh`
+now counts a whole invocation, card reads and writes included, so they do
+not compare with its current output.
 
 ## Where the cycles go
 

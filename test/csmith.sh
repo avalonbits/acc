@@ -90,8 +90,8 @@ for i in $(seq "$count"); do
         >/dev/null 2>&1 || { echo "  csmith failed for $n" >&2; exit 2; }
 
     # C99 5.2.4.1 promises 4,095 characters in a logical line, and acc
-    # takes a window's worth, 16 KB; Csmith's expressions sometimes run
-    # past both.
+    # reads a line whole, up to 64 KB; Csmith's expressions sometimes run
+    # past the first.
     if awk 'length > 4095 { found = 1 } END { exit !found }' "$work/$n.c"; then
         echo "  SKIP $n  a line longer than C99's 4,095 characters"
         continue
