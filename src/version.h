@@ -10,6 +10,6 @@
 #ifndef ACC_VERSION_H
 #define ACC_VERSION_H
 
-#define ACC_VERSION "0.2.0"
+#define ACC_VERSION "0.2.1"
 
 #endif

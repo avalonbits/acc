@@ -1,6 +1,6 @@
 # acc and C99: where it stands
 
-A snapshot, taken at d268584 on 2026-09-28. How it was reached, and the
+A snapshot, taken at 486780a on 2026-09-28. How it was reached, and the
 reasoning behind the suite and its filter, is in
 [c99-conformance-plan.md](c99-conformance-plan.md); this page is the result,
 and the list of what is still open.
@@ -83,13 +83,13 @@ found that a call could have 64 arguments pending at most, where C99
 
 ## Compile speed
 
-570.7 cycles per byte of source on the Agon, over all 23 of
+584.5 cycles per byte of source on the Agon, over all 23 of
 `test/bench.sh`'s inputs with the cycle-counting build, against a goal of
 600. Each figure is the whole invocation -- reading the source and headers
 from the card, compiling, and writing the object -- less the fixed cost of
-MOS starting a command. The dearest inputs are matrix.c at 1,004 cycles a
-byte and numeric.c at 999; the real sources, zap's and acc's own, run at
-309 to 377.
+MOS starting a command. The dearest inputs are numeric.c at 1,086 cycles a
+byte and matrix.c at 1,016; the real sources, zap's and acc's own, run at
+311 to 379.
 
 ## Out by decision
 
