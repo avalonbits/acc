@@ -1,18 +1,18 @@
 #!/bin/bash
 # The entry stub, against the assembly it was made from.
 #
-# gen.c carries the stub and the argument routine as bytes, because acc has to
+# finish.c carries the stub and the argument routine as bytes, because acc has to
 # emit them on a machine with no assembler. The source of truth is
 # src/rt/startup.s: those bytes were produced by assembling it, and a change to
 # either that is not made to the other is a silent divergence -- the comments
-# in gen.c would describe code the compiler does not emit, which is worse than
+# in finish.c would describe code the compiler does not emit, which is worse than
 # having no assembly at all.
 #
 # So this assembles startup.s and compares it with the arrays, byte for byte.
-# The holes are the exception: gen.c leaves an address it does not know yet at
+# The holes are the exception: finish.c leaves an address it does not know yet at
 # zero and fills it in when it emits the stub, so a byte that is zero in the
 # array and not in the assembly is allowed only where the assembly has a call
-# or a load of an address gen.c is known to patch.
+# or a load of an address finish.c is known to patch.
 #
 # Needs agondev. Skips (77) without it.
 set -uo pipefail
@@ -43,10 +43,10 @@ for line in dis.splitlines():
         for i, b in enumerate(m.group(2).split()):
             img[at + i] = int(b, 16)
 
-src = open('src/gen.c').read()
+src = open('src/finish.c').read() + open('src/gen_int.h').read()
 
 def array(name):
-    """The byte array gen.c carries, with its comments taken out."""
+    """The byte array finish.c carries, with its comments taken out."""
     text = src[src.index('unsigned char %s[] = {' % name):]
     text = text[text.index('{') + 1:text.index('};')]
     text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
@@ -68,7 +68,7 @@ def call_table(name):
             for x in re.findall(r'\{ (0x[0-9a-f]+),', block[:block.index('};')])]
 
 def holes(name):
-    """Where gen.c says it fills an address in, as offsets into the array."""
+    """Where finish.c says it fills an address in, as offsets into the array."""
     if name == 'startup_exit':
         return defines('STUB_CLEAR_AT', 'STUB_ARGS_AT', 'STUB_MAIN_AT',
                        'STUB_HOOK_CALL_AT')
@@ -96,7 +96,7 @@ for name, (lo, hi) in spans.items():
     want = [img[i] for i in range(lo, hi)]
     got = array(name)
     if len(want) != len(got):
-        print('  FAIL %-14s the assembly is %d bytes, gen.c carries %d'
+        print('  FAIL %-14s the assembly is %d bytes, finish.c carries %d'
               % (name, len(want), len(got)))
         bad += 1
         continue
@@ -105,7 +105,7 @@ for name, (lo, hi) in spans.items():
     for h in holes(name):
         allowed |= {h, h + 1, h + 2}
 
-        # A hole is three zero bytes in the array: gen.c writes the address
+        # A hole is three zero bytes in the array: finish.c writes the address
         # over them once it knows it. An offset that is one byte out points
         # at the opcode instead, so the array has the opcode there -- and
         # the patch then writes the address over the instruction. Which the
@@ -113,7 +113,7 @@ for name, (lo, hi) in spans.items():
         # the opcode in the assembly.
         if got[h:h + 3] != [0, 0, 0]:
             print('  FAIL %-14s the hole at %d is 0x%02x 0x%02x 0x%02x in '
-                  'gen.c, not three zeros' % (name, h, *got[h:h + 3]))
+                  'finish.c, not three zeros' % (name, h, *got[h:h + 3]))
             bad += 1
             holed = 1
     if holed:
@@ -122,9 +122,9 @@ for name, (lo, hi) in spans.items():
         if a == b:
             continue
         if b == 0 and i in allowed:
-            continue                    # a hole gen.c fills in
+            continue                    # a hole finish.c fills in
         print('  FAIL %-14s byte %d is 0x%02x in the assembly and 0x%02x in '
-              'gen.c' % (name, i, a, b))
+              'finish.c' % (name, i, a, b))
         bad += 1
         break
     else:

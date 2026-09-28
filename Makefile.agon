@@ -57,7 +57,7 @@ LDFLAGS = -defsym=RAM_START=0x40000 -defsym=RAM_SIZE=0x70000 \
           -T src/agon.ld --oformat binary \
           --wrap=_sbrk
 
-SRCS = src/obj.c src/archive.c src/names.c src/source.c src/macro.c src/directive.c src/lex.c src/float.c src/sym.c src/gen.c src/image.c src/reloc.c src/parse.c \
+SRCS = src/obj.c src/archive.c src/names.c src/source.c src/macro.c src/directive.c src/lex.c src/float.c src/sym.c src/insn.c src/vstack.c src/arith.c src/wide.c src/branch.c src/runtime.c src/finish.c src/relax.c src/func.c src/lvalue.c src/image.c src/reloc.c src/parse.c \
        src/fmt.c
 
 # The same headers the host build lists. Naming only src/acc.h here left the
@@ -66,7 +66,7 @@ SRCS = src/obj.c src/archive.c src/names.c src/source.c src/macro.c src/directiv
 # the host build emitted and not the one the Agon build did, and target.sh
 # reported eighty-one programs where the two builds disagreed -- which they
 # did, about a runtime one of them had not been told about.
-HDRS = src/acc.h src/lex_int.h src/out_int.h src/obj_int.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
+HDRS = src/acc.h src/lex_int.h src/out_int.h src/obj_int.h src/gen_int.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
 
 OBJS = $(patsubst src/%.c,$(OBJ)/%.o,$(SRCS)) $(OBJ)/marks.o
 
