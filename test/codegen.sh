@@ -90,6 +90,21 @@ calls "<< 9"                        _acc_rt_shl yes \
 calls "<< a variable"               _acc_rt_shl yes \
     'unsigned f(unsigned x, int n) { return x << n; }'
 
+# >> by 16 to 23 is the top byte, reached through the stack; below 16 it is
+# still the helper's, and so is a variable count.
+calls ">> 16 unsigned"                _acc_rt_shru no \
+    'unsigned f(unsigned x) { return x >> 16; }'
+calls ">> 23 unsigned"                _acc_rt_shru no \
+    'unsigned f(unsigned x) { return x >> 23; }'
+calls ">> 16 signed"                  _acc_rt_shrs no \
+    'int f(int x) { return x >> 16; }'
+calls ">> 20 signed"                  _acc_rt_shrs no \
+    'int f(int x) { return x >> 20; }'
+calls ">> 15"                         _acc_rt_shru yes \
+    'unsigned f(unsigned x) { return x >> 15; }'
+calls ">> a variable"                 _acc_rt_shrs yes \
+    'int f(int x, int n) { return x >> n; }'
+
 # * by a constant: doublings and additions, up to twelve of them, and the
 # helper past that. 13 is zap's; 1030 is 0x406, ten doublings and two
 # additions, exactly twelve, so a count of its bits one too many calls.
