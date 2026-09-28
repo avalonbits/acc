@@ -63,7 +63,7 @@ void gen_settle(int sym)
  * the linker's to work out. The slot keeps the zero it was emitted with,
  * which is the addend, and the relocation names the symbol.
  *
- * Kept apart from the relocation table rather than in it, because out.c does
+ * Kept apart from the relocation table rather than in it, because image.c and reloc.c do
  * not know about symbols and should not have to. The object writer puts the
  * two together. */
 int gen_objects;                /* -c: compiling to an object */

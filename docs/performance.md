@@ -76,7 +76,7 @@ table has other collisions -- so the 0.79 above is not a comparison.
 | acc | 352,505 | 211,617 | - | 1.67 | 379,438 | 222,771 | - | 1.70 |
 | **mean** | | | | **2.03** | | | | **1.89** |
 
-agondev cannot build acc at `-O2`: clang writes assembly for gen.c that its
+agondev cannot build acc at `-O2`: clang writes assembly for the code generator that its
 own assembler refuses.
 
 `code` is the program's own objects: what each compiler made of its C.

@@ -12,7 +12,7 @@ WARN     = -Wall -Wextra -Wno-unused-parameter
 LEX_SRC  = src/names.c src/source.c src/macro.c src/directive.c src/lex.c
 SRC      = src/obj.c src/archive.c src/names.c src/source.c src/macro.c src/directive.c src/lex.c src/float.c src/sym.c src/insn.c src/vstack.c src/arith.c src/wide.c src/branch.c src/runtime.c src/finish.c src/relax.c src/func.c src/lvalue.c src/image.c src/reloc.c src/diag.c src/expr.c src/inline.c src/type.c src/init.c src/decl.c src/stmt.c src/link.c src/main.c \
            src/fmt.c
-HDR      = src/acc.h src/lex_int.h src/out_int.h src/obj_int.h src/gen_int.h src/parse_int.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
+HDR      = src/acc.h src/types.h src/diag.h src/names.h src/lex.h src/sym.h src/gen.h src/out.h src/obj.h src/lex_int.h src/out_int.h src/obj_int.h src/gen_int.h src/parse_int.h src/timing.h src/ctype.h src/rt_helpers.h src/version.h src/fmt.h
 
 # -fsigned-char because char is signed on the eZ80, so the host build should
 # read a source file the same way the target build does.

@@ -641,7 +641,7 @@ void symbol_value(int sym, NameRef name)
         /* What `p++` leaves is a value, and a value can be gone on with:
          * `f++->at` is the member of where f pointed, and the chain reads
          * left to right. Stopping here made that `expected ';', found '->'`,
-         * which acc's own gen.c says twice.
+         * which acc's own code generator says twice.
          *
          * Through subscript_value, which is what every other value with a
          * chain after it uses: the chain can end holding a place rather than

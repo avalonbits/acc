@@ -11,7 +11,7 @@
 #
 # The fix is not to make the buffer static: that moves it into the image's
 # bss, out of the heap, where on the stack it is in the room the stack keeps
-# anyway. Give it a function of its own instead (see copy_member in obj.c).
+# anyway. Give it a function of its own instead (see copy_member in archive.c).
 #
 # A frame may pass 128 only when it holds nothing but its buffer, or is on
 # the list below with the size it has now: the list only shrinks.
