@@ -144,6 +144,7 @@ test: all unit agon
 	@test/forget.sh
 	@test/linkheap.sh
 	@test/linkstream.sh
+	@test/linkfixups.sh
 	@test/manyargs.sh || [ $$? -eq 77 ]
 	@test/abandon.sh
 	@test/objmem.sh

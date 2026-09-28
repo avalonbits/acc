@@ -524,10 +524,10 @@ int main(int argc, char **argv)
         gen_finish();
 #ifdef ACC_TABLE_STATS
         {
-            int out_npatches(void);
+            int out_npatches(void), out_nadds(void);
 
-            fprintf(stderr, "fixups %d patches %d\n", gen_nfixups(),
-                    out_npatches());
+            fprintf(stderr, "fixups %d patches %d adds %d\n", gen_nfixups(),
+                    out_npatches(), out_nadds());
         }
 #endif
         obj_link_map_close();

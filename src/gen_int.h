@@ -57,15 +57,20 @@ typedef struct {
  * so the call is emitted with a hole and the hole is remembered. There are as
  * many of these as there are forward calls, which is nothing beside keeping
  * the whole program in memory to make two passes over it. */
+/*
+ * Six bytes each on the Agon, and a link of acc itself makes six thousand.
+ * Every call is to a function already declared -- one that is not is
+ * refused where it is called -- so there is nothing about the call to keep
+ * but where it is. At the end, a fixup whose slot has gone to the image's
+ * file becomes, in its own place, the addition the file is to get (OutAdd,
+ * which it is laid out as). */
 typedef struct {
     int fn;                 /* index, not a pointer: see sym.c */
     int at;
-    int line, col;          /* where the call was, for the diagnostic below:
-                             * the column only when that can be said, and
-                             * worked out then, since the file has moved on
-                             * by the time it is */
-    unsigned char declared; /* whether the call knew the function's type */
 } Fixup;
+
+typedef char fixup_is_an_add[sizeof(Fixup) == sizeof(OutAdd) ? 1 : -1];
+
 
 /* jp cc, nn -- the condition codes this file uses. */
 #define JP_ANY  0xc3
@@ -264,11 +269,34 @@ void rt_call(int which);
 void rt_emit_used(void);
 
 /* finish.c */
-extern Fixup *fixups;
-extern int nfixups, fixups_cap;
+/* Kept in blocks of FIXUP_BLOCK, and a list of the blocks, rather than in
+ * one array: a link of acc made six thousand, and an array doubling
+ * towards them wanted 74 KB in one piece when the Agon's heap had nothing
+ * that size left. A block is 1.5 KB, and finding one is a byte of the
+ * index; the rest of the index is the place in it. */
+#define FIXUP_BLOCK 256
+
+extern Fixup **fixup_blocks;
+extern int nfixups;
+
+/* The i-th, or null past the last block. Out of line, and asked only at
+ * the start of a block: finding one scales an index by entries that are
+ * not a power of two wide, which is a multiply, and a multiply is a call.
+ * Within a block, a walk steps a pointer (FIXUP_STEP). */
+Fixup *fixup_at(int i);
+
+/* The place of the i-th, the one before it being at `f`: the next in the
+ * block, or the start of the next block. `i` is read twice, so it is a
+ * variable and not `++n`: at a block's start that counted twice. */
+#define FIXUP_STEP(f, i)  ((unsigned char) (i) ? (f) + 1 : fixup_at(i))
 void fixup_add(int fn, int at);
-extern int *bss_fixups;
-extern int nbss_fixups, bss_fixups_cap;
+/* In blocks of 256, as the fixups are and for the same reason: a link of
+ * acc itself has seven thousand. */
+extern int **bss_blocks;
+extern int nbss_fixups;
+
+int *bss_fixup(int i);                  /* as fixup_at, and BSS_STEP */
+#define BSS_STEP(p, i)    ((unsigned char) (i) ? (p) + 1 : bss_fixup(i))
 int no_address(int sym);
 int exit_cell(int which);
 

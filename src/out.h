@@ -26,6 +26,19 @@ void out_resident(int at);          /* from `at` on, in memory again */
 int  out_slot_get(int off);         /* a slot in the file, for cut_out */
 void out_slot_put(int off, int value);
 void out_cut_prepare(void);         /* before the file's addresses move */
+
+/* An addition the image's file is to get: `value` added to the three bytes
+ * at `at`. gen_finish hands its fixups over as these, in the order of
+ * their slots, and the image applies them as it sweeps the file at the end
+ * rather than keeping a patch for each. */
+typedef struct {
+    int value, at;
+} OutAdd;
+void out_add_later(const OutAdd *(*add_at)(int k), int n);
+
+/* And one value added to each of the n slots `slot_at` names, in order:
+ * the bss's start, to the slots that hold an offset into it. */
+void out_add_base_later(int (*slot_at)(int k), int n, int value);
 void out_write_text(void *to);      /* the image, file and memory: a FILE */
 void out_forget(void);          /* a function's cut runs, given back */
 int  out_len(void);                 /* bytes written so far */
