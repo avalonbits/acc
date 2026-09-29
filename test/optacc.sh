@@ -191,5 +191,16 @@ sets "|| in a loop, jumped on"      0 \
 sets "&& as a value, set"           2 \
     'int f(int a, int b) { return a && b; }'
 
+# With OPTACC_REGS, OPTACC_NATIVE and OPTACC_IY, a loop's counter lives in
+# BC and the comparison and the step use it there: scf; sbc hl, bc against
+# the limit in IY, and inc bc -- where gen.h would copy BC out to HL first.
+native='void f(char *a, unsigned n) { unsigned i; for (i = 0; i < n; i++) a[i] = 0; }'
+regs() {
+    OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 emits "$@"
+}
+regs "$OPT" "a comparison with BC where it is"   37ed42  yes "$native"
+regs "$OPT" "a step of BC where it is"           360003  yes "$native"
+emits "$OPT" "neither, from the classic backend" 37ed42  no  "$native"
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -163,6 +163,15 @@ void gen_jump_to(int target)
     patch_to(jump_op(JP_ANY), target);
 }
 
+#ifdef OPT_ACC
+/* A jump on condition `op`, a jp's opcode, to somewhere already written:
+ * the branches opt-acc selects itself (src/ssa.c). */
+void gen_jump_cc_to(int op, int target)
+{
+    patch_to(jump_op(op), target);
+}
+#endif
+
 /* Pop the top and jump when it is true (`when_true`) or when it is false.
  *
  * Nothing below the top may be in a register: the code between this jump and

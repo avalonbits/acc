@@ -251,6 +251,9 @@ void jumps_rewind(int n);
 int jump_op(int op);
 void jumps_forget(int here);
 void patch_to_here(int hole);
+#ifdef OPT_ACC
+void gen_jump_cc_to(int op, int target);
+#endif
 extern int widen_from;
 void widen_loaded(Type to);
 int widen_undo(const Value *v);
