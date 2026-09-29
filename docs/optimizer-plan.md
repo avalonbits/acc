@@ -333,6 +333,34 @@ compilers, and the whole test suite through opt-acc.
      through pointers, calls and their arguments -- where a value in a
      register is copied out, and the weighting that picks between the
      two, which chooses the slower one in interp and lists.
+   - Then more of the code reaching the SSA form: calls compiled in place
+     (their parameters are locals, which become values), a struct read on
+     the way to a member, and a frame laid out again without the locals
+     that became values. In zap, 376 of 387 functions reach it, its two
+     hottest among them.
+   - What that showed: with gen.h making most of a function's code, the
+     function made from SSA runs slower than the first pass's in every
+     hot case in zap -- assemble_line 24.2M cycles against 21.2M,
+     run_lines 12.1M against 6.7M -- because each read gen.h makes of a
+     value in BC or DE copies it out with a push and a pop. The pick keeps
+     the first pass's code, so nothing is lost, but nothing more is won
+     this way. The rest of the milestone is a backend of opt-acc's own for
+     what reaches the SSA form, taken in slices, each kept per function
+     only where it is cheaper than the first pass's:
+     1. Leaf functions of ints, pointers and chars -- no calls, no long,
+        float or struct values: every instruction selected here, registers
+        over HL, DE, BC and IY with spills to (ix+d). Most of zap's small
+        hot functions are these, and sieve's loops.
+     2. Calls, with every register saved by the caller.
+     3. Struct members through a pointer in IY, (iy+d).
+     4. Byte arithmetic in A.
+     5. long and float, through the runtime's helpers.
+   - And what is learned on the way that fits the classic backend -- a
+     one-pass compiler under acc's compile-speed and heap budgets -- goes
+     back into acc, so the Agon gets it too. So far: a parameter loaded
+     once rather than at every read; a slot not read back just after it
+     is stored; the local in IY chosen by liveness; an unsigned char kept
+     in a register with its byte stepped and tested there.
 4. **Inlining, value reuse, hoisting, strength reduction, narrow values,
    ranges**, one at a time, each kept only if the corpora say so. Target:
    zap-basic about 1.10-1.15; the integer programs under 1.00.
