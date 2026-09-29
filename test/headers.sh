@@ -10,10 +10,12 @@
 # Every header acc has, in one file; and eleven an Agon program might
 # include, built in one step and run.
 #
-# And aed, if ~/code/aed is there (AED_SRC to point elsewhere): a real
+# And aed, from its checkout (AED, default ~/code/aed) at AED_REV: a real
 # program of 23 files, compiled a file at a time. AED_OVER is how many may
 # run out of memory: none. And zap's eleven files, from its checkout at
-# ZAP_REV, none of which may either.
+# ZAP_REV, none of which may either. Both at a fixed revision, as
+# test/size.sh takes zap: a checkout moves, and aed's split into
+# libraries after 1.3.1 left this reading half a program.
 #
 #   test/headers.sh [acc.bin]           # default bin/acc.bin
 set -u
@@ -22,7 +24,8 @@ cd "$(dirname "$0")/.."
 . test/emu.sh
 
 ACC=${1:-bin/acc.bin}
-AED_SRC=${AED_SRC:-$HOME/code/aed/src}
+AED=${AED:-$HOME/code/aed}
+AED_REV=${AED_REV:-v1.3.1}
 AED_OVER=0
 ZAP=${ZAP:-$HOME/code/zap}
 ZAP_REV=${ZAP_REV:-v1.1.0}
@@ -110,10 +113,10 @@ EOF
 printf 'echo FILE eleven\r\ntry acc eleven.c\r\ntry eleven\r\n' >> "$sd/autoexec.txt"
 
 naed=0
-if [ -d "$AED_SRC" ]; then
+if git -C "$AED" rev-parse -q --verify "$AED_REV^{commit}" >/dev/null 2>&1; then
     mkdir -p "$sd/aed"
-    cp "$AED_SRC"/*.c "$AED_SRC"/*.h "$sd/aed/"
-    for f in "$AED_SRC"/*.c; do
+    git -C "$AED" archive "$AED_REV" src | tar -x -C "$sd/aed" --strip-components=1
+    for f in "$sd"/aed/*.c; do
         b=$(basename "$f" .c)
         printf 'echo FILE aed/%s\r\ntry acc -c aed/%s.c -o aed/%s.o\r\n' \
             "$b" "$b" "$b" >> "$sd/autoexec.txt"
@@ -182,7 +185,7 @@ if [ "$naed" -gt 0 ]; then
     fi
     grep '^aed/' "$host/errors.txt" | sed 's/^/         /'
 else
-    echo "  [no aed at $AED_SRC: skipped]"
+    echo "  [no aed at $AED_REV in $AED: skipped]"
 fi
 
 if [ "$nzap" -gt 0 ]; then
