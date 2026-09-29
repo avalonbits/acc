@@ -8,7 +8,9 @@
 # - the local a loop uses most kept in IY, chosen by reading the body first
 #   (src/prescan.c), where acc needs it declared register;
 # - every function compiled a second time, from the log of the parser's
-#   calls (src/genlog.c), with the same code to come out.
+#   calls (src/genlog.c), with the same code to come out;
+# - with OPTACC_SSA, functions built as SSA from that log (src/ssa.c), and
+#   the others left to the classic backend with a reason.
 #
 # test/run.sh ACC=bin/opt-acc checks that what opt-acc writes runs; this
 # checks that it is what opt-acc is meant to write.
@@ -114,6 +116,30 @@ else
     printf '  FAIL %-50s failed another way: %s\n' "a broken replay" "$err"
     fail=$((fail + 1))
 fi
+
+# With OPTACC_SSA, a function is built as SSA and its code made from that
+# (src/ssa.c); one that uses what the builder does not handle yet is left to
+# the classic backend, and OPTACC_SSA_STATS says which and why.
+# ssa <name> <expected line> <source>
+ssa() {
+    local what=$1 want=$2 got
+
+    printf '%s\n' "$3" > "$tmp/c.c"
+    rm -f "$tmp/c.o"
+    got=$(OPTACC_SSA=1 OPTACC_SSA_STATS=1 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 \
+          | grep '^ssa ' | head -1)
+    if [ "$got" = "$want" ]; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-50s said "%s", not "%s"\n' "$what" "$got" "$want"
+        fail=$((fail + 1))
+    fi
+}
+ssa "a loop, as SSA"                "ssa f made" "$loop"
+ssa "&& and ?:, as SSA"             "ssa f made" \
+    'int f(int a, int b) { return a && b ? a : b; }'
+ssa "a runtime-sized array, left"   "ssa f an array whose length is known when it runs" \
+    'int f(int n) { char a[n]; a[0] = 1; return a[0]; }'
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

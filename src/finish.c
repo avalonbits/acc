@@ -1147,18 +1147,18 @@ void gen_startup(int ending, const char *program)
 /* What a function may add to here as it is compiled -- room for its static
  * locals, their names, fixups the link settles late -- as it stands, or put
  * back: see genlog.c, which compiles a function again. */
-void finish_state(int *st, int restore)
+void finish_state(int *saved, int restore)
 {
     if (restore) {
-        bss_len = st[0];
-        bss_align = st[1];
-        nbss_syms = st[2];
-        nlate = st[3];
+        bss_len = saved[0];
+        bss_align = saved[1];
+        nbss_syms = saved[2];
+        nlate = saved[3];
     } else {
-        st[0] = bss_len;
-        st[1] = bss_align;
-        st[2] = nbss_syms;
-        st[3] = nlate;
+        saved[0] = bss_len;
+        saved[1] = bss_align;
+        saved[2] = nbss_syms;
+        saved[3] = nlate;
     }
 }
 #endif
