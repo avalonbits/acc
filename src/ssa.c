@@ -2640,8 +2640,10 @@ static void plan_homes(void)
     for (at = 0; at != nroots; at++) {
         int root = order[at], homes = homes_wanted(), member, fits = 1;
 
-        if (web_gain[root] <= 0)
-            break;                      /* no better off in a register */
+        if (web_gain[root] <= 0 && !getenv("OPTACC_ANY_GAIN"))
+            break;                      /* no better off in a register --
+                                         * OPTACC_ANY_GAIN gives it one
+                                         * anyway, for the tests */
 
         for (member = root; member >= 0 && fits; member = web_next[member]) {
             int insn_at;
