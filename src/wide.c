@@ -42,6 +42,26 @@ static void copy_long(int to, int from, int n)
 {
     int i;
 
+#ifdef OPT_ACC
+    /* From the top down, a byte at a time, when the slots overlap and the
+     * copy moves up: from the bottom, the first bytes written would be the
+     * last still to read. An operator's answer is built at the lowest
+     * scratch its operands leave, which is that when a long three bytes
+     * above a spilled register moves down onto it -- as opt-acc's values
+     * in registers do, spilled around a call. acc has not been seen to:
+     * its registers are spilled for the values an expression holds, and
+     * none has been below an operator's answer that way. So it is here
+     * only, where it costs acc.bin nothing. */
+    if ((unsigned) (to - from - 1) < (unsigned) (n - 1)) {
+        for (i = n; i--; ) {
+            ld_a_ix(from + i);
+            ld_ix_a(to + i);
+        }
+
+        return;
+    }
+#endif
+
     if (!disp_fits(from) || !disp_fits(from + n - 1)
         || !disp_fits(to) || !disp_fits(to + n - 1)) {
         for (i = 0; i != n; i++) {               /* one of them is out of reach */
