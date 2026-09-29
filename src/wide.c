@@ -40,11 +40,23 @@ void lea_rr_ix(int reg, int disp)
  * 4.8% of a compile of the long benchmark. */
 static void copy_long(int to, int from, int n)
 {
-    int i;
+    int i, step = 1;
+
+    /* A byte at a time from the top down when the slots overlap and the
+     * copy moves up: from the bottom, the first bytes written were the
+     * last ones still to read. An operator's answer is built at the lowest
+     * scratch its operands leave, so a long three bytes above a spilled
+     * register moved down onto it. */
+    if (to > from && to < from + n) {
+        i = n - 1;
+        step = -1;
+    } else {
+        i = 0;
+    }
 
     if (!disp_fits(from) || !disp_fits(from + n - 1)
         || !disp_fits(to) || !disp_fits(to + n - 1)) {
-        for (i = 0; i != n; i++) {               /* one of them is out of reach */
+        for (; i >= 0 && i != n; i += step) {   /* one of them is out of reach */
             ld_a_ix(from + i);
             ld_ix_a(to + i);
         }
@@ -69,7 +81,7 @@ static void copy_long(int to, int from, int n)
 
         return;
     }
-    for (i = 0; i != n; i++) {
+    for (; i >= 0 && i != n; i += step) {
         out_byte3(0xdd, 0x7e, from + i);        /* ld a, (ix+d) */
         out_byte3(0xdd, 0x77, to + i);          /* ld (ix+d), a */
     }

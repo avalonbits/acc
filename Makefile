@@ -235,6 +235,7 @@ test: all unit agon
 	@OPTACC_SSA=1 ACC=$(BIN)/opt-acc-asan test/run.sh
 	@OPTACC_SSA=1 ACC=$(BIN)/opt-acc-asan test/floatrt.sh || [ $$? -eq 77 ]
 	@OPTACC_SSA=1 ACC=$(BIN)/opt-acc-asan test/printf.sh || [ $$? -eq 77 ]
+	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 ACC=$(BIN)/opt-acc-asan test/run.sh
 	@ACC=$(BIN)/acc-asan test/self.sh
 	@ACC=$(BIN)/acc-asan test/selfbuild.sh
 	@if [ -f $(BIN)/acc.bin ]; then test/target.sh || [ $$? -eq 77 ]; \

@@ -90,7 +90,13 @@ typedef struct {
     int  slot;                  /* its frame slot */
     int  def, last;             /* the instructions that make and last use it */
     int  used;                  /* read at all: by an instruction or a phi */
+    int  reg;                   /* with OPTACC_REGS: the register it lives
+                                 * in, or HOME_SLOT for its frame slot */
+    int  fwd;                   /* left on the classic stack for its one
+                                 * use, never kept anywhere */
 } SVal;
+
+#define HOME_SLOT (-1)
 
 typedef struct {
     int first;                  /* its first instruction */
@@ -169,6 +175,8 @@ static int new_val(Type type, int def)
     vals[nvals].def = def;
     vals[nvals].last = def;
     vals[nvals].used = 0;
+    vals[nvals].reg = HOME_SLOT;
+    vals[nvals].fwd = 0;
 
     return nvals++;
 }
@@ -1619,6 +1627,11 @@ static int plan_slots(void)
     for (val = 0; val != nvals; val++) {
         int size = type_bytes(vals[val].type, 0);
 
+        if (vals[val].fwd || vals[val].reg != HOME_SLOT) {
+            slot_of[val] = -1;          /* kept on the stack, or in a register */
+            continue;
+        }
+
         if (size < ACC_INT_SIZE)
             size = ACC_INT_SIZE;
         for (slot = 0; slot != nslots; slot++)
@@ -1655,7 +1668,8 @@ static void give_slots(void)
     for (slot = 0; slot != nslots; slot++)
         slot_at[slot] = gen_local(slot_size[slot]);
     for (val = 0; val != nvals; val++)
-        vals[val].slot = slot_at[slot_of[val]];
+        if (slot_of[val] >= 0)
+            vals[val].slot = slot_at[slot_of[val]];
     free(slot_at);
 }
 
@@ -1717,6 +1731,9 @@ typedef struct {
 static Trampoline *trampolines;
 static int         ntrampolines, trampolines_cap;
 
+static int  regs_on(void);
+static void edge_moves(int from, int to);
+
 /* The copies of the trampolines waiting, each then a jump on to its
  * block: made where the code before cannot fall into them. */
 static void emit_trampolines(void)
@@ -1727,7 +1744,10 @@ static void emit_trampolines(void)
         int to = trampolines[tramp].to;
 
         gen_label(trampolines[tramp].hole);
-        edge_copies(trampolines[tramp].from, to);
+        if (regs_on())
+            edge_moves(trampolines[tramp].from, to);
+        else
+            edge_copies(trampolines[tramp].from, to);
         if (block_now[to] >= 0)
             gen_jump_to(block_now[to]);
         else
@@ -1912,6 +1932,852 @@ static void emit(void)
     block_now = NULL;
 }
 
+/* ------------------------------------------------------------------ */
+/* values in registers                                                 */
+
+/* With OPTACC_REGS, code is made the same way -- each instruction a call
+ * of gen.h again -- but a value no longer goes through a frame slot on its
+ * way from the instruction that makes it to the ones that read it.
+ *
+ * - A value read once, by an instruction in its own block, in the order
+ *   the classic stack would have it, is left on that stack: the classic
+ *   backend sees the expression it saw the first time (find_forwarded).
+ * - Any other int-sized value lives in BC or DE for the whole of its
+ *   interval when linear scan finds one free, and in its frame slot when
+ *   not (plan_homes). HL stays the classic backend's own.
+ * - While a register holds a value, the value sits at the bottom of the
+ *   classic stack as that register -- a pin -- so that the classic backend
+ *   counts the register as taken: it moves the value, or spills it around
+ *   a call, as it would one of its own. Whenever nothing but pins is left
+ *   on the stack, each goes back to its register (pins_restore). */
+
+static int regs_on(void)
+{
+    return getenv("OPTACC_REGS") != NULL;
+}
+
+/* The instruction each value is the result of, or -1: a phi, a parameter,
+ * the answer of a ?: or of && and ||. */
+static int *def_at;
+
+/* Whether a value is narrower than an int and made by arithmetic: the
+ * classic backend leaves one of those in a register at its type but not cut
+ * to its width -- `c + 100` of a char is 200 there -- and cuts it where it
+ * stores it. The first pass stored it, to the local it was assigned to, and
+ * read it back; left on the stack it would be read uncut. A narrow value
+ * read from memory was widened as it was loaded. */
+static int narrow_unwidened(int val)
+{
+    int op = insns[def_at[val]].op;
+
+    return type_size(vals[val].type) < ACC_INT_SIZE
+           && op != GL_vpush_local && op != GL_vderef && op != GL_vmember
+           && op != GL_gen_call && op != GL_gen_call_indirect;
+}
+
+/* Which values are left on the classic stack: read once, in the block that
+ * makes them, and in stack order -- checked by walking each block with a
+ * stack of its own, and a value that is not where the classic stack would
+ * have it is taken out and the walk made again. */
+static void find_forwarded(void)
+{
+    int *uses = calloc((size_t) nvals + 1, sizeof *uses);
+    int *use_at = calloc((size_t) nvals + 1, sizeof *use_at);
+    int *sim = malloc(((size_t) nvals + 1) * sizeof *sim);
+    int val, at, operand, phi, pred, changed;
+
+    def_at = realloc(def_at, ((size_t) nvals + 1) * sizeof *def_at);
+    if (!uses || !use_at || !sim || !def_at)
+        acc_error("out of memory for the SSA form");
+    for (val = 0; val != nvals; val++)
+        def_at[val] = -1;
+    for (at = 0; at != ninsns; at++) {
+        if (insns[at].res >= 0)
+            def_at[insns[at].res] = at;
+        for (operand = 0; operand != insns[at].nin; operand++) {
+            val = insns[at].in[operand].val;
+            if (val >= 0) {
+                uses[val]++;
+                use_at[val] = at;
+            }
+        }
+    }
+    for (phi = 0; phi != nphis; phi++)
+        for (pred = 0; phis[phi].live && pred != preds[phis[phi].block].count;
+             pred++)
+            if (phis[phi].in[pred] >= 0)
+                uses[phis[phi].in[pred]] += 2;
+    for (val = 0; val != nvals; val++)
+        vals[val].fwd = def_at[val] >= 0 && uses[val] == 1
+                        && use_at[val] > def_at[val]
+                        && insns[use_at[val]].block == insns[def_at[val]].block
+                        && !narrow_unwidened(val);
+
+    do {
+        int blk;
+
+        changed = 0;
+        for (blk = 0; blk != nblocks && !changed; blk++) {
+            int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+            int nsim = 0;
+
+            for (at = blocks[blk].first; at != end && !changed; at++) {
+                const Ins *insn = &insns[at];
+                int want = 0, rank = 0;
+
+                for (operand = 0; operand != insn->nin; operand++) {
+                    val = insn->in[operand].val;
+                    if (val >= 0 && vals[val].fwd)
+                        want++;
+                }
+                for (operand = 0; operand != insn->nin; operand++) {
+                    val = insn->in[operand].val;
+                    if (val < 0 || !vals[val].fwd)
+                        continue;
+                    if (want > nsim || sim[nsim - want + rank] != val)
+                        changed = 1;
+                    rank++;
+                }
+                if (changed) {
+                    for (operand = 0; operand != insn->nin; operand++)
+                        if (insn->in[operand].val >= 0)
+                            vals[insn->in[operand].val].fwd = 0;
+                    break;
+                }
+                nsim -= want;
+                if (insn->res >= 0 && vals[insn->res].fwd)
+                    sim[nsim++] = insn->res;
+            }
+            if (!changed && nsim) {
+                while (nsim)
+                    vals[sim[--nsim]].fwd = 0;
+                changed = 1;
+            }
+        }
+    } while (changed);
+    free(uses);
+    free(use_at);
+    free(sim);
+}
+
+/* Whether a value can live in a register: a scalar an int or narrower,
+ * read nowhere as a bit-field. */
+static int reg_eligible(int val)
+{
+    Type type = vals[val].type;
+
+    if (vals[val].fwd || !vals[val].used || type == TY_VOID
+        || type_is_struct(type) || type_wide(type) || type_float(type)
+        || type_size(type) > ACC_INT_SIZE)
+        return 0;
+    if (def_at[val] >= 0 && insns[def_at[val]].rec->top.bits)
+        return 0;
+
+    return 1;
+}
+
+/* Whether `holder` is done with its register by the time `val` wants it:
+ * dead before, or read last by the instruction that makes `val` -- which
+ * reads it before it writes -- when that is not the last of its block, after
+ * which the edges may still read it. */
+static int done_by(int holder, int val)
+{
+    int at = vals[val].def, operand;
+
+    if (vals[holder].last < at)
+        return 1;
+    if (vals[holder].last != at || def_at[val] != at
+        || at == block_last[insns[at].block])
+        return 0;
+    for (operand = 0; operand != insns[at].nin; operand++)
+        if (insns[at].in[operand].val == holder)
+            return 1;
+
+    return 0;
+}
+
+static int by_start(const void *left, const void *right)
+{
+    int lval = *(const int *) left, rval = *(const int *) right;
+
+    if (vals[lval].def != vals[rval].def)
+        return vals[lval].def < vals[rval].def ? -1 : 1;
+
+    return lval < rval ? -1 : lval > rval;
+}
+
+#define NHOMES 2
+
+static const int home_regs[NHOMES] = { R_BC, R_DE };
+
+/* How many of them values may live in: OPTACC_HOMES, 1 or 2. Every one
+ * taken is one fewer for the classic backend's own work. */
+static int homes_wanted(void)
+{
+    const char *homes = getenv("OPTACC_HOMES");
+
+    return homes && *homes == '2' ? 2 : 1;
+}
+
+/* Linear scan over the intervals: each value a register that nothing else
+ * holds for all of its interval, or, when both are held, the one of the
+ * three that lasts longest goes to its frame slot. */
+static void plan_homes(void)
+{
+    int *order = malloc(((size_t) nvals + 1) * sizeof *order);
+    int holder[NHOMES], at, reg, bits_at, operand;
+
+    if (!order)
+        acc_error("out of memory for the SSA form");
+    for (reg = 0; reg != NHOMES; reg++)
+        holder[reg] = -1;
+    for (at = 0; at != nvals; at++) {
+        order[at] = at;
+        vals[at].reg = HOME_SLOT;
+    }
+
+    /* Read as a bit-field anywhere: in its slot, where the classic backend
+     * reads bit-fields from. */
+    for (bits_at = 0; bits_at != ninsns; bits_at++)
+        for (operand = 0; operand != insns[bits_at].nin; operand++)
+            if (insns[bits_at].in[operand].val >= 0
+                && insns[bits_at].in[operand].attr.bits)
+                vals[insns[bits_at].in[operand].val].reg = -2;
+
+    qsort(order, (size_t) nvals, sizeof *order, by_start);
+    for (at = 0; at != nvals; at++) {
+        int val = order[at], best = -1, homes = homes_wanted(), insn_at;
+
+        if (vals[val].reg == -2 || !reg_eligible(val)) {
+            vals[val].reg = HOME_SLOT;
+            continue;
+        }
+
+        /* A switch's tests load DE: a value across them is in BC. */
+        for (insn_at = vals[val].def; insn_at <= vals[val].last; insn_at++)
+            if (insns[insn_at].op == GL_gen_switch_case)
+                homes = 1;
+        for (reg = 0; reg != homes && best < 0; reg++)
+            if (holder[reg] < 0 || done_by(holder[reg], val))
+                best = reg;
+        if (best < 0) {
+            int longest = 0;
+
+            for (reg = 1; reg != homes; reg++)
+                if (vals[holder[reg]].last > vals[holder[longest]].last)
+                    longest = reg;
+            if (vals[holder[longest]].last <= vals[val].last)
+                continue;
+            vals[holder[longest]].reg = HOME_SLOT;
+            best = longest;
+        }
+        holder[best] = val;
+        vals[val].reg = home_regs[best];
+    }
+    free(order);
+}
+
+/* The pins: the bottom npins entries of the classic stack, and the value
+ * each is. */
+#define MAX_PINS 8
+
+static int pin_val[MAX_PINS], npins;
+
+static void stack_insert(int index, const Value *entry)
+{
+    if (vtop + 1 >= VSTACK_MAX) {
+        fail = "internal: the classic stack is full";
+        return;
+    }
+    memmove(&vstack[index + 1], &vstack[index],
+            (size_t) (vtop - index) * sizeof *vstack);
+    vstack[index] = *entry;
+    vtop++;
+    vsp++;
+}
+
+static Value stack_remove(int index)
+{
+    Value entry = vstack[index];
+
+    memmove(&vstack[index], &vstack[index + 1],
+            (size_t) (vtop - index - 1) * sizeof *vstack);
+    vtop--;
+    vsp--;
+
+    return entry;
+}
+
+static int pin_index(int val)
+{
+    int pin;
+
+    for (pin = 0; pin != npins; pin++)
+        if (pin_val[pin] == val)
+            return pin;
+
+    return -1;
+}
+
+/* The entry on top becomes the pin of `val`. */
+static void pin_top(int val)
+{
+    Value entry;
+
+    if (npins == MAX_PINS) {
+        fail = "internal: too many pins";
+        return;
+    }
+    entry = stack_remove(vtop - 1);
+    stack_insert(npins, &entry);
+    pin_val[npins++] = val;
+}
+
+/* A value in its register, pinned there. */
+static void pin_add(int val)
+{
+    Value entry;
+
+    memset(&entry, 0, sizeof entry);
+    entry.kind = VAL_REG;
+    entry.type = vals[val].type;
+    entry.val = vals[val].reg;
+    stack_insert(vtop, &entry);
+    pin_top(val);
+}
+
+static Value pin_take(int pin)
+{
+    int at;
+
+    for (at = pin; at + 1 < npins; at++)
+        pin_val[at] = pin_val[at + 1];
+    npins--;
+
+    return stack_remove(pin);
+}
+
+/* Each pin back in its register, wherever the classic backend moved it. */
+static void pins_restore(void)
+{
+    int tries, pin;
+
+    for (tries = 0; tries != 4; tries++) {
+        int moved = 0;
+
+        for (pin = 0; pin != npins; pin++) {
+            Value *entry = &vstack[pin];
+            int home = vals[pin_val[pin]].reg;
+
+            if (entry->kind == VAL_REG && entry->val == home)
+                continue;
+            force_into(entry, home);
+            moved = 1;
+        }
+        if (!moved)
+            return;
+    }
+    fail = "internal: a value would not go back to its register";
+}
+
+/* The pins let go of, with every value in its register: at the end of a
+ * block, where nothing else is left on the stack. */
+static void pins_clear(void)
+{
+    pins_restore();
+    if (vtop != npins)
+        fail = "internal: values left on the stack at the end of a block";
+    vtop = 0;
+    vsp = vstack;
+    npins = 0;
+}
+
+/* Whether every pin is in its register: after code that jumps, where one
+ * moved would be somewhere else on the path that jumped. */
+static void pins_check(void)
+{
+    int pin;
+
+    for (pin = 0; pin != npins; pin++)
+        if (vstack[pin].kind != VAL_REG || vstack[pin].val != vals[pin_val[pin]].reg)
+            fail = "a jump with a value out of its register";
+}
+
+/* Before instruction `at`: the pins of values dead by now let go of, and
+ * a value in a register that is not pinned yet -- one live into the
+ * block -- pinned. */
+static void pins_sync(int at)
+{
+    int pin, val;
+
+    for (pin = npins - 1; pin >= 0; pin--)
+        if (vals[pin_val[pin]].last < at)
+            (void) pin_take(pin);
+    for (val = 0; val != nvals && !fail; val++)
+        if (vals[val].reg != HOME_SLOT && vals[val].def <= at
+            && at <= vals[val].last && insns[at].res != val
+            && !(insns[at].op == I_SET && insns[at].target == val)
+            && pin_index(val) < 0)
+            pin_add(val);
+}
+
+/* An entry's attributes made those it had where the first pass read it:
+ * what the relabelling calls between did. */
+static void relabel_entry(Value *entry, const Value *attr)
+{
+    entry->type = attr->type;
+    entry->ext = attr->ext;
+    entry->quals = attr->quals;
+    entry->bits = attr->bits;
+}
+
+/* Operand `ent` of the instruction at `at`, made on top of the classic
+ * stack from where it lives: made again if a constant, read from its slot,
+ * or its register -- the pin itself when this is its last read, a copy of
+ * it otherwise. */
+static void reg_operand(const Ins *insn, int operand, int at)
+{
+    const Ent *ent = &insn->in[operand];
+    int val = ent->val, pin, later, last_read = 1;
+
+    if (val == S_CONST || vals[val].reg == HOME_SLOT) {
+        load(ent);
+        return;
+    }
+    pin = pin_index(val);
+    if (pin < 0) {
+        fail = "internal: a value not in its register";
+        return;
+    }
+    for (later = operand + 1; later != insn->nin; later++)
+        if (insn->in[later].val == val)
+            last_read = 0;
+    if (last_read && vals[val].last <= at) {
+        Value entry = pin_take(pin);
+
+        stack_insert(vtop, &entry);
+    } else if (vstack[pin].kind == VAL_REG) {
+        int to = reg_alloc();
+
+        if (vstack[pin].kind == VAL_REG) {
+            push_rr(vstack[pin].val);   /* not ex de, hl: that would move */
+            pop_rr(to);                 /* what the pin holds as well */
+            vpush(VAL_REG, vals[val].type, to);
+        } else {
+            vpush(vstack[pin].kind, vals[val].type, vstack[pin].val);
+        }
+    } else {
+        vpush(vstack[pin].kind, vals[val].type, vstack[pin].val);
+    }
+
+    /* As load() does for a slot's value. */
+    if (ent->attr.type != vals[val].type) {
+        if (type_pointer(ent->attr.type) && type_pointer(vals[val].type))
+            vset_type(ent->attr.type, ent->attr.ext);
+        else
+            vconvert(ent->attr.type);
+    }
+    vset_ext(ent->attr.ext);
+    vset_quals(ent->attr.quals);
+    if (ent->attr.bits)
+        vset_bits(ent->attr.bits);
+}
+
+/* An instruction's operands, in order, at the top of the classic stack:
+ * the ones left there by the instructions before are there already, and
+ * the rest are made and put in between them. */
+static void reg_operands(const Ins *insn, int at)
+{
+    int nfwd = 0, operand, base;
+
+    for (operand = 0; operand != insn->nin; operand++)
+        if (insn->in[operand].val >= 0 && vals[insn->in[operand].val].fwd)
+            nfwd++;
+    base = vtop - nfwd;
+    if (base < npins) {
+        fail = "internal: an operand left on the stack is not there";
+        return;
+    }
+    for (operand = 0; operand != insn->nin && !fail; operand++) {
+        const Ent *ent = &insn->in[operand];
+        int pins_before = npins;
+
+        if (ent->val >= 0 && vals[ent->val].fwd) {
+            relabel_entry(&vstack[base + operand], &ent->attr);
+            continue;
+        }
+        reg_operand(insn, operand, at);
+        base -= pins_before - npins;    /* a pin taken from below */
+        if (vtop - 1 != base + operand) {
+            Value entry = stack_remove(vtop - 1);
+
+            stack_insert(base + operand, &entry);
+        }
+    }
+}
+
+/* The value just made, on top of the classic stack, to where it lives: its
+ * register, whatever is there moved out, and pinned there; its slot; or
+ * left on the stack for the instruction that reads it. */
+static void settle_as(int val, int converted);
+
+static void settle(int val)
+{
+    settle_as(val, 0);
+}
+
+static void settle_as(int val, int converted)
+{
+    int pin;
+
+    if (vals[val].fwd)
+        return;
+    if (!vals[val].used) {
+        gen_discard();
+        return;
+    }
+    if (vals[val].reg == HOME_SLOT) {
+        vstore_local(vals[val].slot, vals[val].type);
+        vdrop();
+        return;
+    }
+    pin = pin_index(val);
+    if (pin >= 0)
+        (void) pin_take(pin);           /* the other arm of a ?: set it */
+
+    /* A narrow value as the classic backend makes it in a register has its
+     * type but not yet its width -- `w - 1` of an unsigned char is -1 there
+     * until a store to a byte cuts it. Kept in a register, it is cut now. */
+    if (!converted && type_size(vals[val].type) < ACC_INT_SIZE
+        && (vsp - 1)->kind == VAL_REG) {
+        (vsp - 1)->type = TY_INT;
+        vconvert(vals[val].type);
+    }
+    force_into(vsp - 1, vals[val].reg);
+    (vsp - 1)->type = vals[val].type;
+    pin_top(val);
+}
+
+/* The copies an edge makes into the phis of the block it goes to, with
+ * values in registers: every value the edge brings loaded and held first,
+ * and only then each put where its phi lives -- a register by force_into,
+ * which moves whatever is in the way, and a slot by a store. The values
+ * that go on into the block as they are stay pinned throughout. The stack
+ * is empty before and after. */
+static void edge_moves(int from, int to)
+{
+    int sources[MAX_LOCALS * 4], dests[MAX_LOCALS * 4], nmoves = 0;
+    int first = blocks[to].first, pred, phi, val, move;
+
+    for (val = 0; val != nvals && !fail; val++) {
+        int is_phi = 0;
+
+        if (vals[val].reg == HOME_SLOT || vals[val].def > first
+            || first > vals[val].last)
+            continue;
+        for (phi = 0; phi != nphis; phi++)
+            if (phis[phi].live && phis[phi].block == to && phis[phi].val == val)
+                is_phi = 1;
+        if (!is_phi)
+            pin_add(val);
+    }
+
+    for (pred = 0; pred != preds[to].count; pred++) {
+        if (preds[to].at[pred] != from)
+            continue;
+        for (phi = 0; phi != nphis && !fail; phi++) {
+            const Phi *join = &phis[phi];
+            int source, again = 0;
+
+            if (!join->live || join->block != to)
+                continue;
+            source = join->in[pred];
+            if (source < 0 || source == join->val
+                || nmoves == (int) (sizeof dests / sizeof dests[0]))
+                continue;
+            for (move = 0; move != nmoves; move++)
+                if (sources[move] == source)
+                    again = 1;
+            if (vals[source].reg == HOME_SLOT) {
+                vpush_local(vals[source].slot, vals[source].type);
+            } else if (!again && pin_index(source) < 0) {
+                vpush(VAL_REG, vals[source].type, vals[source].reg);
+            } else {
+                int held = pin_index(source), copy = reg_alloc();
+
+                if (held < 0) {
+                    /* Read by an edge before: in the register the first
+                     * read left it in, still on the stack. */
+                    for (move = 0; move != nmoves; move++)
+                        if (sources[move] == source)
+                            held = vtop - nmoves + move;
+                }
+                if (vstack[held].kind == VAL_REG) {
+                    push_rr(vstack[held].val);
+                    pop_rr(copy);
+                    vpush(VAL_REG, vals[source].type, copy);
+                } else {
+                    vpush(vstack[held].kind, vals[source].type,
+                          vstack[held].val);
+                }
+            }
+            (void) force_reg(vsp - 1);  /* held now, not read later */
+            sources[nmoves] = source;
+            dests[nmoves++] = join->val;
+        }
+        break;                          /* one edge's worth: the first */
+    }
+
+    /* The last first: each is on top when its turn comes. */
+    for (move = nmoves - 1; move >= 0 && !fail; move--) {
+        int dest = dests[move];
+
+        if (vals[dest].reg == HOME_SLOT) {
+            vstore_local(vals[dest].slot, vals[dest].type);
+            vdrop();
+        } else {
+            force_into(vsp - 1, vals[dest].reg);
+            (vsp - 1)->type = vals[dest].type;
+            pin_top(dest);
+        }
+    }
+    pins_clear();
+}
+
+/* The pins taken off the stack while a branch is made, and put back: the
+ * classic backend wants the condition alone there, and asks it to be to
+ * jump on a comparison's flags. With nothing else there it reaches for HL
+ * only, which no value lives in. */
+static Value hidden[MAX_PINS];
+
+static void pins_hide(void)
+{
+    Value cond = vstack[vtop - 1];
+
+    memcpy(hidden, vstack, (size_t) npins * sizeof *hidden);
+    vstack[0] = cond;
+    vtop = 1;
+    vsp = vstack + 1;
+}
+
+static void pins_unhide(void)
+{
+    if (vtop != 0) {
+        fail = "internal: a branch left values on the stack";
+        return;
+    }
+    memcpy(vstack, hidden, (size_t) npins * sizeof *hidden);
+    vtop = npins;
+    vsp = vstack + npins;
+}
+
+static void emit_branch_regs(const Ins *insn, int blk, int at)
+{
+    int target = insn->target, invert;
+
+    reg_operands(insn, at);
+    if (target < 0) {
+        vdrop();
+        return;
+    }
+
+    /* Turned over while the pins can still be seen: the truth turned over
+     * is `== 0`, and vnot is ~, not !. */
+    if (type_wide(vtype()))
+        vtruth(TK_NE);
+    invert = has_phis(target) || block_now[target] < 0 ? insn->sense
+                                                       : !insn->sense;
+    if (invert)
+        vtruth(TK_EQ);
+    pins_restore();
+    if (vtop != npins + 1) {
+        fail = "internal: values left under a branch";
+        return;
+    }
+    pins_hide();
+    if (has_phis(target)) {
+        GROW(trampolines, ntrampolines, trampolines_cap);
+        trampolines[ntrampolines].hole = gen_jump_if_false();
+        trampolines[ntrampolines].from = blk;
+        trampolines[ntrampolines].to = target;
+        ntrampolines++;
+    } else if (block_now[target] >= 0) {
+        gen_jump_if_true_to(block_now[target]);
+    } else {
+        jump_forward(gen_jump_if_false(), target);
+    }
+    pins_unhide();
+    pins_check();
+}
+
+static void emit_insn_regs(const Ins *insn, int blk, int at)
+{
+    pins_sync(at);
+    switch (insn->op) {
+    case I_FRAME:
+        break;
+    case GL_vdrop: {
+        int operand;
+
+        /* What was dropped, if it was left on the stack for this. */
+        for (operand = 0; operand != insn->nin; operand++)
+            if (insn->in[operand].val >= 0 && vals[insn->in[operand].val].fwd)
+                vdrop();
+        break;
+    }
+    case GL_gen_stmt_end:
+        /* Not while a value waits on the stack across it: the scratch it
+         * frees may be where the classic backend put that value. */
+        if (vtop == npins) {
+            pins_restore();
+            call(insn);
+        }
+        break;
+    case I_SET:
+        reg_operands(insn, at);
+        if (insn->target >= 0) {
+            vconvert(vals[insn->target].type);
+            settle_as(insn->target, 1);
+        } else {
+            vdrop();
+        }
+        break;
+    case I_CONV:
+        reg_operands(insn, at);
+        if (val_pending((vsp - 1)->kind)
+            && type_size(insn->local_type) < ACC_INT_SIZE)
+            force_reg(vsp - 1);
+        vconvert(insn->local_type);
+        settle_as(insn->res, 1);
+        break;
+    case I_STEP:
+        reg_operands(insn, at);
+        vpush_const(1, TY_INT);
+        vapply((unsigned char) insn->step_op, type_narrow(insn->local_type));
+        vconvert(insn->local_type);
+        settle_as(insn->res, 1);
+        break;
+    case I_JMP:
+        pins_clear();
+        if (insn->target < 0)
+            break;                      /* never landed: nothing jumps */
+        edge_moves(blk, insn->target);
+        if (block_now[insn->target] >= 0)
+            gen_jump_to(block_now[insn->target]);
+        else if (insn->target != blk + 1 || block_last[blk] != at)
+            jump_forward(gen_jump(), insn->target);
+        break;
+    case I_BR:
+        emit_branch_regs(insn, blk, at);
+        break;
+    case GL_gen_switch_load:
+        pins_restore();
+        gen_switch_load((int) insn->rec->arg[0], (Type) insn->rec->arg[1]);
+        pins_check();
+        break;
+    case GL_gen_switch_case:
+        pins_restore();
+        gen_switch_case(insn->rec->arg[0], (uint32_t) insn->rec->arg[1],
+                        (Type) insn->rec->arg[2], block_now[insn->target],
+                        (int) insn->rec->arg[4]);
+        pins_check();
+        break;
+    case GL_gen_return:
+        /* Nothing is kept past a return, and gen_return counts what is
+         * on the stack. */
+        reg_operands(insn, at);
+        while (npins)
+            (void) pin_take(npins - 1);
+        call(insn);
+        break;
+    default:
+        reg_operands(insn, at);
+        call(insn);
+        if (insn->res >= 0)
+            settle(insn->res);
+        else if (pushes(insn->op))
+            vdrop();                    /* a void, or a constant made again */
+        break;
+    }
+    if (vtop == npins && !fail)
+        pins_restore();
+}
+
+static void emit_regs(void)
+{
+    int at, blk, local;
+
+    block_now = malloc((size_t) nblocks * sizeof *block_now);
+    if (!block_now)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != nblocks; at++)
+        block_now[at] = -1;
+    npending = 0;
+    nmoved = 0;
+    ntrampolines = 0;
+    npins = 0;
+
+    call(&insns[0]);
+    for (at = 1; at != ninsns; at++)
+        if (insns[at].op == I_FRAME && !frame_of_value(&insns[at])) {
+            Ins frame_call = insns[at];
+
+            frame_call.op = frame_call.rec->op;
+            call(&frame_call);
+        }
+    give_slots();
+
+    /* Each parameter that is values now, from its slot into its first
+     * value's register or slot. */
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].ok && locals[local].is_param) {
+            int val = locals[local].entry_val;
+
+            vpush_local(locals[local].offset, locals[local].type);
+            if (vals[val].reg == HOME_SLOT) {
+                vstore_local(vals[val].slot, vals[val].type);
+                vdrop();
+            } else {
+                force_into(vsp - 1, vals[val].reg);
+                (vsp - 1)->type = vals[val].type;
+                pin_top(val);
+            }
+        }
+    pins_clear();
+
+    for (blk = 0; blk != nblocks && !fail; blk++) {
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+        int falls = 1;
+
+        if (blk)
+            emit_block_start(blk);
+        for (at = blocks[blk].first; at != end && !fail; at++) {
+            if (at == 0)
+                continue;               /* the prologue, made above */
+            emit_insn_regs(&insns[at], blk, at);
+            if (at == end - 1 && (insns[at].op == I_JMP
+                                  || insns[at].op == GL_gen_return))
+                falls = 0;
+        }
+        if (fail)
+            break;
+        pins_clear();
+        if (falls && blk + 1 < nblocks)
+            edge_moves(blk, blk + 1);
+        if (!falls)
+            emit_trampolines();
+    }
+
+    if (ntrampolines && !fail) {
+        int over = gen_jump();
+
+        emit_trampolines();
+        gen_label(over);
+    }
+    free(block_now);
+    block_now = NULL;
+}
+
 /* OPTACC_SSA_DUMP: the form, an instruction a line, before code is made
  * from it. */
 static void dump(void)
@@ -1954,7 +2820,10 @@ static void dump(void)
                 fprintf(stderr, " void");
         }
         if (insn->res >= 0)
-            fprintf(stderr, " -> v%d", insn->res);
+            fprintf(stderr, " -> v%d%s", insn->res,
+                    !regs_on() ? "" : vals[insn->res].fwd ? " (stack)"
+                    : vals[insn->res].reg == R_BC ? " (bc)"
+                    : vals[insn->res].reg == R_DE ? " (de)" : "");
         if (insn->op == I_BR)
             fprintf(stderr, " when %d to b%d", insn->sense, insn->target);
         else if (insn->op == I_JMP)
@@ -2021,6 +2890,10 @@ int ssa_generate(const char **why)
     to_values();
     if (!fail) {
         live_ranges();
+        if (regs_on()) {
+            find_forwarded();
+            plan_homes();
+        }
         if (getenv("OPTACC_SSA_DUMP"))
             dump();
     }
@@ -2029,7 +2902,10 @@ int ssa_generate(const char **why)
         forget();
         return 0;
     }
-    emit();
+    if (regs_on())
+        emit_regs();
+    else
+        emit();
     forget();
     if (fail) {
         *why = fail;
