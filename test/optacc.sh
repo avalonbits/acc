@@ -167,5 +167,29 @@ phis "a local whose address is taken, none" no \
 ssa "a long where paths join, left" "ssa f a long or a float where paths join" \
     'long f(long n) { long s = 0; while (n) s += n--; return s; }'
 
+# && and || in a condition jump where their answer would send the branch,
+# as the classic backend does, instead of setting a 1 or a 0 and testing it.
+# sets <name> <count> <source>: how many answers f's form sets
+sets() {
+    local what=$1 want=$2 got
+
+    printf '%s\n' "$3" > "$tmp/c.c"
+    rm -f "$tmp/c.o"
+    got=$(OPTACC_SSA=1 OPTACC_SSA_DUMP=1 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 \
+          | sed -n '/ssa of f:/,/ssa of /p' | grep -c ' set ')
+    if [ "$got" = "$want" ]; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-50s sets %s answers, not %s\n' "$what" "$got" "$want"
+        fail=$((fail + 1))
+    fi
+}
+sets "&& in an if, jumped on"       0 \
+    'int f(int a, int b) { if (a && b) return 1; return 2; }'
+sets "|| in a loop, jumped on"      0 \
+    'int f(int *p, int n) { while (n > 0 || *p) { n--; p++; } return n; }'
+sets "&& as a value, set"           2 \
+    'int f(int a, int b) { return a && b; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

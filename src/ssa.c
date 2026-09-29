@@ -83,6 +83,8 @@ typedef struct {
     int block;
     int step_op;                /* I_STEP: TK_PLUS or TK_MINUS */
     Type local_type;            /* I_CONV, I_STEP: the local's type */
+    unsigned char kills;        /* the operands this is the last read of, a
+                                 * bit each (find_clashes) */
 } Ins;
 
 typedef struct {
@@ -111,6 +113,12 @@ static Block *blocks;
 static int    nblocks, blocks_cap;
 
 static const char *fail;        /* why the function is left to the classic */
+
+static int frame_of_value(const Ins *insn);
+
+/* Webs of values that share one home: see coalesce. */
+static int  web_root(int val);
+static int *web_next;
 
 /* A hole the first pass returned, and the instruction whose edge it is; or,
  * with `hole` negative, a ?: whose answer is parked: -1 - its value, and in
@@ -651,6 +659,91 @@ static void keep_records(const GenRec *log, int count, int *keep)
     for (rec_at = 0; rec_at != count; rec_at++)
         if (log[rec_at].op == GL_gen_mark)
             keep[rec_at] = 0;
+}
+
+/* The answer of && or || -- a 1 or a 0 set on each path in, and read by a
+ * branch where the paths join -- is what a condition mostly is, and the
+ * classic backend jumps where the answer would send it instead of making
+ * it. So does this: each path that sets a constant answer jumps on to where
+ * the branch goes with that answer, and a branch that nothing reaches
+ * with an answer any more goes. Made again until nothing changes, for
+ * `a && b && c`, whose answers feed each other. */
+static int ignorable(const Ins *insn)
+{
+    return (insn->op == GL_vdrop && insn->nin == 0)
+           || insn->op == GL_gen_stmt_end;
+}
+
+static void thread_answers(void)
+{
+    int *uses = malloc(((size_t) nvals + 1) * sizeof *uses);
+    int changed = 1, at, operand;
+
+    if (!uses)
+        acc_error("out of memory for the SSA form");
+    while (changed) {
+        changed = 0;
+        memset(uses, 0, ((size_t) nvals + 1) * sizeof *uses);
+        for (at = 0; at != ninsns; at++)
+            for (operand = 0; operand != insns[at].nin; operand++)
+                if (insns[at].in[operand].val >= 0)
+                    uses[insns[at].in[operand].val]++;
+
+        for (at = 0; at != ninsns; at++) {
+            Ins *branch = &insns[at];
+            int join = branch->block, answer, first, set_at, left = 0;
+
+            if (branch->op != I_BR || branch->nin != 1 || branch->target < 0)
+                continue;
+            answer = branch->in[0].val;
+            if (answer < 0 || uses[answer] != 1 || join + 1 >= nblocks)
+                continue;
+            for (first = blocks[join].first; first != at; first++)
+                if (!ignorable(&insns[first]))
+                    break;
+            if (first != at)
+                continue;               /* the branch is not all the block does */
+
+            for (set_at = 0; set_at != ninsns; set_at++) {
+                Ins *set = &insns[set_at];
+                int where, truth;
+
+                if (set->op != I_SET || set->target != answer)
+                    continue;
+                if (set->in[0].val != S_CONST || set->in[0].attr.kind != VAL_CONST) {
+                    left++;
+                    continue;
+                }
+                truth = set->in[0].attr.val != 0;
+                where = truth == branch->sense ? branch->target : join + 1;
+                if (set_at + 1 < ninsns && insns[set_at + 1].block == set->block
+                    && insns[set_at + 1].op == I_JMP
+                    && insns[set_at + 1].target == join) {
+                    insns[set_at + 1].target = where;
+                    set->op = GL_vdrop;
+                    set->nin = 0;
+                    set->target = -1;
+                } else if (set->block + 1 == join
+                           && (set_at + 1 == ninsns
+                               || insns[set_at + 1].block != set->block)) {
+                    set->op = I_JMP;    /* it fell into the join */
+                    set->nin = 0;
+                    set->target = where;
+                } else {
+                    left++;
+                    continue;
+                }
+                changed = 1;
+            }
+            if (!left) {
+                branch->op = GL_vdrop;  /* nothing reaches it with an answer */
+                branch->nin = 0;
+                branch->target = -1;
+                changed = 1;
+            }
+        }
+    }
+    free(uses);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1377,12 +1470,10 @@ static void live_ranges(void)
         if (phis[phi_at].live)
             widen(phis[phi_at].val, blocks[phis[phi_at].block].first);
 
-    free(live_in);
-    free(live_out);
     free(block_gen);
     free(block_kill);
     free(phi_def);
-    live_in = live_out = block_gen = block_kill = phi_def = NULL;
+    block_gen = block_kill = phi_def = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1614,6 +1705,13 @@ static void keep(int val)
 static int *slot_of;            /* by value: which slot */
 static int *slot_size, nslots;
 
+/* A web whose slot is decided already, by its root: a parameter's own, or
+ * the local in IY (IY_SLOT, made in give_slots); 0 for none. */
+static int *fixed_slot;
+static int  iy_web = -1;        /* the web in IY, or -1 */
+
+#define IY_SLOT 1
+
 static int plan_slots(void)
 {
     int *free_at, val, slot, bytes = 0;
@@ -1624,18 +1722,29 @@ static int plan_slots(void)
     if (!slot_of || !slot_size || !free_at)
         acc_error("out of memory for the SSA form");
     nslots = 0;
+
+    /* A slot a web: each of its values in it, for the web's whole span. */
     for (val = 0; val != nvals; val++) {
-        int size = type_bytes(vals[val].type, 0);
+        int size = type_bytes(vals[val].type, 0), first, last, member;
 
-        if (vals[val].fwd || vals[val].reg != HOME_SLOT) {
-            slot_of[val] = -1;          /* kept on the stack, or in a register */
-            continue;
+        slot_of[val] = -1;
+        if (vals[val].fwd || vals[val].reg != HOME_SLOT || web_root(val) != val
+            || (fixed_slot && fixed_slot[val]))
+            continue;                   /* on the stack, in a register, in
+                                         * its root's slot, or where it is
+                                         * put already */
+        first = vals[val].def;
+        last = vals[val].last;
+        for (member = web_next[val]; member >= 0; member = web_next[member]) {
+            if (vals[member].def < first)
+                first = vals[member].def;
+            if (vals[member].last > last)
+                last = vals[member].last;
         }
-
         if (size < ACC_INT_SIZE)
             size = ACC_INT_SIZE;
         for (slot = 0; slot != nslots; slot++)
-            if (free_at[slot] < vals[val].def && slot_size[slot] == size)
+            if (free_at[slot] < first && slot_size[slot] == size)
                 break;
         if (slot == nslots) {
             slot_size[slot] = size;
@@ -1643,8 +1752,12 @@ static int plan_slots(void)
             nslots++;
         }
         slot_of[val] = slot;
-        free_at[slot] = vals[val].last;
+        free_at[slot] = last;
     }
+    for (val = 0; val != nvals; val++)
+        if (!vals[val].fwd && vals[val].reg == HOME_SLOT
+            && !(fixed_slot && fixed_slot[web_root(val)]))
+            slot_of[val] = slot_of[web_root(val)];
     free(free_at);
 
     /* The first pass's locals are all taken by now: what is left in reach
@@ -1671,6 +1784,19 @@ static void give_slots(void)
         if (slot_of[val] >= 0)
             vals[val].slot = slot_at[slot_of[val]];
     free(slot_at);
+
+    /* The web in IY: a slot of its own that IY stands for, as the local
+     * the first pass would have put there. */
+    if (iy_web >= 0) {
+        int at = gen_local(ACC_INT_SIZE);
+
+        gen_iy_take(at);
+        fixed_slot[iy_web] = at;
+    }
+    for (val = 0; fixed_slot && val != nvals; val++)
+        if (!vals[val].fwd && vals[val].reg == HOME_SLOT
+            && fixed_slot[web_root(val)])
+            vals[val].slot = fixed_slot[web_root(val)];
 }
 
 /* A block's live phis, which say whether an edge into it needs copies. */
@@ -1783,6 +1909,22 @@ static void emit_branch(const Ins *insn, int blk)
             vtruth(TK_EQ);
         jump_forward(gen_jump_if_false(), insn->target);
     }
+}
+
+/* Whether the first pass put a local in IY that stays in memory: then IY
+ * is that local's, and no web's. */
+static int iy_taken_already(void)
+{
+    int at;
+
+    for (at = 1; at != ninsns; at++)
+        if (insns[at].op == I_FRAME && !frame_of_value(&insns[at])
+            && (insns[at].rec->op == GL_gen_iy_claim
+                || insns[at].rec->op == GL_gen_iy_param
+                || insns[at].rec->op == GL_gen_iy_take))
+            return 1;
+
+    return 0;
 }
 
 /* Whether a frame call is about a local that is values now, and so is not
@@ -2076,36 +2218,6 @@ static int reg_eligible(int val)
     return 1;
 }
 
-/* Whether `holder` is done with its register by the time `val` wants it:
- * dead before, or read last by the instruction that makes `val` -- which
- * reads it before it writes -- when that is not the last of its block, after
- * which the edges may still read it. */
-static int done_by(int holder, int val)
-{
-    int at = vals[val].def, operand;
-
-    if (vals[holder].last < at)
-        return 1;
-    if (vals[holder].last != at || def_at[val] != at
-        || at == block_last[insns[at].block])
-        return 0;
-    for (operand = 0; operand != insns[at].nin; operand++)
-        if (insns[at].in[operand].val == holder)
-            return 1;
-
-    return 0;
-}
-
-static int by_start(const void *left, const void *right)
-{
-    int lval = *(const int *) left, rval = *(const int *) right;
-
-    if (vals[lval].def != vals[rval].def)
-        return vals[lval].def < vals[rval].def ? -1 : 1;
-
-    return lval < rval ? -1 : lval > rval;
-}
-
 #define NHOMES 2
 
 static const int home_regs[NHOMES] = { R_BC, R_DE };
@@ -2116,64 +2228,362 @@ static int homes_wanted(void)
 {
     const char *homes = getenv("OPTACC_HOMES");
 
-    return homes && *homes == '2' ? 2 : 1;
+    return homes && *homes == '2' ? 2 : homes && *homes == '0' ? 0 : 1;
 }
 
-/* Linear scan over the intervals: each value a register that nothing else
- * holds for all of its interval, or, when both are held, the one of the
- * three that lasts longest goes to its frame slot. */
+/* Which values are live at once, and so cannot share a home: a value
+ * clashes with every value live just after the instruction that makes it
+ * -- after, so that one read last there can give its home to the result --
+ * and the phis and parameters, made at the top of a block, with every value
+ * live there. Found walking each block back from what is live out of it,
+ * which also finds each operand that is the last read of its value. */
+static unsigned char *clash_bits, *live_top;
+static size_t clash_stride;
+
+static int clashes(int one, int two)
+{
+    return clash_bits[(size_t) one * clash_stride + (size_t) two / 8]
+           & (1 << (two % 8));
+}
+
+static void clash(int one, int two)
+{
+    if (one == two)
+        return;
+    clash_bits[(size_t) one * clash_stride + (size_t) two / 8]
+        |= (unsigned char) (1 << (two % 8));
+    clash_bits[(size_t) two * clash_stride + (size_t) one / 8]
+        |= (unsigned char) (1 << (one % 8));
+}
+
+/* Each value made at the top of `blk` clashes with what is live there and
+ * with the others made there. */
+static void clash_at_top(int blk, const unsigned char *live)
+{
+    int made[MAX_LOCALS * 4], nmade = 0, phi, local, val, at;
+
+    for (phi = 0; phi != nphis; phi++)
+        if (phis[phi].live && phis[phi].block == blk
+            && nmade != (int) (sizeof made / sizeof made[0]))
+            made[nmade++] = phis[phi].val;
+    for (local = 0; blk == 0 && local != nlocals; local++)
+        if (locals[local].ok && locals[local].is_param
+            && nmade != (int) (sizeof made / sizeof made[0]))
+            made[nmade++] = locals[local].entry_val;
+    for (at = 0; at != nmade; at++) {
+        for (val = 0; val != nvals; val++)
+            if (live[val])
+                clash(made[at], val);
+        for (val = 0; val != at; val++)
+            clash(made[at], made[val]);
+    }
+}
+
+static void find_clashes(void)
+{
+    unsigned char *live = malloc((size_t) nvals + 1);
+    int blk;
+
+    clash_stride = ((size_t) nvals + 7) / 8 + 1;
+    clash_bits = calloc((size_t) nvals * clash_stride + 1, 1);
+    live_top = calloc((size_t) nblocks * (size_t) nvals + 1, 1);
+    if (!live || !clash_bits || !live_top)
+        acc_error("out of memory for the SSA form");
+    for (blk = 0; blk != nblocks; blk++) {
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns, at;
+
+        memcpy(live, &LIVE_BIT(live_out, blk, 0), (size_t) nvals);
+        for (at = end - 1; at >= blocks[blk].first; at--) {
+            Ins *insn = &insns[at];
+            int made = insn->res >= 0 ? insn->res
+                       : insn->op == I_SET ? insn->target : -1, val, operand;
+
+            insn->kills = 0;
+            if (made >= 0) {
+                live[made] = 0;
+                for (val = 0; val != nvals; val++)
+                    if (live[val])
+                        clash(made, val);
+            }
+            for (operand = insn->nin - 1; operand >= 0; operand--) {
+                val = insn->in[operand].val;
+                if (val < 0 || live[val])
+                    continue;
+                insn->kills |= (unsigned char) (1 << operand);
+                live[val] = 1;
+            }
+        }
+        clash_at_top(blk, live);
+        memcpy(&LIVE_BIT(live_top, blk, 0), live, (size_t) nvals);
+    }
+    free(live);
+}
+
+/* Webs: a phi and the values that come into it joined, where their
+ * intervals allow, so that they have one home and the copies between them
+ * are no copies. A union-find, and each web's values in a list from its
+ * root through web_next. */
+static int *web_parent, *web_tail;
+static long *web_weight;
+
+static int web_root(int val)
+{
+    while (web_parent[val] != val)
+        val = web_parent[val] = web_parent[web_parent[val]];
+
+    return val;
+}
+
+static int webs_clash(int one, int two)
+{
+    int left, right;
+
+    for (left = one; left >= 0; left = web_next[left])
+        for (right = two; right >= 0; right = web_next[right])
+            if (clashes(left, right))
+                return 1;
+
+    return 0;
+}
+
+/* How deep in loops each block is: a jump to a block that dominates the
+ * one it is made from closes a loop, whose body is what reaches the jump
+ * without going through the block it goes to. */
+static int *loop_depth;
+
+static int dominates(int over, int blk)
+{
+    while (blk != over && idom[blk] >= 0 && idom[blk] != blk)
+        blk = idom[blk];
+
+    return blk == over;
+}
+
+static void find_loops(void)
+{
+    int *work = malloc(((size_t) nblocks + 1) * sizeof *work);
+    unsigned char *in_loop = malloc((size_t) nblocks + 1);
+    int blk, succ;
+
+    loop_depth = realloc(loop_depth, ((size_t) nblocks + 1) * sizeof *loop_depth);
+    if (!work || !in_loop || !loop_depth)
+        acc_error("out of memory for the SSA form");
+    for (blk = 0; blk != nblocks; blk++)
+        loop_depth[blk] = 0;
+    for (blk = 0; blk != nblocks; blk++) {
+        if (rpo_num[blk] < 0)
+            continue;
+        for (succ = 0; succ != succs[blk].count; succ++) {
+            int head = succs[blk].at[succ], nwork = 0, at;
+
+            if (rpo_num[head] < 0 || !dominates(head, blk))
+                continue;
+            memset(in_loop, 0, (size_t) nblocks);
+            in_loop[head] = 1;
+            if (!in_loop[blk]) {
+                in_loop[blk] = 1;
+                work[nwork++] = blk;
+            }
+            while (nwork) {
+                int body = work[--nwork], pred;
+
+                for (pred = 0; pred != preds[body].count; pred++) {
+                    int from = preds[body].at[pred];
+
+                    if (!in_loop[from] && rpo_num[from] >= 0) {
+                        in_loop[from] = 1;
+                        work[nwork++] = from;
+                    }
+                }
+            }
+            for (at = 0; at != nblocks; at++)
+                loop_depth[at] += in_loop[at];
+        }
+    }
+    free(work);
+    free(in_loop);
+}
+
+static void coalesce(void)
+{
+    size_t size = ((size_t) nvals + 1) * sizeof *web_parent;
+    int val, phi, pred, at, operand;
+
+    web_parent = realloc(web_parent, size);
+    web_next = realloc(web_next, size);
+    web_tail = realloc(web_tail, size);
+    web_weight = realloc(web_weight, ((size_t) nvals + 1) * sizeof *web_weight);
+    if (!web_parent || !web_next || !web_tail || !web_weight)
+        acc_error("out of memory for the SSA form");
+    for (val = 0; val != nvals; val++) {
+        web_parent[val] = val;
+        web_next[val] = -1;
+        web_tail[val] = val;
+        web_weight[val] = 0;
+    }
+    if (!regs_on())
+        return;
+
+    for (phi = 0; phi != nphis; phi++) {
+        const Phi *join = &phis[phi];
+
+        if (!join->live)
+            continue;
+        for (pred = 0; pred != preds[join->block].count; pred++) {
+            int source = join->in[pred], into, from;
+
+            if (source < 0 || vals[source].fwd
+                || vals[source].type != vals[join->val].type)
+                continue;
+            into = web_root(join->val);
+            from = web_root(source);
+            if (into == from || webs_clash(into, from))
+                continue;
+            web_parent[from] = into;
+            web_next[web_tail[into]] = from;
+            web_tail[into] = web_tail[from];
+        }
+    }
+
+    /* Each read, and each making, eight times over for each loop around
+     * it: what a register saves is paid where the value is used. */
+    find_loops();
+    for (at = 0; at != ninsns; at++) {
+        int depth = loop_depth[insns[at].block];
+        long weight = 1L << (3 * (depth > 5 ? 5 : depth));
+
+        for (operand = 0; operand != insns[at].nin; operand++)
+            if (insns[at].in[operand].val >= 0)
+                web_weight[web_root(insns[at].in[operand].val)] += weight;
+        if (insns[at].res >= 0)
+            web_weight[web_root(insns[at].res)] += weight;
+    }
+}
+
+static int by_weight(const void *left, const void *right)
+{
+    int lval = *(const int *) left, rval = *(const int *) right;
+
+    if (web_weight[lval] != web_weight[rval])
+        return web_weight[lval] > web_weight[rval] ? -1 : 1;
+
+    return lval < rval ? -1 : lval > rval;
+}
+
+static int iy_taken_already(void);
+
+/* Webs whose slots are decided before the rest: the heaviest web left in
+ * the frame that IY can hold goes in IY, if the first pass left IY free;
+ * and a web holding a parameter's first value keeps to the parameter's
+ * own slot, which nothing else reads now. */
+static void plan_fixed(const int *order, int nroots)
+{
+    int at, local;
+
+    fixed_slot = realloc(fixed_slot, ((size_t) nvals + 1) * sizeof *fixed_slot);
+    if (!fixed_slot)
+        acc_error("out of memory for the SSA form");
+    memset(fixed_slot, 0, ((size_t) nvals + 1) * sizeof *fixed_slot);
+    iy_web = -1;
+    for (at = 0; at != nroots && !iy_taken_already() && getenv("OPTACC_IY"); at++) {
+        int root = order[at], member, fits = 1;
+
+        for (member = root; member >= 0; member = web_next[member])
+            if (vals[member].fwd || vals[member].reg != HOME_SLOT
+                || !reg_eligible(member) || !gen_iy_can(vals[member].type))
+                fits = 0;
+
+        /* Nor a parameter out of (ix+d)'s reach: the classic backend
+         * reaches one through IY, which it cannot then load into IY. */
+        for (local = 0; local != nlocals; local++)
+            if (locals[local].ok && locals[local].is_param
+                && web_root(locals[local].entry_val) == root
+                && !disp_fits(locals[local].offset))
+                fits = 0;
+        if (!fits)
+            continue;
+        iy_web = root;
+        fixed_slot[root] = IY_SLOT;     /* made in give_slots */
+        break;
+    }
+    for (local = 0; local != nlocals; local++) {
+        int root;
+
+        if (!locals[local].ok || !locals[local].is_param)
+            continue;
+        root = web_root(locals[local].entry_val);
+        if (!fixed_slot[root] && vals[root].reg == HOME_SLOT && !vals[root].fwd)
+            fixed_slot[root] = locals[local].offset;
+    }
+}
+
+/* The webs, heaviest first, each given a register when every value in it
+ * can live in one and none of them clashes with a value the register was
+ * given already; the rest keep to their frame slots. */
 static void plan_homes(void)
 {
     int *order = malloc(((size_t) nvals + 1) * sizeof *order);
-    int holder[NHOMES], at, reg, bits_at, operand;
+    int *given[NHOMES], ngiven[NHOMES], nroots = 0, at, reg, operand;
 
+    for (reg = 0; reg != NHOMES; reg++) {
+        given[reg] = malloc(((size_t) nvals + 1) * sizeof *given[reg]);
+        ngiven[reg] = 0;
+        if (!given[reg])
+            acc_error("out of memory for the SSA form");
+    }
     if (!order)
         acc_error("out of memory for the SSA form");
-    for (reg = 0; reg != NHOMES; reg++)
-        holder[reg] = -1;
-    for (at = 0; at != nvals; at++) {
-        order[at] = at;
+    for (at = 0; at != nvals; at++)
         vals[at].reg = HOME_SLOT;
-    }
 
     /* Read as a bit-field anywhere: in its slot, where the classic backend
      * reads bit-fields from. */
-    for (bits_at = 0; bits_at != ninsns; bits_at++)
-        for (operand = 0; operand != insns[bits_at].nin; operand++)
-            if (insns[bits_at].in[operand].val >= 0
-                && insns[bits_at].in[operand].attr.bits)
-                vals[insns[bits_at].in[operand].val].reg = -2;
+    for (at = 0; at != ninsns; at++)
+        for (operand = 0; operand != insns[at].nin; operand++)
+            if (insns[at].in[operand].val >= 0 && insns[at].in[operand].attr.bits)
+                vals[insns[at].in[operand].val].reg = -2;
 
-    qsort(order, (size_t) nvals, sizeof *order, by_start);
-    for (at = 0; at != nvals; at++) {
-        int val = order[at], best = -1, homes = homes_wanted(), insn_at;
+    for (at = 0; at != nvals; at++)
+        if (web_root(at) == at)
+            order[nroots++] = at;
+    qsort(order, (size_t) nroots, sizeof *order, by_weight);
 
-        if (vals[val].reg == -2 || !reg_eligible(val)) {
-            vals[val].reg = HOME_SLOT;
-            continue;
+    for (at = 0; at != nroots; at++) {
+        int root = order[at], homes = homes_wanted(), member, fits = 1;
+
+        for (member = root; member >= 0 && fits; member = web_next[member]) {
+            int insn_at;
+
+            if (vals[member].reg == -2 || !reg_eligible(member))
+                fits = 0;
+
+            /* A switch's tests load DE: a value across them is in BC. */
+            for (insn_at = vals[member].def;
+                 fits && insn_at <= vals[member].last; insn_at++)
+                if (insns[insn_at].op == GL_gen_switch_case)
+                    homes = 1;
         }
+        for (reg = 0; reg != homes && fits; reg++) {
+            int clash = 0, other;
 
-        /* A switch's tests load DE: a value across them is in BC. */
-        for (insn_at = vals[val].def; insn_at <= vals[val].last; insn_at++)
-            if (insns[insn_at].op == GL_gen_switch_case)
-                homes = 1;
-        for (reg = 0; reg != homes && best < 0; reg++)
-            if (holder[reg] < 0 || done_by(holder[reg], val))
-                best = reg;
-        if (best < 0) {
-            int longest = 0;
-
-            for (reg = 1; reg != homes; reg++)
-                if (vals[holder[reg]].last > vals[holder[longest]].last)
-                    longest = reg;
-            if (vals[holder[longest]].last <= vals[val].last)
+            for (member = root; member >= 0 && !clash; member = web_next[member])
+                for (other = 0; other != ngiven[reg] && !clash; other++)
+                    clash = clashes(member, given[reg][other]);
+            if (clash)
                 continue;
-            vals[holder[longest]].reg = HOME_SLOT;
-            best = longest;
+            for (member = root; member >= 0; member = web_next[member]) {
+                vals[member].reg = home_regs[reg];
+                given[reg][ngiven[reg]++] = member;
+            }
+            fits = 0;                   /* placed */
         }
-        holder[best] = val;
-        vals[val].reg = home_regs[best];
     }
+    for (at = 0; at != nvals; at++)
+        if (vals[at].reg == -2)
+            vals[at].reg = HOME_SLOT;
+    plan_fixed(order, nroots);
+    for (reg = 0; reg != NHOMES; reg++)
+        free(given[reg]);
     free(order);
 }
 
@@ -2303,22 +2713,29 @@ static void pins_check(void)
             fail = "a jump with a value out of its register";
 }
 
-/* Before instruction `at`: the pins of values dead by now let go of, and
- * a value in a register that is not pinned yet -- one live into the
- * block -- pinned. */
-static void pins_sync(int at)
+/* At the top of a block: every value that lives in a register and is live
+ * there, pinned in it -- each edge into the block left it there. */
+static void pins_block_start(int blk)
 {
-    int pin, val;
+    int val;
 
-    for (pin = npins - 1; pin >= 0; pin--)
-        if (vals[pin_val[pin]].last < at)
-            (void) pin_take(pin);
     for (val = 0; val != nvals && !fail; val++)
-        if (vals[val].reg != HOME_SLOT && vals[val].def <= at
-            && at <= vals[val].last && insns[at].res != val
-            && !(insns[at].op == I_SET && insns[at].target == val)
-            && pin_index(val) < 0)
+        if (vals[val].reg != HOME_SLOT && LIVE_BIT(live_top, blk, val))
             pin_add(val);
+}
+
+/* After an instruction: the pins of the values it read last let go of,
+ * where it did not take them as its operands. */
+static void pins_release(const Ins *insn)
+{
+    int operand, pin;
+
+    for (operand = 0; operand != insn->nin; operand++)
+        if (insn->kills & (1 << operand) && insn->in[operand].val >= 0) {
+            pin = pin_index(insn->in[operand].val);
+            if (pin >= 0)
+                (void) pin_take(pin);
+        }
 }
 
 /* An entry's attributes made those it had where the first pass read it:
@@ -2338,7 +2755,7 @@ static void relabel_entry(Value *entry, const Value *attr)
 static void reg_operand(const Ins *insn, int operand, int at)
 {
     const Ent *ent = &insn->in[operand];
-    int val = ent->val, pin, later, last_read = 1;
+    int val = ent->val, pin, last_read = insn->kills & (1 << operand);
 
     if (val == S_CONST || vals[val].reg == HOME_SLOT) {
         load(ent);
@@ -2349,10 +2766,7 @@ static void reg_operand(const Ins *insn, int operand, int at)
         fail = "internal: a value not in its register";
         return;
     }
-    for (later = operand + 1; later != insn->nin; later++)
-        if (insn->in[later].val == val)
-            last_read = 0;
-    if (last_read && vals[val].last <= at) {
+    if (last_read) {
         Value entry = pin_take(pin);
 
         stack_insert(vtop, &entry);
@@ -2467,20 +2881,11 @@ static void settle_as(int val, int converted)
 static void edge_moves(int from, int to)
 {
     int sources[MAX_LOCALS * 4], dests[MAX_LOCALS * 4], nmoves = 0;
-    int first = blocks[to].first, pred, phi, val, move;
+    int pred, phi, val, move;
 
-    for (val = 0; val != nvals && !fail; val++) {
-        int is_phi = 0;
-
-        if (vals[val].reg == HOME_SLOT || vals[val].def > first
-            || first > vals[val].last)
-            continue;
-        for (phi = 0; phi != nphis; phi++)
-            if (phis[phi].live && phis[phi].block == to && phis[phi].val == val)
-                is_phi = 1;
-        if (!is_phi)
+    for (val = 0; val != nvals && !fail; val++)
+        if (vals[val].reg != HOME_SLOT && LIVE_BIT(live_in, to, val))
             pin_add(val);
-    }
 
     for (pred = 0; pred != preds[to].count; pred++) {
         if (preds[to].at[pred] != from)
@@ -2493,6 +2898,9 @@ static void edge_moves(int from, int to)
                 continue;
             source = join->in[pred];
             if (source < 0 || source == join->val
+                || (vals[source].reg == vals[join->val].reg
+                    && (vals[source].reg != HOME_SLOT
+                        || vals[source].slot == vals[join->val].slot))
                 || nmoves == (int) (sizeof dests / sizeof dests[0]))
                 continue;
             for (move = 0; move != nmoves; move++)
@@ -2612,7 +3020,6 @@ static void emit_branch_regs(const Ins *insn, int blk, int at)
 
 static void emit_insn_regs(const Ins *insn, int blk, int at)
 {
-    pins_sync(at);
     switch (insn->op) {
     case I_FRAME:
         break;
@@ -2699,6 +3106,7 @@ static void emit_insn_regs(const Ins *insn, int blk, int at)
             vdrop();                    /* a void, or a constant made again */
         break;
     }
+    pins_release(insn);
     if (vtop == npins && !fail)
         pins_restore();
 }
@@ -2733,6 +3141,9 @@ static void emit_regs(void)
         if (locals[local].ok && locals[local].is_param) {
             int val = locals[local].entry_val;
 
+            if (vals[val].reg == HOME_SLOT
+                && vals[val].slot == locals[local].offset)
+                continue;               /* its own slot: there already */
             vpush_local(locals[local].offset, locals[local].type);
             if (vals[val].reg == HOME_SLOT) {
                 vstore_local(vals[val].slot, vals[val].type);
@@ -2751,6 +3162,7 @@ static void emit_regs(void)
 
         if (blk)
             emit_block_start(blk);
+        pins_block_start(blk);
         for (at = blocks[blk].first; at != end && !fail; at++) {
             if (at == 0)
                 continue;               /* the prologue, made above */
@@ -2778,6 +3190,23 @@ static void emit_regs(void)
     block_now = NULL;
 }
 
+/* Where a value lives, for the dump: on the stack, in a register, or in
+ * its web's slot, and the web. */
+static const char *where(int val)
+{
+    static char text[40];
+
+    if (!regs_on())
+        return "";
+    if (vals[val].fwd)
+        return " (stack)";
+    snprintf(text, sizeof text, " (%s w%d)",
+             vals[val].reg == R_BC ? "bc" : vals[val].reg == R_DE ? "de" : "slot",
+             web_root(val));
+
+    return text;
+}
+
 /* OPTACC_SSA_DUMP: the form, an instruction a line, before code is made
  * from it. */
 static void dump(void)
@@ -2799,8 +3228,8 @@ static void dump(void)
             for (phi = 0; phi != nphis; phi++) {
                 if (phis[phi].block != block || !phis[phi].live)
                     continue;
-                fprintf(stderr, "      phi v%d of local %d:", phis[phi].val,
-                        locals[phis[phi].local].offset);
+                fprintf(stderr, "      phi v%d%s of local %d:", phis[phi].val,
+                        where(phis[phi].val), locals[phis[phi].local].offset);
                 for (pred = 0; pred != preds[block].count; pred++)
                     fprintf(stderr, " b%d:v%d", preds[block].at[pred],
                             phis[phi].in[pred]);
@@ -2820,10 +3249,7 @@ static void dump(void)
                 fprintf(stderr, " void");
         }
         if (insn->res >= 0)
-            fprintf(stderr, " -> v%d%s", insn->res,
-                    !regs_on() ? "" : vals[insn->res].fwd ? " (stack)"
-                    : vals[insn->res].reg == R_BC ? " (bc)"
-                    : vals[insn->res].reg == R_DE ? " (de)" : "");
+            fprintf(stderr, " -> v%d%s", insn->res, where(insn->res));
         if (insn->op == I_BR)
             fprintf(stderr, " when %d to b%d", insn->sense, insn->target);
         else if (insn->op == I_JMP)
@@ -2855,6 +3281,11 @@ static void forget(void)
     free(rpo_num);
     free(idom);
     free(repl);
+    free(live_in);
+    free(live_out);
+    free(live_top);
+    free(clash_bits);
+    live_in = live_out = live_top = clash_bits = NULL;
     succs = preds = dom_kids = NULL;
     block_last = rpo = rpo_num = idom = repl = NULL;
 }
@@ -2887,13 +3318,17 @@ int ssa_generate(const char **why)
         *why = fail;
         return 0;
     }
+    thread_answers();
     to_values();
     if (!fail) {
         live_ranges();
         if (regs_on()) {
             find_forwarded();
-            plan_homes();
+            find_clashes();
         }
+        coalesce();
+        if (regs_on())
+            plan_homes();
         if (getenv("OPTACC_SSA_DUMP"))
             dump();
     }
