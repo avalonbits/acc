@@ -35,15 +35,15 @@ How to write C that makes the most of these is in
 
 ### Integers
 
-[`vbinop()`](../src/arith.c#L449) folds any operator whose operands are both constants
-with [`const_fold()`](../src/arith.c#L195), and pushes the result; no code is emitted.
+[`vbinop()`](../src/arith.c#L453) folds any operator whose operands are both constants
+with [`const_fold()`](../src/arith.c#L197), and pushes the result; no code is emitted.
 Results wrap at 24 bits, as they would at run time, even on a host with a
 32-bit int. Signedness follows C: a shift takes it from its left operand,
 any other operator is unsigned if either side is. Division or remainder by
 zero, and shifts by a negative count or by 24 or more, are left for run
 time rather than given the host's answer.
 
-Comparisons ([`vcmp()`](../src/arith.c#L1228)), `-x` and `~x` fold the same way. An
+Comparisons ([`vcmp()`](../src/arith.c#L1263)), `-x` and `~x` fold the same way. An
 unsigned comparison of constants folds only when neither has its top bit
 set, which is enough for `sizeof x == 3` and keeps a comparison with a
 negative value honest.
@@ -56,10 +56,10 @@ fold in [`vconvert()`](../src/vstack.c#L218).
 ### Addresses
 
 The address of a file-scope variable is a constant: `VAL_ADDR` for one in
-the image, `VAL_BSS` for an offset into the bss. [`fold_addr()`](../src/arith.c#L342)
+the image, `VAL_BSS` for an offset into the bss. [`fold_addr()`](../src/arith.c#L344)
 lets address ± number stay an address of the same kind, and address −
 address of the same kind become a number, so `&a[3]`, `&s.f` and `p - q`
-over one array are constants. [`foldable()`](../src/arith.c#L383) refuses to fold a
+over one array are constants. [`foldable()`](../src/arith.c#L385) refuses to fold a
 comparison of an address whose value is not known yet against a number:
 the first bss variable is at offset 0, and `&first == 0` must not fold to
 true.
@@ -85,6 +85,7 @@ through the stack. `x + 0` and `x - 0` emit nothing.
 |---|---|---|
 | `x + 3`, `p++` (step ≤ 4) | `inc hl` ×3 | `ld bc,3; add hl,bc`, 5 bytes |
 | `x << 5` (count ≤ 8) | `add hl,hl` ×5 | a call to the shift helper |
+| `x >> 2` (count ≤ 8), `x / 4` | A filled from the top, then a call into `shr` or `sdiv` | the shift loop, the divide |
 | `x * 10` | shifts and adds, below | `call` to the multiply helper, 8 bytes with its setup |
 | `x & 0x7f` | `ld a,l; and 7fh; sbc hl,hl; ld l,a` | a call to the AND helper |
 | `x & 0x8000` | the low byte kept in IYL, top cleared | 6 bytes against 8 |
@@ -92,11 +93,26 @@ through the stack. `x + 0` and `x - 0` emit nothing.
 **Small steps.** A constant within ±4 (`STEP_MAX`) is added with `inc hl`
 or `dec hl`, one byte and one cycle each.
 
-**Left shifts** by a constant up to 8 are that many `add hl,hl`. There is
-no matching right shift: nothing shifts HL's top byte right.
+**Left shifts** by a constant up to 8 are that many `add hl,hl`. Nothing
+shifts HL's top byte right, so a right shift by 1 to 8 goes the other way
+([`shr_const()`](../src/insn.c#L370)): with A holding what fills from the top (`xor a`,
+or `push hl; add hl,hl; pop hl; sbc a,a` for the sign), the runtime's
+`acc_rt_shr`, entered 2(k - 1) bytes in, shifts A:HL left by 8 - k and
+keeps its top three bytes, which it reads back through the stack
+([`lib/rt/shrk.s`](../lib/rt/shrk.s)). The call's slot holds the offset and the
+link adds the routine's address to it. No count is loaded and nothing
+loops: `x >> 8` is 38 cycles where the loop was 253. A shift by 16 to 23
+is HL's top byte, shifted in A.
+
+**Divides and remainders by a power of two.** An unsigned divide by 2 to
+256, or by 2^16 to 2^23, is the right shift above. A signed divide by 2
+to 256 calls `acc_rt_sdiv` the same way ([`lib/rt/sdivk.s`](../lib/rt/sdivk.s)):
+the same shift, plus one for a negative value that had bits shifted out,
+since division rounds toward zero. `x / 4` is 59 cycles where the divide
+was 605. An unsigned remainder by a power of two is an AND with one less.
 
 **Multiplies** by a constant from 1 to 65,535 are shifts and adds,
-[`mul_const()`](../src/arith.c#L115): a power of two is only `add hl,hl`s; any other
+[`mul_const()`](../src/arith.c#L117): a power of two is only `add hl,hl`s; any other
 constant is `push de; push hl; pop de`, then for each lower bit an `add
 hl,hl` and, where the bit is set, an `add hl,de`, then `pop de`. It is
 used up to 12 steps (`MUL_MAX_STEPS`). zap's commonest multiply, by 13 --
@@ -120,7 +136,7 @@ byte at a time through A, touching only the bytes the constant changes:
 **Known-narrow values.** A register value whose upper bytes are known to be
 zero carries `VQ_BYTE` or `VQ_WORD`, read by `vwidth` in [`gen_int.h`](../src/gen_int.h): an
 unsigned narrow load, a byte dereference, a byte return, and the result of
-a narrow AND all set it. [`bitwise_narrow()`](../src/arith.c#L405) then does `&`, `|` and
+a narrow AND all set it. [`bitwise_narrow()`](../src/arith.c#L407) then does `&`, `|` and
 `^` of two register values a byte or two at a time in A. An AND is as
 narrow as its narrower side; OR and XOR need both.
 
@@ -158,7 +174,7 @@ load, where the add would be three instructions.
 
 **Locals.** `&local` is `lea rr,ix+d`. A slot past `(ix-128)` is reached
 through IY, `lea iy,ix+step` and if need be `lea iy,iy+step`
-([`far_base()`](../src/insn.c#L116)).
+([`far_base()`](../src/insn.c#L119)).
 
 ## 4. Byte arithmetic without promotion
 
@@ -169,13 +185,13 @@ and never widens.
 
 The parser sets `narrow_dest` to the width of what the value goes into --
 a byte local, a compound assignment, a store through a byte pointer -- and
-[`binary_rest()`](../src/expr.c#L1408) passes it to [`vapply()`](../src/arith.c#L1385) only when the
+[`binary_rest()`](../src/expr.c#L1408) passes it to [`vapply()`](../src/arith.c#L1420) only when the
 operator is one of those (`transparent_op`) and the expression ends at it
 (`expression_ends_here`). In `c = a + b > 3` the `+` is not narrowed,
 because its full value feeds the `>`.
 
-[`vnarrow_ready()`](../src/arith.c#L917) accepts byte operands that are constants, byte
-locals of the same type, or A itself; [`vbinop_narrow()`](../src/arith.c#L952) then emits
+[`vnarrow_ready()`](../src/arith.c#L952) accepts byte operands that are constants, byte
+locals of the same type, or A itself; [`vbinop_narrow()`](../src/arith.c#L987) then emits
 
 ```
 ld  a,(ix+b)
@@ -210,7 +226,7 @@ does not need it:
   (ix+d),a`. [`widen_again()`](../src/branch.c#L314) lets a cast to another byte type,
   `(unsigned char)*p`, redo only the widening that type needs.
 - **The conversion mark**, set when a store to a narrow local converts the
-  stored value back into the expression's result. [`gen_discard()`](../src/arith.c#L710)
+  stored value back into the expression's result. [`gen_discard()`](../src/arith.c#L745)
   takes it back when the statement's value is thrown away, so `c = x;`
   does not pay to re-widen `c`, and `i++;` loses its step back (section 8).
 - **Conversions that are nothing**: [`vconvert()`](../src/vstack.c#L218) emits no code for
@@ -221,7 +237,7 @@ does not need it:
 ## 6. Comparisons and branches
 
 A comparison makes 0 or 1 in HL, `ld hl,1; jp cc,L; ld hl,0; L:`, and
-leaves a mark ([`cmp_value()`](../src/arith.c#L1304)). Almost nothing wants that value:
+leaves a mark ([`cmp_value()`](../src/arith.c#L1339)). Almost nothing wants that value:
 [`jump_on_truth()`](../src/branch.c#L380) takes it back and emits one conditional jump on
 the flags ([`jump_on_flags()`](../src/branch.c#L193)). That is nineteen bytes a
 comparison, which in a real program is a fifth of its image.
@@ -232,23 +248,23 @@ comparison, which in a real program is a fifth of its image.
 jump on carry. A signed one needs the overflow flag too: three jumps and
 fourteen bytes where the carry is one jump. So:
 
-- [`cmp_is_unsigned()`](../src/arith.c#L298) uses the unsigned form when neither side can
+- [`cmp_is_unsigned()`](../src/arith.c#L300) uses the unsigned form when neither side can
   be negative;
-- [`signed_as_unsigned()`](../src/arith.c#L1166) otherwise adds `0x800000` to both sides,
+- [`signed_as_unsigned()`](../src/arith.c#L1201) otherwise adds `0x800000` to both sides,
   which maps signed order onto unsigned order. Against a constant the
   constant is adjusted at compile time, and `x > c` becomes `x >= c+1` so
   that `x` stays in HL.
 
-**Bytes against constants.** [`cmp_byte_const()`](../src/arith.c#L1099) compares a byte
+**Bytes against constants.** [`cmp_byte_const()`](../src/arith.c#L1134) compares a byte
 local, or a byte just read, with a constant in its range in A: `ld
 a,(ix+d); cp n`. `c > k` becomes `c >= k+1`; a signed byte has `xor 80h`
 applied to both sides first.
 
 **Tests against zero.** `x == 0` is `add hl,bc; or a; sbc hl,bc`
-([`hl_zero_test()`](../src/arith.c#L1157)), 4 bytes against 6 for loading a zero. A value
+([`hl_zero_test()`](../src/arith.c#L1192)), 4 bytes against 6 for loading a zero. A value
 known to be one or two bytes wide is tested with `ld a,l; or a` or `ld a,l;
 or h`. An AND with a mask leaves its flags for the branch
-([`flags_say_nonzero()`](../src/arith.c#L1024)), so `if (c & 0x8000)` is the `and` and a
+([`flags_say_nonzero()`](../src/arith.c#L1059)), so `if (c & 0x8000)` is the `and` and a
 `jp z`. A `long` or `long long` against zero ORs its bytes into A.
 
 **`&&` and `||`.** [`gen_logic_left()`](../src/branch.c#L575) produces a 0/1 value with a
@@ -292,7 +308,7 @@ scratch. Over 1,012 functions, the most locals any had was 84 bytes.
 `x++` on an int or pointer local, whose value is used, is "change, store,
 step back" -- `inc hl; ld (ix+d),hl; dec hl` -- rather than keeping a copy in a second
 register ([`vpostfix_local()`](../src/lvalue.c#L849)). When the value is not used, as in
-`x++;`, [`gen_discard()`](../src/arith.c#L710) removes the step back. `c++` on a byte runs
+`x++;`, [`gen_discard()`](../src/arith.c#L745) removes the step back. `c++` on a byte runs
 in A.
 
 ## 9. `long`, `long long` and `float`

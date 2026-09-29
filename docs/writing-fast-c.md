@@ -66,9 +66,11 @@ or without it.
 
 ## 2. Divide in the narrowest width the value fits
 
-`int` is 24 bits here, up to 8,388,607. Every divide is a call, even by
-a constant: `x / 4` calls the divide routine, and `x >> 2` the shift
-routine (section 5). An `int` divide works in registers. A `long` or
+`int` is 24 bits here, up to 8,388,607. A divide by a power of two up to
+256 is a shift (section 5): `x / 4` takes 59 cycles, and an unsigned
+`u / 4` 41. An unsigned `u % 8` is a mask, 6 cycles. Any other divide is
+a call to the divide routine, about 500 to 600 cycles for an `int`.
+An `int` divide works in registers. A `long` or
 `long long` one takes its operands through frame slots and does more work
 at every step, so the same division costs more the wider its type.
 
@@ -107,13 +109,16 @@ arithmetic in `int`.
 | shift | code |
 | --- | --- |
 | `x << n`, constant `n` up to 8 | `add hl,hl` n times |
+| `x >> n`, constant `n` from 1 to 8 | a call to a routine with no loop: 38 to 52 cycles |
 | `x >> n`, constant `n` from 16 to 23 | HL's top byte through the stack, 8 bytes, then a shift per bit past 16 |
 | a byte by a constant, into a byte | `sla a`, `srl a` or `sra a` n times |
-| any other `int` shift | a call to the shift helper, which loops |
+| any other `int` shift | a call to the shift helper, which loops: about 25 cycles a bit |
 
-`x >> 8` to take the middle byte of an int is a call. If `x` is a local
-or in memory, read the byte instead: `((unsigned char *)&x)[1]` is a
-`lea`, an `inc` and a load.
+A right shift by 1 to 8 is `xor a`, or four bytes that put the sign in A
+for a signed value, and a call: 5 or 8 bytes. `x >> 8` takes 38 cycles.
+If `x` is a local or in memory, reading the byte is cheaper still:
+`((unsigned char *)&x)[1]` is a `lea`, an `inc` and a load. Avoid shifts
+by 9 to 15, which still loop.
 
 ## 6. Multiplies and strides
 

@@ -603,23 +603,18 @@ void vbinop(int op)
      * how `f(a,b,c) + f(1,2,3)` lost an argument. */
     force_into(vsp - 2, R_HL);
 
-    /* A right shift cannot be done a bit at a time as a left one is, below
-     * -- nothing shifts the third byte of HL right -- but one by 16 to 23 is
-     * HL's top byte shifted by the rest and widened, and the top byte can be
-     * reached through the stack: see shr_hl_16. About what loading the count
-     * and calling take, and not the helper's loop of sixteen or more rotates
-     * through memory, which was a third of printing a float, for its
-     * `cur >> 16`. */
-    if (op == TK_SHR && val_number(rhs->kind)
-        && rhs->val >= 16 && rhs->val <= 23) {
-        result = shr_hl_16(rhs->val - 16, type_unsigned(type_promote(lhs->type)))
-                 ? TY_UINT : TY_INT;
-        vdrop();
-        vdrop();
-        vpush_reg(R_HL);
-        (vsp - 1)->type = result;
+    /* A right shift, divide or remainder by a constant that shr_const
+     * writes out, answering its type, or makes an AND. */
+    if (val_number(rhs->kind)
+        && (op == TK_SHR || tok_pair(op, TK_SLASH))) {
+        int how = shr_const(op, lhs, rhs);
 
-        return;
+        if (how == 1) {
+            op = TK_AMP;
+        } else if (how) {
+            result = (Type) how;
+            goto done;
+        }
     }
 
     /* A left shift by a constant of up to eight is add hl, hl a bit at a
@@ -721,6 +716,7 @@ void vbinop(int op)
         acc_error("the operator %s is not implemented yet", tok_spelling(op));
     }
 
+done:
     vdrop();
     vdrop();
     vpush_reg(R_HL);

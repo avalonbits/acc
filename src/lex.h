@@ -126,7 +126,8 @@ typedef char tok_pairs_are_adjacent[(TK_SHR == TK_SHL + 1
                                      && TK_LE == TK_GT + 1
                                      && TK_NE == TK_EQ + 1
                                      && TK_COMMA == TK_SEMI + 1
-                                     && TK_OROR == TK_ANDAND + 1) ? 1 : -1];
+                                     && TK_OROR == TK_ANDAND + 1
+                                     && TK_PERCENT == TK_SLASH + 1) ? 1 : -1];
 
 extern long     tok_val;    /* its value, when TK_INT */
 extern uint32_t tok_val_hi; /* and its high half, when a long long */

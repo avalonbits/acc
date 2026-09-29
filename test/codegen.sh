@@ -105,6 +105,34 @@ calls ">> 15"                         _acc_rt_shru yes \
 calls ">> a variable"                 _acc_rt_shrs yes \
     'int f(int x, int n) { return x >> n; }'
 
+# >> by 1 to 8, and / by 2 to 256, are the runtime's shr and sdiv,
+# a call with no count to load and no loop. An unsigned % by a power of two
+# is a mask, and an unsigned / by 2^16 to 2^23 the top byte's shift.
+calls ">> 2 signed"                   _acc_rt_shrs no \
+    'int f(int x) { return x >> 2; }'
+calls ">> 2 signed, shr"              _acc_rt_shr yes \
+    'int f(int x) { return x >> 2; }'
+calls ">> 8 unsigned"                 _acc_rt_shru no \
+    'unsigned f(unsigned x) { return x >> 8; }'
+calls ">> 9"                          _acc_rt_shru yes \
+    'unsigned f(unsigned x) { return x >> 9; }'
+calls "/ 4 signed"                    _acc_rt_divs no \
+    'int f(int x) { return x / 4; }'
+calls "/ 4 signed, sdiv"              _acc_rt_sdiv yes \
+    'int f(int x) { return x / 4; }'
+calls "/ 256 unsigned"                _acc_rt_divu no \
+    'unsigned f(unsigned x) { return x / 256; }'
+calls "/ 65536 unsigned"              _acc_rt_divu no \
+    'unsigned f(unsigned x) { return x / 65536; }'
+calls "/ 512 signed"                  _acc_rt_divs yes \
+    'int f(int x) { return x / 512; }'
+calls "/ 3"                           _acc_rt_divs yes \
+    'int f(int x) { return x / 3; }'
+calls "% 8 unsigned"                  _acc_rt_remu no \
+    'unsigned f(unsigned x) { return x % 8; }'
+calls "% 8 signed"                    _acc_rt_rems yes \
+    'int f(int x) { return x % 8; }'
+
 # * by a constant: doublings and additions, up to twelve of them, and the
 # helper past that. 13 is zap's; 1030 is 0x406, ten doublings and two
 # additions, exactly twelve, so a count of its bits one too many calls.
