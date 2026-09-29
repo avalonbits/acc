@@ -336,6 +336,80 @@ int shr_hl_16(int count, int is_unsigned)
     return is_unsigned;
 }
 
+/* One more than k where v, as 24 bits, is 2^k; 0 where it is not a power
+ * of two. The host's int is wider, and a constant that fills 24 bits is
+ * held there as a negative number, so its bits above 24 go. */
+static int pow2_rank(int v)
+{
+    unsigned u = (unsigned) v, m = 1;
+    int rank = 1;
+
+#ifndef AGONDEV
+    u &= 0xffffff;
+#endif
+    for (; rank != 25; m += m, rank++)
+        if (u == m)
+            return rank;
+
+    return 0;
+}
+
+/* HL >> c, HL / c or HL % c, for the constant c in `rhs`, done without
+ * the helper's loop where it can be. Answers the result's type if it was,
+ * 1 if the remainder is an AND with rhs, which it has made one less, and 0
+ * if neither. A shift is unsigned by its left operand, the others by
+ * either, each promoted.
+ *
+ * By 16 to 23 is HL's top byte (shr_hl_16), for a shift or an unsigned
+ * divide. By 1 to 8 is the runtime's shr, which shifts A:HL left by 8 - k
+ * and keeps the top three bytes, or for a signed divide its sdiv, which
+ * rounds toward zero as division does: a call and no count, where the
+ * helpers loop. A holds what fills from the top: xor a for zeros, and
+ * push hl; add hl, hl; pop hl; sbc a, a for the sign. An unsigned
+ * remainder by 2^k is the bits below it. */
+int shr_const(int op, const Value *lhs, Value *rhs)
+{
+    int v = rhs->val;
+    int is_unsigned = type_unsigned(type_promote(lhs->type));
+    unsigned k1 = (unsigned) v - 1;             /* k - 1 */
+    unsigned char which = RT_SHR;
+
+    /* A divide by 1, or by no power of two, is out of every range. */
+    if (op == TK_SLASH || op == TK_PERCENT) {
+        int rank = pow2_rank(v);
+
+        is_unsigned |= type_unsigned(type_promote(rhs->type));
+        k1 = (unsigned) rank - 2;
+        if (op == TK_PERCENT) {
+            if (!is_unsigned || !rank)
+                return 0;
+            rhs->val = v - 1;
+
+            return 1;
+        }
+        if (!is_unsigned)
+            which = RT_SDIV;
+    } else if (op != TK_SHR) {
+        return 0;
+    }
+    if (k1 - 15 < 8 && which == RT_SHR) {
+        shr_hl_16((int) k1 - 15, is_unsigned);
+    } else {
+        if (k1 >= 8)
+            return 0;
+        if (!is_unsigned)
+            out_word24(0xe129e5);
+        out_byte(is_unsigned ? 0xaf : 0x9f);
+
+        /* One routine each, entered 2(k - 1) bytes in: the slot holds
+         * that, and the link adds the routine's address to it. */
+        rt_call(which);
+        out_put[-ACC_INT_SIZE] = (unsigned char) (k1 + k1);
+    }
+
+    return is_unsigned ? TY_UINT : TY_INT;
+}
+
 /* The powers of two a constant multiplier can hold, lowest first. */
 const unsigned powers_of_two[16] = {
     0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80,
