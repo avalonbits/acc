@@ -2109,6 +2109,7 @@ static int         ntrampolines, trampolines_cap;
 static int  regs_on(void);
 static void edge_moves(int from, int to);
 static void leaf_edge(int from, int to);
+static int  falls_to(int blk, int target);
 static int  leaf_mode;          /* this function made by emit_leaf */
 static void costs(const int *block_start, int end);
 static int  blocks_from;        /* where the function made here begins */
@@ -2371,6 +2372,46 @@ static int narrow_unwidened(int val)
            && op != GL_gen_call && op != GL_gen_call_indirect;
 }
 
+/* Whether a value read from memory, and read lazily -- a local, or through
+ * a pointer, which the classic backend reads where the value is used --
+ * would wait on the classic stack across something that may write that
+ * memory: a call, or a store. `int z = y; b(&y); c(z, y);` read y for z
+ * after b had changed it. */
+static int read_then_written(int def, int use)
+{
+    int op = insns[def].op, at;
+
+    if (op != GL_vpush_local && op != GL_vderef && op != GL_vmember)
+        return 0;
+    for (at = def + 1; at < use; at++)
+        switch (insns[at].op) {
+        case GL_gen_call: case GL_gen_call_indirect: case GL_vstore_indirect:
+        case GL_vstore_local: case GL_vprefix_indirect:
+        case GL_vpostfix_indirect: case GL_vprefix_local:
+        case GL_vpostfix_local: case GL_gen_copy_to_array:
+        case GL_gen_zero_array:
+            return 1;
+        }
+
+    return 0;
+}
+
+/* With the code made here, whether a value is an argument of a call other
+ * than its last: the arguments are pushed last first, and a value left on
+ * the stack for one would be under the ones after it. */
+static int leaf_early_argument(int val, int use)
+{
+    int operand;
+
+    if (insns[use].op != GL_gen_call)
+        return 0;
+    for (operand = 0; operand + 1 < insns[use].nin; operand++)
+        if (insns[use].in[operand].val == val)
+            return 1;
+
+    return 0;
+}
+
 /* Which values are left on the classic stack: read once, in the block that
  * makes them, and in stack order -- checked by walking each block with a
  * stack of its own, and a value that is not where the classic stack would
@@ -2405,6 +2446,8 @@ static void find_forwarded(void)
                 uses[phis[phi].in[pred]] += 2;
     for (val = 0; val != nvals; val++)
         vals[val].fwd = def_at[val] >= 0 && uses[val] == 1
+                        && !(leaf_mode && leaf_early_argument(val, use_at[val]))
+                        && !read_then_written(def_at[val], use_at[val])
                         && use_at[val] > def_at[val]
                         && insns[use_at[val]].block == insns[def_at[val]].block
                         && !narrow_unwidened(val);
@@ -2800,8 +2843,10 @@ static void plan_fixed(const int *order, int nroots)
         for (member = root; member >= 0; member = web_next[member])
             if (vals[member].fwd || vals[member].reg != HOME_SLOT
                 || !reg_eligible(member) || !gen_iy_can(vals[member].type)
-                || type_size(vals[member].type) != ACC_INT_SIZE)
-                fits = 0;           /* a narrow one is widened at each read */
+                || type_size(vals[member].type) != ACC_INT_SIZE
+                || (leaf_mode && across_calls[member]))
+                fits = 0;           /* a narrow one is widened at each read,
+                                     * and a call does not keep IY */
 
         /* Nor a parameter out of (ix+d)'s reach: the classic backend
          * reaches one through IY, which it cannot then load into IY. */
@@ -2870,6 +2915,10 @@ static void plan_homes(void)
             int insn_at;
 
             if (vals[member].reg == -2 || !reg_eligible(member))
+                fits = 0;
+
+            /* The code made here saves no register around a call. */
+            if (leaf_mode && across_calls[member])
                 fits = 0;
 
             /* A switch's tests load DE: a value across them is in BC. */
@@ -3983,7 +4032,8 @@ static int leaf_operator(const Ins *insn, int arith)
         return 1;
     case TK_PLUS: case TK_MINUS:
         if (type_pointer(left) && type_pointer(right))
-            step = type_step(left, insn->in[0].attr.ext) == 1 ? 1 : 3;
+            step = type_step(left, insn->in[0].attr.ext) == 1 ? 1 : 0;
+                                        /* a difference wider is a divide */
         else if (type_pointer(left))
             step = type_step(left, insn->in[0].attr.ext);
         else if (type_pointer(right))
@@ -4009,6 +4059,33 @@ static int leaf_operator(const Ins *insn, int arith)
     }
 
     return leaf_why = "an operator the code here does not make", 0;
+}
+
+/* Whether a call is one the code here makes: to a function by name, not
+ * one of those gen_call makes in place of a call -- memcpy and the rest,
+ * exit -- nor setjmp or longjmp, with its parameters and its answer ints
+ * or narrower. */
+static int leaf_call_ok(const Ins *insn)
+{
+    static const char *const builtins[] = {
+        "memcpy", "memmove", "memset", "exit", "setjmp", "longjmp", NULL
+    };
+    const Sym *callee = sym_at((int) insn->rec->arg[0]);
+    int first = (int) insn->rec->arg[2], nparams = (int) insn->rec->arg[3];
+    int at;
+
+    for (at = 0; builtins[at]; at++)
+        if (!strcmp(name_text(callee->name), builtins[at]))
+            return leaf_why = "a call gen_call makes in place", 0;
+    if (callee->type != TY_VOID && callee->type != TY_BOOL
+        && !leaf_type(callee->type))
+        return leaf_why = "a call answering wider than an int", 0;
+    for (at = 0; at != nparams; at++)
+        if (!leaf_type(sym_param_type(first, at))
+            && sym_param_type(first, at) != TY_BOOL)
+            return leaf_why = "a call taking wider than an int", 0;
+
+    return 1;
 }
 
 /* Whether every instruction is one the code here makes. */
@@ -4041,6 +4118,10 @@ static int leaf_ok(void)
         case GL_vneg: case GL_vnot: case GL_vtruth: case GL_vconvert:
         case GL_vcast: case GL_vpush_bss: case GL_vpush_const:
         case GL_vpush_global_addr:
+            continue;
+        case GL_gen_call:
+            if (!leaf_call_ok(insn))
+                return 0;
             continue;
         case GL_vmember:
             if (insn->rec->top.bits || insn->res < 0
@@ -4186,8 +4267,10 @@ static int leaf_operands_in(const Ins *insn, int bc_too)
 /* The value `val`, made in HL, to where it lives -- or left on the stack. */
 static void leaf_result(int val)
 {
+    /* Held as what made it -- but not a value made in more than one
+     * place, the answer of ?: or a phi, which each makes differently. */
     if (val >= 0 && leaf_holds)
-        leaf_holds[val] = leaf_hl_type;
+        leaf_holds[val] = def_at[val] >= 0 ? leaf_hl_type : TY_VOID;
     leaf_hl_type = TY_VOID;
     if (val < 0 || !vals[val].used)
         return;
@@ -4300,9 +4383,57 @@ static void leaf_branch(int cc, const Ins *branch, int blk, int at)
 
 /* A comparison: flags and the condition that says it is true, from HL less
  * DE, both moved by 0x800000 when signed. */
+/* A value's byte into A, where it has one: a narrow value in BC or a slot,
+ * or in HL. Answers whether it could. */
+static int leaf_byte_to_a(const Ent *ent)
+{
+    int val = ent->val;
+
+    if (val < 0)
+        return 0;
+    if (vals[val].fwd) {
+        leaf_top_to_hl();
+        leaf_depth--;
+        leaf_top_in_hl = 0;
+        ld_a_l();
+    } else if (vals[val].reg == R_BC) {
+        out_byte(0x79);                         /* ld a, c */
+    } else if (vals[val].reg == HOME_SLOT && !(iy_web >= 0
+               && vals[val].slot == fixed_slot[iy_web])) {
+        ld_a_ix(vals[val].slot);
+    } else {
+        return 0;
+    }
+
+    return 1;
+}
+
 static int leaf_compare(const Ins *insn, int op)
 {
     int number;
+
+    /* A byte against a constant in its range: in A, a cp -- a signed char
+     * moved by 0x80 first, which makes the order an unsigned one. */
+    if (insn->in[0].val >= 0 && leaf_const(&insn->in[1], &number)
+        && type_size(leaf_held(&insn->in[0])) == 1
+        && !(insn->in[0].val >= 0 && !vals[insn->in[0].val].fwd
+             && iy_web >= 0 && vals[insn->in[0].val].slot == fixed_slot[iy_web]
+             && vals[insn->in[0].val].reg == HOME_SLOT)) {
+        Type held = leaf_held(&insn->in[0]);
+        int is_signed = !type_unsigned(held), low = is_signed ? -128 : 0;
+        int high = is_signed ? 127 : 255, bias = is_signed ? 0x80 : 0;
+        int want = op == TK_LE || op == TK_GT ? number + 1 : number;
+
+        if (number >= low && number <= high && want <= high
+            && leaf_byte_to_a(&insn->in[0])) {
+            if (bias)
+                out_byte2(0xee, bias);          /* xor n */
+            out_byte2(0xfe, (want + bias) & 0xff);     /* cp n */
+
+            return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
+                   ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
+        }
+    }
 
     /* Against 0 for equality: the byte in A where the value is one, the
      * pair tested where it is not -- add hl, bc and back, BC as it was. */
@@ -4347,6 +4478,20 @@ static int leaf_compare(const Ins *insn, int op)
         else
             or_a_a();
         sbc_hl_rr(R_BC);
+
+        return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
+               ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
+    }
+    if (is_signed && leaf_const(&insn->in[1], &number)) {
+        leaf_operand_hl(insn, 0);
+        ld_rr_imm(R_DE, 0x800000);
+        add_hl_rr(R_DE);
+        ld_rr_imm(R_DE, (number + 0x800000) & 0xffffff);
+        if (op == TK_LE || op == TK_GT)
+            out_byte(0x37);
+        else
+            or_a_a();
+        sbc_hl_rr(R_DE);
 
         return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
                ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
@@ -4660,6 +4805,55 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         }
         fail = "internal: an operator leaf_ok let through";
         return;
+    case GL_gen_call: {
+        const Sym *callee = sym_at((int) insn->rec->arg[0]);
+        int fn = (int) insn->rec->arg[0], first = (int) insn->rec->arg[2];
+        int nparams = (int) insn->rec->arg[3], arg;
+
+        /* The arguments pushed last first, each as its parameter's type,
+         * so the first is at the lowest address -- as agondev passes them.
+         * Only the last may be left on the stack, in HL. */
+        for (arg = insn->nin - 1; arg >= 0; arg--) {
+            const Ent *ent = &insn->in[arg];
+
+            if (ent->val >= 0 && vals[ent->val].fwd) {
+                leaf_top_to_hl();
+                leaf_depth--;
+                leaf_top_in_hl = 0;
+            } else {
+                leaf_load(ent, R_HL);
+            }
+            if (arg < nparams && !leaf_fits(leaf_held(ent), sym_param_type(first, arg)))
+                leaf_narrow(sym_param_type(first, arg));
+            push_rr(R_HL);
+        }
+        if (sym_flags(fn) & SYMF_DEFINED) {
+            want(fn);
+            out_reloc(out_here() + 1);
+            out_opcode24(0xcd, callee->val);            /* call nn */
+        } else {
+            out_opcode24(0xcd, 0);
+            fixup_add(fn, out_here() - ACC_INT_SIZE);
+        }
+        for (arg = 0; arg != insn->nin; arg++)
+            pop_rr(R_DE);
+
+        /* A byte's answer is in A, the rest in HL. */
+        if (callee->type != TY_VOID && type_size(callee->type) == 1) {
+            if (type_unsigned(callee->type)) {
+                or_a_a();
+                sbc_hl_hl();
+            } else {
+                ld_l_a();
+                out_byte2(0xcb, 0x05);          /* rlc l */
+                sbc_hl_hl();
+            }
+            ld_l_a();
+        }
+        leaf_hl_type = callee->type == TY_BOOL ? TY_UCHAR : callee->type;
+        leaf_result(insn->res);
+        return;
+    }
     case GL_gen_return:
         /* A constant answer goes to gen_return as the constant, which
          * knows it -- a return of one made before is a jump back to it --
@@ -4680,7 +4874,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         leaf_edge(blk, insn->target);
         if (block_now[insn->target] >= 0)
             gen_jump_to(block_now[insn->target]);
-        else if (insn->target != blk + 1 || block_last[blk] != at)
+        else if (!falls_to(blk, insn->target) || block_last[blk] != at)
             jump_forward(gen_jump(), insn->target);
         return;
     case I_BR:
@@ -4699,6 +4893,21 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         return;
     }
     fail = "internal: an instruction leaf_ok let through";
+}
+
+/* Whether `blk`'s end falls into `target`: it is the next block, or only
+ * blocks nothing reaches lie between, which are not made. */
+static int falls_to(int blk, int target)
+{
+    int between;
+
+    if (target <= blk)
+        return 0;
+    for (between = blk + 1; between != target; between++)
+        if (rpo_num[between] >= 0)
+            return 0;
+
+    return 1;
 }
 
 /* The copies an edge makes into its target's phis: every value the edge
@@ -4793,10 +5002,16 @@ static void emit_leaf(void)
                                     && vals[val].slot == locals[local].offset))
                 continue;
             if (vals[val].reg == R_BC) {
-                if (type_size(type) == ACC_INT_SIZE)
+                if (type_size(type) == ACC_INT_SIZE) {
                     ld_rr_ix(R_BC, locals[local].offset);
-                else
+                } else if (type_unsigned(type)) {
                     load_narrow_into(R_BC, locals[local].offset, type);
+                } else {
+                    load_narrow_into(R_HL, locals[local].offset, type);
+                    push_rr(R_HL);
+                    pop_rr(R_BC);
+                }
+                leaf_holds[val] = type;
             } else {
                 if (type_size(type) == ACC_INT_SIZE)
                     ld_rr_ix(R_HL, locals[local].offset);
@@ -4810,6 +5025,8 @@ static void emit_leaf(void)
         int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
         int falls = 1;
 
+        if (blk && rpo_num[blk] < 0)
+            continue;                   /* nothing reaches it */
         if (blk)
             emit_block_start(blk);
         else

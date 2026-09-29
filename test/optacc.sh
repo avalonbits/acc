@@ -270,8 +270,12 @@ leafs() {
     fi
 }
 leafs "a loop on bytes through a table, made here" yes "$byte"
-leafs "a function that calls, not"                no \
+leafs "a function that calls, made here too"      yes \
     'int g(int); int f(int a) { return g(a) + 1; }'
+leafs "one that calls memcpy, not"                 no \
+    'void *memcpy(void *, const void *, unsigned); void f(char *a, char *b) { memcpy(a, b, 4); }'
+OPTACC_LEAF=1 all "$OPT" "a char in BC compared in A"   79ee80fec1 yes \
+    'int f(char c) { return c >= 0x41 && c <= 0x5a; }'
 leafs "one that holds a long, not"                no \
     'long f(long a) { return a + 1; }'
 OPTACC_LEAF=1 all "$OPT" "and its counter stepped as a byte"   0d18 yes "$byte"
