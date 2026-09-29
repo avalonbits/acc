@@ -5,6 +5,7 @@
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
+#define ACC_FRONT       /* the parser: see gen.h */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -901,12 +902,11 @@ static void global_initializer(Type type, unsigned char *bytes)
      * much a constant here as `5L` is. What a global may not have is
      * anything that leaves code behind, which is what the out_here check
      * catches -- a call, a variable, an address that is not a symbol's. */
-    gen_pending_sym = SYM_NONE;
     init_address = init_bss = 0;
-    gen_data_context = 1;
+    gen_data_begin();
     expr();                     /* not comma_expr: in a braced list the
                                  * comma between values is a separator */
-    gen_data_context = 0;
+    gen_data_end();
 
     /* From here on nothing may be emitted: what the expression itself left
      * in the image is a string's bytes, which are a constant's and fine.
@@ -1007,7 +1007,7 @@ static void data_fn_at(int at)
     if (gen_pending_sym == SYM_NONE)
         return;
     gen_data_fixup(gen_pending_sym, at);
-    gen_pending_sym = SYM_NONE;
+    gen_pending_clear();
 }
 
 static void walk_fns_at(int at)
@@ -1063,7 +1063,7 @@ static void global_put(Type scalar, int offset, int value)
         global_initializer(scalar, init_bytes + offset);
     if (gen_pending_sym != SYM_NONE) {
         walk_fn_add(gen_pending_sym, offset);
-        gen_pending_sym = SYM_NONE;
+        gen_pending_clear();
     } else if (init_address) {
         walk_fn_add(SYM_NONE, offset);
         init_address = 0;

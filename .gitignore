@@ -14,6 +14,9 @@ old-acc/test/ref/
 # The compiler's identity, worked out at build time.
 src/acc_build.h
 
+# opt-acc's logging wrappers, written from gen.h by src/genlog.py.
+src/genlog_calls.h
+
 # Python's byte-compiled caches, from the test scripts' modules.
 __pycache__/
 

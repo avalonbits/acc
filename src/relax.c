@@ -86,6 +86,23 @@ void static_begin(int fn)
     static_fns[static_now].at = out_here();
 }
 
+#ifdef OPT_ACC
+/* The two lists a function adds to as it is compiled -- the calls it wants
+ * and, for a static one, where it went -- as they stand, or put back to
+ * how they stood: see genlog.c, which compiles a function again. */
+void relax_state(int *nwants_at, int *nstatics_at, int restore)
+{
+    if (restore) {
+        nwants = *nwants_at;
+        nstatic_fns = *nstatics_at;
+        static_now = -1;
+    } else {
+        *nwants_at = nwants;
+        *nstatics_at = nstatic_fns;
+    }
+}
+#endif
+
 void static_end(void)
 {
     if (static_now >= 0)

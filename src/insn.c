@@ -495,3 +495,24 @@ void store_narrow(int disp, Type type)
     ld_ix_l(disp);
     ld_ix_h(disp + 1);
 }
+
+#ifdef OPT_ACC
+/* This file's marks -- where a sequence just emitted ended, and the
+ * out_rewinds it was made at -- copied out, or back, for genlog.c, which
+ * compiles a function again from where it began and needs every mark as it
+ * stood then. Returns how many bytes they take. */
+size_t insn_marks(unsigned char *buf, int restore)
+{
+    size_t at = 0;
+
+    STATE_VAR(imm_hl_end);
+    STATE_VAR(imm_hl_epoch);
+    STATE_VAR(stored_at);
+    STATE_VAR(stored_disp);
+    STATE_VAR(stored_reg);
+    STATE_VAR(join_at);
+    STATE_VAR(stored_epoch);
+
+    return at;
+}
+#endif

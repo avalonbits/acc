@@ -864,6 +864,24 @@ int gen_pending_sym = SYM_NONE;
  * the slot written down. It costs a register load where a variable with an
  * address is a constant the value stack can carry about and fold into an
  * index, which is why it is only done for the ones that need it. */
+#ifdef OPT_ACC
+void gen_data_begin(void)
+{
+    gen_pending_sym = SYM_NONE;
+    gen_data_context = 1;
+}
+
+void gen_data_end(void)
+{
+    gen_data_context = 0;
+}
+
+void gen_pending_clear(void)
+{
+    gen_pending_sym = SYM_NONE;
+}
+#endif
+
 void vpush_global_addr(int sym)
 {
     /* In a global's initial value there is no code to put a hole in, so the
@@ -1239,3 +1257,21 @@ static void call_through(void)
     push_rr(R_HL);
     out_byte2(0xfd, 0xe9);                      /* jp (iy) */
 }
+
+#ifdef OPT_ACC
+/* This file's marks -- where a sequence just emitted ended, and the
+ * out_rewinds it was made at -- copied out, or back, for genlog.c, which
+ * compiles a function again from where it began and needs every mark as it
+ * stood then. Returns how many bytes they take. */
+size_t func_marks(unsigned char *buf, int restore)
+{
+    size_t at = 0;
+
+    STATE_VAR(return_chain);
+    STATE_VAR(return_epoch);
+    STATE_VAR(gen_data_context);
+    STATE_VAR(gen_pending_sym);
+
+    return at;
+}
+#endif

@@ -6,7 +6,9 @@
 #   add hl, sp; ld sp, hl, where acc calls acc_rt_frameset -- and cut to its
 #   first nine bytes when there is no frame;
 # - the local a loop uses most kept in IY, chosen by reading the body first
-#   (src/prescan.c), where acc needs it declared register.
+#   (src/prescan.c), where acc needs it declared register;
+# - every function compiled a second time, from the log of the parser's
+#   calls (src/genlog.c), with the same code to come out.
 #
 # test/run.sh ACC=bin/opt-acc checks that what opt-acc writes runs; this
 # checks that it is what opt-acc is meant to write.
@@ -90,6 +92,28 @@ lea_hl_iy=ed2300                    # lea hl, iy+0: a read of the IY local
 emits "$OPT" "a loop: opt-acc keeps a local in IY" "$lea_hl_iy" yes "$loop"
 emits "$ACC" "a loop: acc does not unasked"        "$lea_hl_iy" no  "$loop"
 emits "$ACC" "a loop: acc does when told register" "$lea_hl_iy" yes "$regloop"
+
+# Every function opt-acc compiles is replayed from its log and has to come
+# out the same (src/genlog.c). The check has to be able to fail: with one
+# record of the log left out of the replay, it does.
+printf '%s\n' "$loop" > "$tmp/c.c"
+rm -f "$tmp/c.o"                    # acc -c skips an object newer than its source
+if "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" >/dev/null 2>&1; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s the replay did not match\n' "a loop, replayed"
+    fail=$((fail + 1))
+fi
+rm -f "$tmp/c.o"
+if err=$(GENLOG_BREAK=3 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1); then
+    printf '  FAIL %-50s a record left out went unnoticed\n' "a broken replay"
+    fail=$((fail + 1))
+elif printf '%s' "$err" | grep -q 'internal: replaying'; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s failed another way: %s\n' "a broken replay" "$err"
+    fail=$((fail + 1))
+fi
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

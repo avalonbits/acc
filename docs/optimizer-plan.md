@@ -231,10 +231,27 @@ compilers, and the whole test suite through opt-acc.
    - Frameless leaves were left for SSA: a leaf that reads its parameters
      needs IX or a stack-relative read, and the functions with neither
      parameters nor a frame are too few to matter.
-1. **The log, replayed.** opt-acc records each function and generates it
-   by replaying the log into the classic backend. The output has to be
-   identical to acc's, byte for byte, over the whole test suite: the proof
-   that the log holds everything.
+1. **The log, replayed.** Done. opt-acc records each function and
+   generates it again by replaying the log into the classic backend, and
+   the result has to be the same code, byte for byte, with the same
+   relocations and fixups, or the compile stops with an error naming the
+   call where the two parted.
+   - [src/genlog.c](../src/genlog.c) is the log and the replay. Its
+     wrappers are written from gen.h by [src/genlog.py](../src/genlog.py),
+     and gen.h sends the parser's calls through them in opt-acc only.
+   - Bytes the parser writes itself, the data of a static local or of a
+     string, are caught as the gap between two calls and kept as raw bytes
+     with their relocations.
+   - To replay, the backend is wound back to where the function began:
+     the code and its fixups, the lists of calls and static functions, the
+     bss, and every file's marks with the rewind count they are checked
+     against. Two of the parser's writes to the backend's variables became
+     calls, `gen_data_begin` and `gen_pending_clear`, which in acc are the
+     same assignments as before.
+   - It holds over the case suite, all four conformance suites, libc, and
+     acc, zap and vi. Getting there found state the backend carries from
+     one function to the next: `join_at` survives a function's end, so a
+     fold can be refused because of the function before.
 2. **SSA and a plain backend.** Built from the log for int, pointer and
    byte values, with no optimisation yet and the classic body as the
    fallback. The measure is correctness: every case, the torture sweep and

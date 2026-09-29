@@ -9,6 +9,16 @@
 #ifndef ACC_GEN_H
 #define ACC_GEN_H
 
+/* In opt-acc, the parser's calls into the code generator go through
+ * genlog.c, which writes each one down as well as making it. The parser's
+ * files say they are the parser (ACC_FRONT); the code generator's do not,
+ * and call one another directly. */
+#if defined(OPT_ACC) && defined(ACC_FRONT)
+#define GENLOG_RENAME
+#include "genlog_calls.h"
+#undef GENLOG_RENAME
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -124,6 +134,7 @@ void    prescan_begin(void);
 void    prescan_param(NameRef name, int offset, int can);
 int     prescan_body(const char *at, NameRef *wants, int *param);
 void    prescan_claim(int offset, Type type, NameRef name);
+void    gen_iy_take(int offset);     /* vstack.c: the one it chose */
 #endif
 int  gen_iy_pick(int offset, Type type, int quals);  /* a parameter */
 void gen_iy_param(int offset);        /* and once the prologue is laid */
@@ -211,6 +222,19 @@ void gen_data_fixup(int fn, int at);  /* and one in a global's bytes */
 void gen_link_fixup(int fn, int at);  /* and one in a link's */
 extern int gen_data_context;          /* a global's initial value is being read */
 extern int gen_pending_sym;            /* whose address it needs, not yet known */
+
+/* The parser's changes to those two. In opt-acc they are calls, which
+ * genlog.c logs, since what vpush_global_addr does depends on them; in acc
+ * they are the assignments themselves. */
+#ifdef OPT_ACC
+void gen_data_begin(void);            /* func.c */
+void gen_data_end(void);
+void gen_pending_clear(void);
+#else
+#define gen_data_begin()    (gen_pending_sym = SYM_NONE, gen_data_context = 1)
+#define gen_data_end()      (gen_data_context = 0)
+#define gen_pending_clear() (gen_pending_sym = SYM_NONE)
+#endif
 
 /* A cast: the top converted to `to`, as an assignment to an object of that
  * type would convert it, or thrown away for `(void)`. */
