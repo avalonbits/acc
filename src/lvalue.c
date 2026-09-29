@@ -55,20 +55,20 @@ void vstore_local(int offset, Type type)
     gen_effects++;
     int reg;
 
+    /* An assignment converts the value to the type of the object, and
+     * between a float and an integer that is arithmetic rather than a
+     * relabelling. vconvert is where it lives; this used to refuse instead,
+     * which is why a float could be stored and read back but never made from
+     * anything. The local in IY needs it as much as one in the frame. */
+    if (type_float(type) != type_float((vsp - 1)->type) || type == TY_BOOL)
+        vconvert(type);         /* a _Bool from all of a long, not its low
+                                 * bytes, which the narrow store takes */
+
     if (offset == iy_local) {
         vstore_iy();
 
         return;
     }
-
-    /* An assignment converts the value to the type of the object, and
-     * between a float and an integer that is arithmetic rather than a
-     * relabelling. vconvert is where it lives; this used to refuse instead,
-     * which is why a float could be stored and read back but never made from
-     * anything. */
-    if (type_float(type) != type_float((vsp - 1)->type) || type == TY_BOOL)
-        vconvert(type);         /* a _Bool from all of a long, not its low
-                                 * bytes, which the narrow store takes */
 
     if (type_wide(type)) {
         if (long_into(offset, type))
