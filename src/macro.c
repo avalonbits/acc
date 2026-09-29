@@ -184,6 +184,9 @@ void macro_define(NameRef name, const char *text, int len,
     m->nparams = (short) nparams;
     m->variadic = (short) variadic;
     name_is_macro(name) |= NAME_MACRO;
+#ifdef OPT_ACC
+    prescan_macro(m);
+#endif
 }
 
 /* Forgotten, and the slot left usable. A tombstone is not needed: the run of

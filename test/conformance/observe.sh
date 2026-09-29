@@ -53,7 +53,7 @@ observe() {
             flags=$(printf "%s" "$row" | cut -f3)
             lines=$(printf "%s" "$row" | cut -f4)
         fi
-        err=$(bin/acc -c "$OBSERVE_TESTS/$n.c" -o "$d/$n.o" -Iinclude \
+        err=$("${ACC:-bin/acc}" -c "$OBSERVE_TESTS/$n.c" -o "$d/$n.o" -Iinclude \
               $OBSERVE_DEFINES $flags 2>&1 >/dev/null)
         refused=$?
         if [ "$kind" = reject ]; then
@@ -70,7 +70,7 @@ observe() {
                                | sed "s/.*error: //")" > "$d/$n.out"
         elif [ "$kind" = compile ]; then
             echo "$n pass compiled" > "$d/$n.out"
-        elif ! err=$(bin/acc "$d/$n.o" bin/libc.a -o "$d/$n.bin" -p 2>&1 >/dev/null); then
+        elif ! err=$("${ACC:-bin/acc}" "$d/$n.o" bin/libc.a -o "$d/$n.bin" -p 2>&1 >/dev/null); then
             echo "$n needs ? $(printf "%s" "$err" | grep -m1 "error:" \
                                | sed "s/.*error: //")" > "$d/$n.out"
         fi' _ < "$names"

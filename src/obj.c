@@ -18,7 +18,7 @@
  * records to say which compiler made it. */
 void obj_print_version(void)
 {
-    printf("acc %s (build %d)\r\n", ACC_VERSION, ACC_BUILD);
+    printf(ACC_NAME " %s (build %d)\r\n", ACC_VERSION, ACC_BUILD);
 }
 
 /* The shape of the file. Every number in it is three bytes, lowest first --

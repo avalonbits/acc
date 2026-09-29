@@ -195,6 +195,10 @@ than being held in memory. acc's own sources compile and link on the Agon.
   acc compiles well: what is cheap, what is a call, and where `register`
   pays.
 
+`bin/opt-acc` is acc built with its optimising passes, for the host only.
+It takes the same arguments and makes the same objects, and trades compile
+time for faster code: see [docs/optimizer-plan.md](docs/optimizer-plan.md).
+
 ## What the code costs
 
 acc's output against agondev's at `-Oz`, on an emulated Agon, as acc's

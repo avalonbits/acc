@@ -70,6 +70,10 @@ typedef struct {
     short    nparams;           /* -1 when it is a name and not a call */
     short    variadic;          /* whether the last parameter is `...` */
     int      serial;            /* which definition: see lex_macro_def */
+#ifdef OPT_ACC
+    unsigned char amp;          /* its expansion may take an address: see
+                                 * prescan_macro */
+#endif
 } Macro;
 
 /* A buffer that grows, for the text an expansion is built into. On the
@@ -153,6 +157,9 @@ extern Macro *macro_spare;
 extern void *macro_chunks;
 extern char *macro_at, *macro_end;
 Macro *macro_find(NameRef name);
+#ifdef OPT_ACC
+void   prescan_macro(Macro *m);    /* prescan.c: a macro just defined */
+#endif
 void macro_define(NameRef name, const char *text, int len, NameRef *params, int nparams, int variadic);
 void macro_undef(NameRef name);
 char **args_room(char **argv, int argc, int *cap);

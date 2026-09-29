@@ -419,11 +419,26 @@ void gen_func_begin(int fn, int nparams, Type returns)
      * address. The size is not known until the body has been read, so it
      * is filled in at the end, and a function with no frame has the load
      * taken out and calls acc_rt_frameset0 instead. */
+#ifdef OPT_ACC
+    /* opt-acc writes the frame out instead -- push ix; ld ix, 0; add ix,
+     * sp; ld hl, -frame; add hl, sp; ld sp, hl -- fifteen bytes and no
+     * call, about 15 cycles less on every entry. With no frame the last
+     * six are cut (frame_cut), leaving nine. */
+    out_word24(0xdde5dd);                       /* push ix; ld ix, */
+    out_word24(0x000021);                       /*   0 */
+    out_word24(0x39dd00);                       /* ; add ix, sp */
+    out_byte(0x21);                             /* ld hl, nn */
+    frame_patch = out_here();
+    out_word24(0);
+    out_byte2(0x39, 0xf9);                      /* add hl, sp; ld sp, hl */
+    frame_call = -1;
+#else
     out_byte(0x21);                              /* ld hl, nn */
     frame_patch = out_here();
     out_word24(0);
     frame_call = nrt_fixups;
     rt_call(RT_FRAMESET);
+#endif
 }
 
 static void gen_forget(void);
@@ -489,8 +504,10 @@ void gen_func_end(void)
 
     /* Last, so that everything written into the function is written before
      * any of it moves -- and before static_end measures how long it is. */
+#ifndef OPT_ACC
     if (!frame_size())
         rt_fixups[frame_call].which = RT_FRAMESET0;
+#endif
     relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
     pool_emit();
     static_end();

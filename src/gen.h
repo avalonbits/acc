@@ -115,6 +115,16 @@ extern int iy_any;                    /* test builds: the first that can, not
                                        * only a register one */
 int  gen_iy_can(Type type);           /* whether a local of this type may */
 void gen_iy_claim(int offset, Type type, int quals);
+#ifdef OPT_ACC
+/* prescan.c, opt-acc's: which local lives in IY, read from the body first */
+extern NameRef iy_wants[4];           /* prescan_body's choices, best first */
+extern int     iy_nwants;
+int     inline_has(int fn);           /* inline.c */
+void    prescan_begin(void);
+void    prescan_param(NameRef name, int offset, int can);
+int     prescan_body(const char *at, NameRef *wants, int *param);
+void    prescan_claim(int offset, Type type, NameRef name);
+#endif
 int  gen_iy_pick(int offset, Type type, int quals);  /* a parameter */
 void gen_iy_param(int offset);        /* and once the prologue is laid */
 void gen_func_end(void);

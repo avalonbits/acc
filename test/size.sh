@@ -37,7 +37,9 @@ cd "$(dirname "$0")/.."
 focus=
 [ "${1:-}" = -f ] && { focus=$2; shift 2; }
 
-[ -x bin/acc ] || { echo "bin/acc missing -- run make" >&2; exit 2; }
+# Which compiler builds the acc column: acc, or opt-acc (ACC=bin/opt-acc).
+ACC=${ACC:-bin/acc}
+[ -x "$ACC" ] || { echo "$ACC missing -- run make" >&2; exit 2; }
 AGONDEV=${AGONDEV:-$HOME/agondev}
 CC=$AGONDEV/bin/ez80-none-elf-clang
 NM=$AGONDEV/bin/ez80-none-elf-nm
@@ -127,7 +129,7 @@ build() {
         local o="$dir/$how/$(basename "$f" .c).o"
 
         if [ "$how" = acc ]; then
-            bin/acc -c "$f" -o "$o" -Iinclude -I"$dir" -DAGONDEV -map "$o.map" \
+            "$ACC" -c "$f" -o "$o" -Iinclude -I"$dir" -DAGONDEV -map "$o.map" \
                 >/dev/null 2>&1 || return 1
         else
             $CC $CFLAGS -$how -I"$dir" -c "$f" -o "$o" 2>/dev/null || return 1
@@ -135,7 +137,7 @@ build() {
         objs="$objs $o"
     done
     if [ "$how" = acc ]; then
-        bin/acc $objs bin/libc.a -o "$dir/$how.bin" >/dev/null 2>&1
+        "$ACC" $objs bin/libc.a -o "$dir/$how.bin" >/dev/null 2>&1
     else
         "$AGONDEV/bin/ez80-none-elf-ld" $LDFLAGS -o "$dir/$how.bin" $objs \
             -L"$AGONDEV/lib" -lagon >/dev/null 2>&1
