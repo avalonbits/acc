@@ -294,6 +294,14 @@ void gen_return(int line, const char *spot); /* `return`, where it is */
  * zero, and then its heap and its stack. */
 #define ACC_RAM_BYTES 458752
 
+/* A moslet: a program MOS runs from /mos, which it loads at 0x0B0000 into
+ * the 32 KB up to 0x0B8000. MOS keeps its data, its heap and its own stack
+ * from 0x0B8000 up: a moslet whose stack started at 0x0C0000 printed its
+ * answer and took the machine down on the way back to MOS. acc -moslet
+ * builds one. */
+#define ACC_MOSLET_BASE 0x0B0000
+#define ACC_MOSLET_END  0x0B8000
+
 /* Kept between the heap's top and the top of memory, for the stack to come
  * down into. The same figure src/agon.ld reserves for acc's own stack, for
  * the same reason and with as little to go on. */

@@ -401,6 +401,14 @@ void gen_bss_forget(int sym)
         }
 }
 
+/* The bytes a program has from where it is loaded: up to the moslet area
+ * for a program, up to its end for a moslet. */
+static int ram_bytes(void)
+{
+    return (unsigned) out_base >= ACC_MOSLET_BASE ? ACC_MOSLET_END - out_base
+                                                  : ACC_RAM_BYTES;
+}
+
 /* The routine that clears the bss, and the addresses of everything in it.
  *
  * Last of all, so that what follows the image's last byte is the bss itself
@@ -453,10 +461,10 @@ static void bss_emit(void)
         }
     }
 
-    if (base - out_base + bss_len + bss_extra > ACC_RAM_BYTES)
+    if (base - out_base + bss_len + bss_extra > ram_bytes())
         acc_error("the program and what it leaves at zero come to %d bytes, "
                   "and the Agon has %d for both",
-                  base - out_base + bss_len + bss_extra, ACC_RAM_BYTES);
+                  base - out_base + bss_len + bss_extra, ram_bytes());
 
     /* Every slot that holds an offset into it, which is where the folding
      * went: `a[3]` put nine there, and this makes it an address. The table
@@ -618,13 +626,13 @@ static int link_given(int sym)
     const char *name;
 
     if (sym == stack_top_sym)
-        return out_base + ACC_RAM_BYTES;
+        return out_base + ram_bytes();
     name = name_text(sym_at(sym)->name);
 
     if (strcmp(name, "acc_heap_start") == 0)
         return bss_top;
     if (strcmp(name, "acc_heap_end") == 0)
-        return out_base + ACC_RAM_BYTES - ACC_STACK_RESERVE;
+        return out_base + ram_bytes() - ACC_STACK_RESERVE;
 
     return 0;
 }

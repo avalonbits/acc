@@ -111,6 +111,19 @@ directory given with `-I`, which is searched before `/lib/acc/include`:
 
     */ acc -c main.c -I /src/common
 
+A *moslet* is a program MOS runs from `/mos`, loaded at `0x0B0000`
+rather than `0x040000`: a command that can run while another program is in
+memory, and is found before anything in `/bin`. `-moslet` builds one, and
+it goes in `/mos`:
+
+    */ acc hello.c -moslet -o /mos/hello.bin
+    */ hello moslet
+    hello, moslet
+
+A moslet has the 32 KB from `0x0B0000` up to `0x0B8000` for everything --
+its code, what it leaves at zero, and its stack of 16 KB; its heap is what
+is left between them -- and acc says so if a program will not fit.
+
 `acc -v` prints the version:
 
     */ acc -v
@@ -145,6 +158,7 @@ takes, so a program of dozens of objects links in one command.
 | `-p` | Print what `main` returned, as six hex digits |
 | `-x` | Write what `main` returned to IO port 0, which stops an emulator with it as the exit status |
 | `-b <addr>` | Load the program at `<addr>`, in hexadecimal; the default is `40000` |
+| `-moslet` | A moslet, for `/mos`: loaded at `B0000`, with the 32 KB up to `B8000` |
 | `-r <file>` | Write the offsets inside the image that `-b` moved |
 | `-map <file>` | Write where each function and variable went |
 | `-trigraphs` | Read the nine trigraphs |
