@@ -13,6 +13,7 @@
 	XREF	acc_rt_fadd_round
 	XREF	acc_rt_fadd_subnormal
 	XREF	acc_rt_fadd_zero
+	XREF	acc_rt_fround
 	XREF	acc_rt_fnorm
 	XREF	acc_rt_funpack
 
@@ -45,6 +46,161 @@ _acc_rt_fdiv:
 	push	ix
 	push	iy
 	push	bc
+	push	de
+	push	hl
+
+	; ---------------------------------------------------- the fast path
+	; Two normal numbers whose quotient is normal, as fmul's: the exponents
+	; and sign from the top bytes, both significands with their leading 1s
+	; on a small frame at IY, the division in registers, and the rounding
+	; and packing in acc_rt_fround. Anything else goes to the general code
+	; below, and nothing is written until the answer is known to be normal.
+	; The frame: 0..2 the dividend's significand, 3..5 the divisor's, 6..8
+	; the exponent, 9 the sign.
+	push	hl
+	pop	ix			; the dividend, and the destination
+	push	de
+	pop	iy			; the divisor, until the frame takes IY
+
+	ld	a, (ix + 2)		; the biased exponents, as fmul reads them
+	rla
+	ld	a, (ix + 3)
+	rla
+	ld	c, a
+	dec	a
+	cp	a, 254
+	jp	nc, .fdiv_general
+	ld	a, (iy + 2)
+	rla
+	ld	a, (iy + 3)
+	rla
+	ld	b, a
+	dec	a
+	cp	a, 254
+	jp	nc, .fdiv_general
+
+	ld	hl, 127			; the exponent: the difference, and the
+	ld	de, 0			; bias; one less if the quotient's leading
+	ld	e, c			; bit comes out below bit 31
+	add	hl, de
+	ld	e, b
+	or	a, a
+	sbc	hl, de
+	ld	a, (ix + 3)		; the sign is the two signs differing
+	xor	a, (iy + 3)
+	and	a, 0x80
+	ld	c, a
+
+	ex	de, hl
+	ld	hl, -10
+	add	hl, sp
+	ld	sp, hl
+	ld	a, (ix + 0)		; both significands, with their leading 1s
+	ld	(hl), a
+	inc	hl
+	ld	a, (ix + 1)
+	ld	(hl), a
+	inc	hl
+	ld	a, (ix + 2)
+	or	a, 0x80
+	ld	(hl), a
+	inc	hl
+	ld	a, (iy + 0)
+	ld	(hl), a
+	inc	hl
+	ld	a, (iy + 1)
+	ld	(hl), a
+	inc	hl
+	ld	a, (iy + 2)
+	or	a, 0x80
+	ld	(hl), a
+	ld	iy, 0
+	add	iy, sp
+	ld	(iy + 6), de
+	ld	(iy + 9), c
+
+	; The quotient, thirty-two bits, as the general code's loop makes it,
+	; except that each finished byte is pushed: popped again below, they
+	; come off lowest first.
+	ld	hl, (iy + 0)
+	ld	de, (iy + 3)
+	ld	c, 4
+	or	a, a
+.fdiv_fast_byte:
+	ld	b, 8
+.fdiv_fast_bit:
+	jr	c, .fdiv_fast_force
+	or	a, a
+	sbc	hl, de
+	jr	nc, .fdiv_fast_one
+	add	hl, de
+	ccf
+	jr	.fdiv_fast_take
+.fdiv_fast_force:
+	or	a, a
+	sbc	hl, de
+.fdiv_fast_one:
+	scf
+.fdiv_fast_take:
+	rla
+	add	hl, hl
+	djnz	.fdiv_fast_bit
+	push	af			; the byte, and the carry with it
+	dec	c
+	jr	nz, .fdiv_fast_byte
+
+	; What is left of the remainder, the last doubling's carry included,
+	; is the sticky bit, in C.
+	jr	c, .fdiv_fast_sticky
+	ld	de, 0
+	or	a, a
+	sbc	hl, de
+	jr	z, .fdiv_fast_exact
+.fdiv_fast_sticky:
+	inc	c
+.fdiv_fast_exact:
+	pop	af			; the guard byte, with the sticky in it
+	or	a, c
+	ld	b, a
+	pop	af
+	ld	c, a
+	pop	af
+	ld	l, a
+	pop	af
+	ld	h, a
+	ld	a, b
+	ld	de, (iy + 6)
+	bit	7, h			; a leading bit below 31: one place up,
+	jr	nz, .fdiv_fast_round	; and one exponent less
+	sla	a
+	rl	c
+	rl	l
+	rl	h
+	dec	de
+.fdiv_fast_round:
+	ld	b, (iy + 9)
+	call	acc_rt_fround
+	jr	c, .fdiv_fast_undo
+
+	ld	hl, 10
+	add	hl, sp
+	ld	sp, hl
+	pop	hl
+	pop	de
+	pop	bc
+	pop	iy
+	pop	ix
+	ret
+
+.fdiv_fast_undo:
+	ld	hl, 10
+	add	hl, sp
+	ld	sp, hl
+
+	; ------------------------------------------------- the general case
+.fdiv_general:
+	pop	hl			; the operands' addresses again, from
+	pop	de			; where they were saved
 	push	de
 	push	hl
 
@@ -132,83 +288,82 @@ _acc_rt_fdiv:
 	call	acc_rt_fnorm
 	ld	(ix + 23), a
 
-	; Which bias the exponent takes, and how many bits the loop has to
-	; produce: a dividend at least the divisor gives its leading 1 at once,
-	; and one fewer iteration is needed for the same twenty-four bits.
-	ld	de, (ix + 5)		; the divisor's significand
-	ld	hl, (ix + 1)		; the dividend's
-	or	a, a
-	sbc	hl, de
-	jr	nc, .fdiv_ge
-
-	add	hl, de			; smaller: the subtract did not happen,
-	ld	(ix + 16), hl		; so the whole dividend is the remainder
-	ld	(ix + 0), 0		; and the whole quotient comes from the
-	ld	(ix + 1), 0		; loop, one exponent lower
-	ld	(ix + 2), 0
-	ld	(ix + 3), 0
-	ld	b, 32
-	ld	c, 126
-	jr	.fdiv_exponent
-
-.fdiv_ge:
-	ld	(ix + 16), hl		; what the leading 1 left behind
-	ld	(ix + 0), 1		; and that 1, already in place
-	ld	(ix + 1), 0
-	ld	(ix + 2), 0
-	ld	(ix + 3), 0
-	ld	b, 31
-	ld	c, 127
-
-.fdiv_exponent:
-	push	bc			; the count and the bias
+	; The exponent: the difference of the two, the bias, and the places
+	; the denormals were moved. One less if the quotient's leading bit
+	; comes out below bit 31, which is known after the loop.
 	ld	hl, 0
 	ld	l, (ix + 8)
 	ld	de, 0
 	ld	e, (ix + 9)
 	or	a, a
 	sbc	hl, de			; the exponents' difference, which may
-	ld	de, 0			; have gone negative
-	ld	e, c
-	add	hl, de			; plus the bias
+	ld	de, 127			; have gone negative, plus the bias
+	add	hl, de
+	ld	de, 0
 	ld	e, (ix + 23)		; plus the divisor's shift
 	add	hl, de
 	ld	e, (ix + 15)		; less the dividend's
 	or	a, a
 	sbc	hl, de
-
 	ld	(ix + 20), hl		; kept until there is a quotient to go
-	pop	bc			; with it, because whether it is in
+					; with it, because whether it is in
 					; range decides nothing until then
 
-	ld	hl, (ix + 16)		; the remainder, in a register for the
-	ld	de, (ix + 5)		; whole loop, as is the divisor
-
-	; The quotient is built across the whole thirty-two bit field rather
-	; than the twenty-four of the significand, so that its leading bit
-	; lands at bit 31 and the eight below the number come out of the
-	; division too. That is the shape everything else rounds and packs,
-	; and it is why the count is 31 or 32 and not 24 or 25: the extra
-	; iterations are the guard byte.
-.fdiv_loop:
-	sla	(ix + 0)		; the quotient makes room for the bit
-	rl	(ix + 1)
-	rl	(ix + 2)
-	rl	(ix + 3)
-	add	hl, hl			; and the remainder doubles
+	; The quotient, thirty-two bits of it, from bit 31 down: each step
+	; asks whether the divisor fits the remainder, takes it off if it
+	; does, and doubles what is left. Bit 31 is the dividend against the
+	; divisor as they stand, so it is 1 when the dividend's significand is
+	; the larger and the ratio is in [1, 2), and 0 when it is in [1/2, 1).
+	; The bits are gathered in A and stored a byte at a time, top byte
+	; first, from ix+3 down to ix+0, where the guard byte is.
+	;
+	; Doubling can carry out of twenty-four bits, and that carry means the
+	; divisor fits whatever the borrow says.
+	ld	hl, (ix + 1)		; the dividend's significand
+	ld	de, (ix + 5)		; and the divisor's, for the whole loop
+	lea	iy, ix + 3
+	ld	c, 4
+	or	a, a			; no carry into the first step
+.fdiv_byte:
+	ld	b, 8
+.fdiv_bit:
 	jr	c, .fdiv_force
 	or	a, a
 	sbc	hl, de
-	jr	nc, .fdiv_fits
-	add	hl, de			; it did not fit, so put it back
-	jr	.fdiv_next
+	jr	nc, .fdiv_one
+	add	hl, de			; it did not fit: put it back, and a 0
+	ccf				; (the add carried)
+	jr	.fdiv_take
 .fdiv_force:
 	or	a, a			; above twenty-four bits, so the divisor
 	sbc	hl, de			; fits however the borrow reads
-.fdiv_fits:
-	inc	(ix + 0)		; the shift left bit 0 clear
-.fdiv_next:
-	djnz	.fdiv_loop
+.fdiv_one:
+	scf
+.fdiv_take:
+	rla				; the bit into the byte being gathered
+	add	hl, hl			; and the remainder doubles
+	djnz	.fdiv_bit		; (none of these three touch the carry)
+	ld	(iy + 0), a
+	dec	iy
+	dec	c
+	jr	nz, .fdiv_byte
+
+	; A leading bit below 31: one place up, and one exponent less.
+	jr	nc, .fdiv_sticky	; the last doubling's carry is part of the
+	ld	hl, 1			; remainder: anything there is sticky
+.fdiv_sticky:
+	bit	7, (ix + 3)
+	jr	nz, .fdiv_placed
+	sla	(ix + 0)
+	rl	(ix + 1)
+	rl	(ix + 2)
+	rl	(ix + 3)
+	push	hl
+	ld	hl, (ix + 20)
+	dec	hl
+	ld	(ix + 20), hl
+	pop	hl
+.fdiv_placed:
 
 	; Whatever is left of the remainder goes into the lowest bit, so that a
 	; quotient that stopped exactly on the halfway mark can be told from

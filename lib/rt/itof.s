@@ -101,42 +101,55 @@ _acc_rt_uitof:
 	jr	.itof_done
 
 .itof_normalise:
+	; The magnitude's bytes in A, H and L, top first, moved up until
+	; the leading 1 is at the top of A: a whole byte at a time while the
+	; top one is empty, then a bit at a time in registers.
+	ld	a, (iy + 2)
+	ld	h, (iy + 1)
+	ld	l, (iy + 0)
 	ld	c, 150			; 127 + 23: the exponent when the top
 					; bit is already bit 23
-.itof_shift:
-	bit	7, (iy + 2)
+.itof_bytes:
+	or	a, a
+	jr	nz, .itof_bits
+	ld	a, h
+	ld	h, l
+	ld	l, 0
+	ld	c, 142			; eight places up; it cannot take a third,
+	or	a, a			; since zero went the other way
+	jr	nz, .itof_bits
+	ld	a, h
+	ld	h, 0
+	ld	c, 134
+.itof_bits:
+	bit	7, a
 	jr	nz, .itof_pack
-	sla	(iy + 0)
-	rl	(iy + 1)
-	rl	(iy + 2)
+	sla	l
+	rl	h
+	rla
 	dec	c
-	jr	.itof_shift
+	jr	.itof_bits
 
 .itof_pack:
-	res	7, (iy + 2)		; the leading 1 is implied, not stored
-	bit	0, c			; and the exponent's low bit takes the
-	jr	z, .itof_exp_even	; place it leaves
-	set	7, (iy + 2)
+	and	a, 0x7f			; the leading 1 is implied, not stored,
+	srl	c			; and the exponent's low bit takes the
+	jr	nc, .itof_exp_even	; place it leaves
+	or	a, 0x80
 .itof_exp_even:
+	ex	de, hl			; the destination, a byte at a time
+	ld	(hl), e
+	inc	hl
+	ld	(hl), d
+	inc	hl
+	ld	(hl), a
+	inc	hl
 	ld	a, c
-	srl	a
-	or	a, b			; the sign goes above the exponent
-	ld	c, a
-
-	ld	a, (iy + 0)
-	ld	(de), a
-	inc	de
-	ld	a, (iy + 1)
-	ld	(de), a
-	inc	de
-	ld	a, (iy + 2)
-	ld	(de), a
-	inc	de
-	ld	a, c
-	ld	(de), a
-	dec	de
-	dec	de
-	dec	de
+	or	a, b			; the sign above the exponent
+	ld	(hl), a
+	dec	hl
+	dec	hl
+	dec	hl
+	ex	de, hl
 
 .itof_done:
 	pop	bc			; the working copy, discarded
