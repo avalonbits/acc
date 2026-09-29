@@ -290,8 +290,38 @@ compilers, and the whole test suite through opt-acc.
      forced, against step 2 on the same day: the speed mean 1.64 -> 1.47
      of agondev, zap-basic 157.2M -> 151.0M cycles; the code mean 2.35 ->
      1.78, zap 150056 -> 139648 bytes. acc itself now compiles this way.
-   - Next: the values in registers, by linear scan over the same
-     intervals, and the choice per function of this code or acc's.
+   - Then the values in registers, behind OPTACC_REGS, with OPTACC_IY,
+     OPTACC_NATIVE and OPTACC_HOMES=2. Code is still made one gen.h call
+     an instruction; what changed is where values are between them.
+     - A value read once, by the next instruction that wants it in stack
+       order, stays on the classic stack, which is the expression the
+       first pass compiled. Every other value has a home, shared with
+       the values of the same local through its phis where liveness
+       allows -- precise liveness, from walking each block back.
+     - Homes are BC and DE, IY through the classic backend's local in
+       IY, and frame slots; a parameter's web keeps the parameter's slot.
+       A value in a register sits at the bottom of the classic stack as
+       that register, so the classic backend works around it, spills it
+       around calls, and it is put back when the stack empties.
+     - Registers only pay where the code is selected here: the classic
+       backend, which does not own a value in BC, copies it to HL with a
+       push and a pop, dearer than a frame slot. So comparisons with the
+       branch on them, adds and subtracts, and steps are selected in
+       ssa.c with the register where it is -- scf; sbc hl, bc; inc bc --
+       and a web gets a register only when the reads selected here
+       outweigh the rest and the calls it lives across.
+     - && and || answers read by a branch are jumped on, not made.
+     - Each function is kept made this way only when its bytes, weighted
+       eight times over for each loop, come to less than the first
+       pass's; otherwise the first pass's code is replayed.
+   - Measured on the perf corpus with all of it on, against the classic
+     path on the same day: speed mean 1.02 of agondev -Oz against 1.05,
+     sieve 1.11 against 1.61, zap-basic 1.47 as it was; code size as it
+     was. The target is not met yet: lists is 1.07 and zap-basic 1.47.
+     What is left is the code gen.h still makes -- loads and stores
+     through pointers, calls and their arguments -- where a value in a
+     register is copied out, and the weighting that picks between the
+     two, which chooses the slower one in interp and lists.
 4. **Inlining, value reuse, hoisting, strength reduction, narrow values,
    ranges**, one at a time, each kept only if the corpora say so. Target:
    zap-basic about 1.10-1.15; the integer programs under 1.00.

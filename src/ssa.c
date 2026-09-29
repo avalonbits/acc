@@ -1127,8 +1127,11 @@ static void place_phis(void)
 
 static int find_val(int val)
 {
-    while (val >= 0 && repl[val] >= 0 && repl[val] != val)
+    while (val >= 0 && repl[val] != -1 && repl[val] != val) {
+        if (repl[val] == UNDEF)
+            return UNDEF;               /* read before any write */
         val = repl[val];
+    }
 
     return val;
 }
@@ -1136,9 +1139,10 @@ static int find_val(int val)
 /* The operand an instruction reads, with what it stood for resolved. */
 static void resolve(Ent *ent)
 {
-    if (ent->val < 0)
+    if (ent->val < 0 && ent->val != UNDEF)
         return;
-    ent->val = find_val(ent->val);
+    if (ent->val >= 0)
+        ent->val = find_val(ent->val);
     if (ent->val == UNDEF) {
         ent->val = S_CONST;             /* a read before any write: 0 */
         ent->attr.kind = VAL_CONST;
@@ -1565,7 +1569,10 @@ static void load(const Ent *ent)
         fail = "internal: a void operand";
         return;
     }
-    if (ent->val == S_CONST) {
+    if (ent->val == UNDEF) {
+        vpush_const(0, attr->type);     /* read before any write: any
+                                         * value will do, and 0 is one */
+    } else if (ent->val == S_CONST) {
         load_constant(ent);
     } else {
         Type stored = vals[ent->val].type;
@@ -2843,7 +2850,7 @@ static void reg_operand(const Ins *insn, int operand, int at)
     const Ent *ent = &insn->in[operand];
     int val = ent->val, pin, last_read = insn->kills & (1 << operand);
 
-    if (val == S_CONST || vals[val].reg == HOME_SLOT) {
+    if (val < 0 || vals[val].reg == HOME_SLOT) {
         load(ent);
         return;
     }

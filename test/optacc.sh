@@ -212,5 +212,11 @@ OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 \
 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 \
     ssa "a short worked by gen.h, not kept" "ssa f the first pass's code is cheaper" "$short"
 
+# A local read before it is written reads a 0 made again, not a value
+# nothing makes -- which in a register was a second owner of it.
+OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
+    ssa "a local read unwritten"     "ssa f made" \
+    'struct s { int key, next, prev; }; void f(struct s *h) { int i, k; for (i = 0; i < 2; i++) { struct s *c = h + k; c->key = i * (0xffffffffUL / 2); c->next = k + (1 - i); c->prev = k + (1 - i); } }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
