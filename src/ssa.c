@@ -1350,6 +1350,43 @@ static void to_values(void)
     cur_def = cur_top = NULL;
 }
 
+/* A step of a local -- p++ -- moved down to just after the last read of
+ * the value it steps, in its block: `*p++` reads the old p after the step
+ * is made, so the two were live at once and could not share a home, and
+ * the new one was copied back at the end of every trip. After it, they
+ * can, and the step is an inc where the value is. Not past a read of what
+ * it makes, and not in between a comparison and the branch on it. */
+static void sink_steps(void)
+{
+    int at;
+
+    for (at = 0; at != ninsns; at++) {
+        Ins step = insns[at];
+        int blk = step.block, last = block_last[blk], to = at, scan, operand;
+
+        if (step.op != I_STEP || step.nin != 1 || step.in[0].val < 0
+            || step.res < 0)
+            continue;
+        for (scan = at + 1; scan < last; scan++) {
+            int reads_old = 0, reads_new = 0;
+
+            for (operand = 0; operand != insns[scan].nin; operand++) {
+                reads_old |= insns[scan].in[operand].val == step.in[0].val;
+                reads_new |= insns[scan].in[operand].val == step.res;
+            }
+            if (reads_new || insns[scan].op == I_STEP)
+                break;
+            if (reads_old)
+                to = scan;
+        }
+        if (to == at || (insns[to].res >= 0 && to + 1 == last))
+            continue;
+        memmove(&insns[at], &insns[at + 1], (size_t) (to - at) * sizeof *insns);
+        insns[to] = step;
+        at = to;                        /* on past it */
+    }
+}
+
 /* Where each value is live, as the interval its slot is kept for: every
  * position from the first to the last at which it is live, found by the
  * usual dataflow over the blocks -- a value is live into a block that
@@ -3213,20 +3250,38 @@ static int operand_place(const Ent *ent, int *where)
     return AT_REG;
 }
 
-/* Whether the classic stack holds nothing but the pins, each in its home,
- * and this instruction's operands left for it -- at most one, on top. */
+/* Whether the code here can be made now: the pins each in its home, and
+ * this instruction's operands, at most two, on top of the classic stack.
+ * Values waiting there under them for later instructions are moved out of
+ * HL and DE, the scratch, to slots of their own, as the classic backend
+ * moves one out of a register it wants -- the last thing asked, since it
+ * writes code. Not with a byte waiting in A, or the local in IY read
+ * lazily, which the code here may change under them. */
 static int native_ready(const Ins *insn)
 {
-    int nfwd = 0, operand, pin;
+    int nfwd = 0, operand, pin, at;
 
     for (operand = 0; operand != insn->nin; operand++)
         if (insn->in[operand].val >= 0 && vals[insn->in[operand].val].fwd)
             nfwd++;
-    if (nfwd > 1 || vtop != npins + nfwd)
+    if (nfwd > 2 || vtop < npins + nfwd)
         return 0;
     for (pin = 0; pin != npins; pin++)
         if (vstack[pin].kind != VAL_REG || vstack[pin].val != vals[pin_val[pin]].reg)
             return 0;
+    for (at = npins; at != vtop - nfwd; at++)
+        if (vstack[at].kind == VAL_ACC || vstack[at].kind == VAL_IY
+            || vstack[at].kind == VAL_IYADDR)
+            return 0;
+    for (at = npins; at != vtop - nfwd; at++)
+        if (vstack[at].kind == VAL_REG
+            && (vstack[at].val == R_HL || vstack[at].val == R_DE)) {
+            int slot = spill_slot();
+
+            ld_ix_rr(slot, vstack[at].val);
+            vstack[at].kind = VAL_LOCAL;
+            vstack[at].val = slot;
+        }
 
     return 1;
 }
@@ -3333,6 +3388,97 @@ static int mirror(int op)
     return op;
 }
 
+/* The branch after the comparison at `at`, on the flags it left: jp on `cc`
+ * when the comparison is true -- turned over when the branch jumps on false
+ * -- to its block, or to the copies on the way there. */
+static void branch_on(int cc, const Ins *branch, int blk, int at)
+{
+    int target = branch->target;
+
+    if (!branch->sense)
+        cc ^= 0x08;                     /* the opposite condition */
+    if (edge_copies_any(blk, target)) {
+        GROW(trampolines, ntrampolines, trampolines_cap);
+        trampolines[ntrampolines].hole = jump_op(cc);
+        trampolines[ntrampolines].from = blk;
+        trampolines[ntrampolines].to = target;
+        ntrampolines++;
+    } else if (block_now[target] >= 0) {
+        gen_jump_cc_to(cc, block_now[target]);
+    } else {
+        jump_forward(jump_op(cc), target);
+    }
+    skip_branch = at + 1;
+}
+
+/* An unsigned char in a register compared with 0, by the branch after it:
+ * its byte into A and or a, the bytes above it being 0. */
+static int native_byte_zero(const Ins *insn, int blk, int at)
+{
+    const Ins *branch = &insns[at + 1];
+    int op = (int) insn->rec->arg[0], val = insn->in[0].val, number, pin;
+
+    if ((op != TK_EQ && op != TK_NE) || insn->nin != 2 || val < 0
+        || vals[val].type != TY_UCHAR || vals[val].reg == HOME_SLOT
+        || !const_number(&insn->in[1], &number) || number != 0
+        || insn->res < 0 || !vals[insn->res].fwd || at + 1 >= ninsns
+        || branch->op != I_BR || branch->nin != 1
+        || branch->in[0].val != insn->res || branch->target < 0
+        || !native_ready(insn))
+        return 0;
+    pin = pin_index(val);
+    if (pin < 0 || vstack[pin].kind != VAL_REG || vstack[pin].val != vals[val].reg)
+        return 0;
+    out_byte(vals[val].reg == R_BC ? 0x79 : 0x7b);     /* ld a, c or ld a, e */
+    or_a_a();
+    branch_on(op == TK_EQ ? JP_Z : JP_NZ, branch, blk, at);
+
+    return 1;
+}
+
+/* The comparison as native_compare's quick forms cannot make it: DE is
+ * borrowed if it holds a value -- pushed first and popped last, which
+ * leaves the flags -- the right side read and kept on the stack, the left
+ * into HL, both moved by 0x800000 when signed, and HL less DE. Everything
+ * is read before DE is written, so a side in DE is read where it is. A
+ * side left on the classic stack is read first, since the others' loads
+ * go through HL; two left there are the top and the one under it. */
+static int compare_general(const Ins *insn, int op, int is_signed,
+                           const int *place, const int *where)
+{
+    int borrow = reg_taken(R_DE), left = 0, right = 1;
+
+    /* Whichever is on top of the classic stack is read first, as the
+     * right side: the comparison turned about if that is the left. */
+    if (place[0] == AT_STACK && place[1] != AT_STACK) {
+        left = 1;
+        right = 0;
+        op = mirror(op);
+    }
+    if (borrow)
+        push_rr(R_DE);
+    load_into(&insn->in[right], place[right], where[right], R_HL);
+    push_rr(R_HL);
+    load_into(&insn->in[left], place[left], where[left], R_HL);
+    if (is_signed) {
+        ld_rr_imm(R_DE, 0x800000);
+        add_hl_rr(R_DE);
+        out_byte(0xe3);                 /* ex (sp), hl: the right side */
+        add_hl_rr(R_DE);
+        out_byte(0xe3);                 /* and the left back */
+    }
+    pop_rr(R_DE);
+    if (op == TK_LE || op == TK_GT)
+        out_byte(0x37);                 /* scf: HL - DE - 1 */
+    else
+        or_a_a();
+    sbc_hl_rr(R_DE);
+    if (borrow)
+        pop_rr(R_DE);
+
+    return op;
+}
+
 /* A comparison of two ints read only by the branch after it: the flags of
  * one subtraction, and a jump on them. HL is one side and the other is
  * where it is, in BC or DE, or loaded into DE. A signed comparison moves
@@ -3341,7 +3487,7 @@ static int native_compare(const Ins *insn, int blk, int at)
 {
     const Ins *branch = &insns[at + 1];
     int op = (int) insn->rec->arg[0], place[2], where[2] = { 0, 0 };
-    int in_hl, other, is_signed, cc, target, number;
+    int in_hl, other, is_signed, cc, number;
 
     if (at + 1 >= ninsns || insn->res < 0 || !vals[insn->res].fwd
         || branch->op != I_BR || branch->nin != 1
@@ -3363,8 +3509,15 @@ static int native_compare(const Ins *insn, int blk, int at)
      * one, and the right side otherwise. */
     other = place[0] == AT_REG && place[1] != AT_REG && !is_signed ? 0 : 1;
     in_hl = 1 - other;
-    if (!(place[other] == AT_REG && !is_signed) && reg_taken(R_DE))
-        return 0;                       /* DE is wanted, and holds a value */
+    if ((!(place[other] == AT_REG && !is_signed) && reg_taken(R_DE))
+        || (place[0] == AT_STACK && place[1] == AT_STACK)) {
+        op = compare_general(insn, op, is_signed, place, where);
+        cc = op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
+             ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
+        branch_on(cc, branch, blk, at);
+
+        return 1;
+    }
 
     if (is_signed && const_number(&insn->in[other], &number)) {
         load_into(&insn->in[in_hl], place[in_hl], where[in_hl], R_HL);
@@ -3413,22 +3566,7 @@ static int native_compare(const Ins *insn, int blk, int at)
     sbc_hl_rr(where[other]);
     cc = op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT ? JP_NC
          : op == TK_EQ ? JP_Z : JP_NZ;
-    if (!branch->sense)
-        cc ^= 0x08;                     /* the opposite condition */
-
-    target = branch->target;
-    if (edge_copies_any(blk, target)) {
-        GROW(trampolines, ntrampolines, trampolines_cap);
-        trampolines[ntrampolines].hole = jump_op(cc);
-        trampolines[ntrampolines].from = blk;
-        trampolines[ntrampolines].to = target;
-        ntrampolines++;
-    } else if (block_now[target] >= 0) {
-        gen_jump_cc_to(cc, block_now[target]);
-    } else {
-        jump_forward(jump_op(cc), target);
-    }
-    skip_branch = at + 1;
+    branch_on(cc, branch, blk, at);
 
     return 1;
 }
@@ -3464,13 +3602,14 @@ static int native_sum(const Ins *insn, int at)
         return 0;
     place[0] = operand_place(&insn->in[0], &where[0]);
     place[1] = operand_place(&insn->in[1], &where[1]);
-    if (place[0] == AT_NONE || place[1] == AT_NONE || !native_ready(insn))
+    if (place[0] == AT_NONE || place[1] == AT_NONE)
         return 0;
 
     /* x + k or x - k with x's register the answer's too, read last here. */
     if (vals[res].reg != HOME_SLOT && !vals[res].fwd && place[0] == AT_REG
         && where[0] == vals[res].reg && insn->kills & 1
-        && const_number(&insn->in[1], &number) && number >= -4 && number <= 4) {
+        && const_number(&insn->in[1], &number) && number >= -4 && number <= 4
+        && native_ready(insn)) {
         step_reg(where[0], op == TK_PLUS ? number : -number);
         pins_release(insn);
         pin_add(res);
@@ -3486,6 +3625,10 @@ static int native_sum(const Ins *insn, int at)
              && number <= 4)
         && reg_taken(R_DE))
         return 0;                       /* DE is wanted, and holds a value */
+    if (place[0] == AT_STACK && place[1] == AT_STACK)
+        return 0;
+    if (!native_ready(insn))
+        return 0;
     if (place[other] == AT_STACK) {
         load_into(&insn->in[other], AT_STACK, 0, R_DE);
         place[other] = AT_REG;
@@ -3516,23 +3659,38 @@ static int native_sum(const Ins *insn, int at)
  * the new one lives there too. */
 static int native_step(const Ins *insn, int at)
 {
-    int place, where = 0, res = insn->res, count;
+    int place, where = 0, res = insn->res, val = insn->in[0].val, count, pin;
     Type type = insn->local_type;
+    int byte = type == TY_UCHAR;
 
     (void) at;
-    if (type_size(type) != ACC_INT_SIZE || type_float(type)
+    if (val < 0 || (type_size(type) != ACC_INT_SIZE && !byte)
+        || type_float(type)
         || (type_pointer(type) && type_step(type, insn->in[0].attr.ext) != 1))
         return 0;
-    place = operand_place(&insn->in[0], &where);
-    if (place == AT_NONE || !native_ready(insn))
-        return 0;
     count = insn->step_op == TK_MINUS ? -1 : 1;
-    if (place == AT_REG && vals[res].reg == where && insn->kills & 1) {
-        step_reg(where, count);
+
+    /* In place, where the value and the new one share a register and this
+     * reads it last: nothing on the classic stack is touched, so whatever
+     * waits there may. An unsigned char steps its byte alone, and wraps as
+     * the type does, the bytes above staying 0. */
+    pin = pin_index(val);
+    if (vals[val].reg != HOME_SLOT && vals[res].reg == vals[val].reg
+        && insn->kills & 1 && pin >= 0 && vstack[pin].kind == VAL_REG
+        && vstack[pin].val == vals[val].reg) {
+        if (byte)
+            out_byte((vals[val].reg == R_BC ? 0x0c : 0x1c) + (count < 0));
+        else
+            step_reg(vals[val].reg, count);     /* inc/dec c or e, above */
         pins_release(insn);
         pin_add(res);
         return 1;
     }
+    if (byte)
+        return 0;
+    place = operand_place(&insn->in[0], &where);
+    if (place == AT_NONE || !native_ready(insn))
+        return 0;
     if (place == AT_SLOT && iy_local && where == iy_local
         && vals[res].reg == HOME_SLOT && vals[res].slot == iy_local) {
         step_reg(-1, count);
@@ -3632,7 +3790,8 @@ static void emit_insn_regs(const Ins *insn, int blk, int at)
         break;
     default:
         if (native_on() && insn->op == GL_vapply
-            && (native_compare(insn, blk, at) || native_sum(insn, at)))
+            && (native_compare(insn, blk, at) || native_byte_zero(insn, blk, at)
+                || native_sum(insn, at)))
             break;
         reg_operands(insn, at);
         call(insn);
@@ -3649,6 +3808,8 @@ static void emit_insn_regs(const Ins *insn, int blk, int at)
 
 long ssa_cost_made, ssa_cost_first;
 
+static int blocks_from;         /* where the function made here begins */
+
 static long block_weight(int blk)
 {
     int depth = loop_depth[blk];
@@ -3656,43 +3817,170 @@ static long block_weight(int blk)
     return 1L << (3 * (depth > 5 ? 5 : depth));
 }
 
-/* What each would cost: the bytes each block took, weighted by its loops
- * -- the first pass's from where each of its calls ended, the log's
- * records falling to the blocks their instructions are in. */
+/* An eZ80 instruction at `code`, in ADL mode: its length, and in *cycles
+ * about what it takes -- a cycle a byte fetched, and one a byte read or
+ * written besides, which is what the chip's timing comes to for all but
+ * the jumps taken. Only what acc writes needs to be right; anything else
+ * is counted a byte and a cycle. */
+static int ez80_insn(const unsigned char *code, int avail, int *cycles)
+{
+    int op = code[0], len = 1, mem = 0;
+
+    if (op == 0xdd || op == 0xfd) {
+        int next = avail > 1 ? code[1] : 0;
+
+        if (next == 0xcb)
+            len = 4, mem = 2;
+        else if (next == 0x21)
+            len = 5;                            /* ld ix, nn */
+        else if (next == 0x22 || next == 0x2a)
+            len = 5, mem = 3;                   /* ld (nn), ix */
+        else if (next == 0x36)
+            len = 4, mem = 1;                   /* ld (ix+d), n */
+        else if (next == 0x07 || next == 0x17 || next == 0x27 || next == 0x31
+                 || next == 0x37 || next == 0x0f || next == 0x1f
+                 || next == 0x2f || next == 0x3e || next == 0x3f)
+            len = 3, mem = 3;                   /* ld rr, (ix+d) and back */
+        else if ((next >= 0x46 && next <= 0x7e && (next & 7) == 6)
+                 || (next >= 0x70 && next <= 0x77) || (next & 0xc7) == 0x86
+                 || next == 0x34 || next == 0x35)
+            len = 3, mem = 1;                   /* a byte at (ix+d) */
+        else if (next == 0xe5 || next == 0xe1)
+            len = 2, mem = 3;                   /* push ix, pop ix */
+        else if (next == 0xe3)
+            len = 2, mem = 6;
+        else
+            len = 2;
+    } else if (op == 0xed) {
+        int next = avail > 1 ? code[1] : 0;
+
+        if ((next & 0xcf) == 0x43 || (next & 0xcf) == 0x4b)
+            len = 5, mem = 3;                   /* ld (nn), rr and back */
+        else if ((next & 0xc7) == 0x02 || (next & 0xc7) == 0x03
+                 || next == 0x32 || next == 0x33 || next == 0x54 || next == 0x55
+                 || next == 0x64 || next == 0x65 || next == 0x74)
+            len = 3;                            /* lea, and the like */
+        else if (next == 0x07 || next == 0x17 || next == 0x27 || next == 0x31
+                 || next == 0x37 || next == 0x0f || next == 0x1f
+                 || next == 0x2f || next == 0x3e || next == 0x3f)
+            len = 2, mem = 3;                   /* ld rr, (hl) and back */
+        else if (next == 0xb0 || next == 0xb8)
+            len = 2, mem = 2;                   /* ldir, a byte a trip */
+        else
+            len = 2;
+    } else if (op == 0xcb) {
+        len = 2;
+        if ((code[1] & 7) == 6)
+            mem = 2;
+    } else if ((op & 0xcf) == 0x01) {
+        len = 4;                                /* ld rr, nn */
+    } else if (op == 0x22 || op == 0x2a) {
+        len = 4, mem = 3;
+    } else if (op == 0x32 || op == 0x3a) {
+        len = 4, mem = 1;
+    } else if ((op & 0xc7) == 0x06 || (op & 0xc7) == 0xc6 || op == 0x18
+               || op == 0x10 || (op & 0xe7) == 0x20 || op == 0xd3 || op == 0xdb) {
+        len = 2;                                /* n, and jr */
+        if (op == 0x36)
+            mem = 1;
+    } else if (op == 0xc3 || (op & 0xc7) == 0xc2) {
+        len = 4;                                /* jp */
+    } else if (op == 0xcd || (op & 0xc7) == 0xc4) {
+        len = 4, mem = 6;                       /* call, and the ret */
+    } else if ((op & 0xcb) == 0xc1) {
+        mem = 3;                                /* push rr, pop rr */
+    } else if (op == 0xe3) {
+        mem = 6;                                /* ex (sp), hl */
+    } else if ((op & 0xc7) == 0x46 || (op >= 0x70 && op <= 0x77 && op != 0x76)
+               || (op & 0xc7) == 0x86 || op == 0x34 || op == 0x35
+               || op == 0x0a || op == 0x1a || op == 0x02 || op == 0x12) {
+        mem = 1;                                /* a byte through a pointer */
+    }
+    if (len > avail)
+        len = avail;
+    *cycles = len + mem;
+
+    return len;
+}
+
+/* The cycles of the code from `from` for `len` bytes, each instruction
+ * counted by the loops around the block its first byte is in. */
+static long code_cost(const unsigned char *code, int len, const int *block_of)
+{
+    long cost = 0;
+    int at = 0;
+
+    while (at < len) {
+        int cycles, step = ez80_insn(code + at, len - at, &cycles);
+
+        cost += block_weight(block_of[at] < 0 ? 0 : block_of[at]) * cycles;
+        at += step;
+    }
+
+    return cost;
+}
+
+/* What each would cost to run: every instruction's cycles, weighted by the
+ * loops around its block -- the first pass's code placed in blocks by the
+ * log's records, which say where each call's bytes ended and which of
+ * them are in which block. */
 static void costs(const int *block_start, int end)
 {
-    int *block_of = malloc(((size_t) gl_n + 1) * sizeof *block_of);
-    int at, blk = 0, before;
+    int *rec_block = malloc(((size_t) gl_n + 1) * sizeof *rec_block);
+    int *byte_block, at, blk = 0, before, from = blocks_from;
 
-    if (!block_of)
+    if (!rec_block)
         acc_error("out of memory for the SSA form");
     for (at = 0; at != gl_n; at++)
-        block_of[at] = -1;
+        rec_block[at] = -1;
     for (at = 0; at != ninsns; at++)
         if (insns[at].rec)
-            block_of[insns[at].rec - gl_log] = insns[at].block;
+            rec_block[insns[at].rec - gl_log] = insns[at].block;
+
     ssa_cost_first = 0;
-    before = gl_log[0].at_after;
-    for (at = 1; at != gl_n; at++) {
-        if (block_of[at] >= 0)
-            blk = block_of[at];
-        ssa_cost_first += block_weight(blk) * (gl_log[at].at_after - before);
-        before = gl_log[at].at_after;
+    if (gl_first_code && gl_first_len > 0) {
+        byte_block = malloc((size_t) gl_first_len * sizeof *byte_block + 1);
+        if (!byte_block)
+            acc_error("out of memory for the SSA form");
+        for (at = 0; at != gl_first_len; at++)
+            byte_block[at] = 0;
+        before = gl_log[0].at_after - gl_first_from;
+        for (at = 1; at != gl_n; at++) {
+            int after = gl_log[at].at_after - gl_first_from, byte;
+
+            if (rec_block[at] >= 0)
+                blk = rec_block[at];
+            for (byte = before < 0 ? 0 : before;
+                 byte < after && byte < gl_first_len; byte++)
+                byte_block[byte] = blk;
+            before = after;
+        }
+        ssa_cost_first = code_cost(gl_first_code, gl_first_len, byte_block);
+        free(byte_block);
     }
-    free(block_of);
+    free(rec_block);
 
-    ssa_cost_made = 0;
+    /* And the code made here, from where each block began. */
+    byte_block = malloc(((size_t) (end - from) + 1) * sizeof *byte_block);
+    if (!byte_block)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != end - from; at++)
+        byte_block[at] = 0;
     for (blk = 0; blk != nblocks; blk++) {
-        int next = end;
+        int next = end, later;
 
-        for (at = blk + 1; at != nblocks; at++)
-            if (block_start[at] >= 0) {
-                next = block_start[at];
+        if (block_start[blk] < 0)
+            continue;
+        for (later = blk + 1; later != nblocks; later++)
+            if (block_start[later] >= 0) {
+                next = block_start[later];
                 break;
             }
-        if (block_start[blk] >= 0)
-            ssa_cost_made += block_weight(blk) * (next - block_start[blk]);
+        for (at = block_start[blk]; at < next && at < end; at++)
+            byte_block[at - from] = blk;
     }
+    ssa_cost_made = code_cost(out_img + (from - out_base), end - from, byte_block);
+    free(byte_block);
 }
 
 static void emit_regs(void)
@@ -3715,6 +4003,7 @@ static void emit_regs(void)
     for (at = 0; at != nblocks; at++)
         block_start[at] = -1;
 
+    blocks_from = out_here();
     call(&insns[0]);
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at])) {
@@ -3917,6 +4206,8 @@ int ssa_generate(const char **why)
     }
     thread_answers();
     to_values();
+    if (!fail && regs_on())
+        sink_steps();
     if (!fail) {
         live_ranges();
         if (regs_on()) {

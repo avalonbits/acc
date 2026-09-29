@@ -218,5 +218,22 @@ OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
     ssa "a local read unwritten"     "ssa f made" \
     'struct s { int key, next, prev; }; void f(struct s *h) { int i, k; for (i = 0; i < 2; i++) { struct s *c = h + k; c->key = i * (0xffffffffUL / 2); c->next = k + (1 - i); c->prev = k + (1 - i); } }'
 
+# Selected with a value in a register, and every function made so (no pick):
+# an unsigned char's zero test and step on its register's byte -- ld a, c;
+# or a and dec c -- and p++ moved after the *p that reads the old p, so the
+# two share DE and it is inc de. And a signed comparison of two values when
+# DE holds one: DE pushed and popped round it, pop de; or a; sbc hl, de;
+# pop de, where gen.h spilled both registers and made a 0 or 1.
+byte='typedef unsigned char u8; static u8 t[256]; u8 f(const char *p, int len) { u8 h = 0; for (u8 k = (u8) len; k != 0; k--) h = t[h ^ (u8) *p++]; return h; }'
+dirs='int f(const char *s, const char *want, int n) { for (int i = 0; i < n; i++) if ((s[i] | 0x20) != want[i]) return 0; return 1; }'
+all() {
+    OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+        OPTACC_PICK=0 emits "$@"
+}
+all "$OPT" "an unsigned char tested for 0 in its register" 79b7       yes "$byte"
+all "$OPT" "and stepped there"                            0d18       yes "$byte"
+all "$OPT" "p++ after *p, in place"                       6f137d     yes "$byte"
+all "$OPT" "a signed comparison borrowing DE"             d1b7ed52d1 yes "$dirs"
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

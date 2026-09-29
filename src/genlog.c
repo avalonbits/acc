@@ -59,6 +59,9 @@ static GenMark *gl_replay_marks;   /* by record */
 
 /* Where the backend stood as the function began, to be put back. */
 static GenMark gl_start;
+
+const unsigned char *gl_first_code;
+int gl_first_from, gl_first_len;
 static int     gl_start_nwants, gl_start_nstatics;
 static long    gl_start_nrelocs;
 static int     gl_start_finish[4];
@@ -419,6 +422,9 @@ static void gl_function_end(void)
     if (!first || !first_relocs)
         acc_error("out of memory for the log");
     out_copy(from, first, len);
+    gl_first_code = first;
+    gl_first_from = from;
+    gl_first_len = len;
     memcpy(first_relocs, out_relocs + gl_start_nrelocs,
            (size_t) relocs * sizeof *first_relocs);
 

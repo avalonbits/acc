@@ -43,6 +43,11 @@ int ssa_generate(const char **why);
  * around it. Both 0 when it did not say. */
 extern long ssa_cost_made, ssa_cost_first;
 
+/* The code the first pass made, kept by gl_function_end before it winds
+ * the backend back: where it began, and its bytes. */
+extern const unsigned char *gl_first_code;
+extern int gl_first_from, gl_first_len;
+
 #endif
 
 #endif
