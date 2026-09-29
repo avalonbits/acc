@@ -191,6 +191,9 @@ than being held in memory. acc's own sources compile and link on the Agon.
   how a source becomes a program, and how it fits in the Agon's memory.
 - [docs/OPTIMIZATIONS.md](docs/OPTIMIZATIONS.md) describes each
   optimization acc makes in the code it generates.
+- [docs/writing-fast-c.md](docs/writing-fast-c.md) is for writing C that
+  acc compiles well: what is cheap, what is a call, and where `register`
+  pays.
 
 ## What the code costs
 

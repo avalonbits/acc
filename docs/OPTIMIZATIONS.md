@@ -26,6 +26,9 @@ program's image is its heap.
 The costs quoted are eZ80 ADL-mode bytes; the cycle figures are from the
 emulator's cycle counter.
 
+How to write C that makes the most of these is in
+[writing-fast-c.md](writing-fast-c.md).
+
 ---
 
 ## 1. Constant folding
@@ -270,6 +273,15 @@ zap's running time.
 **Scratch.** Spill slots are reused within a statement and the area resets
 at its end ([`gen_stmt_end()`](../src/vstack.c#L632)), so a frame holds the most any one
 statement needs, not the sum.
+
+**A local in IY.** One local or parameter a function declares `register`,
+an int or a pointer, lives in IY instead of its frame slot
+([`gen_iy_claim()`](../src/vstack.c#L253)). It is `VAL_IY` on the value stack, with a
+displacement: adding a small constant changes only the displacement, so
+`p + 1` is no code and `p++;` is `inc iy`, and memory through it is
+`(iy+d)`. A read into another register is `lea rr,iy+d`. IY is the
+backend's scratch elsewhere, so in such a function every call and every
+use of IY for something else pushes it first and pops it after.
 
 **Locals within reach.** Locals are kept in the first 96 bytes
 (`NEAR_LOCALS`) of the frame, inside `(ix+d)`'s reach, with room left for
