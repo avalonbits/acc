@@ -115,7 +115,11 @@ static int    nblocks, blocks_cap;
 static const char *fail;        /* why the function is left to the classic */
 
 static int frame_of_value(const Ins *insn);
+static void call(const Ins *insn);
 static int native_on(void);
+static int regs_on(void);
+static int clashes(int one, int two);
+static unsigned char *clash_bits;
 
 /* How deep in loops each block is, and how many calls, weighted so, each
  * value lives across: see find_loops and find_clashes. */
@@ -313,6 +317,95 @@ static int block_at(int old_at)
     return 0;
 }
 
+/* The scratch of each call compiled in place: where the first pass put its
+ * parameters. */
+typedef struct {
+    int from, size;
+} Inlined;
+
+static Inlined *inlined;
+static int      ninlined, inlined_cap;
+
+/* The inlined calls' scratch, the regions that overlap merged -- the
+ * same scratch is taken again by the next call compiled in place -- and
+ * where each is now: a parameter that did not become values is read and
+ * written there, in a slot of this frame's own, as the first pass's
+ * scratch is the code made here's to use. */
+static int  nmerged;
+
+static void inline_merge(void)
+{
+    int at, into;
+
+    for (at = 1; at < ninlined; at++) {         /* by where each starts */
+        Inlined key = inlined[at];
+        int back = at - 1;
+
+        while (back >= 0 && inlined[back].from > key.from) {
+            inlined[back + 1] = inlined[back];
+            back--;
+        }
+        inlined[back + 1] = key;
+    }
+    nmerged = 0;
+    for (at = 0; at != ninlined; at++) {
+        if (nmerged && inlined[at].from
+            <= inlined[nmerged - 1].from + inlined[nmerged - 1].size) {
+            int end = inlined[at].from + inlined[at].size;
+
+            into = nmerged - 1;
+            if (end > inlined[into].from + inlined[into].size)
+                inlined[into].size = end - inlined[into].from;
+        } else {
+            inlined[nmerged++] = inlined[at];
+        }
+    }
+}
+
+/* The frame laid out again: each of the first pass's locals that is still
+ * read or written in memory, and each inlined call's scratch, where it is
+ * now -- a local that became values has no room at all -- so that every
+ * offset the log names is moved to its place here. */
+typedef struct {
+    int from, size, to;
+} Moved_local;
+
+static Moved_local *local_moves;
+static int          nlocal_moves, local_moves_cap;
+
+static void local_move(int from, int size, int to)
+{
+    GROW(local_moves, nlocal_moves, local_moves_cap);
+    local_moves[nlocal_moves].from = from;
+    local_moves[nlocal_moves].size = size;
+    local_moves[nlocal_moves].to = to;
+    nlocal_moves++;
+}
+
+/* Where the first pass's frame offset `offset` is now: a parameter's, and
+ * anything not moved, where it was. */
+static int inline_moved(int offset)
+{
+    int at;
+
+    for (at = 0; at != nlocal_moves; at++)
+        if (offset >= local_moves[at].from
+            && offset < local_moves[at].from + local_moves[at].size)
+            return offset - local_moves[at].from + local_moves[at].to;
+
+    return offset;
+}
+
+/* The merged regions, each a slot of this frame. */
+static void inline_slots(void)
+{
+    int region;
+
+    for (region = 0; region != nmerged; region++)
+        local_move(inlined[region].from, inlined[region].size,
+                   gen_local(inlined[region].size));
+}
+
 /* Whether a call is a query or a check, which changes nothing. */
 static int query(int op)
 {
@@ -501,8 +594,23 @@ static void build_one(const GenRec *rec)
     case GL_RAW:
         fail = "a static local's bytes";
         return;
-    case GL_gen_inline_begin: case GL_gen_inline_end:
-        fail = "code inlined in place";
+    case GL_gen_inline_begin:
+        /* A call compiled in place: its parameters are locals in the
+         * scratch the first pass gave them, and locals become values. Kept
+         * to check that they all did (inline_left). */
+        GROW(inlined, ninlined, inlined_cap);
+        inlined[ninlined].from = (int) rec->ret;
+        inlined[ninlined].size = (int) rec->arg[0];
+        ninlined++;
+        return;
+    case GL_gen_inline_end:
+        return;
+    case GL_vpush_reg:
+        /* The answer of a call compiled in place, popped into a register
+         * and pushed as it: the value it was. */
+        if (rec != gl_log && rec[-1].op == GL_vpop_reg)
+            return;
+        fail = "a register pushed by the parser";
         return;
     case GL_gen_stack_take: case GL_gen_stack_mark: case GL_gen_stack_back:
         fail = "an array whose length is known when it runs";
@@ -517,9 +625,6 @@ static void build_one(const GenRec *rec)
         return;
     case GL_gen_mark: case GL_gen_rollback:
         fail = "internal: a mark left in the log";
-        return;
-    case GL_vpush_reg:
-        fail = "a register pushed by the parser";
         return;
 
     case GL_vdup:
@@ -628,7 +733,11 @@ static void build_one(const GenRec *rec)
         push(result(rec, -1));
         return;
     }
-    if (type_is_struct(rec->top.type)) {
+    /* A struct as a value is the address of it: `p->x` makes one of `*p`
+     * on the way to its member. With OPTACC_REGS it may be, if it stays on
+     * the classic stack for its one read (checked after find_forwarded);
+     * the plain code gives every value a slot, which a struct is not. */
+    if (type_is_struct(rec->top.type) && !regs_on()) {
         fail = "a struct as a value";
         return;
     }
@@ -1350,6 +1459,46 @@ static void to_values(void)
     cur_def = cur_top = NULL;
 }
 
+/* Whether the local gen_local put at `from`, `size` bytes, is values now
+ * and is given no room. */
+static int local_gone(int from, int size)
+{
+    int local = local_of(from);
+
+    return local >= 0 && locals[local].ok && !locals[local].is_param
+           && type_bytes(locals[local].type, locals[local].ext) == size;
+}
+
+/* The bytes of the first pass's locals kept in the frame. */
+static int locals_kept(void)
+{
+    int at, kept = 0;
+
+    for (at = 1; at != ninsns; at++)
+        if (insns[at].op == I_FRAME && insns[at].rec->op == GL_gen_local
+            && !local_gone((int) insns[at].rec->ret, (int) insns[at].rec->arg[0]))
+            kept += (int) insns[at].rec->arg[0];
+
+    return kept;
+}
+
+/* A frame call of the first pass's made again, its local moved to where it
+ * is now -- or not made, for a local that is values now. */
+static void frame_again(const Ins *insn)
+{
+    Ins frame_call = *insn;
+
+    if (insn->rec->op == GL_gen_local) {
+        int from = (int) insn->rec->ret, size = (int) insn->rec->arg[0];
+
+        if (!local_gone(from, size))
+            local_move(from, size, gen_local(size));
+        return;
+    }
+    frame_call.op = frame_call.rec->op;
+    call(&frame_call);
+}
+
 /* A step of a local -- p++ -- moved down to just after the last read of
  * the value it steps, in its block: `*p++` reads the old p after the step
  * is made, so the two were live at once and could not share a home, and
@@ -1656,10 +1805,10 @@ static void call(const Ins *insn)
         break;
     }
     case GL_vconvert:           vconvert(ARG(0, Type)); break;
-    case GL_vpush_local:        vpush_local(ARG(0, int), ARG(1, Type)); break;
-    case GL_vstore_local:       vstore_local(ARG(0, int), ARG(1, Type)); break;
+    case GL_vpush_local:        vpush_local(inline_moved(ARG(0, int)), ARG(1, Type)); break;
+    case GL_vstore_local:       vstore_local(inline_moved(ARG(0, int)), ARG(1, Type)); break;
     case GL_vapply:             vapply(ARG(0, unsigned char), ARG(1, Type)); break;
-    case GL_vaddr_local:        vaddr_local(ARG(0, int), ARG(1, Type)); break;
+    case GL_vaddr_local:        vaddr_local(inline_moved(ARG(0, int)), ARG(1, Type)); break;
     case GL_vaddr_array:        vaddr_array(ARG(0, int), ARG(1, Type)); break;
     case GL_vderef:             vderef(); break;
     case GL_vmember:
@@ -1677,10 +1826,10 @@ static void call(const Ins *insn)
     case GL_vpush_function:     vpush_function(ARG(0, int)); break;
     case GL_vpush_global_addr:  vpush_global_addr(ARG(0, int)); break;
     case GL_vprefix_local:
-        vprefix_local(ARG(0, int), ARG(1, Type), ARG(2, int), ARG(3, int));
+        vprefix_local(inline_moved(ARG(0, int)), ARG(1, Type), ARG(2, int), ARG(3, int));
         break;
     case GL_vpostfix_local:
-        vpostfix_local(ARG(0, int), ARG(1, Type), ARG(2, int), ARG(3, int));
+        vpostfix_local(inline_moved(ARG(0, int)), ARG(1, Type), ARG(2, int), ARG(3, int));
         break;
     case GL_vprefix_indirect:   vprefix_indirect(ARG(0, int)); break;
     case GL_vpostfix_indirect:  vpostfix_indirect(ARG(0, int)); break;
@@ -1713,10 +1862,10 @@ static void call(const Ins *insn)
         gen_local_array_size(ARG(0, int), ARG(1, int));
         break;
     case GL_gen_iy_claim:
-        gen_iy_claim(ARG(0, int), ARG(1, Type), ARG(2, int));
+        gen_iy_claim(inline_moved(ARG(0, int)), ARG(1, Type), ARG(2, int));
         break;
     case GL_gen_iy_param:       gen_iy_param(ARG(0, int)); break;
-    case GL_gen_iy_take:        gen_iy_take(ARG(0, int)); break;
+    case GL_gen_iy_take:        gen_iy_take(inline_moved(ARG(0, int))); break;
     case GL_gen_func_begin:
         gen_func_begin(ARG(0, int), ARG(1, int), ARG(2, Type));
         break;
@@ -1785,6 +1934,24 @@ static int  iy_web = -1;        /* the web in IY, or -1 */
 
 #define IY_SLOT 1
 
+/* With the clashes found (OPTACC_REGS), whether a web may not share slot
+ * `slot`: one of its values clashes with one of a web already there. */
+static int slot_clashes(int slot, int root)
+{
+    int other, left, right;
+
+    for (other = 0; other != nvals; other++) {
+        if (slot_of[other] != slot || web_root(other) != other)
+            continue;
+        for (left = root; left >= 0; left = web_next[left])
+            for (right = other; right >= 0; right = web_next[right])
+                if (clashes(left, right))
+                    return 1;
+    }
+
+    return 0;
+}
+
 static int plan_slots(void)
 {
     int *free_at, val, slot, bytes = 0;
@@ -1795,6 +1962,8 @@ static int plan_slots(void)
     if (!slot_of || !slot_size || !free_at)
         acc_error("out of memory for the SSA form");
     nslots = 0;
+    for (val = 0; val != nvals; val++)
+        slot_of[val] = -1;              /* none yet: slot_clashes reads ahead */
 
     /* A slot a web: each of its values in it, for the web's whole span. */
     for (val = 0; val != nvals; val++) {
@@ -1817,7 +1986,9 @@ static int plan_slots(void)
         if (size < ACC_INT_SIZE)
             size = ACC_INT_SIZE;
         for (slot = 0; slot != nslots; slot++)
-            if (free_at[slot] < first && slot_size[slot] == size)
+            if (slot_size[slot] == size
+                && (clash_bits ? !slot_clashes(slot, val)
+                               : free_at[slot] < first))
                 break;
         if (slot == nslots) {
             slot_size[slot] = size;
@@ -1834,8 +2005,13 @@ static int plan_slots(void)
     free(free_at);
 
     /* The first pass's locals are all taken by now: what is left in reach
-     * is what gen_local_fits says. */
-    if (bytes && !gen_local_fits(bytes)) {
+     * is what gen_local_fits says. The inlined calls' scratch, moved into
+     * the frame, is in it too. */
+    for (slot = 0; slot != nmerged; slot++)
+        bytes += inlined[slot].size;
+    /* Against the locals kept -- gen_local_fits counts from locals_size,
+     * which the first pass left at all of them. */
+    if (bytes && !gen_local_fits(bytes + locals_kept() - locals_size)) {
         fail = "more values than the frame can reach";
         return 0;
     }
@@ -2062,12 +2238,13 @@ static void emit_insn(const Ins *insn, int blk, int at)
         emit_branch(insn, blk);
         break;
     case GL_gen_switch_load:
-        gen_switch_load((int) insn->rec->arg[0], (Type) insn->rec->arg[1]);
+        gen_switch_load(inline_moved((int) insn->rec->arg[0]),
+                        (Type) insn->rec->arg[1]);
         break;
     case GL_gen_switch_case:
         gen_switch_case(insn->rec->arg[0], (uint32_t) insn->rec->arg[1],
                         (Type) insn->rec->arg[2], block_now[insn->target],
-                        (int) insn->rec->arg[4]);
+                        inline_moved((int) insn->rec->arg[4]));
         break;
     default:
         for (operand = 0; operand != insn->nin; operand++)
@@ -2097,14 +2274,12 @@ static void emit(void)
     /* The prologue, and the frame as the first pass laid it out -- but
      * for the local in IY, if it is values now. */
     call(&insns[0]);
+    nlocal_moves = 0;
     for (at = 1; at != ninsns; at++)
-        if (insns[at].op == I_FRAME && !frame_of_value(&insns[at])) {
-            Ins frame_call = insns[at];
-
-            frame_call.op = frame_call.rec->op;
-            call(&frame_call);
-        }
+        if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
+            frame_again(&insns[at]);
     give_slots();
+    inline_slots();
 
     /* Each parameter that is values now, from its slot into its first. */
     for (local = 0; local != nlocals; local++)
@@ -2310,7 +2485,7 @@ static int homes_wanted(void)
  * and the phis and parameters, made at the top of a block, with every value
  * live there. Found walking each block back from what is live out of it,
  * which also finds each operand that is the last read of its value. */
-static unsigned char *clash_bits, *live_top;
+static unsigned char *live_top;
 static size_t clash_stride;
 
 static int clashes(int one, int two)
@@ -3770,14 +3945,15 @@ static void emit_insn_regs(const Ins *insn, int blk, int at)
         break;
     case GL_gen_switch_load:
         pins_restore();
-        gen_switch_load((int) insn->rec->arg[0], (Type) insn->rec->arg[1]);
+        gen_switch_load(inline_moved((int) insn->rec->arg[0]),
+                        (Type) insn->rec->arg[1]);
         pins_check();
         break;
     case GL_gen_switch_case:
         pins_restore();
         gen_switch_case(insn->rec->arg[0], (uint32_t) insn->rec->arg[1],
                         (Type) insn->rec->arg[2], block_now[insn->target],
-                        (int) insn->rec->arg[4]);
+                        inline_moved((int) insn->rec->arg[4]));
         pins_check();
         break;
     case GL_gen_return:
@@ -4005,14 +4181,12 @@ static void emit_regs(void)
 
     blocks_from = out_here();
     call(&insns[0]);
+    nlocal_moves = 0;
     for (at = 1; at != ninsns; at++)
-        if (insns[at].op == I_FRAME && !frame_of_value(&insns[at])) {
-            Ins frame_call = insns[at];
-
-            frame_call.op = frame_call.rec->op;
-            call(&frame_call);
-        }
+        if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
+            frame_again(&insns[at]);
     give_slots();
+    inline_slots();
 
     /* Each parameter that is values now, from its slot into its first
      * value's register or slot. */
@@ -4181,7 +4355,7 @@ int ssa_generate(const char **why)
 
     if (!keep)
         acc_error("out of memory for the SSA form");
-    ninsns = nvals = nblocks = nholes = nheres = nstk = 0;
+    ninsns = nvals = nblocks = nholes = nheres = nstk = ninlined = nmerged = 0;
     fail = NULL;
     ssa_cost_made = ssa_cost_first = 0;
     keep_records(gl_log, gl_n, keep);
@@ -4206,19 +4380,30 @@ int ssa_generate(const char **why)
     }
     thread_answers();
     to_values();
+    inline_merge();
     if (!fail && regs_on())
         sink_steps();
     if (!fail) {
         live_ranges();
         if (regs_on()) {
+            int val;
+
             find_forwarded();
-            find_clashes();
+            for (val = 0; val != nvals && !fail; val++)
+                if (type_is_struct(vals[val].type) && !vals[val].fwd
+                    && vals[val].used)
+                    fail = "a struct as a value";   /* one never read is
+                                                     * dropped, and fine */
+            if (!fail)
+                find_clashes();
         }
-        coalesce();
-        if (regs_on())
-            plan_homes();
-        if (getenv("OPTACC_SSA_DUMP"))
-            dump();
+        if (!fail) {
+            coalesce();
+            if (regs_on())
+                plan_homes();
+            if (getenv("OPTACC_SSA_DUMP"))
+                dump();
+        }
     }
     if (fail || !plan_slots()) {
         *why = fail;
