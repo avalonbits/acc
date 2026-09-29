@@ -127,7 +127,7 @@ ssa() {
     printf '%s\n' "$3" > "$tmp/c.c"
     rm -f "$tmp/c.o"
     got=$(OPTACC_SSA=1 OPTACC_SSA_STATS=1 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 \
-          | grep '^ssa ' | head -1)
+          | grep '^ssa f ' | head -1)
     if [ "$got" = "$want" ]; then
         pass=$((pass + 1))
     else
@@ -234,6 +234,21 @@ all "$OPT" "an unsigned char tested for 0 in its register" 79b7       yes "$byte
 all "$OPT" "and stepped there"                            0d18       yes "$byte"
 all "$OPT" "p++ after *p, in place"                       6f137d     yes "$byte"
 all "$OPT" "a signed comparison borrowing DE"             d1b7ed52d1 yes "$dirs"
+
+# More functions reach the SSA form: a call compiled in place, its
+# parameters locals that become values; `(*p).x`, which makes a struct of
+# *p on the way to its member; and the frame laid out again without the
+# locals that became values -- nine bytes of them here, where three are
+# kept.
+OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
+    ssa "a call compiled in place"   "ssa f made" \
+    '__attribute__((always_inline)) static inline int sq(int x) { return x * x + 1; } int f(int a) { int s = 0; for (int i = 0; i < a; i++) s += sq(i); return s; }'
+OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
+    ssa "a struct read for a member" "ssa f made" \
+    'struct s { int a, b; }; int f(struct s *p, int i) { return p[i].b + (*p).a; }'
+frame='int f(int a) { int x = a + 1, y = x * 2, z = y - 3; return z; }'
+all "$OPT" "the frame without the locals made values"  21fdffff yes "$frame"
+emits "$OPT" "which the first pass's has"              21f7ffff yes "$frame"
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
