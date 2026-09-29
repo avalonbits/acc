@@ -38,6 +38,11 @@ const char *gl_kept(long at);
  * function uses something the builder does not handle yet. */
 int ssa_generate(const char **why);
 
+/* And what the code it made would cost to run, against what the first
+ * pass made: bytes, each block's counted eight times over for each loop
+ * around it. Both 0 when it did not say. */
+extern long ssa_cost_made, ssa_cost_first;
+
 #endif
 
 #endif

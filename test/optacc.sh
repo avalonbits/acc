@@ -202,5 +202,15 @@ regs "$OPT" "a comparison with BC where it is"   37ed42  yes "$native"
 regs "$OPT" "a step of BC where it is"           360003  yes "$native"
 emits "$OPT" "neither, from the classic backend" 37ed42  no  "$native"
 
+# And each function made either way is kept the way that costs less to
+# run: bytes, each block's counted eight times over for each loop around
+# it. A loop on a counter that lives in BC is cheaper made from SSA; one
+# that works a short through gen.h is cheaper as the first pass made it.
+short='unsigned f(unsigned short c, int n) { while (n--) c = c & 0x8000 ? (unsigned short) (c << 1) ^ 0x1021 : (unsigned short) (c << 1); return c; }'
+OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 \
+    ssa "a loop on BC, kept"                "ssa f made" "$native"
+OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 \
+    ssa "a short worked by gen.h, not kept" "ssa f the first pass's code is cheaper" "$short"
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

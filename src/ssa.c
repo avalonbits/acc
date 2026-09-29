@@ -2571,8 +2571,9 @@ static void plan_fixed(const int *order, int nroots)
 
         for (member = root; member >= 0; member = web_next[member])
             if (vals[member].fwd || vals[member].reg != HOME_SLOT
-                || !reg_eligible(member) || !gen_iy_can(vals[member].type))
-                fits = 0;
+                || !reg_eligible(member) || !gen_iy_can(vals[member].type)
+                || type_size(vals[member].type) != ACC_INT_SIZE)
+                fits = 0;           /* a narrow one is widened at each read */
 
         /* Nor a parameter out of (ix+d)'s reach: the classic backend
          * reaches one through IY, which it cannot then load into IY. */
@@ -2948,7 +2949,9 @@ static void settle_as(int val, int converted)
      * type but not yet its width -- `w - 1` of an unsigned char is -1 there
      * until a store to a byte cuts it. Kept in a register, it is cut now. */
     if (!converted && type_size(vals[val].type) < ACC_INT_SIZE
-        && (vsp - 1)->kind == VAL_REG) {
+        && (vsp - 1)->kind == VAL_REG
+        && !(type_unsigned(vals[val].type)
+             && vwidth(vsp - 1) <= type_size(vals[val].type))) {
         (vsp - 1)->type = TY_INT;
         vconvert(vals[val].type);
     }
@@ -3635,9 +3638,57 @@ static void emit_insn_regs(const Ins *insn, int blk, int at)
         pins_restore();
 }
 
+long ssa_cost_made, ssa_cost_first;
+
+static long block_weight(int blk)
+{
+    int depth = loop_depth[blk];
+
+    return 1L << (3 * (depth > 5 ? 5 : depth));
+}
+
+/* What each would cost: the bytes each block took, weighted by its loops
+ * -- the first pass's from where each of its calls ended, the log's
+ * records falling to the blocks their instructions are in. */
+static void costs(const int *block_start, int end)
+{
+    int *block_of = malloc(((size_t) gl_n + 1) * sizeof *block_of);
+    int at, blk = 0, before;
+
+    if (!block_of)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != gl_n; at++)
+        block_of[at] = -1;
+    for (at = 0; at != ninsns; at++)
+        if (insns[at].rec)
+            block_of[insns[at].rec - gl_log] = insns[at].block;
+    ssa_cost_first = 0;
+    before = gl_log[0].at_after;
+    for (at = 1; at != gl_n; at++) {
+        if (block_of[at] >= 0)
+            blk = block_of[at];
+        ssa_cost_first += block_weight(blk) * (gl_log[at].at_after - before);
+        before = gl_log[at].at_after;
+    }
+    free(block_of);
+
+    ssa_cost_made = 0;
+    for (blk = 0; blk != nblocks; blk++) {
+        int next = end;
+
+        for (at = blk + 1; at != nblocks; at++)
+            if (block_start[at] >= 0) {
+                next = block_start[at];
+                break;
+            }
+        if (block_start[blk] >= 0)
+            ssa_cost_made += block_weight(blk) * (next - block_start[blk]);
+    }
+}
+
 static void emit_regs(void)
 {
-    int at, blk, local;
+    int at, blk, local, *block_start;
 
     block_now = malloc((size_t) nblocks * sizeof *block_now);
     if (!block_now)
@@ -3649,6 +3700,11 @@ static void emit_regs(void)
     ntrampolines = 0;
     npins = 0;
     skip_branch = -1;
+    block_start = malloc(((size_t) nblocks + 1) * sizeof *block_start);
+    if (!block_start)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != nblocks; at++)
+        block_start[at] = -1;
 
     call(&insns[0]);
     for (at = 1; at != ninsns; at++)
@@ -3687,6 +3743,9 @@ static void emit_regs(void)
 
         if (blk)
             emit_block_start(blk);
+        else
+            block_now[0] = out_here();
+        block_start[blk] = block_now[blk];
         pins_block_start(blk);
         for (at = blocks[blk].first; at != end && !fail; at++) {
             if (at == 0)
@@ -3711,6 +3770,9 @@ static void emit_regs(void)
         emit_trampolines();
         gen_label(over);
     }
+    if (!fail)
+        costs(block_start, out_here());
+    free(block_start);
     free(block_now);
     block_now = NULL;
 }
@@ -3823,6 +3885,7 @@ int ssa_generate(const char **why)
         acc_error("out of memory for the SSA form");
     ninsns = nvals = nblocks = nholes = nheres = nstk = 0;
     fail = NULL;
+    ssa_cost_made = ssa_cost_first = 0;
     keep_records(gl_log, gl_n, keep);
 
     new_block(-1);

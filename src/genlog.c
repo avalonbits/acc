@@ -438,12 +438,24 @@ static void gl_function_end(void)
         const char *why = NULL;
         int made = ssa_generate(&why);
 
-        if (getenv("OPTACC_SSA_STATS"))
-            fprintf(stderr, "ssa %s %s\n", name_text(sym_at(gl_fn)->name),
-                    made > 0 ? "made" : why);
         if (made < 0)
             acc_error("internal: generating %s from its SSA form: %s",
                       name_text(sym_at(gl_fn)->name), why);
+
+        /* Made, but costlier to run than what the first pass made: back
+         * again, and that replayed instead. OPTACC_PICK=0 keeps it. */
+        if (made > 0 && ssa_cost_made > ssa_cost_first
+            && !(getenv("OPTACC_PICK") && *getenv("OPTACC_PICK") == '0')) {
+            made = 0;
+            why = "the first pass's code is cheaper";
+            gen_rollback(&gl_start);
+            relax_state(&gl_start_nwants, &gl_start_nstatics, 1);
+            finish_state(gl_start_finish, 1);
+            gl_marks(gl_start_marks, 1);
+        }
+        if (getenv("OPTACC_SSA_STATS"))
+            fprintf(stderr, "ssa %s %s\n", name_text(sym_at(gl_fn)->name),
+                    made > 0 ? "made" : why);
         if (made > 0) {
             free(first);
             free(first_relocs);
