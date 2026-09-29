@@ -51,17 +51,17 @@ int     iy_nwants;
 /* macros                                                              */
 
 /* A name's hash, as the walk works it out: its bytes, doubled and added. */
-static unsigned char ps_hash_of(const char *t, unsigned char *len)
+static unsigned char ps_hash_of(const char *text, unsigned char *len)
 {
-    unsigned char h = 0, n = 0;
+    unsigned char hash = 0, count = 0;
 
-    while (t[n]) {
-        h = (unsigned char) ((h << 1) + (unsigned char) t[n]);
-        n++;
+    while (text[count]) {
+        hash = (unsigned char) ((hash << 1) + (unsigned char) text[count]);
+        count++;
     }
-    *len = n;
+    *len = count;
 
-    return h;
+    return hash;
 }
 
 /* Which hashes a macro that may take an address has: a bit for each. A
@@ -70,52 +70,52 @@ static unsigned char ps_hash_of(const char *t, unsigned char *len)
  * ever set. */
 unsigned char ps_risk[32];
 
-static void ps_risky(Macro *m)
+static void ps_risky(Macro *macro)
 {
-    unsigned char len, h = ps_hash_of(name_text(m->name), &len);
+    unsigned char len, hash = ps_hash_of(name_text(macro->name), &len);
 
-    m->amp = 1;
-    ps_risk[h >> 3] |= (unsigned char) (1 << (h & 7));
+    macro->amp = 1;
+    ps_risk[hash >> 3] |= (unsigned char) (1 << (hash & 7));
 }
 
 /* Whether a macro's text has an `&` that could take an address, or names a
  * macro that may. An `&` after a name, a number, `)` or `]` is an AND,
  * which takes nothing; one after anything else, or at the start, may. */
-static int macro_text_amp(const char *t)
+static int macro_text_amp(const char *text)
 {
     char prev = '(';                    /* the last byte that was not a space */
 
-    for (; *t; t++) {
-        if (*t == '&') {
-            if (t[1] == '&' || t[1] == '=') {
-                t++;
+    for (; *text; text++) {
+        if (*text == '&') {
+            if (text[1] == '&' || text[1] == '=') {
+                text++;
             } else if (!(prev == ')' || prev == ']' || prev == '_'
                          || ((prev | 0x20) >= 'a' && (prev | 0x20) <= 'z')
                          || (prev >= '0' && prev <= '9'))) {
                 return 1;
             }
             prev = '&';
-        } else if (*t == '_' || ((*t | 0x20) >= 'a' && (*t | 0x20) <= 'z')) {
-            const char *s = t;
-            unsigned char h = 0;
-            NameRef n;
-            Macro *m;
+        } else if (*text == '_' || ((*text | 0x20) >= 'a' && (*text | 0x20) <= 'z')) {
+            const char *start = text;
+            unsigned char hash = 0;
+            NameRef name;
+            Macro *macro;
 
-            while (*t == '_' || ((*t | 0x20) >= 'a' && (*t | 0x20) <= 'z')
-                   || (*t >= '0' && *t <= '9')) {
-                h = (unsigned char) ((h << 1) + (unsigned char) *t);
-                t++;
+            while (*text == '_' || ((*text | 0x20) >= 'a' && (*text | 0x20) <= 'z')
+                   || (*text >= '0' && *text <= '9')) {
+                hash = (unsigned char) ((hash << 1) + (unsigned char) *text);
+                text++;
             }
-            if (ps_risk[h >> 3] & (1 << (h & 7))) {
-                n = name_intern(s, (int) (t - s));
-                m = macro_find(n);
-                if (m && m->amp)
+            if (ps_risk[hash >> 3] & (1 << (hash & 7))) {
+                name = name_intern(start, (int) (text - start));
+                macro = macro_find(name);
+                if (macro && macro->amp)
                     return 1;
             }
-            t--;
+            text--;
             prev = 'a';
-        } else if (*t != ' ' && *t != '\t') {
-            prev = *t;
+        } else if (*text != ' ' && *text != '\t') {
+            prev = *text;
         }
     }
 
@@ -123,12 +123,12 @@ static int macro_text_amp(const char *t)
 }
 
 /* Whether a macro's text names `name`, as a whole word. */
-static int macro_names(const char *t, const char *name, size_t len)
+static int macro_names(const char *text, const char *name, size_t len)
 {
-    const char *at = t;
+    const char *at = text;
 
     while ((at = strstr(at, name)) != NULL) {
-        char before = at == t ? ' ' : at[-1], after = at[len];
+        char before = at == text ? ' ' : at[-1], after = at[len];
 
         if (!(before == '_' || ((before | 0x20) >= 'a' && (before | 0x20) <= 'z')
               || (before >= '0' && before <= '9'))
@@ -145,28 +145,28 @@ static int macro_names(const char *t, const char *name, size_t len)
  * that names it may too, found by their text -- and every one that names
  * one of those. Rare enough to be worth nothing: macros that take
  * addresses are few. */
-static void ps_spread(Macro *m)
+static void ps_spread(Macro *macro)
 {
-    const char *name = name_text(m->name);
+    const char *name = name_text(macro->name);
     size_t len = strlen(name);
-    unsigned i;
+    unsigned slot;
 
-    ps_risky(m);
-    for (i = 0; i != nmacro_slots; i++) {
-        Macro *o = macros[i];
+    ps_risky(macro);
+    for (slot = 0; slot != nmacro_slots; slot++) {
+        Macro *other = macros[slot];
 
-        if (o && !o->amp && o->text && macro_names(o->text, name, len))
-            ps_spread(o);
+        if (other && !other->amp && other->text && macro_names(other->text, name, len))
+            ps_spread(other);
     }
 }
 
 /* A macro just defined: whether its expansion may take an address, which
  * rules out every body that uses it. */
-void prescan_macro(Macro *m)
+void prescan_macro(Macro *macro)
 {
-    m->amp = 0;
-    if (m->text && macro_text_amp(m->text))
-        ps_spread(m);
+    macro->amp = 0;
+    if (macro->text && macro_text_amp(macro->text))
+        ps_spread(macro);
 }
 
 /* ------------------------------------------------------------------ */
@@ -218,36 +218,36 @@ static PsName **ps_slot_of(unsigned char hash)
  * what it was used for is not kept, and a name not kept is never chosen. */
 PsName ps_spare;
 
-static PsName *ps_find(const char *p, unsigned char len, unsigned char hash)
+static PsName *ps_find(const char *bytes, unsigned char len, unsigned char hash)
 {
-    PsName **slot = ps_slot_of(hash), *e;
+    PsName **slot = ps_slot_of(hash), *ent;
 
-    while ((e = *slot) != NULL) {
-        if (e->hash == hash && e->len == len && !memcmp(e->text, p, len))
-            return e;
+    while ((ent = *slot) != NULL) {
+        if (ent->hash == hash && ent->len == len && !memcmp(ent->text, bytes, len))
+            return ent;
         if (++slot == ps_slot + PS_SLOTS)
             slot = ps_slot;
     }
     if (ps_end == ps_names + PS_NAMES
         || ps_arena_end + len > ps_arena + PS_ARENA) {
-        e = &ps_spare;
-        e->text = p;
+        ent = &ps_spare;
+        ent->text = bytes;
     } else {
-        e = ps_end++;
-        *slot = e;
-        memcpy(ps_arena_end, p, len);
-        e->text = ps_arena_end;
+        ent = ps_end++;
+        *slot = ent;
+        memcpy(ps_arena_end, bytes, len);
+        ent->text = ps_arena_end;
         ps_arena_end += len;
     }
-    e->score = 0;
-    e->calls = 0;
-    e->len = len;
-    e->hash = hash;
-    e->use = 0;
-    e->offset = 0;
-    e->name = NAME_NONE;
+    ent->score = 0;
+    ent->calls = 0;
+    ent->len = len;
+    ent->hash = hash;
+    ent->use = 0;
+    ent->offset = 0;
+    ent->name = NAME_NONE;
 
-    return e;
+    return ent;
 }
 
 /* A new function: only the slots the last one used are cleared, by
@@ -256,14 +256,14 @@ static unsigned char ps_nparams;
 
 void prescan_begin(void)
 {
-    PsName *e;
+    PsName *ent;
 
     if (!ps_end)
         ps_end = ps_names;
-    for (e = ps_names; e != ps_end; e++) {
-        PsName **slot = ps_slot_of(e->hash);
+    for (ent = ps_names; ent != ps_end; ent++) {
+        PsName **slot = ps_slot_of(ent->hash);
 
-        while (*slot != e) {
+        while (*slot != ent) {
             if (++slot == ps_slot + PS_SLOTS)
                 slot = ps_slot;
         }
@@ -296,18 +296,18 @@ void prescan_param(NameRef name, int offset, int can)
 /* The parameters noted, into the table, once the body is to be walked. */
 static void ps_params(void)
 {
-    unsigned char i;
+    unsigned char param;
 
-    for (i = 0; i != ps_nparams; i++) {
-        const char *t = name_text(ps_param_name[i]);
-        unsigned char len, hash = ps_hash_of(t, &len);
-        PsName *e = ps_find(t, len, hash);
+    for (param = 0; param != ps_nparams; param++) {
+        const char *text = name_text(ps_param_name[param]);
+        unsigned char len, hash = ps_hash_of(text, &len);
+        PsName *ent = ps_find(text, len, hash);
 
-        if (e == &ps_spare)
+        if (ent == &ps_spare)
             return;
-        e->offset = ps_param_at[i];
-        e->use = ps_param_can[i] ? U_CAN : 0;
-        e->name = ps_param_name[i];
+        ent->offset = ps_param_at[param];
+        ent->use = ps_param_can[param] ? U_CAN : 0;
+        ent->name = ps_param_name[param];
     }
 }
 
@@ -335,7 +335,7 @@ static long  ps_seek;
 
 /* At the 0 that ends what is in hand: the next piece, or NULL at the end
  * of the text. */
-static const unsigned char *ps_next_piece(const unsigned char *p)
+static const unsigned char *ps_next_piece(const unsigned char *pos)
 {
     int keep, total, cut;
 
@@ -354,7 +354,7 @@ static const unsigned char *ps_next_piece(const unsigned char *p)
         }
     } else {
         keep = ps_part;
-        memmove(ps_buf, p + 1, (size_t) keep);
+        memmove(ps_buf, pos + 1, (size_t) keep);
     }
     total = keep;
     if (src_file) {
@@ -385,30 +385,30 @@ static const unsigned char *ps_next_piece(const unsigned char *p)
  * directive's line, from p: where it ends, or NULL if the text does.
  * `until` is the closing quote, '*' for a block comment, or '\n' for the
  * rest of the line; a backslash escapes what follows, a newline too. */
-static const unsigned char *ps_skip(const unsigned char *p, int until)
+static const unsigned char *ps_skip(const unsigned char *pos, int until)
 {
     int star = 0;
 
     for (;;) {
-        int c = *p;
+        int ch = *pos;
 
-        if (c == 0) {
-            p = ps_next_piece(p);
-            if (!p)
+        if (ch == 0) {
+            pos = ps_next_piece(pos);
+            if (!pos)
                 return NULL;
             continue;
         }
-        p++;
+        pos++;
         if (until == '*') {                     /* a block comment */
-            if (star && c == '/')
-                return p;
-            star = c == '*';
-        } else if (c == '\\') {
-            if (*p == 0)
+            if (star && ch == '/')
+                return pos;
+            star = ch == '*';
+        } else if (ch == '\\') {
+            if (*pos == 0)
                 continue;
-            p++;
-        } else if (c == until || c == '\n') {
-            return p;           /* a line's end ends a quote too, as an error */
+            pos++;
+        } else if (ch == until || ch == '\n') {
+            return pos;           /* a line's end ends a quote too, as an error */
         }
     }
 }
@@ -425,7 +425,7 @@ unsigned char ps_loop_next;     /* a loop's body comes next */
 unsigned char ps_member, ps_amp, ps_level;
 int           ps_weight;        /* what a use counts: 8 in a loop */
 const unsigned char *ps_wp;     /* where the walk is */
-PsName       *ps_risk_e;        /* a name the walk stopped for */
+PsName       *ps_risk_ent;        /* a name the walk stopped for */
 unsigned char ps_tk;            /* a quote ps_walk stopped at */
 
 /* What ps_walk stops for. */
@@ -445,24 +445,24 @@ unsigned char ps_tk;            /* a quote ps_walk stopped at */
  * known by their spelling. */
 static int ps_walk(void)
 {
-    const unsigned char *p = ps_wp;
+    const unsigned char *pos = ps_wp;
 
     for (;;) {
-        unsigned char c, hash = 0, len = 0;
-        const unsigned char *s, *q;
-        PsName *e, *before;
+        unsigned char ch, hash = 0, len = 0;
+        const unsigned char *start, *after;
+        PsName *ent, *before;
 
-        while (ps_class[*p] & C_SPACE)
-            p++;
-        c = *p;
-        if (ps_class[c] & C_END) {
-            ps_wp = p;
+        while (ps_class[*pos] & C_SPACE)
+            pos++;
+        ch = *pos;
+        if (ps_class[ch] & C_END) {
+            ps_wp = pos;
             return W_END;
         }
 
         /* A loop's body that is not braced is the statement that starts
          * here, up to its `;`. */
-        if (ps_loop_next && c != '{') {
+        if (ps_loop_next && ch != '{') {
             ps_loop_next = 0;
             ps_stmt = 1;
         }
@@ -472,90 +472,90 @@ static int ps_walk(void)
                         : ps_level == 2 ? 64 : 512;
         }
 
-        if (ps_class[c] & C_NAME) {
-            if (c >= '0' && c <= '9') {         /* a number */
+        if (ps_class[ch] & C_NAME) {
+            if (ch >= '0' && ch <= '9') {         /* a number */
                 do
-                    p++;
-                while (ps_class[*p] & C_NAME || *p == '.');
+                    pos++;
+                while (ps_class[*pos] & C_NAME || *pos == '.');
                 ps_amp = 0;
                 continue;
             }
-            s = p;
-            while (ps_class[*p] & C_NAME) {
-                hash = (unsigned char) ((hash << 1) + *p);
+            start = pos;
+            while (ps_class[*pos] & C_NAME) {
+                hash = (unsigned char) ((hash << 1) + *pos);
                 len++;
-                p++;
+                pos++;
             }
-            if (len == 1 && c == 'L' && (*p == '\'' || *p == '"')) {
-                ps_wp = p;
+            if (len == 1 && ch == 'L' && (*pos == '\'' || *pos == '"')) {
+                ps_wp = pos;
                 return W_WIDE;
             }
             if (ps_member) {                    /* s.n and s->n */
                 ps_member = 0;
                 continue;
             }
-            if ((len == 3 && s[0] == 'f' && s[1] == 'o' && s[2] == 'r')
-                || (len == 5 && s[0] == 'w' && s[1] == 'h' && s[2] == 'i'
-                    && s[3] == 'l' && s[4] == 'e')) {
+            if ((len == 3 && start[0] == 'f' && start[1] == 'o' && start[2] == 'r')
+                || (len == 5 && start[0] == 'w' && start[1] == 'h' && start[2] == 'i'
+                    && start[3] == 'l' && start[4] == 'e')) {
                 ps_header = 1;
                 ps_header_parens = ps_parens;
                 continue;
             }
-            if (len == 2 && s[0] == 'd' && s[1] == 'o') {
+            if (len == 2 && start[0] == 'd' && start[1] == 'o') {
                 ps_loop_next = 1;
                 continue;
             }
             before = ps_end;
-            e = ps_find((const char *) s, len, hash);
-            e->score += ps_weight;
+            ent = ps_find((const char *) start, len, hash);
+            ent->score += ps_weight;
             if (ps_amp)
-                e->use |= U_TAKEN;
+                ent->use |= U_TAKEN;
             ps_amp = 0;
-            for (q = p; ps_class[*q] & C_SPACE; q++)
+            for (after = pos; ps_class[*after] & C_SPACE; after++)
                 ;
-            if (*q == '(')
-                e->calls += ps_weight;
+            if (*after == '(')
+                ent->calls += ps_weight;
             /* A name new to the table, with a hash a risky macro has: the C
              * asks whether it is that macro. Only new ones -- what a name
              * is does not change inside a body. */
-            if ((e == &ps_spare || ps_end != before)
+            if ((ent == &ps_spare || ps_end != before)
                 && ps_risk[hash >> 3] & (1 << (hash & 7))) {
-                ps_wp = p;
-                ps_risk_e = e;
+                ps_wp = pos;
+                ps_risk_ent = ent;
                 return W_RISK;
             }
             continue;
         }
 
-        p++;
-        switch (c) {
+        pos++;
+        switch (ch) {
         case '&':
-            if (*p == '&' || *p == '=') {
-                p++;
+            if (*pos == '&' || *pos == '=') {
+                pos++;
                 break;
             }
             ps_amp = 1;
             continue;
         case '-':
-            if (*p != '>')
+            if (*pos != '>')
                 break;
-            p++;
+            pos++;
             /* fall through: -> is . */
         case '.':
             ps_member = 1;
             break;
         case '"':
         case '\'':
-            ps_tk = c;
-            ps_wp = p;
+            ps_tk = ch;
+            ps_wp = pos;
             return W_QUOTE;
         case '/':
-            if (*p != '*' && *p != '/')
+            if (*pos != '*' && *pos != '/')
                 break;
-            ps_wp = p;
+            ps_wp = pos;
             return W_SLASH;
         case '#':
-            ps_wp = p;
+            ps_wp = pos;
             return W_HASH;
         case '(':
             ps_parens++;
@@ -573,18 +573,18 @@ static int ps_walk(void)
             break;
         case '{':
             if (ps_braces == PS_DEPTH) {
-                ps_wp = p;
+                ps_wp = pos;
                 return W_BAD;
             }
-            c = (unsigned char) (ps_loop_next || ps_stmt);
-            ps_loop_brace[ps_braces++] = c;
-            ps_loops += c;
+            ch = (unsigned char) (ps_loop_next || ps_stmt);
+            ps_loop_brace[ps_braces++] = ch;
+            ps_loops += ch;
             ps_loop_next = 0;
             ps_stmt = 0;
             break;
         case '}':
             if (--ps_braces == 0) {
-                ps_wp = p;
+                ps_wp = pos;
                 return W_DONE;
             }
             ps_loops -= ps_loop_brace[ps_braces];
@@ -604,73 +604,73 @@ static int ps_walk(void)
  * costs time: a brace or a keyword in a string or a comment walks a body
  * for nothing, or leaves one unwalked. Text that ends before the braces do
  * says yes, so that the walk, which reads past it, decides. */
-static int ps_has_loop(const unsigned char *p)
+static int ps_has_loop(const unsigned char *pos)
 {
     int braces = 0;
 
     for (;;) {
-        unsigned char c = *p;
+        unsigned char ch = *pos;
 
-        if (ps_class[c] & C_NAME) {
-            const unsigned char *s = p;
+        if (ps_class[ch] & C_NAME) {
+            const unsigned char *start = pos;
 
-            while (ps_class[*p] & C_NAME)
-                p++;
-            if ((p - s == 3 && s[0] == 'f' && s[1] == 'o' && s[2] == 'r')
-                || (p - s == 5 && s[0] == 'w' && s[1] == 'h' && s[2] == 'i'
-                    && s[3] == 'l' && s[4] == 'e')
-                || (p - s == 2 && s[0] == 'd' && s[1] == 'o'))
+            while (ps_class[*pos] & C_NAME)
+                pos++;
+            if ((pos - start == 3 && start[0] == 'f' && start[1] == 'o' && start[2] == 'r')
+                || (pos - start == 5 && start[0] == 'w' && start[1] == 'h' && start[2] == 'i'
+                    && start[3] == 'l' && start[4] == 'e')
+                || (pos - start == 2 && start[0] == 'd' && start[1] == 'o'))
                 return 1;
             continue;
         }
-        if (c == 0)
+        if (ch == 0)
             return 1;
-        if (c == '{')
+        if (ch == '{')
             braces++;
-        else if (c == '}' && --braces == 0)
+        else if (ch == '}' && --braces == 0)
             return 0;
-        p++;
+        pos++;
     }
 }
 
 /* A name's NameRef, asked for the first time it is needed. The spare's
  * is asked each time: it is a different name each time. */
-static NameRef ps_name_of(PsName *e)
+static NameRef ps_name_of(PsName *ent)
 {
-    if (!e->name || e == &ps_spare)
-        e->name = name_intern(e->text, e->len);
+    if (!ent->name || ent == &ps_spare)
+        ent->name = name_intern(ent->text, ent->len);
 
-    return e->name;
+    return ent->name;
 }
 
 /* Whether a called name is something a call is made to, so that a local
  * in IY would be saved around it: a function not compiled in place, a
  * pointer to one in a local, or a name not declared yet. Not a keyword --
  * `if (`, `sizeof (` -- or a macro. */
-static int ps_is_call(PsName *e)
+static int ps_is_call(PsName *ent)
 {
-    NameRef n = ps_name_of(e);
-    int s;
+    NameRef n = ps_name_of(ent);
+    int sym;
 
     if (n < kw_limit || (name_is_macro(n) & NAME_MACRO))
         return 0;
-    s = sym_find(n);
+    sym = sym_find(n);
 
-    return s == SYM_NONE || sym_at(s)->kind != SYM_FUNC || !inline_has(s);
+    return sym == SYM_NONE || sym_at(sym)->kind != SYM_FUNC || !inline_has(sym);
 }
 
 /* Whether a name may be a local of this body -- not a keyword, a macro, or
  * anything declared before the body began -- or is one of its parameters. */
-static int ps_may_be_local(PsName *e)
+static int ps_may_be_local(PsName *ent)
 {
-    NameRef n = ps_name_of(e);
-    int s;
+    NameRef n = ps_name_of(ent);
+    int sym;
 
     if (n < kw_limit || (name_is_macro(n) & NAME_MACRO))
         return 0;
-    s = sym_find(n);
+    sym = sym_find(n);
 
-    return s == SYM_NONE || sym_at(s)->kind == SYM_LOCAL;
+    return sym == SYM_NONE || sym_at(sym)->kind == SYM_LOCAL;
 }
 
 /* The body, from its `{`, which is where `at` points in the window: up to
@@ -681,24 +681,24 @@ static int ps_may_be_local(PsName *e)
  * declares each one, so that is left to it (gen_iy_claim). */
 int prescan_body(const char *at, NameRef *wants, int *param)
 {
-    PsName *e;
-    int n = 0, calls = 0;
+    PsName *ent;
+    int nwant = 0, calls = 0;
 
     *param = 0;
     if (!at || at < src || at >= src_end || *at != '{')
         return 0;
     if (!ps_class['_']) {
-        int c;
+        int byte;
 
-        for (c = 0; c != 256; c++)
-            ps_class[c] = (unsigned char) (c == 0 ? C_END
-                                           : c == ' ' || c == '\t' || c == '\n'
-                                             || c == '\r' || c == '\f'
-                                             || c == '\v' ? C_SPACE
-                                           : c == '_' || c >= 0x80
-                                             || ((c | 0x20) >= 'a'
-                                                 && (c | 0x20) <= 'z')
-                                             || (c >= '0' && c <= '9') ? C_NAME
+        for (byte = 0; byte != 256; byte++)
+            ps_class[byte] = (unsigned char) (byte == 0 ? C_END
+                                           : byte == ' ' || byte == '\t' || byte == '\n'
+                                             || byte == '\r' || byte == '\f'
+                                             || byte == '\v' ? C_SPACE
+                                           : byte == '_' || byte >= 0x80
+                                             || ((byte | 0x20) >= 'a'
+                                                 && (byte | 0x20) <= 'z')
+                                             || (byte >= '0' && byte <= '9') ? C_NAME
                                            : 0);
     }
     if (!ps_has_loop((const unsigned char *) at))
@@ -713,55 +713,55 @@ int prescan_body(const char *at, NameRef *wants, int *param)
     ps_wp = (const unsigned char *) at;
 
     while (!ps_bad) {
-        const unsigned char *p;
-        Macro *m;
+        const unsigned char *pos;
+        Macro *macro;
 
         switch (ps_walk()) {
         case W_END:
-            p = ps_next_piece(ps_wp);
-            if (!p)
+            pos = ps_next_piece(ps_wp);
+            if (!pos)
                 goto out;
-            ps_wp = p;
+            ps_wp = pos;
             break;
         case W_RISK:
             /* A name a risky macro's hash has: whether it is that macro. */
-            m = macro_find(ps_name_of(ps_risk_e));
-            if (m && m->amp)
+            macro = macro_find(ps_name_of(ps_risk_ent));
+            if (macro && macro->amp)
                 ps_bad = 1;
             break;
         case W_WIDE:
-            p = ps_skip(ps_wp + 1, *ps_wp);     /* L'x' and L"x" */
-            if (!p)
+            pos = ps_skip(ps_wp + 1, *ps_wp);     /* L'x' and L"x" */
+            if (!pos)
                 goto out;
-            ps_wp = p;
+            ps_wp = pos;
             ps_amp = 0;
             break;
         case W_QUOTE:
-            p = ps_skip(ps_wp, ps_tk);
-            if (!p)
+            pos = ps_skip(ps_wp, ps_tk);
+            if (!pos)
                 goto out;
-            ps_wp = p;
+            ps_wp = pos;
             ps_amp = 0;
             break;
         case W_SLASH:
-            p = ps_skip(ps_wp + 1, *ps_wp == '*' ? '*' : '\n');
-            if (!p)
+            pos = ps_skip(ps_wp + 1, *ps_wp == '*' ? '*' : '\n');
+            if (!pos)
                 goto out;
-            ps_wp = p;
+            ps_wp = pos;
             break;
         case W_HASH:
             /* A directive: #if and its kind only choose what is compiled,
              * and counting both sides costs nothing. One that defines or
              * brings in text could hide an `&`. */
-            p = ps_wp;
-            while (*p == ' ' || *p == '\t')
-                p++;
-            if (*p == 'd' || *p == 'u' || (p[0] == 'i' && p[1] == 'n'))
+            pos = ps_wp;
+            while (*pos == ' ' || *pos == '\t')
+                pos++;
+            if (*pos == 'd' || *pos == 'u' || (pos[0] == 'i' && pos[1] == 'n'))
                 ps_bad = 1;
-            p = ps_skip(p, '\n');
-            if (!p)
+            pos = ps_skip(pos, '\n');
+            if (!pos)
                 goto out;
-            ps_wp = p;
+            ps_wp = pos;
             break;
         case W_DONE:
             goto done;
@@ -782,9 +782,9 @@ done:
         return 0;
 
     /* The calls a local in IY would be saved around. */
-    for (e = ps_names; e != ps_end; e++)
-        if (e->calls && ps_is_call(e))
-            calls += e->calls;
+    for (ent = ps_names; ent != ps_end; ent++)
+        if (ent->calls && ps_is_call(ent))
+            calls += ent->calls;
 
     /* The best few, used inside a loop and more than those calls cost -- a
      * push and a pop each, about what two of its uses save. A parameter is
@@ -792,23 +792,23 @@ done:
     for (;;) {
         PsName *best = NULL;
 
-        for (e = ps_names; e != ps_end; e++)
-            if (!(e->use & U_TAKEN) && (!e->offset || e->use & U_CAN)
-                && (!best || e->score > best->score))
-                best = e;
+        for (ent = ps_names; ent != ps_end; ent++)
+            if (!(ent->use & U_TAKEN) && (!ent->offset || ent->use & U_CAN)
+                && (!best || ent->score > best->score))
+                best = ent;
         if (!best || best->score < 8 || best->score <= 2 * calls)
             break;
         best->use |= U_TAKEN;           /* not chosen twice */
         if (!best->offset && !ps_may_be_local(best))
             continue;
-        if (n == 0 && best->offset)
+        if (nwant == 0 && best->offset)
             *param = best->offset;
-        wants[n++] = ps_name_of(best);
-        if (n == PS_WANTS || *param)
+        wants[nwant++] = ps_name_of(best);
+        if (nwant == PS_WANTS || *param)
             break;
     }
 
-    return n;
+    return nwant;
 }
 
 /* A local as it is declared: whether it is the one prescan_body chose -- the
@@ -818,20 +818,20 @@ done:
  * already had its chance (gen_iy_claim). */
 void prescan_claim(int offset, Type type, NameRef name)
 {
-    int i;
+    int want;
 
     if (iy_local != 0)
         return;
-    for (i = 0; i != iy_nwants; i++) {
-        if (iy_wants[i] == NAME_NONE)
+    for (want = 0; want != iy_nwants; want++) {
+        if (iy_wants[want] == NAME_NONE)
             continue;                   /* out of the running */
-        if (iy_wants[i] != name)
+        if (iy_wants[want] != name)
             return;                     /* a better one is still to come */
         if (gen_iy_can(type)) {
             gen_iy_take(offset);
             return;
         }
-        iy_wants[i] = NAME_NONE;
+        iy_wants[want] = NAME_NONE;
     }
 }
 
