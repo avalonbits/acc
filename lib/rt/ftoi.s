@@ -39,69 +39,77 @@ _acc_rt_ftoi:
 
 .ftoi_significand:
 	ld	e, (iy + 0)		; the stored mantissa with its leading
-	ld	d, (iy + 1)		; 1 put back
+	ld	d, (iy + 1)		; 1 put back, in A, D and E, top first
 	ld	a, (iy + 2)
 	and	a, 0x7f
 	or	a, 0x80
+	ld	hl, 0			; zero, for a value below 1
 
-	ld	hl, -3			; somewhere the three bytes can be
-	add	hl, sp			; shifted as one value
-	ld	sp, hl
-	push	hl
-	pop	iy
-	ld	(iy + 0), e
-	ld	(iy + 1), d
-	ld	(iy + 2), a
+	ld	iy, -3			; somewhere the three bytes can be put
+	add	iy, sp			; together as one value
+	ld	sp, iy
 
+	push	af
 	ld	a, b
 	cp	a, 127			; below 1, so the integer part is 0
 	jr	c, .ftoi_zero
-	sub	a, 127			; how far the point has moved right
+	sub	a, 150			; how far the point is from the bottom
+	jr	nc, .ftoi_left		; at or past it: already whole, or more
+	neg				; places to go right, 1 to 23
 	ld	b, a
-	ld	a, 23
-	sub	a, b
-	jr	c, .ftoi_left		; past the top of the significand
-
-	or	a, a			; already an integer when a is zero
-	jr	z, .ftoi_signed
+	pop	af
+.ftoi_bytes:
+	ld	h, a			; eight at a time while there are
+	ld	a, b
+	cp	a, 8
+	ld	a, h
+	jr	c, .ftoi_bits
+	ld	e, d
+	ld	d, a
+	xor	a, a
+	ld	h, a
+	ld	a, b
+	sub	a, 8
 	ld	b, a
-.ftoi_right:
-	srl	(iy + 2)
-	rr	(iy + 1)
-	rr	(iy + 0)
-	djnz	.ftoi_right
-	jr	.ftoi_signed
+	ld	a, h
+	jr	nz, .ftoi_bytes
+	jr	.ftoi_place
+.ftoi_bits:
+	srl	a			; and then one at a time
+	rr	d
+	rr	e
+	djnz	.ftoi_bits
+	jr	.ftoi_place
 
 .ftoi_left:
-	neg				; a was 23 - shift and went negative
-	ld	b, a
+	ld	b, a			; places to go left, which a value this
+	pop	af			; large for an int wraps through
+	inc	b
+	dec	b
+	jr	z, .ftoi_place
 .ftoi_left_loop:
-	sla	(iy + 0)
-	rl	(iy + 1)
-	rl	(iy + 2)
+	sla	e
+	rl	d
+	rla
 	djnz	.ftoi_left_loop
-	jr	.ftoi_signed
+
+.ftoi_place:
+	ld	(iy + 0), e
+	ld	(iy + 1), d
+	ld	(iy + 2), a
+	ld	hl, (iy + 0)
+	bit	0, c			; and the sign, as a subtract from zero
+	jr	z, .ftoi_out
+	ex	de, hl
+	or	a, a
+	sbc	hl, hl
+	sbc	hl, de
+	jr	.ftoi_out
 
 .ftoi_zero:
-	ld	(iy + 0), 0
-	ld	(iy + 1), 0
-	ld	(iy + 2), 0
-
-.ftoi_signed:
-	bit	0, c
-	jr	z, .ftoi_out
-	ld	a, 0
-	sub	a, (iy + 0)
-	ld	(iy + 0), a
-	ld	a, 0
-	sbc	a, (iy + 1)
-	ld	(iy + 1), a
-	ld	a, 0
-	sbc	a, (iy + 2)
-	ld	(iy + 2), a
+	pop	af
 
 .ftoi_out:
-	ld	hl, (iy + 0)
 	ld	iy, 3			; give the three bytes back
 	add	iy, sp
 	ld	sp, iy

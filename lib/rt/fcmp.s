@@ -8,71 +8,109 @@
 ;
 
 	XDEF	_acc_rt_fcmp
-	XREF	_acc_rt_fkey
-	XREF	acc_rt_fisnan
 
 	.assume adl=1
 	SEGMENT CODE
 
-; How the float at (hl) stands to the one at (de), in a: 0 below, 1 equal, 2
-; above, 3 unordered. Both are rewritten as keys on the way, which the caller
-; can afford because it passes copies.
 ;
-; Three outcomes would do for integers; floats need a fourth. A NaN is not
-; less than, equal to or greater than anything, itself included, so `x < y`
-; and `x >= y` are both false when either is one -- which no ordering can
-; express, and which is why this returns a code rather than leaving flags for
-; the caller's branch to read.
+; How the float at (hl) stands to the one at (de), in a: 0 below, 1 equal, 2
+; above, 3 unordered. Neither operand is written to, so the caller may pass
+; them where they are. Keeps everything but a and the flags.
+;
+; A NaN on either side is unordered. Otherwise the order of two floats is
+; the order of their magnitudes, as unsigned numbers, when their signs agree
+; -- turned round when both are negative -- and the sign's when they differ,
+; except that +0 and -0 are equal.
+;
 _acc_rt_fcmp:
 	push	ix
 	push	iy
-	push	de
 	push	hl
-
-	call	acc_rt_fisnan
-	jr	nz, .fcmp_unordered
-	ex	de, hl
-	call	acc_rt_fisnan
-	ex	de, hl
-	jr	nz, .fcmp_unordered
-
-	call	_acc_rt_fkey
-	ex	de, hl
-	call	_acc_rt_fkey
-	ex	de, hl
-
-	push	hl
-	pop	iy
-	push	de
 	pop	ix
+	push	de
+	pop	iy
+
+	ld	a, (ix + 3)		; a NaN: every exponent bit set, and a
+	or	a, 0x80			; mantissa that is not empty. The sign
+	inc	a			; set, the top byte's seven are all ones
+					; when this comes to zero
+	jr	nz, .fcmp_left_ok
+	bit	7, (ix + 2)
+	jr	z, .fcmp_left_ok
+	ld	a, (ix + 2)
+	and	a, 0x7f
+	or	a, (ix + 1)
+	or	a, (ix + 0)
+	jp	nz, .fcmp_unordered
+.fcmp_left_ok:
 	ld	a, (iy + 3)
-	cp	a, (ix + 3)
-	jr	nz, .fcmp_differ
+	or	a, 0x80
+	inc	a
+	jr	nz, .fcmp_right_ok
+	bit	7, (iy + 2)
+	jr	z, .fcmp_right_ok
 	ld	a, (iy + 2)
-	cp	a, (ix + 2)
-	jr	nz, .fcmp_differ
-	ld	a, (iy + 1)
-	cp	a, (ix + 1)
-	jr	nz, .fcmp_differ
-	ld	a, (iy + 0)
-	cp	a, (ix + 0)
-	jr	nz, .fcmp_differ
+	and	a, 0x7f
+	or	a, (iy + 1)
+	or	a, (iy + 0)
+	jp	nz, .fcmp_unordered
+.fcmp_right_ok:
+
+	ld	a, (ix + 3)
+	xor	a, (iy + 3)
+	jp	m, .fcmp_signs
+
+	ld	a, (ix + 3)		; the same sign: the magnitudes, from the
+	cp	a, (iy + 3)		; top byte down
+	jr	nz, .fcmp_magnitude
+	ld	a, (ix + 2)
+	cp	a, (iy + 2)
+	jr	nz, .fcmp_magnitude
+	ld	a, (ix + 1)
+	cp	a, (iy + 1)
+	jr	nz, .fcmp_magnitude
+	ld	a, (ix + 0)
+	cp	a, (iy + 0)
+	jr	nz, .fcmp_magnitude
 	ld	a, 1
 	jr	.fcmp_done
 
-.fcmp_differ:
-	jr	c, .fcmp_below
+.fcmp_magnitude:
+	jr	c, .fcmp_smaller	; the left's magnitude is below the right's
+	bit	7, (ix + 3)		; larger: above if positive
+	jr	z, .fcmp_above
+	jr	.fcmp_below
+.fcmp_smaller:
+	bit	7, (ix + 3)
+	jr	z, .fcmp_below
+
+.fcmp_above:
 	ld	a, 2
 	jr	.fcmp_done
+
+.fcmp_signs:
+	ld	a, (ix + 3)		; different signs: two zeros are equal,
+	or	a, (iy + 3)		; and otherwise the negative one is below
+	and	a, 0x7f
+	or	a, (ix + 2)
+	or	a, (ix + 1)
+	or	a, (ix + 0)
+	or	a, (iy + 2)
+	or	a, (iy + 1)
+	or	a, (iy + 0)
+	ld	a, 1
+	jr	z, .fcmp_done
+	bit	7, (ix + 3)
+	jr	z, .fcmp_above
+
 .fcmp_below:
 	xor	a, a
 	jr	.fcmp_done
+
 .fcmp_unordered:
 	ld	a, 3
 
 .fcmp_done:
-	pop	hl
-	pop	de
 	pop	iy
 	pop	ix
 	ret

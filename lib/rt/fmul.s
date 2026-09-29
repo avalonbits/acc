@@ -13,6 +13,7 @@
 	XREF	acc_rt_fadd_round
 	XREF	acc_rt_fadd_subnormal
 	XREF	acc_rt_fadd_zero
+	XREF	acc_rt_fround
 	XREF	acc_rt_fnorm
 	XREF	acc_rt_funpack
 
@@ -41,43 +42,188 @@
 
 
 ; The 16-bit product of significand byte i of the left and j of the right,
-; added into the running product at byte k and carried up to the top.
-	MACRO	FMUL_AT i, j, k
+; added into the column being summed in HL. MLT gives it in B and C, and it
+; goes through D and E into DE, whose upper byte is kept zero, so that
+; nothing depends on what MLT does to BC's.
+	MACRO	FMUL_AT i, j
 	ld	b, (ix + (1 + i))
 	ld	c, (ix + (5 + j))
 	mlt	bc
-	ld	a, (ix + (16 + k))
-	add	a, c
-	ld	(ix + (16 + k)), a
-	ld	a, (ix + (17 + k))
-	adc	a, b
-	ld	(ix + (17 + k)), a
-	IF 1 - (k >> 2)
-	ld	a, (ix + (18 + k))
-	adc	a, 0
-	ld	(ix + (18 + k)), a
+	ld	d, b
+	ld	e, c
+	add	hl, de
+	ENDMACRO
+
+; The fast path's partial product: left byte i -- 0 and 1 from the operand
+; at IX, 2 from the frame with its leading 1 -- times right byte j from the
+; frame. With `sum` 0 it is left in B and C for the first column.
+	MACRO	FAST_AT i, j, sum
+	IF i - 2
+	ld	b, (ix + i)
+	ELSE
+	ld	b, (iy + 3)
 	ENDIF
-	IF 1 - ((k + 1) >> 2)
-	ld	a, (ix + (19 + k))
-	adc	a, 0
-	ld	(ix + (19 + k)), a
+	ld	c, (iy + j)
+	mlt	bc
+	IF sum
+	ld	d, b
+	ld	e, c
+	add	hl, de
 	ENDIF
-	IF 1 - ((k + 2) >> 2)
-	ld	a, (ix + (20 + k))
-	adc	a, 0
-	ld	(ix + (20 + k)), a
-	ENDIF
-	IF 1 - ((k + 3) >> 2)
-	ld	a, (ix + (21 + k))
-	adc	a, 0
-	ld	(ix + (21 + k)), a
-	ENDIF
+	ENDMACRO
+
+; One column done: its low byte is product byte k, and the rest carries into
+; the next. Storing HL at byte k and loading it back from k + 1 does both --
+; the load reads the carry as H and U, and a zero from the byte above, which
+; no column has written yet.
+	MACRO	FMUL_CARRY k
+	ld	(ix + (16 + k)), hl
+	ld	hl, (ix + (17 + k))
 	ENDMACRO
 
 _acc_rt_fmul:
 	push	ix
 	push	iy
 	push	bc
+	push	de
+	push	hl
+
+	; ---------------------------------------------------- the fast path
+	; Two normal numbers whose product is normal, which is nearly every
+	; multiply a program does, worked straight from the operands: the
+	; exponents and sign from their top bytes, the product on a small frame
+	; at IY, and the rounding and packing in registers. Anything else --
+	; a zero, a denormal, an infinity or a NaN on either side, or a product
+	; past either end of the exponents -- goes to the general code below,
+	; which unpacks both into its own frame and handles every case. Nothing
+	; is written to the destination until the answer is known to be normal.
+	;
+	; The frame: 0..2 the right significand with its leading 1, 3 the left's
+	; top byte with its leading 1, 4..9 the product (4 and 5 only as far as
+	; the rounding needs them), 10 a zero for the last carry, 11..13 the
+	; exponent, 14 the sign.
+	push	hl
+	pop	ix			; the left operand, and the destination
+	push	de
+	pop	iy			; the right, until the frame takes IY
+
+	ld	a, (ix + 2)		; the exponent's low bit into the carry,
+	rla				; and then the byte above it: A is the
+	ld	a, (ix + 3)		; biased exponent
+	rla
+	ld	c, a
+	dec	a			; 1 to 254 is a normal number
+	cp	a, 254
+	jp	nc, .fmul_general
+	ld	a, (iy + 2)
+	rla
+	ld	a, (iy + 3)
+	rla
+	ld	b, a
+	dec	a
+	cp	a, 254
+	jp	nc, .fmul_general
+
+	ld	hl, -127		; the exponent, one bias taken back off;
+	ld	de, 0			; one more if the product reaches 2
+	ld	e, c
+	add	hl, de
+	ld	e, b
+	add	hl, de
+	ld	a, (ix + 3)		; the sign is the two signs differing
+	xor	a, (iy + 3)
+	and	a, 0x80
+	ld	c, a
+
+	ex	de, hl
+	ld	hl, -15
+	add	hl, sp
+	ld	sp, hl
+	ld	a, (iy + 0)		; the right significand, and the left's
+	ld	(hl), a			; top byte, with their leading 1s
+	inc	hl
+	ld	a, (iy + 1)
+	ld	(hl), a
+	inc	hl
+	ld	a, (iy + 2)
+	or	a, 0x80
+	ld	(hl), a
+	inc	hl
+	ld	a, (ix + 2)
+	or	a, 0x80
+	ld	(hl), a
+	ld	iy, 0
+	add	iy, sp
+	ld	(iy + 11), de
+	ld	(iy + 14), c
+	ld	hl, 0
+	ld	(iy + 5), hl		; bytes 5 to 10 zero, for the carries
+	ld	(iy + 8), hl
+	ld	de, 0			; and DE's upper byte, for FAST_AT
+
+	FAST_AT	0, 0, 0
+	ld	h, b
+	ld	l, c
+	ld	(iy + 4), hl
+	ld	hl, (iy + 5)
+	FAST_AT	1, 0, 1
+	FAST_AT	0, 1, 1
+	ld	(iy + 5), hl
+	ld	hl, (iy + 6)
+	FAST_AT	2, 0, 1
+	FAST_AT	1, 1, 1
+	FAST_AT	0, 2, 1
+	ld	(iy + 6), hl
+	ld	hl, (iy + 7)
+	FAST_AT	2, 1, 1
+	FAST_AT	1, 2, 1
+	ld	(iy + 7), hl
+	ld	hl, (iy + 8)
+	FAST_AT	2, 2, 1			; H and L are the product's top two bytes
+
+	; The significand is the top twenty-four bits in H, L and C, and A the
+	; eight below them, with anything further down kept in its lowest bit.
+	ld	c, (iy + 7)
+	ld	a, (iy + 5)
+	or	a, (iy + 4)
+	ld	a, (iy + 6)
+	jr	z, .fmul_fast_sticky
+	or	a, 1
+.fmul_fast_sticky:
+	ld	de, (iy + 11)
+	bit	7, h			; at bit 47: between 2 and 4, one more
+	jr	nz, .fmul_fast_top	; exponent
+	sla	a			; below it: one place up
+	rl	c
+	rl	l
+	rl	h
+	jr	.fmul_fast_round
+.fmul_fast_top:
+	inc	de
+.fmul_fast_round:
+	ld	b, (iy + 14)		; the sign, and the rest is fadd's
+	call	acc_rt_fround
+	jr	c, .fmul_fast_undo
+
+	ld	hl, 15
+	add	hl, sp
+	ld	sp, hl
+	pop	hl
+	pop	de
+	pop	bc
+	pop	iy
+	pop	ix
+	ret
+
+.fmul_fast_undo:
+	ld	hl, 15
+	add	hl, sp
+	ld	sp, hl
+
+	; ------------------------------------------------- the general case
+.fmul_general:
+	pop	hl			; the operands' addresses again, from
+	pop	de			; where they were saved
 	push	de
 	push	hl
 
@@ -127,28 +273,34 @@ _acc_rt_fmul:
 	push	ix
 	pop	iy
 	call	acc_rt_fnorm
-	ld	(ix + 22), a
+	ld	(ix + 23), a
 	lea	iy, ix + 4
 	call	acc_rt_fnorm
-	add	a, (ix + 22)
-	ld	(ix + 22), a
+	add	a, (ix + 23)
+	ld	(ix + 23), a
 
-	ld	(ix + 16), 0		; the product, in six bytes
-	ld	(ix + 17), 0
-	ld	(ix + 18), 0
-	ld	(ix + 19), 0
-	ld	(ix + 20), 0
-	ld	(ix + 21), 0
+	; The product, a column at a time: column k is the sum of the partial
+	; products whose bytes add to k, at most three of them, which fits in
+	; HL with the carry from below.
+	ld	hl, 0
+	ld	(ix + 17), hl		; bytes 17 to 22 zero, for the carries
+	ld	(ix + 20), hl
+	ld	de, 0			; and DE's upper byte, for FMUL_AT
 
-	FMUL_AT 0, 0, 0
-	FMUL_AT 0, 1, 1
-	FMUL_AT 1, 0, 1
-	FMUL_AT 0, 2, 2
-	FMUL_AT 1, 1, 2
-	FMUL_AT 2, 0, 2
-	FMUL_AT 1, 2, 3
-	FMUL_AT 2, 1, 3
-	FMUL_AT 2, 2, 4
+	FMUL_AT 0, 0
+	FMUL_CARRY 0
+	FMUL_AT 1, 0
+	FMUL_AT 0, 1
+	FMUL_CARRY 1
+	FMUL_AT 2, 0
+	FMUL_AT 1, 1
+	FMUL_AT 0, 2
+	FMUL_CARRY 2
+	FMUL_AT 2, 1
+	FMUL_AT 1, 2
+	FMUL_CARRY 3
+	FMUL_AT 2, 2
+	ld	(ix + 20), hl		; bytes 4 and 5, and a zero above
 
 	; The exponent, which does not fit in a byte until the range has been
 	; checked: two biased exponents add to as much as 508.
@@ -160,7 +312,7 @@ _acc_rt_fmul:
 	ld	de, 127			; one bias too many, having added two
 	or	a, a
 	sbc	hl, de
-	ld	e, (ix + 22)		; and the places a denormal was moved
+	ld	e, (ix + 23)		; and the places a denormal was moved
 	or	a, a
 	sbc	hl, de
 

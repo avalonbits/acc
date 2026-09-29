@@ -166,6 +166,24 @@ These live in frame slots, and almost every operation on them is a call:
 shifts by 1, 8, 16 or 24, are done on the slot's bytes directly. Everything
 else costs a call. If an `int` holds the value, use it.
 
+The float routines, in cycles per call with the code around it:
+
+| operation | cycles |
+| --- | --- |
+| `+` | 381 |
+| `-` | 417 |
+| `*` | 555 |
+| `/` | 946 |
+| `<` and the other compares | about 200 |
+| `int` to `float` | 153 |
+| `float` to `int` | 296 |
+| `long` to `float` | 271 |
+| `float` to `long` | 407 |
+
+A value computed twice costs its calls twice. Keep a repeated product in a
+variable: the Mandelbrot loop in test/perf's fp.c spends a tenth of its time
+on the `zr * zr` it computes for the test and again for the body.
+
 ## 11. Keep the frame small
 
 `(ix+d)` reaches 128 bytes below the frame pointer. acc keeps locals in

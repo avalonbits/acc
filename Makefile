@@ -205,6 +205,7 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/usage.sh
 	@test/conformance.sh --check || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/printf.sh || [ $$? -eq 77 ]
+	@ACC=$(BIN)/acc-asan test/floatrt.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/hosted.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/agonlib.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/vdpreal.sh || [ $$? -eq 77 ]

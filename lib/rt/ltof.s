@@ -10,8 +10,7 @@
 	XDEF	_acc_rt_ltof
 	XDEF	_acc_rt_ultof
 	XDEF	acc_rt_ultof_entry
-	XREF	acc_rt_fadd_round
-	XREF	acc_rt_fadd_zero
+	XREF	acc_rt_fround
 
 	.assume adl=1
 	SEGMENT CODE
@@ -27,97 +26,104 @@
 ;
 ; ltof needs no rounding code of its own. Shifting the magnitude up until its
 ; leading bit reaches bit 31 leaves the number in bits 31..8 and whatever was
-; below it in bits 7..0, which is exactly the shape fadd rounds and packs.
+; below it in bits 7..0, which is exactly the shape acc_rt_fround takes.
 
 
 _acc_rt_ltof:
 	push	ix
-	push	iy
 	push	bc
 	push	de
 	push	hl
-
-	ld	ix, -24
-	add	ix, sp
-	ld	sp, ix
-	ld	(ix + 12), hl
-
+	call	.ltof_load
 	ld	b, 0			; the sign
-	ld	a, (hl)
-	ld	(ix + 0), a
-	inc	hl
-	ld	a, (hl)
-	ld	(ix + 1), a
-	inc	hl
-	ld	a, (hl)
-	ld	(ix + 2), a
-	inc	hl
-	ld	a, (hl)
-	ld	(ix + 3), a
-
-	bit	7, a
+	bit	7, h
 	jr	z, .ltof_magnitude
-	ld	b, 0x80
+	ld	b, 0x80			; negative: the magnitude, from zero
+	xor	a, a
+	sub	a, e
+	ld	e, a
 	ld	a, 0
-	sub	a, (ix + 0)
-	ld	(ix + 0), a
-	ld	a, 0			; ld leaves the borrow alone
-	sbc	a, (ix + 1)
-	ld	(ix + 1), a
+	sbc	a, c
+	ld	c, a
 	ld	a, 0
-	sbc	a, (ix + 2)
-	ld	(ix + 2), a
+	sbc	a, l
+	ld	l, a
 	ld	a, 0
-	sbc	a, (ix + 3)
-	ld	(ix + 3), a
+	sbc	a, h
+	ld	h, a
 	jr	.ltof_magnitude
 
 _acc_rt_ultof:
 acc_rt_ultof_entry:
 	push	ix
-	push	iy
 	push	bc
 	push	de
 	push	hl
-
-	ld	ix, -24
-	add	ix, sp
-	ld	sp, ix
-	ld	(ix + 12), hl
-
+	call	.ltof_load
 	ld	b, 0			; never negative, so no magnitude to take
-	ld	a, (hl)
-	ld	(ix + 0), a
-	inc	hl
-	ld	a, (hl)
-	ld	(ix + 1), a
-	inc	hl
-	ld	a, (hl)
-	ld	(ix + 2), a
-	inc	hl
-	ld	a, (hl)
-	ld	(ix + 3), a
 
 .ltof_magnitude:
-	ld	(ix + 10), b		; the sign, in the place pack reads it
-	ld	a, (ix + 0)
-	or	a, (ix + 1)
-	or	a, (ix + 2)
-	or	a, (ix + 3)
-	jp	z, acc_rt_fadd_zero
+	; The magnitude moved up until its leading 1 is at bit 31: a whole
+	; byte at a time while the top one is empty, then a bit at a time.
+	; D counts the exponent down from 158, 127 + 31.
+	ld	d, 158
+	ld	a, h
+	or	a, l
+	or	a, c
+	or	a, e
+	jr	z, .ltof_zero
+.ltof_bytes:
+	ld	a, h
+	or	a, a
+	jr	nz, .ltof_bits
+	ld	h, l
+	ld	l, c
+	ld	c, e
+	ld	e, 0
+	ld	a, d
+	sub	a, 8
+	ld	d, a
+	jr	.ltof_bytes
+.ltof_bits:
+	bit	7, h
+	jr	nz, .ltof_round
+	sla	e
+	rl	c
+	rl	l
+	rl	h
+	dec	d
+	jr	.ltof_bits
 
-	ld	c, 158			; 127 + 31: the exponent when the top
-					; bit is already bit 31
-.ltof_shift:
-	bit	7, (ix + 3)
-	jr	nz, .ltof_done
-	sla	(ix + 0)
-	rl	(ix + 1)
-	rl	(ix + 2)
-	rl	(ix + 3)
-	dec	c
-	jr	.ltof_shift
+.ltof_round:
+	; The top three bytes are the significand and the lowest the eight
+	; below it, which is what acc_rt_fround takes; the exponent is always
+	; in range, so it always writes.
+	ld	a, e
+	ld	e, d
+	ld	d, 0
+	call	acc_rt_fround
+	jr	.ltof_done
+
+.ltof_zero:
+	ld	(ix + 0), a		; a zero long is +0
+	ld	(ix + 1), a
+	ld	(ix + 2), a
+	ld	(ix + 3), a
 
 .ltof_done:
-	ld	(ix + 8), c
-	jp	acc_rt_fadd_round		; the eight bits below the number are
+	pop	hl
+	pop	de
+	pop	bc
+	pop	ix
+	ret
+
+; The long at (hl) into H, L, C and E, top first, with IX at it for the
+; float that replaces it.
+.ltof_load:
+	push	hl
+	pop	ix
+	ld	e, (ix + 0)
+	ld	c, (ix + 1)
+	ld	l, (ix + 2)
+	ld	h, (ix + 3)
+	ret

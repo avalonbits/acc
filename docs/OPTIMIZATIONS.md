@@ -327,6 +327,18 @@ operand.
   next three bytes are the same.
 - **Float negation** is `xor 80h` on the top byte. `f - c` for a constant
   `c` is `f + (-c)`, so the pool can hold it.
+- **The float routines take a fast path** when both operands and the
+  result are normal numbers, which is nearly every call: `fadd`, `fmul` and
+  `fdiv` read the exponents from the operands' top bytes and work in
+  registers, with the multiply's product summed a column at a time from
+  MLTs and the divide's quotient gathered a byte at a time in A. They share
+  one rounding and packing routine, `acc_rt_fround`. Anything else -- a
+  zero, a denormal, an infinity, a NaN, a result past either end -- goes to
+  the general code, which unpacks both operands and handles every case.
+  `fcmp` compares the bytes as they are and writes neither operand, so a
+  float compare reads its right operand where it lies or from the pool.
+  Every result is checked bit for bit against the host's IEEE arithmetic
+  by `test/floatrt.sh`.
 - **The runtime's division** runs its shift-and-subtract loop entirely in
   registers, starting from the dividend's first nonzero byte: 24 turns for
   a value under 2²⁴, 16 under 2¹⁶. The 64-bit multiply skips zero rows, and

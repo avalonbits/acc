@@ -489,7 +489,7 @@ static int helper_writes_right(int which)
     switch (which) {
     case RT_LDIVU:  case RT_LREMU:  case RT_LDIVS:  case RT_LREMS:
     case RT_LLDIVU: case RT_LLREMU: case RT_LLDIVS: case RT_LLREMS:
-    case RT_FSUB:   case RT_FCMP:
+    case RT_FSUB:
         return 1;
     }
 
@@ -1248,13 +1248,11 @@ static void cmp_from_code(int op)
     acc_error("internal: %s is not a comparison", tok_spelling(op));
 }
 
-/* Comparing two four-byte values, whether they are longs or floats.
- *
- * A float goes through fkey first, which rewrites it as the unsigned integer
- * that sorts the way it does. After that it is the same comparison as any
- * other four bytes, which is the whole reason for doing it that way: the
- * ordering of floats is not a second four-byte compare that knows about
- * exponents, it is this one with the operands prepared. */
+/* Comparing two wide values, longs, long longs or floats. The integers go
+ * to the compare routines and a branch on what they leave; a float goes to
+ * acc_rt_fcmp, which answers in four ways, unordered being the fourth. Both
+ * only read their operands, so either can take a right operand where it
+ * lies or from the pool. */
 void vcmp_wide(int op, Type operand)
 {
     int floating = type_float(operand);
@@ -1335,15 +1333,15 @@ void vcmp_wide(int op, Type operand)
         }
     }
 
-    /* As in vbinop_long: the integer comparisons only read through DE, so a
-     * right operand already in the frame is compared where it lies. The
-     * float one rewrites both operands and cannot. */
-    in_place = !floating && wide_in_place(vsp - 1, operand, n);
+    /* As in vbinop_long: the comparisons only read through DE, so a right
+     * operand already in the frame is compared where it lies, and a
+     * constant is read from the pool. */
+    in_place = wide_in_place(vsp - 1, operand, n);
     low = spill_lowest(2, in_place);
     rstart = spill_used > low + n ? spill_used : low + n;
 
     left = slot_at(low, n);
-    pooled = !floating && !in_place && wide_const_top(operand, &bits)
+    pooled = !in_place && wide_const_top(operand, &bits)
              && npool < POOL_MAX;
     if (pooled) {
         vdrop();                        /* read from the pool, below */
@@ -1370,7 +1368,10 @@ void vcmp_wide(int op, Type operand)
      * go through the same tail as the integer ones. */
     if (floating) {
         lea_rr_ix(R_HL, left);
-        lea_rr_ix(R_DE, right);
+        if (pooled)
+            ld_rr_pool(R_DE, bits, n);
+        else
+            lea_rr_ix(R_DE, right);
         rt_call(RT_FCMP);
         cmp_from_code(op);
         spill_used = low;               /* the answer is in HL */
