@@ -141,5 +141,31 @@ ssa "&& and ?:, as SSA"             "ssa f made" \
 ssa "a runtime-sized array, left"   "ssa f an array whose length is known when it runs" \
     'int f(int n) { char a[n]; a[0] = 1; return a[0]; }'
 
+# The locals and parameters that stay in registers are SSA values, with a
+# phi where paths join (docs/optimizer-plan.md, milestone 3): the ones whose
+# address is taken stay in the frame. OPTACC_SSA_DUMP prints the form.
+# phis <name> <yes|no> <source>: whether f's form has a phi
+phis() {
+    local what=$1 want=$2 got=no
+
+    printf '%s\n' "$3" > "$tmp/c.c"
+    rm -f "$tmp/c.o"
+    OPTACC_SSA=1 OPTACC_SSA_DUMP=1 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 \
+        | grep -q '^ *phi v[0-9]* of local' && got=yes
+    if [ "$got" = "$want" ]; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-50s phi: want %s, got %s\n' "$what" "$want" "$got"
+        fail=$((fail + 1))
+    fi
+}
+phis "a loop's counter, a phi"      yes "$loop"
+phis "a parameter stepped, a phi"   yes \
+    'int f(int n) { int s = 0; while (n) { s += n; n--; } return s; }'
+phis "a local whose address is taken, none" no \
+    'void g(int *); int f(void) { int i; for (i = 0; i < 9; i++) g(&i); return i; }'
+ssa "a long where paths join, left" "ssa f a long or a float where paths join" \
+    'long f(long n) { long s = 0; while (n) s += n--; return s; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

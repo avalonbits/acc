@@ -64,7 +64,10 @@ enum {
     I_BR = GL_COUNT,            /* jump when the operand's truth is `sense` */
     I_JMP,                      /* jump */
     I_SET,                      /* a phi's slot, from the operand */
-    I_FRAME                     /* a frame call, laid down with the prologue */
+    I_FRAME,                    /* a frame call, laid down with the prologue */
+    I_CONV,                     /* a local's new value: the operand converted
+                                 * to the local's type */
+    I_STEP                      /* ++ or -- of a local's value */
 };
 
 #define MAX_OPERANDS 8
@@ -78,12 +81,15 @@ typedef struct {
     int sense;                  /* I_BR: jump when the truth is this */
     int target;                 /* I_BR, I_JMP: the block; I_SET: the value */
     int block;
+    int step_op;                /* I_STEP: TK_PLUS or TK_MINUS */
+    Type local_type;            /* I_CONV, I_STEP: the local's type */
 } Ins;
 
 typedef struct {
     Type type;                  /* as it is stored: the type it was made at */
     int  slot;                  /* its frame slot */
     int  def, last;             /* the instructions that make and last use it */
+    int  used;                  /* read at all: by an instruction or a phi */
 } SVal;
 
 typedef struct {
@@ -162,6 +168,7 @@ static int new_val(Type type, int def)
     vals[nvals].slot = 0;
     vals[nvals].def = def;
     vals[nvals].last = def;
+    vals[nvals].used = 0;
 
     return nvals++;
 }
@@ -638,51 +645,736 @@ static void keep_records(const GenRec *log, int count, int *keep)
             keep[rec_at] = 0;
 }
 
-/* Whether an instruction is a jump, and so has a block for a target. */
-static int jumps(const Ins *insn)
+/* ------------------------------------------------------------------ */
+/* locals as values                                                    */
+
+/* A local or parameter the function reads and writes only by name -- its
+ * address never taken, always the same scalar type -- stops being memory:
+ * each store to it makes a new SSA value, each read uses the one that
+ * reaches it, and where paths with different values meet, a phi joins
+ * them. What is left of the local is its values; its slot is not used. */
+
+#define MAX_LOCALS 64
+#define UNDEF (-3)              /* no value reaches: a read before any write */
+
+typedef struct {
+    int  offset;
+    Type type;
+    int  ext;
+    int  ok;                    /* still a candidate */
+    int  is_param;
+    int  entry_val;             /* a parameter's value as the function begins */
+} Local;
+
+static Local locals[MAX_LOCALS];
+static int   nlocals;
+
+/* A phi: the local it joins, the value it makes, and what each of its
+ * block's predecessors brings -- a value, or UNDEF. */
+typedef struct {
+    int block, local, val;
+    int *in;                    /* by predecessor, in preds[block] order */
+    int live;
+} Phi;
+
+static Phi *phis;
+static int  nphis, phis_cap;
+
+/* The CFG, a list a block: successors and predecessors. */
+typedef struct {
+    int *at, count, cap;
+} IntList;
+
+static IntList *succs, *preds, *dom_kids;
+static int     *idom, *rpo_num, *block_last;
+
+static int *repl;               /* a value read in place of another, or -1 */
+
+static void list_add(IntList *list, int item)
 {
-    return insn->op == I_JMP || insn->op == I_BR
-           || insn->op == GL_gen_switch_case;
+    GROW(list->at, list->count, list->cap);
+    list->at[list->count++] = item;
 }
 
-/* Every value's last use, and its live range made to cover every loop it
- * is live across: a jump back from below its last use to between its
- * definition and that use carries it round again. */
-static void live_ranges(void)
+static int local_of(int offset)
 {
-    int at, operand, val, changed;
+    int at;
 
+    for (at = 0; at != nlocals; at++)
+        if (locals[at].offset == offset)
+            return at;
+
+    return -1;
+}
+
+/* A local seen with `type`: added, or ruled out if seen with another. */
+static void local_seen(int offset, Type type, int ext)
+{
+    int at = local_of(offset);
+
+    if (at < 0) {
+        if (nlocals == MAX_LOCALS)
+            return;
+        at = nlocals++;
+        locals[at].offset = offset;
+        locals[at].type = type;
+        locals[at].ext = ext;
+        locals[at].ok = !type_is_struct(type);
+        locals[at].is_param = offset > 0;
+        locals[at].entry_val = -1;
+        return;
+    }
+    if (locals[at].type != type)
+        locals[at].ok = 0;
+}
+
+static void local_ruled_out(int offset)
+{
+    int at = local_of(offset);
+
+    if (at < 0 && nlocals < MAX_LOCALS) {
+        at = nlocals++;
+        locals[at].offset = offset;
+        locals[at].type = TY_VOID;
+    }
+    if (at >= 0)
+        locals[at].ok = 0;
+}
+
+/* Whether a value's type is an array whose length is known when it runs,
+ * or a pointer to one: the backend reads the length from a frame slot the
+ * type names, where the log does not see it. */
+static int runtime_array(Type type, int ext)
+{
+    while (type_pointer(type))
+        type = type_deref(type);
+
+    return type_is_array(type) && ext_vla_size(ext) != 0;
+}
+
+/* Which locals can become values. None of them, in a function with an
+ * array whose length is known when it runs: its length is in a local that
+ * the backend reads without a call the log would show. */
+static void find_locals(void)
+{
+    int at;
+
+    nlocals = 0;
+    for (at = 0; at != ninsns; at++)
+        if (insns[at].rec && runtime_array(insns[at].rec->top.type,
+                                           insns[at].rec->top.ext))
+            return;
     for (at = 0; at != ninsns; at++) {
         const Ins *insn = &insns[at];
+        const GenRec *rec = insn->rec;
 
-        for (operand = 0; operand != insn->nin; operand++) {
-            val = insn->in[operand].val;
-            if (val >= 0 && vals[val].last < at)
-                vals[val].last = at;
+        switch (insn->op) {
+        case GL_vpush_local: case GL_vstore_local:
+            local_seen((int) rec->arg[0], (Type) rec->arg[1],
+                       rec->top.ext);
+            break;
+        case GL_vprefix_local: case GL_vpostfix_local:
+            local_seen((int) rec->arg[0], (Type) rec->arg[1],
+                       (int) rec->arg[2]);
+            break;
+        case GL_vaddr_local:
+            local_ruled_out((int) rec->arg[0]);
+            break;
+        case GL_gen_switch_load: case GL_gen_switch_case:
+            local_ruled_out(insn->op == GL_gen_switch_load
+                            ? (int) rec->arg[0] : (int) rec->arg[4]);
+            break;
+        case GL_gen_call:
+            /* longjmp comes back to setjmp with the frame as it is, and a
+             * value that moved out of its local would not be there. */
+            if (!strcmp(name_text(sym_at((int) rec->arg[0])->name), "setjmp"))
+                nlocals = MAX_LOCALS + 1;
+            break;
+        default:
+            break;
         }
-        if (insn->op == I_SET && insn->target >= 0
-            && vals[insn->target].last < at)
-            vals[insn->target].last = at;
+        if (nlocals > MAX_LOCALS)
+            break;
     }
+    if (nlocals > MAX_LOCALS)
+        nlocals = 0;
+}
+
+/* The blocks each block goes on to, and where each block's code ends. */
+static void build_cfg(void)
+{
+    int blk, at;
+
+    succs = calloc((size_t) nblocks, sizeof *succs);
+    preds = calloc((size_t) nblocks, sizeof *preds);
+    dom_kids = calloc((size_t) nblocks, sizeof *dom_kids);
+    block_last = malloc((size_t) nblocks * sizeof *block_last);
+    if (!succs || !preds || !dom_kids || !block_last)
+        acc_error("out of memory for the SSA form");
+    for (blk = 0; blk != nblocks; blk++) {
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+        int falls = 1;
+
+        block_last[blk] = end - 1;
+        for (at = blocks[blk].first; at != end; at++) {
+            const Ins *insn = &insns[at];
+
+            if ((insn->op == I_BR || insn->op == I_JMP
+                 || insn->op == GL_gen_switch_case) && insn->target >= 0)
+                list_add(&succs[blk], insn->target);
+            if (at == end - 1
+                && (insn->op == I_JMP || insn->op == GL_gen_return))
+                falls = 0;
+        }
+        if (falls && blk + 1 < nblocks)
+            list_add(&succs[blk], blk + 1);
+    }
+    for (blk = 0; blk != nblocks; blk++)
+        for (at = 0; at != succs[blk].count; at++)
+            list_add(&preds[succs[blk].at[at]], blk);
+}
+
+/* Reverse postorder from the entry, and each block's immediate dominator
+ * (Cooper, Harvey and Kennedy's iteration). A block the entry does not
+ * reach has none. */
+static int *rpo;
+static int  nrpo;
+
+static void postorder(int blk, int *seen)
+{
+    int at;
+
+    seen[blk] = 1;
+    for (at = 0; at != succs[blk].count; at++)
+        if (!seen[succs[blk].at[at]])
+            postorder(succs[blk].at[at], seen);
+    rpo[nrpo++] = blk;
+}
+
+static int intersect(int one, int two)
+{
+    while (one != two) {
+        while (rpo_num[one] > rpo_num[two])
+            one = idom[one];
+        while (rpo_num[two] > rpo_num[one])
+            two = idom[two];
+    }
+
+    return one;
+}
+
+static void dominators(void)
+{
+    int *seen = calloc((size_t) nblocks, sizeof *seen);
+    int at, changed;
+
+    rpo = malloc((size_t) nblocks * sizeof *rpo);
+    rpo_num = malloc((size_t) nblocks * sizeof *rpo_num);
+    idom = malloc((size_t) nblocks * sizeof *idom);
+    if (!seen || !rpo || !rpo_num || !idom)
+        acc_error("out of memory for the SSA form");
+    nrpo = 0;
+    postorder(0, seen);
+    for (at = 0; at != nrpo / 2; at++) {
+        int swap = rpo[at];
+
+        rpo[at] = rpo[nrpo - 1 - at];
+        rpo[nrpo - 1 - at] = swap;
+    }
+    for (at = 0; at != nblocks; at++) {
+        rpo_num[at] = -1;
+        idom[at] = -1;
+    }
+    for (at = 0; at != nrpo; at++)
+        rpo_num[rpo[at]] = at;
+    idom[0] = 0;
     do {
         changed = 0;
-        for (at = 0; at != ninsns; at++) {
-            const Ins *insn = &insns[at];
-            int to;
+        for (at = 1; at != nrpo; at++) {
+            int blk = rpo[at], pred, dom = -1;
 
-            if (!jumps(insn) || insn->target < 0)
-                continue;
-            to = blocks[insn->target].first;
-            if (to > at)
-                continue;
-            for (val = 0; val != nvals; val++)
-                if (vals[val].def < to && vals[val].last >= to
-                    && vals[val].last < at) {
-                    vals[val].last = at;
-                    changed = 1;
-                }
+            for (pred = 0; pred != preds[blk].count; pred++) {
+                int from = preds[blk].at[pred];
+
+                if (idom[from] < 0)
+                    continue;
+                dom = dom < 0 ? from : intersect(from, dom);
+            }
+            if (dom >= 0 && idom[blk] != dom) {
+                idom[blk] = dom;
+                changed = 1;
+            }
         }
     } while (changed);
+    for (at = 1; at != nrpo; at++)
+        list_add(&dom_kids[idom[rpo[at]]], rpo[at]);
+    free(seen);
+}
+
+/* The blocks where each local needs a phi: the iterated dominance frontier
+ * of the blocks that write it. */
+static void place_phis(void)
+{
+    IntList *frontier = calloc((size_t) nblocks, sizeof *frontier);
+    int *writes = calloc((size_t) nblocks, sizeof *writes);
+    int *has_phi = calloc((size_t) nblocks, sizeof *has_phi);
+    int *work = malloc(((size_t) nblocks + 1) * sizeof *work);
+    int blk, at, local, pred;
+
+    if (!frontier || !writes || !has_phi || !work)
+        acc_error("out of memory for the SSA form");
+    for (blk = 0; blk != nblocks; blk++) {
+        if (rpo_num[blk] < 0 || preds[blk].count < 2)
+            continue;
+        for (pred = 0; pred != preds[blk].count; pred++) {
+            int runner = preds[blk].at[pred];
+
+            if (rpo_num[runner] < 0)
+                continue;
+            while (runner != idom[blk]) {
+                list_add(&frontier[runner], blk);
+                runner = idom[runner];
+            }
+        }
+    }
+    for (local = 0; local != nlocals; local++) {
+        int nwork = 0;
+
+        if (!locals[local].ok)
+            continue;
+        memset(writes, 0, (size_t) nblocks * sizeof *writes);
+        memset(has_phi, 0, (size_t) nblocks * sizeof *has_phi);
+        if (locals[local].is_param) {
+            writes[0] = 1;
+            work[nwork++] = 0;
+        }
+        for (at = 0; at != ninsns; at++) {
+            const Ins *insn = &insns[at];
+
+            if ((insn->op == GL_vstore_local || insn->op == GL_vprefix_local
+                 || insn->op == GL_vpostfix_local)
+                && insn->rec->arg[0] == locals[local].offset
+                && !writes[insn->block] && rpo_num[insn->block] >= 0) {
+                writes[insn->block] = 1;
+                work[nwork++] = insn->block;
+            }
+        }
+        while (nwork) {
+            blk = work[--nwork];
+            for (at = 0; at != frontier[blk].count; at++) {
+                int join = frontier[blk].at[at];
+
+                if (has_phi[join])
+                    continue;
+                has_phi[join] = 1;
+                GROW(phis, nphis, phis_cap);
+                phis[nphis].block = join;
+                phis[nphis].local = local;
+                phis[nphis].val = new_val(locals[local].type,
+                                          blocks[join].first);
+                phis[nphis].in = malloc(((size_t) preds[join].count + 1)
+                                        * sizeof (int));
+                if (!phis[nphis].in)
+                    acc_error("out of memory for the SSA form");
+                for (pred = 0; pred != preds[join].count; pred++)
+                    phis[nphis].in[pred] = UNDEF;
+                phis[nphis].live = 0;
+                nphis++;
+                if (!writes[join]) {
+                    writes[join] = 1;
+                    work[nwork++] = join;
+                }
+            }
+        }
+    }
+    for (blk = 0; blk != nblocks; blk++)
+        free(frontier[blk].at);
+    free(frontier);
+    free(writes);
+    free(has_phi);
+    free(work);
+}
+
+static int find_val(int val)
+{
+    while (val >= 0 && repl[val] >= 0 && repl[val] != val)
+        val = repl[val];
+
+    return val;
+}
+
+/* The operand an instruction reads, with what it stood for resolved. */
+static void resolve(Ent *ent)
+{
+    if (ent->val < 0)
+        return;
+    ent->val = find_val(ent->val);
+    if (ent->val == UNDEF) {
+        ent->val = S_CONST;             /* a read before any write: 0 */
+        ent->attr.kind = VAL_CONST;
+        ent->attr.val = 0;
+        ent->wide = 0;
+    }
+}
+
+/* Each block, in the dominator tree's order: every read of a local turned
+ * into the value that reaches it, every write into a new value, and each
+ * successor's phis told what this block brings them. */
+static int *cur_def;            /* by local: a stack of values, one a push */
+static int *cur_top;
+static int  cur_cap;
+
+static void rename_block(int blk)
+{
+    int pushed[MAX_LOCALS], at, end, succ, phi, kid;
+
+    memset(pushed, 0, sizeof pushed);
+#define DEF_PUSH(local, val) do {                                        \
+        cur_def[(local) * cur_cap + cur_top[local]++] = (val);           \
+        pushed[local]++;                                                 \
+    } while (0)
+#define DEF_TOP(local) (cur_top[local] ? cur_def[(local) * cur_cap          \
+                                                 + cur_top[local] - 1]    \
+                                       : UNDEF)
+
+    for (phi = 0; phi != nphis; phi++)
+        if (phis[phi].block == blk)
+            DEF_PUSH(phis[phi].local, phis[phi].val);
+    end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+    for (at = blocks[blk].first; at != end; at++) {
+        Ins *insn = &insns[at];
+        int local, operand;
+
+        for (operand = 0; operand != insn->nin; operand++)
+            resolve(&insn->in[operand]);
+        if (insn->op != GL_vpush_local && insn->op != GL_vstore_local
+            && insn->op != GL_vprefix_local && insn->op != GL_vpostfix_local)
+            continue;
+        local = local_of((int) insn->rec->arg[0]);
+        if (local < 0 || !locals[local].ok)
+            continue;
+
+        if (insn->op == GL_vpush_local) {
+            repl[insn->res] = DEF_TOP(local);
+            insn->op = GL_vdrop;
+            insn->nin = 0;
+            insn->res = -1;
+        } else if (insn->op == GL_vstore_local) {
+            const Ent *stored = &insn->in[0];
+
+            if (stored->val >= 0 && vals[stored->val].type == locals[local].type
+                && stored->attr.type == locals[local].type) {
+                repl[insn->res] = stored->val;
+                DEF_PUSH(local, stored->val);
+                insn->op = GL_vdrop;
+                insn->nin = 0;
+                insn->res = -1;
+            } else {
+                insn->op = I_CONV;
+                insn->local_type = locals[local].type;
+                vals[insn->res].type = locals[local].type;
+                DEF_PUSH(local, insn->res);
+            }
+        } else {
+            int old = DEF_TOP(local), result = insn->res;
+            int stepped = new_val(locals[local].type, at);
+            Ent operand_ent;
+
+            memset(&operand_ent, 0, sizeof operand_ent);
+            operand_ent.attr = insn->rec->top;
+            operand_ent.attr.type = locals[local].type;
+            operand_ent.attr.ext = (unsigned char) insn->rec->arg[2];
+            operand_ent.attr.kind = VAL_LOCAL;
+            operand_ent.val = old;
+            resolve(&operand_ent);
+            repl = realloc(repl, (size_t) nvals * sizeof *repl);
+            if (!repl)
+                acc_error("out of memory for the SSA form");
+            repl[stepped] = -1;
+            insn = &insns[at];
+            insn->step_op = (int) insn->rec->arg[3];
+            insn->local_type = locals[local].type;
+            insn->nin = 1;
+            insn->in[0] = operand_ent;
+            insn->res = stepped;
+            repl[result] = insn->op == GL_vprefix_local ? stepped : old;
+            insn->op = I_STEP;
+            DEF_PUSH(local, stepped);
+        }
+    }
+    for (succ = 0; succ != succs[blk].count; succ++) {
+        int to = succs[blk].at[succ], pred;
+
+        for (pred = 0; pred != preds[to].count; pred++) {
+            if (preds[to].at[pred] != blk)
+                continue;
+            for (phi = 0; phi != nphis; phi++)
+                if (phis[phi].block == to)
+                    phis[phi].in[pred] = DEF_TOP(phis[phi].local);
+        }
+    }
+    for (kid = 0; kid != dom_kids[blk].count; kid++)
+        rename_block(dom_kids[blk].at[kid]);
+    for (at = 0; at != nlocals; at++)
+        cur_top[at] -= pushed[at];
+#undef DEF_PUSH
+#undef DEF_TOP
+}
+
+/* Only the phis something reads are kept: a phi is live if an instruction
+ * reads it, or a live phi does. */
+static void live_phis(void)
+{
+    int at, operand, phi, changed;
+    char *used = calloc((size_t) nvals + 1, 1);
+
+    if (!used)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != ninsns; at++)
+        for (operand = 0; operand != insns[at].nin; operand++)
+            if (insns[at].in[operand].val >= 0)
+                used[insns[at].in[operand].val] = 1;
+    do {
+        changed = 0;
+        for (phi = 0; phi != nphis; phi++) {
+            int pred;
+
+            if (phis[phi].live || !used[phis[phi].val])
+                continue;
+            phis[phi].live = 1;
+            changed = 1;
+            for (pred = 0; pred != preds[phis[phi].block].count; pred++) {
+                int from = find_val(phis[phi].in[pred]);
+
+                phis[phi].in[pred] = from;
+                if (from >= 0)
+                    used[from] = 1;
+            }
+        }
+    } while (changed);
+    free(used);
+}
+
+static void to_values(void)
+{
+    int local, at;
+    Phi *phi;
+
+    nphis = 0;
+    find_locals();
+    build_cfg();
+    dominators();
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].ok && locals[local].is_param) {
+            locals[local].entry_val = new_val(locals[local].type, 0);
+        }
+    place_phis();
+
+    repl = malloc(((size_t) nvals + 1) * sizeof *repl);
+    cur_cap = ninsns + nlocals + 8;
+    cur_def = malloc(((size_t) nlocals + 1) * (size_t) cur_cap * sizeof *cur_def);
+    cur_top = calloc((size_t) nlocals + 1, sizeof *cur_top);
+    if (!repl || !cur_def || !cur_top)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != nvals; at++)
+        repl[at] = -1;
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].ok && locals[local].is_param)
+            cur_def[local * cur_cap + cur_top[local]++] = locals[local].entry_val;
+    rename_block(0);
+
+    /* What the blocks the entry does not reach read, resolved as well. */
+    for (at = 0; at != ninsns; at++) {
+        int operand;
+
+        for (operand = 0; operand != insns[at].nin; operand++)
+            resolve(&insns[at].in[operand]);
+    }
+    live_phis();
+
+    /* What the copies into phis cannot do yet: a phi wider than an int,
+     * which a register cannot hold across them, and one a switch's case
+     * jumps to, which leaves no place for its copies. */
+    for (phi = phis; phi != phis + nphis && !fail; phi++) {
+        int pred;
+
+        if (!phi->live)
+            continue;
+        if (type_wide(vals[phi->val].type))
+            fail = "a long or a float where paths join";
+        for (pred = 0; pred != preds[phi->block].count && !fail; pred++) {
+            int from = preds[phi->block].at[pred];
+
+            for (at = blocks[from].first; at <= block_last[from]; at++)
+                if (insns[at].op == GL_gen_switch_case
+                    && insns[at].target == phi->block)
+                    fail = "a switch's case where paths join";
+        }
+    }
+    free(cur_def);
+    free(cur_top);
+    cur_def = cur_top = NULL;
+}
+
+/* Where each value is live, as the interval its slot is kept for: every
+ * position from the first to the last at which it is live, found by the
+ * usual dataflow over the blocks -- a value is live into a block that
+ * reads it before writing it, and out of one that a successor needs it
+ * live into, or whose successor's phi reads it. Layout order is not flow
+ * order: a goto into a loop's middle puts a value's reads above where it
+ * is made. */
+static unsigned char *live_in, *live_out, *block_gen, *block_kill, *phi_def;
+
+#define LIVE_BIT(set, blk, val) ((set)[(size_t) (blk) * (size_t) nvals + (val)])
+
+static void widen(int val, int at)
+{
+    if (vals[val].def > at)
+        vals[val].def = at;
+    if (vals[val].last < at)
+        vals[val].last = at;
+}
+
+static void live_ranges(void)
+{
+    size_t size = (size_t) nblocks * (size_t) nvals + 1;
+    int blk, at, operand, val, phi_at, changed, local;
+
+    live_in = calloc(size, 1);
+    live_out = calloc(size, 1);
+    block_gen = calloc(size, 1);
+    block_kill = calloc(size, 1);
+    phi_def = calloc(size, 1);
+    if (!live_in || !live_out || !block_gen || !block_kill || !phi_def)
+        acc_error("out of memory for the SSA form");
+
+    /* What each block reads before it writes, and what it writes. */
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].ok && locals[local].is_param)
+            LIVE_BIT(block_kill, 0, locals[local].entry_val) = 1;
+    for (phi_at = 0; phi_at != nphis; phi_at++)
+        if (phis[phi_at].live) {
+            LIVE_BIT(block_kill, phis[phi_at].block, phis[phi_at].val) = 1;
+            LIVE_BIT(phi_def, phis[phi_at].block, phis[phi_at].val) = 1;
+        }
+    for (blk = 0; blk != nblocks; blk++) {
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+
+        for (at = blocks[blk].first; at != end; at++) {
+            const Ins *insn = &insns[at];
+
+            for (operand = 0; operand != insn->nin; operand++) {
+                val = insn->in[operand].val;
+                if (val < 0)
+                    continue;
+                vals[val].used = 1;
+                if (!LIVE_BIT(block_kill, blk, val))
+                    LIVE_BIT(block_gen, blk, val) = 1;
+            }
+            if (insn->res >= 0)
+                LIVE_BIT(block_kill, blk, insn->res) = 1;
+            if (insn->op == I_SET && insn->target >= 0)
+                LIVE_BIT(block_kill, blk, insn->target) = 1;
+        }
+    }
+    for (phi_at = 0; phi_at != nphis; phi_at++) {
+        const Phi *phi = &phis[phi_at];
+        int pred;
+
+        if (!phi->live)
+            continue;
+        for (pred = 0; pred != preds[phi->block].count; pred++)
+            if (phi->in[pred] >= 0)
+                vals[phi->in[pred]].used = 1;
+    }
+
+    /* Out of a block: what its successors need, and what their phis read
+     * from it; into it: what it reads first, and what goes out that it
+     * does not make. */
+    do {
+        changed = 0;
+        for (blk = nblocks - 1; blk >= 0; blk--) {
+            int succ;
+
+            for (succ = 0; succ != succs[blk].count; succ++) {
+                int to = succs[blk].at[succ], pred;
+
+                for (val = 0; val != nvals; val++)
+                    if (LIVE_BIT(live_in, to, val) && !LIVE_BIT(live_out, blk, val)
+                        && !LIVE_BIT(phi_def, to, val)) {
+                        LIVE_BIT(live_out, blk, val) = 1;
+                        changed = 1;
+                    }
+                for (pred = 0; pred != preds[to].count; pred++) {
+                    if (preds[to].at[pred] != blk)
+                        continue;
+                    for (phi_at = 0; phi_at != nphis; phi_at++) {
+                        const Phi *phi = &phis[phi_at];
+
+                        if (!phi->live || phi->block != to || phi->in[pred] < 0
+                            || LIVE_BIT(live_out, blk, phi->in[pred]))
+                            continue;
+                        LIVE_BIT(live_out, blk, phi->in[pred]) = 1;
+                        changed = 1;
+                    }
+                }
+            }
+            for (val = 0; val != nvals; val++) {
+                int in = LIVE_BIT(block_gen, blk, val)
+                         || (LIVE_BIT(live_out, blk, val)
+                             && !LIVE_BIT(block_kill, blk, val));
+
+                if (in && !LIVE_BIT(live_in, blk, val)) {
+                    LIVE_BIT(live_in, blk, val) = 1;
+                    changed = 1;
+                }
+            }
+        }
+    } while (changed);
+
+    /* The intervals: each value's making, its reads, and every block it is
+     * live into or out of, end to end. */
+    for (val = 0; val != nvals; val++) {
+        vals[val].def = vals[val].def < 0 ? 0 : vals[val].def;
+        vals[val].last = vals[val].def;
+    }
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].ok && locals[local].is_param)
+            widen(locals[local].entry_val, 0);
+    for (blk = 0; blk != nblocks; blk++) {
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+        int first = blocks[blk].first, last = block_last[blk];
+
+        if (last < first)
+            last = first;
+        for (val = 0; val != nvals; val++) {
+            if (LIVE_BIT(live_in, blk, val))
+                widen(val, first);
+            if (LIVE_BIT(live_out, blk, val))
+                widen(val, last);
+        }
+        for (at = first; at != end; at++) {
+            const Ins *insn = &insns[at];
+
+            for (operand = 0; operand != insn->nin; operand++)
+                if (insn->in[operand].val >= 0)
+                    widen(insn->in[operand].val, at);
+            if (insn->res >= 0)
+                widen(insn->res, at);
+            if (insn->op == I_SET && insn->target >= 0)
+                widen(insn->target, at);
+        }
+    }
+    for (phi_at = 0; phi_at != nphis; phi_at++)
+        if (phis[phi_at].live)
+            widen(phis[phi_at].val, blocks[phis[phi_at].block].first);
+
+    free(live_in);
+    free(live_out);
+    free(block_gen);
+    free(block_kill);
+    free(phi_def);
+    live_in = live_out = block_gen = block_kill = phi_def = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -748,9 +1440,20 @@ static void load(const Ent *ent)
     if (ent->val == S_CONST) {
         load_constant(ent);
     } else {
-        vpush_local(vals[ent->val].slot, vals[ent->val].type);
-        if (attr->type != vals[ent->val].type)
-            vset_type(attr->type, attr->ext);
+        Type stored = vals[ent->val].type;
+
+        vpush_local(vals[ent->val].slot, stored);
+
+        /* Read where the first pass had it at another type: the same
+         * address as another pointer is a relabel, and anything else --
+         * a char read where the first pass had it promoted, say -- is a
+         * conversion. */
+        if (attr->type != stored) {
+            if (type_pointer(attr->type) && type_pointer(stored))
+                vset_type(attr->type, attr->ext);
+            else
+                vconvert(attr->type);
+        }
     }
     vset_ext(attr->ext);
     vset_quals(attr->quals);
@@ -889,7 +1592,7 @@ static void emit_block_start(int block)
  * when nothing reads it, dropped. */
 static void keep(int val)
 {
-    if (vals[val].last == vals[val].def) {
+    if (!vals[val].used) {
         gen_discard();
         return;
     }
@@ -956,11 +1659,98 @@ static void give_slots(void)
     free(slot_at);
 }
 
-static void emit_branch(const Ins *insn)
+/* A block's live phis, which say whether an edge into it needs copies. */
+static int has_phis(int blk)
+{
+    int phi;
+
+    for (phi = 0; phi != nphis; phi++)
+        if (phis[phi].live && phis[phi].block == blk)
+            return 1;
+
+    return 0;
+}
+
+/* The copies an edge makes into the phis of the block it goes to: every
+ * value the edge brings loaded first and held -- in a register, or where
+ * the backend puts one when it runs out -- and only then stored, the last
+ * first, so that a phi read by another's copy is read before it changes. */
+static void edge_copies(int from, int to)
+{
+    int nstored = 0, stored[MAX_LOCALS * 4], phi, pred;
+
+    for (pred = 0; pred != preds[to].count; pred++) {
+        if (preds[to].at[pred] != from)
+            continue;
+        for (phi = 0; phi != nphis; phi++) {
+            const Phi *join = &phis[phi];
+            Ent ent;
+
+            if (!join->live || join->block != to || join->in[pred] < 0
+                || join->in[pred] == join->val
+                || nstored == (int) (sizeof stored / sizeof stored[0]))
+                continue;
+            memset(&ent, 0, sizeof ent);
+            ent.val = join->in[pred];
+            ent.attr.kind = VAL_LOCAL;
+            ent.attr.type = vals[ent.val].type;
+            load(&ent);
+            (void) force_reg(vsp - 1);  /* held now, not read later */
+            stored[nstored++] = join->val;
+        }
+        break;                          /* one edge's worth: the first */
+    }
+    while (nstored--) {
+        int val = stored[nstored];
+
+        vstore_local(vals[val].slot, vals[val].type);
+        vdrop();
+    }
+}
+
+/* Jumps to copies made where nothing falls into them: an edge that
+ * branches into a block with phis goes there first. */
+typedef struct {
+    int hole, from, to;
+} Trampoline;
+
+static Trampoline *trampolines;
+static int         ntrampolines, trampolines_cap;
+
+/* The copies of the trampolines waiting, each then a jump on to its
+ * block: made where the code before cannot fall into them. */
+static void emit_trampolines(void)
+{
+    int tramp;
+
+    for (tramp = 0; tramp != ntrampolines && !fail; tramp++) {
+        int to = trampolines[tramp].to;
+
+        gen_label(trampolines[tramp].hole);
+        edge_copies(trampolines[tramp].from, to);
+        if (block_now[to] >= 0)
+            gen_jump_to(block_now[to]);
+        else
+            jump_forward(gen_jump(), to);
+    }
+    ntrampolines = 0;
+}
+
+static void emit_branch(const Ins *insn, int blk)
 {
     load(&insn->in[0]);
     if (insn->target < 0) {
         vdrop();
+        return;
+    }
+    if (has_phis(insn->target)) {
+        if (insn->sense)
+            vtruth(TK_EQ);
+        GROW(trampolines, ntrampolines, trampolines_cap);
+        trampolines[ntrampolines].hole = gen_jump_if_false();
+        trampolines[ntrampolines].from = blk;
+        trampolines[ntrampolines].to = insn->target;
+        ntrampolines++;
         return;
     }
     /* The truth turned over is `== 0`: vnot is ~, not !. */
@@ -975,9 +1765,90 @@ static void emit_branch(const Ins *insn)
     }
 }
 
+/* Whether a frame call is about a local that is values now, and so is not
+ * made: the local in IY is one of them. */
+static int frame_of_value(const Ins *insn)
+{
+    int local;
+
+    switch (insn->rec->op) {
+    case GL_gen_iy_claim: case GL_gen_iy_param: case GL_gen_iy_take:
+        local = local_of((int) insn->rec->arg[0]);
+        return local >= 0 && locals[local].ok;
+    }
+
+    return 0;
+}
+
+static void emit_insn(const Ins *insn, int blk, int at)
+{
+    int operand;
+
+    switch (insn->op) {
+    case I_FRAME:
+    case GL_vdrop:
+        break;
+    case I_SET:
+        load(&insn->in[0]);
+        if (insn->target >= 0) {
+            vconvert(vals[insn->target].type);
+            vstore_local(vals[insn->target].slot, vals[insn->target].type);
+        }
+        vdrop();
+        break;
+    case I_CONV:
+        load(&insn->in[0]);
+
+        /* An address the link fills in is cut down in a register, as the
+         * store it stands for would: vconvert refuses it as a constant. */
+        if (val_pending((vsp - 1)->kind)
+            && type_size(insn->local_type) < ACC_INT_SIZE)
+            force_reg(vsp - 1);
+        vconvert(insn->local_type);
+        keep(insn->res);
+        break;
+    case I_STEP:
+        load(&insn->in[0]);
+        vpush_const(1, TY_INT);
+        vapply((unsigned char) insn->step_op, type_narrow(insn->local_type));
+        vconvert(insn->local_type);
+        keep(insn->res);
+        break;
+    case I_JMP:
+        if (insn->target < 0)
+            break;                      /* never landed: nothing jumps */
+        edge_copies(blk, insn->target);
+        if (block_now[insn->target] >= 0)
+            gen_jump_to(block_now[insn->target]);
+        else if (insn->target != blk + 1 || block_last[blk] != at)
+            jump_forward(gen_jump(), insn->target);
+        break;
+    case I_BR:
+        emit_branch(insn, blk);
+        break;
+    case GL_gen_switch_load:
+        gen_switch_load((int) insn->rec->arg[0], (Type) insn->rec->arg[1]);
+        break;
+    case GL_gen_switch_case:
+        gen_switch_case(insn->rec->arg[0], (uint32_t) insn->rec->arg[1],
+                        (Type) insn->rec->arg[2], block_now[insn->target],
+                        (int) insn->rec->arg[4]);
+        break;
+    default:
+        for (operand = 0; operand != insn->nin; operand++)
+            load(&insn->in[operand]);
+        call(insn);
+        if (insn->res >= 0)
+            keep(insn->res);
+        else if (pushes(insn->op))
+            vdrop();                    /* a void, or a constant made again */
+        break;
+    }
+}
+
 static void emit(void)
 {
-    int at, block = 0, operand;
+    int at, blk, local;
 
     block_now = malloc((size_t) nblocks * sizeof *block_now);
     if (!block_now)
@@ -986,11 +1857,13 @@ static void emit(void)
         block_now[at] = -1;
     npending = 0;
     nmoved = 0;
+    ntrampolines = 0;
 
-    /* The prologue, and the frame as the first pass laid it out. */
+    /* The prologue, and the frame as the first pass laid it out -- but
+     * for the local in IY, if it is values now. */
     call(&insns[0]);
     for (at = 1; at != ninsns; at++)
-        if (insns[at].op == I_FRAME) {
+        if (insns[at].op == I_FRAME && !frame_of_value(&insns[at])) {
             Ins frame_call = insns[at];
 
             frame_call.op = frame_call.rec->op;
@@ -998,60 +1871,42 @@ static void emit(void)
         }
     give_slots();
 
-    for (at = 1; at != ninsns && !fail; at++) {
-        const Ins *insn = &insns[at];
+    /* Each parameter that is values now, from its slot into its first. */
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].ok && locals[local].is_param) {
+            int val = locals[local].entry_val;
 
-        while (block + 1 < nblocks && blocks[block + 1].first <= at) {
-            block++;
-            emit_block_start(block);
-        }
-        switch (insn->op) {
-        case I_FRAME:
-        case GL_vdrop:
-            break;
-        case I_SET:
-            load(&insn->in[0]);
-            if (insn->target >= 0) {
-                vconvert(vals[insn->target].type);
-                vstore_local(vals[insn->target].slot,
-                             vals[insn->target].type);
-            }
+            vpush_local(locals[local].offset, locals[local].type);
+            vstore_local(vals[val].slot, vals[val].type);
             vdrop();
-            break;
-        case I_JMP:
-            if (insn->target < 0)
-                break;                  /* never landed: nothing jumps */
-            if (block_now[insn->target] >= 0)
-                gen_jump_to(block_now[insn->target]);
-            else if (insn->target != block + 1
-                     || blocks[block + 1].first != at + 1)
-                jump_forward(gen_jump(), insn->target);
-            break;
-        case I_BR:
-            emit_branch(insn);
-            break;
-        case GL_gen_switch_load:
-            gen_switch_load((int) insn->rec->arg[0], (Type) insn->rec->arg[1]);
-            break;
-        case GL_gen_switch_case:
-            gen_switch_case(insn->rec->arg[0], (uint32_t) insn->rec->arg[1],
-                            (Type) insn->rec->arg[2], block_now[insn->target],
-                            (int) insn->rec->arg[4]);
-            break;
-        default:
-            for (operand = 0; operand != insn->nin; operand++)
-                load(&insn->in[operand]);
-            call(insn);
-            if (insn->res >= 0)
-                keep(insn->res);
-            else if (pushes(insn->op))
-                vdrop();                /* a void, or a constant made again */
-            break;
         }
+
+    for (blk = 0; blk != nblocks && !fail; blk++) {
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+        int falls = 1;
+
+        if (blk)
+            emit_block_start(blk);
+        for (at = blocks[blk].first; at != end && !fail; at++) {
+            if (at == 0)
+                continue;               /* the prologue, made above */
+            emit_insn(&insns[at], blk, at);
+            if (at == end - 1 && (insns[at].op == I_JMP
+                                  || insns[at].op == GL_gen_return))
+                falls = 0;
+        }
+        if (falls && blk + 1 < nblocks)
+            edge_copies(blk, blk + 1);
+        if (!falls)
+            emit_trampolines();
     }
-    while (block + 1 < nblocks && !fail) {
-        block++;
-        emit_block_start(block);
+
+    /* The last block falls into the epilogue: over the rest. */
+    if (ntrampolines) {
+        int over = gen_jump();
+
+        emit_trampolines();
+        gen_label(over);
     }
     free(block_now);
     block_now = NULL;
@@ -1068,10 +1923,25 @@ static void dump(void)
         const Ins *insn = &insns[at];
         const char *name = insn->op < GL_COUNT ? gl_names[insn->op]
                            : insn->op == I_BR ? "br" : insn->op == I_JMP ? "jmp"
-                           : insn->op == I_SET ? "set" : "frame";
+                           : insn->op == I_SET ? "set" : insn->op == I_CONV ? "conv"
+                           : insn->op == I_STEP ? "step" : "frame";
 
-        while (block < nblocks && blocks[block].first <= at)
-            fprintf(stderr, " b%d:\n", block++);
+        while (block < nblocks && blocks[block].first <= at) {
+            int phi, pred;
+
+            fprintf(stderr, " b%d:\n", block);
+            for (phi = 0; phi != nphis; phi++) {
+                if (phis[phi].block != block || !phis[phi].live)
+                    continue;
+                fprintf(stderr, "      phi v%d of local %d:", phis[phi].val,
+                        locals[phis[phi].local].offset);
+                for (pred = 0; pred != preds[block].count; pred++)
+                    fprintf(stderr, " b%d:v%d", preds[block].at[pred],
+                            phis[phi].in[pred]);
+                fprintf(stderr, "\n");
+            }
+            block++;
+        }
         fprintf(stderr, "  %3d %-20s", at, name);
         for (operand = 0; operand != insn->nin; operand++) {
             const Ent *ent = &insn->in[operand];
@@ -1093,6 +1963,31 @@ static void dump(void)
             fprintf(stderr, " into v%d", insn->target);
         fprintf(stderr, "\n");
     }
+}
+
+/* What one function's form held, given back before the next. */
+static void forget(void)
+{
+    int at;
+
+    for (at = 0; at != nphis; at++)
+        free(phis[at].in);
+    nphis = 0;
+    for (at = 0; succs && at != nblocks; at++) {
+        free(succs[at].at);
+        free(preds[at].at);
+        free(dom_kids[at].at);
+    }
+    free(succs);
+    free(preds);
+    free(dom_kids);
+    free(block_last);
+    free(rpo);
+    free(rpo_num);
+    free(idom);
+    free(repl);
+    succs = preds = dom_kids = NULL;
+    block_last = rpo = rpo_num = idom = repl = NULL;
 }
 
 int ssa_generate(const char **why)
@@ -1123,14 +2018,19 @@ int ssa_generate(const char **why)
         *why = fail;
         return 0;
     }
-    live_ranges();
-    if (getenv("OPTACC_SSA_DUMP"))
-        dump();
-    if (!plan_slots()) {
+    to_values();
+    if (!fail) {
+        live_ranges();
+        if (getenv("OPTACC_SSA_DUMP"))
+            dump();
+    }
+    if (fail || !plan_slots()) {
         *why = fail;
+        forget();
         return 0;
     }
     emit();
+    forget();
     if (fail) {
         *why = fail;
         return -1;                      /* part emitted: the caller stops */

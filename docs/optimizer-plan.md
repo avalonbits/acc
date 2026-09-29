@@ -276,6 +276,22 @@ compilers, and the whole test suite through opt-acc.
      the case suite, the float oracle and printf that way.
 3. **Register allocation.** The step the others are worth nothing without.
    Target: sieve and lists at or under agondev, zap-basic under 1.35.
+   - First, the locals out of memory. Done: a scalar local or parameter
+     whose address is never taken becomes SSA values, with a phi where
+     paths join, placed at the dominance frontiers of its stores. Each
+     edge into a block with phis copies its values in, all read before any
+     is written; a conditional edge copies on a trampoline, made where no
+     code falls into it. Left in the frame: a local of more than one type,
+     one a switch reads, every local of a function that calls setjmp or
+     has a runtime-sized array, and -- until the backend holds them in
+     registers -- a long or a float where paths join.
+   - The values still sit in frame slots, so what it buys is fewer of
+     them and no copies between a local and its temporaries. With SSA
+     forced, against step 2 on the same day: the speed mean 1.64 -> 1.47
+     of agondev, zap-basic 157.2M -> 151.0M cycles; the code mean 2.35 ->
+     1.78, zap 150056 -> 139648 bytes. acc itself now compiles this way.
+   - Next: the values in registers, by linear scan over the same
+     intervals, and the choice per function of this code or acc's.
 4. **Inlining, value reuse, hoisting, strength reduction, narrow values,
    ranges**, one at a time, each kept only if the corpora say so. Target:
    zap-basic about 1.10-1.15; the integer programs under 1.00.
