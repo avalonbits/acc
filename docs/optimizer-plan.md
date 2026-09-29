@@ -6,10 +6,10 @@ Agon, and that budget has decided what it can do: every optimisation in
 opt-acc is a second compiler without that budget: the same front end,
 built as its own binary, that may take as long and as much memory as it
 needs. Its goal is code **faster than agondev's, and no bigger than
-agondev's at `-Oz`**. It is meant for the host, where the time does not
-matter; it still runs on the Agon, as its own binary, slowly. acc itself
-does not change, and there is no flag: which binary compiles a program is
-the choice.
+agondev's at `-Oz`**. It is a cross-compiler for the host only, as
+agondev is: acc stays the compiler that runs on the Agon. acc itself does
+not change, and there is no flag: which binary compiles a program is the
+choice.
 
 Not built. This is what the gap to agondev is made of, measured, and how
 opt-acc would close it.
@@ -212,9 +212,8 @@ Each ends measured: `test/perf.sh` and `test/size.sh` for both
 compilers, and the whole test suite through opt-acc.
 
 0. **opt-acc itself, with what already exists.**
-   - A second binary from the same sources, `bin/opt-acc` on the host
-     and `opt-acc.bin` on the Agon, which the build turns the new backend
-     on for; acc and acc.bin are unchanged.
+   - A second binary from the same sources, `bin/opt-acc`, built for the
+     host only; acc and acc.bin are unchanged.
    - In it from the start: the pre-scan that picks the IY local (branch
      `iy-prescan2`: zap -3.8%, lists -11.7%, sieve -7.4%, at a compile
      cost that no longer matters), the written-out prologue (zap -2.2%,
@@ -253,9 +252,11 @@ on a stack, and turning a stack machine into SSA is mechanical. Locals
 whose address is never taken become SSA values; those whose address is
 taken stay memory.
 
-Being a separate binary is what makes SSA affordable. The intermediate
-form, its passes and the allocator cost no heap in acc.bin, so opt-acc
-can use a textbook SSA backend rather than squeeze one into the one-pass
+Being a separate binary for the host only is what makes SSA affordable.
+The intermediate form, its passes and the allocator cost no heap in
+acc.bin, and nothing of opt-acc has to fit the Agon or compile with
+agondev, so it can use a textbook SSA backend, written in ordinary C
+with memory to spare, rather than squeeze one into the one-pass
 compiler. The classic backend stays in opt-acc for two things: it
 answers the parser's questions while the log is taken, and it is the
 fallback for any function the new backend cannot compile yet. Once SSA
@@ -264,16 +265,11 @@ the classic backend can leave opt-acc.
 
 ## What opt-acc costs
 
-- **Memory.** The log and the intermediate form hold one function at a
-  time. On the host that is nothing. On the Agon, a function of a few
-  hundred statements needs a few tens of KB. The heap is 188 KB, and
-  acc's own sources are the largest input it compiles.
-- **acc.bin.** Nothing: the second backend is in opt-acc only. On the
-  Agon, opt-acc.bin is bigger than acc.bin, so it has less heap. That
-  limits the size of the function it can hold, not what it can compile
-  with acc instead.
-- **Compile time on the Agon.** Several times acc's. Accepted: that is
-  the trade opt-acc makes.
+- **acc.bin.** Nothing: the second backend is in opt-acc only, and
+  opt-acc runs on the host. Its memory and time are the host's.
+- **Source kept apart.** The front end is shared, so the new backend's
+  files are built into opt-acc and not into acc: `Makefile.agon` never
+  sees them.
 - **Testing.** Two backends, each tested on everything. Keeping the
   better body means a bug in the new one can hide behind the old one's,
   so step 2's correctness runs force the new backend wherever it can
