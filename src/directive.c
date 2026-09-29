@@ -1172,6 +1172,7 @@ static int skip_group(void)
 
     for (;;) {
         /* At the start of a line. */
+    line_start:
         if (!in_comment) {
             skip_blanks();
             if (hash_at(cursor)) {
@@ -1224,6 +1225,11 @@ static int skip_group(void)
                 break;
             if (!refill())
                 acc_error_at(opened, "#if without #endif");
+
+            /* The window holds whole lines, so its end is where one
+             * starts: the refilled window's first line is a line of its
+             * own, and a directive on it is looked at. */
+            goto line_start;
         }
         cursor++;               /* the newline */
         line++;
