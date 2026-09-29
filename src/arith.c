@@ -1535,3 +1535,28 @@ void vapply(unsigned char op, Type narrow)
 
     vbinop(op);
 }
+
+#ifdef OPT_ACC
+/* This file's marks -- where a sequence just emitted ended, and the
+ * out_rewinds it was made at -- copied out, or back, for genlog.c, which
+ * compiles a function again from where it began and needs every mark as it
+ * stood then. Returns how many bytes they take. */
+size_t arith_marks(unsigned char *buf, int restore)
+{
+    size_t at = 0;
+
+    STATE_VAR(gaddr_end);
+    STATE_VAR(gaddr_reg);
+    STATE_VAR(gaddr_epoch);
+    STATE_VAR(conversion_from);
+    STATE_VAR(conversion_to);
+    STATE_VAR(conversion_epoch);
+    STATE_VAR(cmp_from);
+    STATE_VAR(cmp_to);
+    STATE_VAR(cmp_op);
+    STATE_VAR(cmp_was_unsigned);
+    STATE_VAR(cmp_epoch);
+
+    return at;
+}
+#endif

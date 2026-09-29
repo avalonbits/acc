@@ -1420,3 +1420,19 @@ void vcmp_wide(int op, Type operand)
     spill_used = low;
     vpush_reg(R_HL);
 }
+
+#ifdef OPT_ACC
+/* This file's marks -- where a sequence just emitted ended, and the
+ * out_rewinds it was made at -- copied out, or back, for genlog.c, which
+ * compiles a function again from where it began and needs every mark as it
+ * stood then. Returns how many bytes they take. */
+size_t wide_marks(unsigned char *buf, int restore)
+{
+    size_t at = 0;
+
+    STATE_VAR(lops);
+    STATE_VAR(lop_top);
+
+    return at;
+}
+#endif

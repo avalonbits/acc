@@ -804,3 +804,27 @@ void gen_cond_end(int to_stub, int slot, int lock, Type middle,
     if (was_struct)
         (vsp - 1)->type = TY_STRUCT;
 }
+
+#ifdef OPT_ACC
+/* This file's marks -- where a sequence just emitted ended, and the
+ * out_rewinds it was made at -- copied out, or back, for genlog.c, which
+ * compiles a function again from where it began and needs every mark as it
+ * stood then. Returns how many bytes they take. */
+size_t branch_marks(unsigned char *buf, int restore)
+{
+    size_t at = 0;
+
+    STATE_VAR(widen_from);
+    STATE_VAR(widen_to);
+    STATE_VAR(widen_type);
+    STATE_VAR(widen_epoch);
+    STATE_VAR(logic_from);
+    STATE_VAR(logic_to);
+    STATE_VAR(logic_settles);
+    STATE_VAR(logic_holes);
+    STATE_VAR(nlogic_holes);
+    STATE_VAR(logic_epoch);
+
+    return at;
+}
+#endif

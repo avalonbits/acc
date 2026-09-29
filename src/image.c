@@ -850,3 +850,30 @@ void out_abandon(void)
     spill = NULL;
     remove(spill_name);
 }
+
+#ifdef OPT_ACC
+/* This file's marks -- where a sequence just emitted ended, and the
+ * out_rewinds it was made at -- copied out, or back, for genlog.c, which
+ * compiles a function again from where it began and needs every mark as it
+ * stood then. Returns how many bytes they take. */
+#ifndef STATE_VAR               /* as gen_int.h has it */
+#define STATE_VAR(v) do {                                               \
+        if (restore)                                                    \
+            memcpy(&(v), buf + at, sizeof (v));                         \
+        else                                                            \
+            memcpy(buf + at, &(v), sizeof (v));                         \
+        at += sizeof (v);                                               \
+    } while (0)
+#endif
+size_t image_marks(unsigned char *buf, int restore);
+
+size_t image_marks(unsigned char *buf, int restore)
+{
+    size_t at = 0;
+
+    STATE_VAR(out_rewinds);
+    STATE_VAR(out_rewind_floor);
+
+    return at;
+}
+#endif

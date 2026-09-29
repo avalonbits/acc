@@ -5,6 +5,7 @@
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
+#define ACC_FRONT       /* the parser: see gen.h */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>

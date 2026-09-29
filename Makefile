@@ -115,8 +115,12 @@ $(BIN)/acc: $(SRC) $(HDR) src/acc_build.h | $(BIN)
 
 # opt-acc: the same sources with its own passes turned on, for the host only
 # (docs/optimizer-plan.md). Makefile.agon never sees OPT_SRC.
-OPT_SRC = src/prescan.c
-$(BIN)/opt-acc: $(SRC) $(OPT_SRC) $(HDR) src/acc_build.h | $(BIN)
+OPT_SRC = src/prescan.c src/genlog.c
+
+# The wrappers genlog.c logs the parser's calls through, from gen.h.
+src/genlog_calls.h: src/gen.h src/genlog.py
+	@python3 src/genlog.py src/gen.h $@
+$(BIN)/opt-acc: $(SRC) $(OPT_SRC) $(HDR) src/acc_build.h src/genlog_calls.h | $(BIN)
 	$(CC) $(CFLAGS) $(WARN) $(HOSTLIB) -DOPT_ACC -Isrc -o $@ $(SRC) $(OPT_SRC)
 
 $(BIN)/lib:
@@ -159,7 +163,7 @@ $(BIN)/libc.a: $(LIBOBJ) $(LIBASMOBJ) $(RTOBJ) $(BIN)/lib/members $(BIN)/acc
 $(BIN)/acc-asan: $(SRC) $(HDR) | $(BIN)
 	$(CC) $(SAN) $(WARN) $(HOSTLIB) -Isrc -o $@ $(SRC)
 
-$(BIN)/opt-acc-asan: $(SRC) $(OPT_SRC) $(HDR) | $(BIN)
+$(BIN)/opt-acc-asan: $(SRC) $(OPT_SRC) $(HDR) src/genlog_calls.h | $(BIN)
 	$(CC) $(SAN) $(WARN) $(HOSTLIB) -DOPT_ACC -Isrc -o $@ $(SRC) $(OPT_SRC)
 
 $(BIN):

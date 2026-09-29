@@ -31,6 +31,8 @@
  */
 #ifdef OPT_ACC                  /* opt-acc's alone; acc compiles it to nothing */
 
+#define ACC_FRONT       /* the parser's side: see gen.h */
+
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -826,7 +828,7 @@ void prescan_claim(int offset, Type type, NameRef name)
         if (iy_wants[i] != name)
             return;                     /* a better one is still to come */
         if (gen_iy_can(type)) {
-            iy_local = offset;
+            gen_iy_take(offset);
             return;
         }
         iy_wants[i] = NAME_NONE;

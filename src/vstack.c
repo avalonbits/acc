@@ -257,6 +257,15 @@ void gen_iy_claim(int offset, Type type, int quals)
         iy_local = offset;
 }
 
+#ifdef OPT_ACC
+/* The local at `offset` into IY: opt-acc's pre-scan choosing it
+ * (prescan_claim), as a call through gen.h so that genlog.c sees it. */
+void gen_iy_take(int offset)
+{
+    iy_local = offset;
+}
+#endif
+
 /* A parameter as the list is read: its offset if it is the one, else 0. */
 int gen_iy_pick(int offset, Type type, int quals)
 {
