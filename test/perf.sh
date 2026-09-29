@@ -28,7 +28,9 @@ cd "$(dirname "$0")/.."
 . test/emu.sh
 
 emu_available || exit 77
-[ -x bin/acc ] || { echo "bin/acc missing -- run make" >&2; exit 2; }
+# Which compiler builds the acc column: acc, or opt-acc (ACC=bin/opt-acc).
+ACC=${ACC:-bin/acc}
+[ -x "$ACC" ] || { echo "$ACC missing -- run make" >&2; exit 2; }
 AGONDEV=${AGONDEV:-$HOME/agondev}
 CC=$AGONDEV/bin/ez80-none-elf-clang
 [ -x "$CC" ] || { echo "no agondev at $AGONDEV" >&2; exit 2; }
@@ -64,8 +66,8 @@ build() {
     local src=$1 how=$2 out=$3
 
     if [ "$how" = acc ]; then
-        bin/acc -c "$src" -o "$out.o" -Iinclude -Itest/perf >/dev/null 2>&1 &&
-            bin/acc "$out.o" bin/libc.a -o "$out" >/dev/null 2>&1
+        "$ACC" -c "$src" -o "$out.o" -Iinclude -Itest/perf >/dev/null 2>&1 &&
+            "$ACC" "$out.o" bin/libc.a -o "$out" >/dev/null 2>&1
     else
         $CC $CFLAGS -$how -Itest/perf -c "$src" -o "$out.o" 2>/dev/null &&
             "$AGONDEV/bin/ez80-none-elf-ld" --oformat binary -Ttext=0x40000 \
@@ -175,8 +177,8 @@ if [ "$with_zap" = 1 ] && git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}
     for port in 40 41; do
         printf '#include <ez80f92.h>\nint main(void) { io_out(0x%s, 0); return 0; }\n' \
             "$port" > "$z/t$port.c"
-        { bin/acc -c "$z/t$port.c" -o "$z/t$port.o" -Iinclude &&
-              bin/acc "$z/t$port.o" bin/libc.a -o "$z/t$port.bin"; } >/dev/null 2>&1 || exit 2
+        { "$ACC" -c "$z/t$port.c" -o "$z/t$port.o" -Iinclude &&
+              "$ACC" "$z/t$port.o" bin/libc.a -o "$z/t$port.bin"; } >/dev/null 2>&1 || exit 2
     done
     ok=1
     for how in acc Oz O2; do
@@ -185,7 +187,7 @@ if [ "$with_zap" = 1 ] && git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}
         for f in "$z/src"/*.c; do
             o="$z/$how/$(basename "$f" .c).o"
             if [ "$how" = acc ]; then
-                bin/acc -c "$f" -o "$o" -Iinclude -I"$z/src" -DAGONDEV >/dev/null 2>&1
+                "$ACC" -c "$f" -o "$o" -Iinclude -I"$z/src" -DAGONDEV >/dev/null 2>&1
             else
                 $CC $CFLAGS -$how -DAGONDEV -fno-threadsafe-statics -I"$z/src" \
                     -c "$f" -o "$o" 2>/dev/null
@@ -193,7 +195,7 @@ if [ "$with_zap" = 1 ] && git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}
             objs="$objs $o"
         done
         if [ "$how" = acc ]; then
-            bin/acc $objs bin/libc.a -o "$z/$how.bin" >/dev/null 2>&1
+            "$ACC" $objs bin/libc.a -o "$z/$how.bin" >/dev/null 2>&1
         else
             "$AGONDEV/bin/ez80-none-elf-ld" -defsym=RAM_START=0x40000 \
                 -defsym=RAM_SIZE=0x70000 -defsym=_has_exit_handler=0 \

@@ -225,6 +225,16 @@ void return_kept(int line, const char *spot)
 }
 
 /* The function's kept text, if a call here may be compiled in place. */
+#ifdef OPT_ACC
+/* Whether a call to fn may be compiled in place, as far as its text goes:
+ * what prescan.c asks, which counts the calls a local in IY is saved
+ * around, and a call compiled in place has none. */
+int inline_has(int fn)
+{
+    return inline_of(fn) != NULL;
+}
+#endif
+
 const struct Inline *inline_usable(int fn)
 {
     const struct Inline *in;

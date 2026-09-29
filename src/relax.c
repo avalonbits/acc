@@ -656,7 +656,11 @@ void relax_function(const Mark *from, int frame_at)
          * are still in order, and nothing jumps into it. */
         if (frame_at >= 0) {
             cut->at = frame_at;
+#ifdef OPT_ACC
+            cut->len = 6;               /* and opt-acc's add hl, sp; ld sp, hl */
+#else
             cut->len = 4;
+#endif
             cut++;
             ncuts++;
         }

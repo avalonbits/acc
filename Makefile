@@ -66,7 +66,7 @@ LIBASMOBJ = $(LIBASM:lib/%.s=$(BIN)/lib/%.o)
 # under test, reporting green. It is worst when checking that a new test
 # bites: breaking the line it covers and watching the test still pass reads
 # as "the test does not cover this" when the truth is "that binary is old".
-all: $(BIN)/acc $(BIN)/acc-asan $(BIN)/libc.a
+all: $(BIN)/acc $(BIN)/acc-asan $(BIN)/opt-acc $(BIN)/opt-acc-asan $(BIN)/libc.a
 
 # acc's runtime is eZ80 assembly, lib/rt/*.s, assembled by zap into acc's
 # object format and put in the library with the C: see lib/rt/README.md.
@@ -113,6 +113,12 @@ HOSTLIB = -DACC_LIBC='"$(CURDIR)/$(BIN)/libc.a"' \
 $(BIN)/acc: $(SRC) $(HDR) src/acc_build.h | $(BIN)
 	$(CC) $(CFLAGS) $(WARN) $(HOSTLIB) -Isrc -o $@ $(SRC)
 
+# opt-acc: the same sources with its own passes turned on, for the host only
+# (docs/optimizer-plan.md). Makefile.agon never sees OPT_SRC.
+OPT_SRC = src/prescan.c
+$(BIN)/opt-acc: $(SRC) $(OPT_SRC) $(HDR) src/acc_build.h | $(BIN)
+	$(CC) $(CFLAGS) $(WARN) $(HOSTLIB) -DOPT_ACC -Isrc -o $@ $(SRC) $(OPT_SRC)
+
 $(BIN)/lib:
 	@mkdir -p $@
 
@@ -152,6 +158,9 @@ $(BIN)/libc.a: $(LIBOBJ) $(LIBASMOBJ) $(RTOBJ) $(BIN)/lib/members $(BIN)/acc
 # see the note there.
 $(BIN)/acc-asan: $(SRC) $(HDR) | $(BIN)
 	$(CC) $(SAN) $(WARN) $(HOSTLIB) -Isrc -o $@ $(SRC)
+
+$(BIN)/opt-acc-asan: $(SRC) $(OPT_SRC) $(HDR) | $(BIN)
+	$(CC) $(SAN) $(WARN) $(HOSTLIB) -DOPT_ACC -Isrc -o $@ $(SRC) $(OPT_SRC)
 
 $(BIN):
 	@mkdir -p $(BIN)
@@ -204,6 +213,7 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/onestep.sh
 	@ACC=$(BIN)/acc-asan test/usage.sh
 	@test/conformance.sh --check || [ $$? -eq 77 ]
+	@ACC=$(BIN)/opt-acc test/conformance.sh --check || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/printf.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/floatrt.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/hosted.sh || [ $$? -eq 77 ]
@@ -214,6 +224,10 @@ test: all unit agon
 	@test/abi-acc.sh
 	@ACC=$(BIN)/acc-asan test/errors.sh
 	@ACC=$(BIN)/acc-asan test/run.sh
+	@test/optacc.sh
+	@ACC=$(BIN)/opt-acc-asan test/run.sh
+	@ACC=$(BIN)/opt-acc-asan test/floatrt.sh || [ $$? -eq 77 ]
+	@ACC=$(BIN)/opt-acc-asan test/printf.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/self.sh
 	@ACC=$(BIN)/acc-asan test/selfbuild.sh
 	@if [ -f $(BIN)/acc.bin ]; then test/target.sh || [ $$? -eq 77 ]; \

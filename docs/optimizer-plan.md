@@ -211,14 +211,26 @@ unpacking and packing they share, alone would take fp from 2.09 to about
 Each ends measured: `test/perf.sh` and `test/size.sh` for both
 compilers, and the whole test suite through opt-acc.
 
-0. **opt-acc itself, with what already exists.**
-   - A second binary from the same sources, `bin/opt-acc`, built for the
-     host only; acc and acc.bin are unchanged.
-   - In it from the start: the pre-scan that picks the IY local (branch
-     `iy-prescan2`: zap -3.8%, lists -11.7%, sieve -7.4%, at a compile
-     cost that no longer matters), the written-out prologue (zap -2.2%,
-     words -3.5%), and frameless leaves.
-   - `test/run.sh` and the torture runs gain an opt-acc pass.
+0. **opt-acc itself, with what already exists.** Done.
+   - `bin/opt-acc` is the same sources built with `OPT_ACC` defined, and
+     [src/prescan.c](../src/prescan.c) added; everything it does
+     differently is behind that define, so acc and acc.bin are unchanged.
+   - The pre-scan picks the local a function's loops use most and keeps it
+     in IY, without `register`.
+   - The prologue is written out instead of called.
+   - `make test` runs the case suite, the conformance suites, the float
+     oracle and printf through opt-acc, and `test/optacc.sh` checks that
+     it writes what it should.
+   - Measured against acc on the same day: zap-basic 119.5M -> 112.2M
+     cycles (1.57 -> 1.47 of agondev); lists 1.18 -> 1.03, sieve 1.73 ->
+     1.61, sort 1.15 -> 1.09, words 0.98 -> 0.89, matmul 1.62 -> 1.56; the
+     speed mean 1.11 -> 1.05. fp went 1.09 -> 1.10: the pre-scan put an int
+     in IY in a function whose float copies then save it, which only
+     knowing types, in SSA, avoids. Code size: mean 1.33 -> 1.38, zap's
+     image +1.4%, all of it the written-out prologues.
+   - Frameless leaves were left for SSA: a leaf that reads its parameters
+     needs IX or a stack-relative read, and the functions with neither
+     parameters nor a frame are too few to matter.
 1. **The log, replayed.** opt-acc records each function and generates it
    by replaying the log into the classic backend. The output has to be
    identical to acc's, byte for byte, over the whole test suite: the proof

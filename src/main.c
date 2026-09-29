@@ -43,7 +43,7 @@ static int ncmdline;
 static void summary(FILE *f)
 {
     fprintf(f,
-        "acc " ACC_VERSION ", a C compiler for the Agon\r\n"
+        ACC_NAME " " ACC_VERSION ", " ACC_FOR "\r\n"
         "\r\n"
         "  acc prog.c                  compile and link prog.bin\r\n"
         "  acc -c prog.c               compile to prog.o\r\n"
@@ -56,9 +56,9 @@ static void summary(FILE *f)
 __attribute__((noreturn)) static void help(void)
 {
     printf(
-        "usage: acc [-c] <file.c> [<file.o|lib.a>]... [options]\r\n"
-        "       acc <file.o|lib.a>... [options]\r\n"
-        "       acc -a <lib.a> <file.o>...\r\n"
+        "usage: " ACC_NAME " [-c] <file.c> [<file.o|lib.a>]... [options]\r\n"
+        "       " ACC_NAME " <file.o|lib.a>... [options]\r\n"
+        "       " ACC_NAME " -a <lib.a> <file.o>...\r\n"
         "\r\n"
         "  -o <file>       what to write; else the input's name, .bin or .o\r\n"
         "  -c              compile to an object, to be linked later\r\n"

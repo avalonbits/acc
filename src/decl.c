@@ -379,6 +379,9 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
      * there is one. */
     mark = sym_scope_begin();
     params_first = sym_params_begin();
+#ifdef OPT_ACC
+    prescan_begin();
+#endif
     argoff = 2 * ACC_PTR_SIZE;
     if (type_is_struct(ret_type))
         argoff += ACC_PTR_SIZE;
@@ -451,6 +454,10 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
             sym_param_add(ptype, pext);
             if (pname && !iy_param)
                 iy_param = gen_iy_pick(argoff, ptype, pquals);
+#ifdef OPT_ACC
+            if (pname)
+                prescan_param(pname, argoff, gen_iy_can(ptype));
+#endif
 
             /* Every argument occupies whole slots: one however narrow it is,
              * two for a long, and as many as a struct fills. That is what
@@ -554,6 +561,20 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
                       | (decl_static ? SYMF_STATIC : 0));
     current_fn = fn;
 
+#ifdef OPT_ACC
+    /* The local to keep in IY, if nothing was declared register: see
+     * prescan.c. A parameter comes back as its offset, and is loaded once
+     * the prologue is laid; a local is claimed as it is declared. */
+    if (!iy_param && !iy_any) {
+        int off;
+
+        iy_nwants = prescan_body(tok_at, iy_wants, &off);
+        if (off) {
+            iy_param = off;
+            iy_nwants = 0;
+        }
+    }
+#endif
     gen_func_begin(fn, nparams, ret_type);
     if (iy_param)
         gen_iy_param(iy_param);
