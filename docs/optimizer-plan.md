@@ -1,15 +1,18 @@
-# `-O`: the plan
+# opt-acc: the plan
 
 acc compiles in one pass, with a budget of about 600 cycles a byte on the
 Agon, and that budget has decided what it can do: every optimisation in
 [OPTIMIZATIONS.md](OPTIMIZATIONS.md) works on what it can see as it emits.
-`-O` lifts the budget. With it, acc may take as long and as much memory as
-it needs, and the goal is code **as good as agondev's or better, on both
-size and speed**. It is meant for the host, where the time does not
-matter; it still runs on the Agon, slowly. Without `-O`, nothing changes.
+opt-acc is a second compiler without that budget: the same front end,
+built as its own binary, that may take as long and as much memory as it
+needs. Its goal is code **faster than agondev's, and no bigger than
+agondev's at `-Oz`**. It is meant for the host, where the time does not
+matter; it still runs on the Agon, as its own binary, slowly. acc itself
+does not change, and there is no flag: which binary compiles a program is
+the choice.
 
 Not built. This is what the gap to agondev is made of, measured, and how
-`-O` would close it.
+opt-acc would close it.
 
 ## Where the gap is
 
@@ -32,12 +35,12 @@ Cycles, millions. Two different problems:
 - **The program's own code** is 1.2 to 1.8 times agondev's in every
   program: sieve 1.78, matmul 1.76, fp 1.57, sort 1.52, words 1.34, crc
   1.25, interp 1.21, lists 1.15. For the integer programs this is the
-  whole loss. It is what `-O` is for.
+  whole loss. It is what opt-acc is for.
 - **The runtime** loses in floats and in the multiplies, and wins
   everywhere else (crc 13.8M against 21.1M, interp 0.5M against 6.7M,
   wide64 5.5M against 7.1M). Where it loses, it is the routines' own
-  algorithms, not how they are called, and fixing them helps every build,
-  `-O` or not: see [The runtime](#the-runtime).
+  algorithms, not how they are called, and fixing them helps both
+  compilers: see [The runtime](#the-runtime).
 
 ### What the own-code gap is made of
 
@@ -76,7 +79,7 @@ The small programs show the same things more plainly:
 - **pearson8** in zap: 91 cycles a turn against 32. agondev holds `k` in
   C, `h` in E, `p` in HL and the table in IY, with no frame at all.
 
-## What `-O` would do, and what each is worth
+## What opt-acc would do, and what each is worth
 
 Ranked by what it recovers. The zap figures are out of its 44.2M gap.
 
@@ -132,7 +135,7 @@ The parser drives code generation through the interface in `gen.h`: a
 stack machine of about 60 operations (`vpush_local`, `vapply`, `vderef`,
 `vstore_indirect`, `gen_call`, `gen_jump_if_false`, `gen_label`, ...).
 stmt.c, expr.c and decl.c call `out_` directly only four times between
-them. So under `-O`:
+them. So in opt-acc:
 
 1. **Record.** Every call through the interface is also written to a log
    for the function, with its arguments: a linear stack-machine
@@ -156,8 +159,11 @@ them. So under `-O`:
    come from the emitters in insn.c, arith.c and wide.c that the classic
    backend already has.
 5. **Keep the better one.** Both bodies exist at the end: the classic
-   one and the optimised one. Keep the smaller one, or the faster one by
-   a loop-weighted count of cycles, and never lose to today. A function
+   one and the optimised one. Keep the faster one by a loop-weighted
+   count of cycles, and the smaller one where they tie, so that opt-acc
+   never loses to acc. The size target is the whole program's, against
+   agondev `-Oz`: a faster body that is bigger is kept only while the
+   program stays within it. A function
    that uses something the new backend cannot do yet (VLAs, `setjmp`,
    `long long`, floats, at first) keeps the classic body. The new backend
    can therefore grow one construct at a time, and be correct on every
@@ -181,7 +187,8 @@ them. So under `-O`:
 
 ## The runtime
 
-Separate from `-O`, and worth doing first, because every build gains:
+Separate from opt-acc, and worth doing first, because every program built
+by either compiler gains:
 
 | routine | acc | libagon | where it shows |
 |---|---:|---:|---|
@@ -201,46 +208,72 @@ unpacking and packing they share, alone would take fp from 2.09 to about
 
 ## Milestones
 
-Each ends measured: `test/perf.sh` and `test/size.sh` with and without
-`-O`, and the whole test suite with `-O`.
+Each ends measured: `test/perf.sh` and `test/size.sh` for both
+compilers, and the whole test suite through opt-acc.
 
-0. **`-O` itself, with what already exists.**
-   - The flag, passed down to the compile. It is host-first, and whether
-     it goes into acc.bin or a separate Agon binary is decided at step 2.
-   - With it: the pre-scan that picks the IY local (branch `iy-prescan2`:
-     zap -3.8%, lists -11.7%, sieve -7.4%, but +10% compile time, which no
-     longer matters), the written-out prologue (zap -2.2%, words -3.5%),
-     and frameless leaves.
-   - `test/run.sh` and the torture runs gain an `-O` pass.
-1. **The log, replayed.** `-O` records each function and generates it by
-   replaying the log into the classic backend. The output has to be
-   identical, byte for byte, over the whole test suite: the proof that the
-   log holds everything.
-2. **The intermediate form and a plain backend.** Built from the log for
-   int, pointer and byte values, with no optimisation yet and the classic
-   body as the fallback. The measure is correctness: every case, the
-   torture sweep and csmith, with `-O`.
+0. **opt-acc itself, with what already exists.**
+   - A second binary from the same sources, `bin/opt-acc` on the host
+     and `opt-acc.bin` on the Agon, which the build turns the new backend
+     on for; acc and acc.bin are unchanged.
+   - In it from the start: the pre-scan that picks the IY local (branch
+     `iy-prescan2`: zap -3.8%, lists -11.7%, sieve -7.4%, at a compile
+     cost that no longer matters), the written-out prologue (zap -2.2%,
+     words -3.5%), and frameless leaves.
+   - `test/run.sh` and the torture runs gain an opt-acc pass.
+1. **The log, replayed.** opt-acc records each function and generates it
+   by replaying the log into the classic backend. The output has to be
+   identical to acc's, byte for byte, over the whole test suite: the proof
+   that the log holds everything.
+2. **SSA and a plain backend.** Built from the log for int, pointer and
+   byte values, with no optimisation yet and the classic body as the
+   fallback. The measure is correctness: every case, the torture sweep and
+   csmith, through opt-acc.
 3. **Register allocation.** The step the others are worth nothing without.
    Target: sieve and lists at or under agondev, zap-basic under 1.35.
 4. **Inlining, value reuse, hoisting, strength reduction, narrow values,
    ranges**, one at a time, each kept only if the corpora say so. Target:
    zap-basic about 1.10-1.15; the integer programs under 1.00.
-5. **`long`, `long long` and float in the intermediate form**, with a
-   register convention for float calls.
+5. **`long`, `long long` and float in SSA**, with a register convention
+   for float calls.
 
 The runtime work runs alongside all of it.
 
-## What `-O` costs
+## Why SSA
+
+In SSA every value is defined once, so each question an optimisation asks
+is answered at its definition. Is this the same computation as before?
+Does this value change inside the loop? What range can it take? Which
+other value does it depend on? Reuse, hoisting, strength reduction and
+range analysis are each a walk over definitions and uses, not a dataflow
+problem of their own. Register allocation on SSA works on each value's
+live range and can colour with the eZ80's uneven registers in mind.
+
+It also suits this front end. The log is already one value per operation
+on a stack, and turning a stack machine into SSA is mechanical. Locals
+whose address is never taken become SSA values; those whose address is
+taken stay memory.
+
+Being a separate binary is what makes SSA affordable. The intermediate
+form, its passes and the allocator cost no heap in acc.bin, so opt-acc
+can use a textbook SSA backend rather than squeeze one into the one-pass
+compiler. The classic backend stays in opt-acc for two things: it
+answers the parser's questions while the log is taken, and it is the
+fallback for any function the new backend cannot compile yet. Once SSA
+covers everything, the builder can answer those questions itself, and
+the classic backend can leave opt-acc.
+
+## What opt-acc costs
 
 - **Memory.** The log and the intermediate form hold one function at a
   time. On the host that is nothing. On the Agon, a function of a few
   hundred statements needs a few tens of KB. The heap is 188 KB, and
   acc's own sources are the largest input it compiles.
-- **acc.bin.** A second backend is thousands of lines. Every byte of it
-  in acc.bin is a byte of heap lost, `-O` or not. So on the Agon it
-  should be its own binary, `acco.bin`, unless it turns out small.
-- **Compile time on the Agon.** Several times today's. Accepted: it is
-  what `-O` is for.
+- **acc.bin.** Nothing: the second backend is in opt-acc only. On the
+  Agon, opt-acc.bin is bigger than acc.bin, so it has less heap. That
+  limits the size of the function it can hold, not what it can compile
+  with acc instead.
+- **Compile time on the Agon.** Several times acc's. Accepted: that is
+  the trade opt-acc makes.
 - **Testing.** Two backends, each tested on everything. Keeping the
   better body means a bug in the new one can hide behind the old one's,
   so step 2's correctness runs force the new backend wherever it can
