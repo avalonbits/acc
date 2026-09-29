@@ -314,6 +314,17 @@ compilers, and the whole test suite through opt-acc.
      - Each function is kept made this way only when its bytes, weighted
        eight times over for each loop, come to less than the first
        pass's; otherwise the first pass's code is replayed.
+   - Then more selected here: a step moved after the reads of the value
+     it steps, so `*p++` is inc de; an unsigned char's zero test and step
+     on its register's byte; DE borrowed with a push and a pop where a
+     comparison needs it and it holds a value; and the per-function pick
+     counts cycles from a small eZ80 decoder, not bytes. Perf mean 1.01
+     against 1.05, interp 0.60 against 0.62. A profile of zap-basic says
+     where the rest is: its two hottest functions, a third of its time,
+     inline code with always_inline, which the SSA form refuses; and the
+     functions that do reach it are byte arithmetic on struct fields,
+     which gen.h makes better than the code here yet -- none of them
+     runs faster made from SSA, and the pick keeps the first pass's.
    - Measured on the perf corpus with all of it on, against the classic
      path on the same day: speed mean 1.02 of agondev -Oz against 1.05,
      sieve 1.11 against 1.61, zap-basic 1.47 as it was; code size as it
