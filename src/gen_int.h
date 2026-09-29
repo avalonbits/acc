@@ -317,16 +317,16 @@ extern int *arr_cut_at, narr_cuts, arr_cuts_cap;
 void relax_function(const Mark *from, int frame_at);
 #ifdef OPT_ACC
 void relax_state(int *nwants_at, int *nstatics_at, int restore);
-void finish_state(int *st, int restore);   /* four ints */
+void finish_state(int *saved, int restore);   /* four ints */
 
 /* One variable into the buffer at `at`, or back out of it: see the files'
  * *_marks, which genlog.c saves and puts back around a replay. */
-#define STATE_VAR(v) do {                                               \
+#define STATE_VAR(var) do {                                               \
         if (restore)                                                    \
-            memcpy(&(v), buf + at, sizeof (v));                         \
+            memcpy(&(var), buf + at, sizeof (var));                     \
         else                                                            \
-            memcpy(buf + at, &(v), sizeof (v));                         \
-        at += sizeof (v);                                               \
+            memcpy(buf + at, &(var), sizeof (var));                     \
+        at += sizeof (var);                                             \
     } while (0)
 size_t arith_marks(unsigned char *buf, int restore);
 size_t branch_marks(unsigned char *buf, int restore);

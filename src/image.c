@@ -857,12 +857,12 @@ void out_abandon(void)
  * compiles a function again from where it began and needs every mark as it
  * stood then. Returns how many bytes they take. */
 #ifndef STATE_VAR               /* as gen_int.h has it */
-#define STATE_VAR(v) do {                                               \
+#define STATE_VAR(var) do {                                               \
         if (restore)                                                    \
-            memcpy(&(v), buf + at, sizeof (v));                         \
+            memcpy(&(var), buf + at, sizeof (var));                     \
         else                                                            \
-            memcpy(buf + at, &(v), sizeof (v));                         \
-        at += sizeof (v);                                               \
+            memcpy(buf + at, &(var), sizeof (var));                     \
+        at += sizeof (var);                                             \
     } while (0)
 #endif
 size_t image_marks(unsigned char *buf, int restore);

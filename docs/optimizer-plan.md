@@ -252,10 +252,28 @@ compilers, and the whole test suite through opt-acc.
      acc, zap and vi. Getting there found state the backend carries from
      one function to the next: `join_at` survives a function's end, so a
      fold can be refused because of the function before.
-2. **SSA and a plain backend.** Built from the log for int, pointer and
-   byte values, with no optimisation yet and the classic body as the
-   fallback. The measure is correctness: every case, the torture sweep and
-   csmith, through opt-acc.
+2. **SSA and a plain backend.** Done. With `OPTACC_SSA=1`, opt-acc builds
+   each function as SSA from its log ([src/ssa.c](../src/ssa.c)) and makes
+   its code from that.
+   - The log is walked with a stack of its own: every value a call makes
+     is an SSA value and every call that uses values names them. Jumps,
+     labels, `&&`, `||`, `?:`, switch and return become blocks and edges,
+     with a phi where `&&`, `||` and `?:` join. Each value's type is what
+     the classic backend made it the first time, which the log now
+     records, with the stack's depth around each call.
+   - The plain backend puts every value in a frame slot of its own,
+     reused once it is dead, and makes each instruction by calling gen.h
+     again with its operands loaded from their slots. The code is correct
+     and about twice as slow and large as acc's -- zap-basic 157M cycles
+     against 120M -- since nothing stays in a register: that is step 3.
+   - Left to the classic backend, with `OPTACC_SSA_STATS=1` saying why: a
+     struct as a value, a static local, a runtime-sized array, code
+     inlined in place, a frame too full for the slots. In the test cases,
+     778 of 867 functions are built as SSA.
+   - With the SSA path forced, the case suite passes under the
+     sanitizers, and so do the conformance suites, the float oracle,
+     printf and the perf programs, zap-basic among them. `make test` runs
+     the case suite, the float oracle and printf that way.
 3. **Register allocation.** The step the others are worth nothing without.
    Target: sieve and lists at or under agondev, zap-basic under 1.35.
 4. **Inlining, value reuse, hoisting, strength reduction, narrow values,
