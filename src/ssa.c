@@ -3970,6 +3970,12 @@ static const char *leaf_why;    /* why the function is not made here */
  * type of what is in HL now, which leaf_result gives the value made. */
 static Type *leaf_holds, leaf_hl_type;
 
+/* And how many of its bytes can be other than zero, where the code here
+ * knows it better than the first pass's record does -- an AND's answer, an
+ * OR of two such: 1 to 3, as vwidth says it, and the same for a value made
+ * in more than one place. */
+static unsigned char *leaf_widths, leaf_hl_width = 3;
+
 /* Whether a type is one the code here holds: an int or narrower, a
  * pointer, not a short -- which it would have to widen through IY -- and
  * not a _Bool, whose steps and conversions are to 0 or 1. */
@@ -4048,15 +4054,8 @@ static int leaf_operator(const Ins *insn, int arith)
         if (leaf_const(&insn->in[1], &number) && number >= 0 && number <= 8)
             return 1;
         return leaf_why = "a shift by a variable", 0;
-    case TK_AMP:
-        if (leaf_width(&insn->in[0]) == 1 || leaf_width(&insn->in[1]) == 1)
-            return 1;
-        return leaf_why = "an AND wider than a byte", 0;
-    case TK_PIPE: case TK_CARET:
-        if ((leaf_width(&insn->in[0]) == 1 && leaf_width(&insn->in[1]) == 1)
-            || leaf_byte_const(&insn->in[1]) || leaf_byte_const(&insn->in[0]))
-            return 1;
-        return leaf_why = "an OR or XOR wider than a byte", 0;
+    case TK_AMP: case TK_PIPE: case TK_CARET:
+        return 1;                       /* in A, or by the helper */
     }
 
     return leaf_why = "an operator the code here does not make", 0;
@@ -4333,9 +4332,12 @@ static void leaf_result(int val)
 {
     /* Held as what made it -- but not a value made in more than one
      * place, the answer of ?: or a phi, which each makes differently. */
-    if (val >= 0 && leaf_holds)
+    if (val >= 0 && leaf_holds) {
         leaf_holds[val] = def_at[val] >= 0 ? leaf_hl_type : TY_VOID;
+        leaf_widths[val] = def_at[val] >= 0 ? leaf_hl_width : 3;
+    }
     leaf_hl_type = TY_VOID;
+    leaf_hl_width = 3;
     if (val < 0 || !vals[val].used)
         return;
     if (vals[val].fwd) {
@@ -4500,6 +4502,116 @@ static int leaf_and_branch(const Ins *insn, int blk, int at)
         || zero != 0 || !leaf_branch(op == TK_EQ ? JP_Z : JP_NZ, blk, next))
         return 0;
     fused_from = at;
+
+    return 1;
+}
+
+/* A constant's bytes applied to the value in HL where the top byte needs
+ * nothing done to it, which has no name: an AND that clears it -- the
+ * middle byte first, then sbc hl, hl on the carry it clears, the low byte
+ * waiting in E -- or any operator whose constant leaves it as it is. */
+static int leaf_const_bytes(int op, int value, int emit)
+{
+    int low = value & 0xff, middle = (value >> 8) & 0xff, top = (value >> 16) & 0xff;
+    int identity = op == TK_AMP ? 0xff : 0x00;
+    int imm = op == TK_AMP ? 0xe6 : op == TK_PIPE ? 0xf6 : 0xee;
+
+    if (op == TK_AMP && top == 0x00) {
+        if (!emit)
+            return 1;
+        if (low) {
+            ld_a_l();
+            if (low != 0xff)
+                out_byte2(0xe6, low);           /* and n */
+            out_byte(0x5f);                     /* ld e, a */
+        }
+        ld_a_h();
+        if (middle == 0xff)
+            or_a_a();                           /* the carry, cleared */
+        else
+            out_byte2(0xe6, middle);            /* and n, which clears it */
+        sbc_hl_hl();
+        ld_h_a();
+        if (low)
+            out_byte(0x6b);                     /* ld l, e */
+        return 1;
+    }
+    if (top != identity)
+        return 0;
+    if (!emit)
+        return 1;
+    if (low != identity) {
+        ld_a_l();
+        out_byte2(imm, low);
+        ld_l_a();
+    }
+    if (middle != identity) {
+        ld_a_h();
+        out_byte2(imm, middle);
+        ld_h_a();
+    }
+
+    return 1;
+}
+
+/* How many bytes of an operand can be other than zero, as it is made:
+ * what the first pass knew, or what the code here knew when it made it. */
+static int leaf_known_width(const Ent *ent)
+{
+    int width = leaf_width(ent);
+
+    if (ent->val >= 0 && leaf_widths[ent->val] < width)
+        width = leaf_widths[ent->val];
+
+    return width;
+}
+
+/* AND, OR and XOR wider than a byte, which leaf_insn's byte forms do not
+ * make: a constant's bytes where the top one is left alone; both sides two
+ * bytes wide or less -- for an AND either -- a byte at a time against DE;
+ * and the rest by the first pass's helper, HL and BC to HL, BC kept.
+ * Returns 0 where the byte forms do it. */
+static int leaf_bitwise(const Ins *insn, int op, int byte_op)
+{
+    int left = leaf_known_width(&insn->in[0]), right = leaf_known_width(&insn->in[1]);
+    int which = leaf_const(&insn->in[1], &(int) { 0 }) ? 1 : 0, value;
+
+    if (op == TK_AMP ? left == 1 || right == 1 : left == 1 && right == 1)
+        return 0;
+    leaf_hl_width = op == TK_AMP ? (left < right ? left : right)
+                                 : (left > right ? left : right);
+    if (leaf_const(&insn->in[which], &value) && leaf_const_bytes(op, value, 0)) {
+        leaf_operand_hl(insn, 1 - which);
+        leaf_const_bytes(op, value, 1);
+    } else if (op == TK_AMP ? left <= 2 || right <= 2 : left <= 2 && right <= 2) {
+        (void) leaf_operands_in(insn, 0);       /* the right in DE */
+        if (op == TK_AMP) {
+            ld_a_h();
+            out_byte(byte_op - 1);              /* and d */
+            out_byte(0x57);                     /* ld d, a */
+            ld_a_l();
+            out_byte(byte_op);                  /* and e */
+            out_byte(0x5f);                     /* ld e, a */
+            sbc_hl_hl();                        /* and cleared the carry */
+            out_byte2(0x6b, 0x62);              /* ld l, e; ld h, d */
+        } else {
+            ld_a_l();
+            out_byte(byte_op);                  /* or e, xor e */
+            ld_l_a();
+            ld_a_h();
+            out_byte(byte_op - 1);              /* or d, xor d */
+            ld_h_a();
+        }
+    } else if (leaf_operands_in(insn, 1) == R_BC) {
+        rt_call(op == TK_AMP ? RT_AND : op == TK_PIPE ? RT_OR : RT_XOR);
+    } else {
+        push_rr(R_BC);
+        push_rr(R_DE);
+        pop_rr(R_BC);
+        rt_call(op == TK_AMP ? RT_AND : op == TK_PIPE ? RT_OR : RT_XOR);
+        pop_rr(R_BC);
+    }
+    leaf_result(insn->res);
 
     return 1;
 }
@@ -5082,6 +5194,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 int which = leaf_byte_const(&insn->in[1]) ? 1 : 0, byte;
 
                 (void) leaf_const(&insn->in[which], &byte);
+                leaf_hl_width = (unsigned char) leaf_known_width(&insn->in[1 - which]);
                 leaf_operand_hl(insn, 1 - which);
                 ld_a_l();
                 out_byte2(number == TK_PIPE ? 0xf6 : 0xee, byte);   /* or n, xor n */
@@ -5104,9 +5217,12 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 sbc_hl_hl();            /* and leaves carry clear */
                 ld_l_a();
                 leaf_hl_type = TY_UCHAR;
+                leaf_hl_width = 1;
                 leaf_result(insn->res);
                 return;
             }
+            if (leaf_bitwise(insn, number, byte_op))
+                return;
             if (leaf_operands_in(insn, 1) == R_BC)
                 byte_op -= 2;           /* and c, or c, xor c */
             ld_a_l();
@@ -5114,6 +5230,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             if (number == TK_AMP)
                 sbc_hl_hl();            /* and leaves carry clear */
             ld_l_a();
+            leaf_hl_width = 1;
             leaf_result(insn->res);
             return;
         }
@@ -5292,11 +5409,15 @@ static void emit_leaf(void)
     leaf_depth = 0;
     leaf_top_in_hl = 0;
     leaf_hl_type = TY_VOID;
+    leaf_hl_width = 3;
     leaf_holds = realloc(leaf_holds, ((size_t) nvals + 1) * sizeof *leaf_holds);
-    if (!leaf_holds)
+    leaf_widths = realloc(leaf_widths, (size_t) nvals + 1);
+    if (!leaf_holds || !leaf_widths)
         acc_error("out of memory for the SSA form");
-    for (at = 0; at != nvals; at++)
+    for (at = 0; at != nvals; at++) {
         leaf_holds[at] = TY_VOID;
+        leaf_widths[at] = 3;
+    }
 
     blocks_from = out_here();
     call(&insns[0]);
