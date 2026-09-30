@@ -448,12 +448,18 @@ static void gl_function_end(void)
             acc_error("internal: generating %s from its SSA form: %s",
                       name_text(sym_at(gl_fn)->name), why);
 
-        /* Made, but costlier to run than what the first pass made: back
-         * again, and that replayed instead. OPTACC_PICK=0 keeps it. */
-        if (made > 0 && ssa_cost_made > ssa_cost_first
+        /* Made, but costlier to run than what the first pass made, or
+         * bigger: back again, and that replayed instead. OPTACC_PICK=0
+         * keeps it. Bigger for a gain the estimate sees was, on zap, 537
+         * bytes for less than the gain the smaller code alone had: the
+         * estimate weighs every path alike, and a path is not run alike. */
+        if (made > 0 && (ssa_cost_made > ssa_cost_first
+                         || ssa_size_made > ssa_size_first)
             && !(getenv("OPTACC_PICK") && *getenv("OPTACC_PICK") == '0')) {
+            why = ssa_cost_made > ssa_cost_first
+                  ? "the first pass's code is cheaper"
+                  : "the first pass's code is smaller";
             made = 0;
-            why = "the first pass's code is cheaper";
             gen_rollback(&gl_start);
             relax_state(&gl_start_nwants, &gl_start_nstatics, 1);
             finish_state(gl_start_finish, 1);
