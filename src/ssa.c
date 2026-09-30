@@ -3453,6 +3453,7 @@ enum { AT_NONE, AT_CONST, AT_STACK, AT_REG, AT_SLOT };
 
 static int skip_branch = -1;    /* the branch selected with its comparison */
 static int fused_from = -1;     /* and what made it, the rest between made too */
+static int leaf_jump_left_out;  /* the block's jump left out: it falls on */
 
 /* Where an int-wide operand is, and the register or displacement in
  * `*where`; AT_NONE when it is not something the code here handles. */
@@ -5308,6 +5309,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             gen_jump_to(block_now[insn->target]);
         else if (!falls_to(blk, insn->target) || block_last[blk] != at)
             jump_forward(gen_jump(), insn->target);
+        else
+            leaf_jump_left_out = 1;     /* falls into it: see emit_leaf */
         return;
     case I_BR:
         if (at == skip_branch)
@@ -5468,6 +5471,7 @@ static void emit_leaf(void)
         else
             block_now[0] = out_here();
         block_start[blk] = block_now[blk];
+        leaf_jump_left_out = 0;
         for (at = blocks[blk].first; at != end && !fail; at++) {
             if (at == 0)
                 continue;
@@ -5482,7 +5486,11 @@ static void emit_leaf(void)
             fail = "internal: values left on the stack at a block's end";
         if (falls && blk + 1 < nblocks)
             leaf_edge(blk, blk + 1);
-        if (!falls)
+
+        /* A jump left out falls into the block it goes to, over blocks
+         * nothing reaches, so the trampolines waiting are not made here --
+         * the code would fall into the first of them. */
+        if (!falls && !leaf_jump_left_out)
             emit_trampolines();
     }
     if (ntrampolines && !fail) {
