@@ -1515,23 +1515,38 @@ static void frame_again(const Ins *insn)
     call(&frame_call);
 }
 
-/* A step of a local -- p++ -- moved down to just after the last read of
- * the value it steps, in its block: `*p++` reads the old p after the step
- * is made, so the two were live at once and could not share a home, and
- * the new one was copied back at the end of every trip. After it, they
- * can, and the step is an inc where the value is. Not past a read of what
- * it makes, and not in between a comparison and the branch on it. */
+/* A step of a local -- p++ -- moved down past the reads of the value it
+ * steps, in its block: `*p++` reads the old p after the step is made, so
+ * the two were live at once and could not share a home, and the new one
+ * was copied back at the end of every trip. After it, they can, and the
+ * step is an inc where the value is. For the code made here, as far down
+ * as it goes -- to just before a read of what it makes, or the block's end
+ * -- rather than just past the old one's last read, which could put it
+ * between an argument and its call and make the argument wait on the
+ * stack. Not past another
+ * step of the same value, and not in between a comparison and the branch
+ * on it. */
+static int leaf_mode;             /* see emit_leaf */
+
 static void sink_steps(void)
 {
     int at;
 
     for (at = 0; at != ninsns; at++) {
         Ins step = insns[at];
-        int blk = step.block, last = block_last[blk], to = at, scan, operand;
+        int blk = step.block, last = block_last[blk], read_old = at, to, scan;
+        int operand;
 
         if (step.op != I_STEP || step.nin != 1 || step.in[0].val < 0
             || step.res < 0)
             continue;
+
+        /* Past the block's last too, where that falls on to the next --
+         * `*o++ = f(x)` ends one with the store -- not a jump, a branch or
+         * a return, which it would then come after. */
+        if (insns[last].op != I_BR && insns[last].op != I_JMP
+            && insns[last].op != GL_gen_return)
+            last++;
         for (scan = at + 1; scan < last; scan++) {
             int reads_old = 0, reads_new = 0;
 
@@ -1539,16 +1554,31 @@ static void sink_steps(void)
                 reads_old |= insns[scan].in[operand].val == step.in[0].val;
                 reads_new |= insns[scan].in[operand].val == step.res;
             }
-            if (reads_new || insns[scan].op == I_STEP)
+            /* Past a step of something else -- `*o++ = *s++` -- but not
+             * of this: the two would change places. */
+            if (reads_new || (insns[scan].op == I_STEP && reads_old))
                 break;
             if (reads_old)
-                to = scan;
+                read_old = scan;
         }
-        if (to == at || (insns[to].res >= 0 && to + 1 == last))
+        if (read_old == at)
+            continue;                   /* nothing reads the old one after */
+
+        /* The hybrid path's homes are planned for a step just past its
+         * last read, and got worse -- a pointer in DE, a counter spilled
+         * -- for one further down; the code made here, better. */
+        to = leaf_mode ? scan - 1 : read_old;
+
+        /* Not between a comparison and the branch on it: above it. */
+        if (to + 1 == block_last[blk] && insns[block_last[blk]].op == I_BR
+            && insns[to].res >= 0)
+            to--;
+        if (to < read_old)
             continue;
         memmove(&insns[at], &insns[at + 1], (size_t) (to - at) * sizeof *insns);
         insns[to] = step;
-        at = to;                        /* on past it */
+        at--;                           /* what moved up into its place, next:
+                                         * another step it went past */
     }
 }
 
@@ -6187,7 +6217,7 @@ static int falls_to(int blk, int target)
  * first -- so that none is written before all are read. */
 static void leaf_edge(int from, int to)
 {
-    int dests[MAX_LOCALS * 4], nmoves = 0, pred, phi;
+    int dests[MAX_LOCALS * 4], sources[MAX_LOCALS * 4], nmoves = 0, pred, phi;
 
     for (pred = 0; pred != preds[to].count; pred++) {
         if (preds[to].at[pred] != from)
@@ -6195,7 +6225,6 @@ static void leaf_edge(int from, int to)
         for (phi = 0; phi != nphis; phi++) {
             const Phi *join = &phis[phi];
             int source;
-            Ent ent;
 
             if (!join->live || join->block != to)
                 continue;
@@ -6206,18 +6235,37 @@ static void leaf_edge(int from, int to)
                         || vals[source].slot == vals[join->val].slot))
                 || nmoves == (int) (sizeof dests / sizeof dests[0]))
                 continue;
-            memset(&ent, 0, sizeof ent);
-            ent.val = source;
-            ent.attr.type = vals[source].type;
-            if (vals[source].reg == R_BC) {
-                push_rr(R_BC);
-            } else {
-                leaf_load(&ent, R_HL);
-                push_rr(R_HL);
-            }
+            sources[nmoves] = source;
             dests[nmoves++] = join->val;
         }
         break;
+    }
+
+    /* One copy is made straight, through HL; more go through the stack,
+     * all read before any is written, since one may be another's source. */
+    if (nmoves == 1) {
+        Ent ent;
+
+        memset(&ent, 0, sizeof ent);
+        ent.val = sources[0];
+        ent.attr.type = vals[sources[0]].type;
+        leaf_load(&ent, R_HL);
+        vals[dests[0]].fwd = 0;
+        leaf_result(dests[0]);
+        return;
+    }
+    for (phi = 0; phi != nmoves; phi++) {
+        Ent ent;
+
+        memset(&ent, 0, sizeof ent);
+        ent.val = sources[phi];
+        ent.attr.type = vals[sources[phi]].type;
+        if (vals[sources[phi]].reg == R_BC) {
+            push_rr(R_BC);
+        } else {
+            leaf_load(&ent, R_HL);
+            push_rr(R_HL);
+        }
     }
     while (nmoves--) {
         int dest = dests[nmoves];
@@ -6861,16 +6909,17 @@ int ssa_generate(const char **why)
     thread_answers();
     to_values();
     inline_merge();
-    if (!fail && regs_on())
+    if (!fail && regs_on()) {
+        leaf_why = NULL;
+        leaf_mode = leaf_on() && leaf_ok();
+        ssa_made_leaf = leaf_mode;
         sink_steps();
+    }
     if (!fail) {
         live_ranges();
         if (regs_on()) {
             int val;
 
-            leaf_why = NULL;
-            leaf_mode = leaf_on() && leaf_ok();
-            ssa_made_leaf = leaf_mode;
             find_forwarded();
             for (val = 0; val != nvals && !fail; val++)
                 if (type_is_struct(vals[val].type) && !vals[val].fwd
