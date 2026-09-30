@@ -3959,9 +3959,14 @@ static int native_step(const Ins *insn, int at)
  * and HL are this code's. Anything it does not make declines the whole
  * function, which goes to the code before. */
 
+/* ssa_leaf_off: the hybrid path's code wanted instead, because the leaf
+ * backend's lost the pick -- see genlog.c. ssa_made_leaf: whether the code
+ * just made was the leaf backend's. */
+int ssa_leaf_off, ssa_made_leaf;
+
 static int leaf_on(void)
 {
-    return getenv("OPTACC_LEAF") != NULL;
+    return getenv("OPTACC_LEAF") != NULL && !ssa_leaf_off;
 }
 
 static const char *leaf_why;    /* why the function is not made here */
@@ -5986,7 +5991,7 @@ int ssa_generate(const char **why)
     ninsns = nvals = nblocks = nholes = nheres = nstk = ninlined = nmerged = 0;
     fail = NULL;
     ssa_cost_made = ssa_cost_first = 0;
-    leaf_mode = 0;
+    leaf_mode = ssa_made_leaf = 0;
     keep_records(gl_log, gl_n, keep);
 
     new_block(-1);
@@ -6019,6 +6024,7 @@ int ssa_generate(const char **why)
 
             leaf_why = NULL;
             leaf_mode = leaf_on() && leaf_ok();
+            ssa_made_leaf = leaf_mode;
             find_forwarded();
             for (val = 0; val != nvals && !fail; val++)
                 if (type_is_struct(vals[val].type) && !vals[val].fwd

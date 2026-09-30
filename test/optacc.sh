@@ -319,5 +319,12 @@ OPTACC_PICK=0 wants "$OPT" "an OR of two bytes' worth, without it" acc_rt_or no 
 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
     ssa "cheaper but bigger, not kept" "ssa f the first pass's code is smaller" \
     'int f(int x) { return x * x; }'
+# Where the leaf backend's code loses the pick, the hybrid path's is made
+# and weighed too, before the first pass's is kept: a character class's
+# test is the hybrid path's.
+OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+    ssa "the leaf backend's lost, the hybrid path's made" \
+    "ssa f made, not by the leaf backend" \
+    'extern const unsigned char tab[256]; _Bool f(char c) { return (tab[(unsigned char) c] & 4) != 0; }'
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

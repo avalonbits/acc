@@ -401,6 +401,31 @@ static void gl_replay(void)
     gl_replay_marks = NULL;
 }
 
+/* Back to where the function began, as its first pass left things. */
+static void gl_back(void)
+{
+    gen_rollback(&gl_start);
+    relax_state(&gl_start_nwants, &gl_start_nstatics, 1);
+    finish_state(gl_start_finish, 1);
+    gl_marks(gl_start_marks, 1);
+}
+
+/* Whether the code just made from the SSA form loses to the first pass's:
+ * costlier to run, or bigger; `*why` says which. */
+static int ssa_loses(const char **why)
+{
+    if (ssa_cost_made > ssa_cost_first) {
+        *why = "the first pass's code is cheaper";
+        return 1;
+    }
+    if (ssa_size_made > ssa_size_first) {
+        *why = "the first pass's code is smaller";
+        return 1;
+    }
+
+    return 0;
+}
+
 /* The end of a function: the backend wound back to where it began, and the
  * function made again -- from its SSA form, when OPTACC_SSA asks for that
  * and the form can be built, and otherwise by replaying the log, which has
@@ -429,10 +454,7 @@ static void gl_function_end(void)
            (size_t) relocs * sizeof *first_relocs);
 
     /* Back to where the function began. */
-    gen_rollback(&gl_start);
-    relax_state(&gl_start_nwants, &gl_start_nstatics, 1);
-    finish_state(gl_start_finish, 1);
-    gl_marks(gl_start_marks, 1);
+    gl_back();
     gl_on = 0;
 
     /* OPTACC_SSA_ONLY: one function's name, the only one made from its SSA
@@ -442,7 +464,10 @@ static void gl_function_end(void)
             || !strcmp(getenv("OPTACC_SSA_ONLY"),
                        name_text(sym_at(gl_fn)->name)))) {
         const char *why = NULL;
-        int made = ssa_generate(&why);
+        int picking = !(getenv("OPTACC_PICK") && *getenv("OPTACC_PICK") == '0');
+        int made, ssa_leaf_tried = 0;
+
+        made = ssa_generate(&why);
 
         if (made < 0)
             acc_error("internal: generating %s from its SSA form: %s",
@@ -452,22 +477,37 @@ static void gl_function_end(void)
          * bigger: back again, and that replayed instead. OPTACC_PICK=0
          * keeps it. Bigger for a gain the estimate sees was, on zap, 537
          * bytes for less than the gain the smaller code alone had: the
-         * estimate weighs every path alike, and a path is not run alike. */
-        if (made > 0 && (ssa_cost_made > ssa_cost_first
-                         || ssa_size_made > ssa_size_first)
-            && !(getenv("OPTACC_PICK") && *getenv("OPTACC_PICK") == '0')) {
-            why = ssa_cost_made > ssa_cost_first
-                  ? "the first pass's code is cheaper"
-                  : "the first pass's code is smaller";
+         * estimate weighs every path alike, and a path is not run alike.
+         *
+         * Where what lost was the leaf backend's, the hybrid path's is
+         * made and weighed too: a function the leaf backend could take was
+         * one the hybrid path had won, and letting the leaf backend take
+         * more lost zap 131 bytes in br_byte alone. */
+        if (made > 0 && picking && ssa_loses(&why)) {
             made = 0;
-            gen_rollback(&gl_start);
-            relax_state(&gl_start_nwants, &gl_start_nstatics, 1);
-            finish_state(gl_start_finish, 1);
-            gl_marks(gl_start_marks, 1);
+            gl_back();
+            if (ssa_made_leaf) {
+                const char *leaf_why = why;
+
+                ssa_leaf_tried = 1;
+                ssa_leaf_off = 1;
+                made = ssa_generate(&why);
+                ssa_leaf_off = 0;
+                if (made < 0)
+                    acc_error("internal: generating %s from its SSA form: %s",
+                              name_text(sym_at(gl_fn)->name), why);
+                if (made > 0 && ssa_loses(&why)) {
+                    made = 0;
+                    gl_back();
+                } else if (made <= 0) {
+                    why = leaf_why;
+                }
+            }
         }
         if (getenv("OPTACC_SSA_STATS"))
             fprintf(stderr, "ssa %s %s\n", name_text(sym_at(gl_fn)->name),
-                    made > 0 ? "made" : why);
+                    made <= 0 ? why : ssa_leaf_tried && !ssa_made_leaf
+                    ? "made, not by the leaf backend" : "made");
         if (made > 0) {
             free(first);
             free(first_relocs);
