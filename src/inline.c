@@ -297,8 +297,7 @@ void inline_expand(const struct Inline *in, int fn)
      * slots are given up now, and the answer is a value, not an object,
      * and not a constant a case label could take either. */
     vconvert(ret);
-    vpop_reg();
-    vpush_reg(R_HL);
+    vpush_reg(vpop_reg());      /* HL, unless it holds an earlier argument */
     vset_type(type_promote(ret), ret_ext);
     gen_inline_end(lock);
     expect(TK_RPAREN, "')'");

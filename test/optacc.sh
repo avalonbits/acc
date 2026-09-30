@@ -326,5 +326,28 @@ OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
     ssa "the leaf backend's lost, the hybrid path's made" \
     "ssa f made, not by the leaf backend" \
     'extern const unsigned char tab[256]; _Bool f(char c) { return (tab[(unsigned char) c] & 4) != 0; }'
+# A list walked with its node in IY across a call: IY kept in a slot around
+# the call it lives across, and not around the one before it is made --
+# ld (ix+d), iy once; p = p->next as ld iy, (iy+0); the _Bool answer tested
+# in A as IY comes back, ld iy, (ix+d) then or a; and the first argument,
+# read through IY, left in HL while the parameter after it goes around it,
+# ld de, (ix+12) then push de.
+walk='struct n { struct n *next; const char *name; int value; };
+struct n *first(struct n *, int); _Bool same(const char *, const char *);
+int f(struct n *h, int k, const char *s) { struct n *p; for (p = first(h, k); p; p = p->next) if (same(p->name, s)) return p->value; return -1; }'
+OPTACC_LEAF=1 all "$OPT" "p = p->next, ld iy, (iy+0)"            fd3700     yes "$walk"
+OPTACC_LEAF=1 all "$OPT" "the answer tested in A as IY comes back" 'dd31..b72[08]' yes "$walk"
+OPTACC_LEAF=1 all "$OPT" "the next argument around the first, by DE" dd170cd5 yes "$walk"
+printf '%s\n' "$walk" > "$tmp/c.c"
+rm -f "$tmp/c.o"
+OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
+    OPTACC_LEAF=1 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" >/dev/null 2>&1
+saves=$(text_hex "$tmp/c.o" | grep -o 'dd3e' | wc -l)
+if [ "$saves" = 1 ]; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s saved %s times\n' "IY saved around one call of two" "$saves"
+    fail=$((fail + 1))
+fi
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
