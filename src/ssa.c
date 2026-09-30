@@ -3452,6 +3452,7 @@ static int native_on(void)
 enum { AT_NONE, AT_CONST, AT_STACK, AT_REG, AT_SLOT };
 
 static int skip_branch = -1;    /* the branch selected with its comparison */
+static int fused_from = -1;     /* and what made it, the rest between made too */
 
 /* Where an int-wide operand is, and the register or displacement in
  * `*where`; AT_NONE when it is not something the code here handles. */
@@ -4373,12 +4374,70 @@ static int leaf_in_iy(const Ent *ent)
            && iy_web >= 0 && vals[ent->val].slot == fixed_slot[iy_web];
 }
 
-/* The jump for the branch after the instruction at `at`, on flags `cc`
- * true, made with it. */
-static void leaf_branch(int cc, const Ins *branch, int blk, int at)
+/* The branch that the truth value `val`, made at `at`, reaches through
+ * nothing but conversions and truth tests of it -- `(x & 4) != 0` made a
+ * _Bool, and `!` of that -- or -1. `*cc` is turned about by each `!`: a
+ * conversion of 0 or 1 to any type the code here makes is 0 or 1 still. */
+static int leaf_truth_branch(int at, int val, int *cc)
 {
-    branch_to(cc, branch, blk);
-    skip_branch = at + 1;
+    int next;
+
+    for (next = at + 1; next < ninsns && val >= 0 && vals[val].fwd; next++) {
+        const Ins *insn = &insns[next];
+
+        if (insn->op == GL_vdrop && insn->nin == 0)
+            continue;
+        if (insn->nin != 1 || insn->in[0].val != val)
+            return -1;
+        if (insn->op == I_BR)
+            return insn->target >= 0 ? next : -1;
+        if (insn->op == GL_vtruth && (int) insn->rec->arg[0] == TK_EQ)
+            *cc ^= 0x08;
+        else if (insn->op != GL_vtruth && insn->op != GL_vconvert)
+            return -1;
+        val = insn->res;
+    }
+
+    return -1;
+}
+
+/* The jump for the branch that the truth value made at `at` reaches, on
+ * flags `cc` true, made with it and the steps between left out; 0 if
+ * there is none, and the value is to be made. */
+static int leaf_branch(int cc, int blk, int at)
+{
+    int next = leaf_truth_branch(at, insns[at].res, &cc);
+
+    if (next < 0)
+        return 0;
+    branch_to(cc, &insns[next], blk);
+    skip_branch = next;
+    fused_from = at;
+
+    return 1;
+}
+
+/* An AND with a byte, made in A, and compared with 0 by what follows: the
+ * branch that comparison reaches taken on the AND's own flags, and the
+ * comparison and what is between left out. */
+static int leaf_and_branch(const Ins *insn, int blk, int at)
+{
+    int next = at + 1, op, zero;
+    const Ins *test;
+
+    while (next < ninsns && insns[next].op == GL_vdrop && insns[next].nin == 0)
+        next++;
+    if (next == ninsns || insn->res < 0 || !vals[insn->res].fwd)
+        return 0;
+    test = &insns[next];
+    op = test->op == GL_vapply ? (int) test->rec->arg[0] : 0;
+    if ((op != TK_EQ && op != TK_NE) || test->nin != 2
+        || test->in[0].val != insn->res || !leaf_const(&test->in[1], &zero)
+        || zero != 0 || !leaf_branch(op == TK_EQ ? JP_Z : JP_NZ, blk, next))
+        return 0;
+    fused_from = at;
+
+    return 1;
 }
 
 /* A comparison: flags and the condition that says it is true, from HL less
@@ -4441,12 +4500,14 @@ static int leaf_compare(const Ins *insn, int op)
         && number == 0) {
         const Ent *ent = &insn->in[0];
 
+        int byte = leaf_width(ent) == 1 || leaf_held(ent) == TY_UCHAR;
+
         if (ent->val >= 0 && !vals[ent->val].fwd && vals[ent->val].reg == R_BC
-            && leaf_width(ent) == 1) {
+            && byte) {
             out_byte(0x79);                     /* ld a, c */
         } else {
             leaf_operand_hl(insn, 0);
-            if (leaf_width(ent) == 1) {
+            if (byte) {
                 ld_a_l();
             } else {
                 add_hl_rr(R_BC);
@@ -4528,6 +4589,10 @@ static void leaf_truth_value(int cc)
 static void leaf_insn(const Ins *insn, int blk, int at)
 {
     int op = insn->op, number, cc;
+
+    /* Between a comparison and the branch it was made with: nothing. */
+    if (at > fused_from && at < skip_branch)
+        return;
 
     /* A step in place, where the value and the new one share BC or IY:
      * HL is not touched. An unsigned char steps its byte alone, and wraps
@@ -4641,12 +4706,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         or_a_a();
         sbc_hl_rr(R_BC);
         cc = (int) insn->rec->arg[0] == TK_EQ ? JP_Z : JP_NZ;
-        if (at + 1 < ninsns && insns[at + 1].op == I_BR && insns[at + 1].nin == 1
-            && insns[at + 1].in[0].val == insn->res && vals[insn->res].fwd
-            && insns[at + 1].target >= 0) {
-            leaf_branch(cc, &insns[at + 1], blk, at);
+        if (leaf_branch(cc, blk, at))
             return;
-        }
         leaf_truth_value(cc);
         leaf_result(insn->res);
         return;
@@ -4716,12 +4777,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         switch (number) {
         case TK_LT: case TK_GT: case TK_LE: case TK_GE: case TK_EQ: case TK_NE:
             cc = leaf_compare(insn, number);
-            if (at + 1 < ninsns && insns[at + 1].op == I_BR && insns[at + 1].nin == 1
-                && insns[at + 1].in[0].val == insn->res && vals[insn->res].fwd
-                && insns[at + 1].target >= 0) {
-                leaf_branch(cc, &insns[at + 1], blk, at);
+            if (leaf_branch(cc, blk, at))
                 return;
-            }
             leaf_truth_value(cc);
             leaf_result(insn->res);
             return;
@@ -4789,6 +4846,24 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 ld_a_l();
                 out_byte2(number == TK_PIPE ? 0xf6 : 0xee, byte);   /* or n, xor n */
                 ld_l_a();
+                leaf_result(insn->res);
+                return;
+            }
+            if (number == TK_AMP && (leaf_byte_const(&insn->in[0])
+                                     || leaf_byte_const(&insn->in[1]))) {
+                int which = leaf_byte_const(&insn->in[1]) ? 1 : 0, byte;
+
+                (void) leaf_const(&insn->in[which], &byte);
+                if (!leaf_byte_to_a(&insn->in[1 - which])) {
+                    leaf_operand_hl(insn, 1 - which);
+                    ld_a_l();
+                }
+                out_byte2(0xe6, byte);                  /* and n */
+                if (leaf_and_branch(insn, blk, at))
+                    return;
+                sbc_hl_hl();            /* and leaves carry clear */
+                ld_l_a();
+                leaf_hl_type = TY_UCHAR;
                 leaf_result(insn->res);
                 return;
             }
@@ -4973,7 +5048,7 @@ static void emit_leaf(void)
     npending = 0;
     nmoved = 0;
     ntrampolines = 0;
-    skip_branch = -1;
+    skip_branch = fused_from = -1;
     leaf_depth = 0;
     leaf_top_in_hl = 0;
     leaf_hl_type = TY_VOID;

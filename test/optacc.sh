@@ -279,6 +279,13 @@ OPTACC_LEAF=1 all "$OPT" "a char in BC compared in A"   79ee80fec1 yes \
 leafs "one that holds a long, not"                no \
     'long f(long a) { return a + 1; }'
 OPTACC_LEAF=1 all "$OPT" "and its counter stepped as a byte"   0d18 yes "$byte"
+# A byte tested through a table, as zap's character classes are: the AND
+# made in A and branched on straight from its flags -- and 0x20, jr nz --
+# through the inlined _Bool's conversion and the `!` of it.
+OPTACC_LEAF=1 all "$OPT" "a byte's AND branched on from its flags"   e62020 yes \
+    'extern const unsigned char tab[256];
+__attribute__((always_inline)) static inline _Bool alpha(char c) { return (tab[(unsigned char) c] & 0x20) != 0; }
+int f(const char *p) { if (!alpha(*p)) return 5; return 3; }'
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
