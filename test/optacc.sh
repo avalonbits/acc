@@ -371,5 +371,8 @@ OPTACC_LEAF=1 all "$OPT" "and written, ld (nn), hl"            22010000 yes "$gl
 OPTACC_LEAF=1 all "$OPT" "a byte's, ld a, (nn)"                3a000000 yes "$global"
 OPTACC_LEAF=1 all "$OPT" "an extern's, the offset for the link"  2a040000 yes \
     'extern struct { unsigned char m; int a, b; } h; int f(void) { return h.b; }'
+# An unsigned byte shifted right by a constant, srl a in A, not the helper.
+OPTACC_LEAF=1 all "$OPT" "a byte shifted right in A, srl a"  cb3f yes \
+    'int f(unsigned char *p) { return *p >> 1; }'
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
