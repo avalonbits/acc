@@ -4409,6 +4409,17 @@ static int leaf_ok(void)
             continue;
         case GL_vaddr_array: case GL_vaddr_local:
             continue;
+        case GL_gen_switch_load:
+            /* A switch on an int or narrower: its value from its slot into
+             * HL, and each case a comparison and a jump, as the first pass
+             * makes them. */
+            if (type_wide((Type) insn->rec->arg[1]))
+                return leaf_why = "a switch on a long", 0;
+            continue;
+        case GL_gen_switch_case:
+            if (type_wide((Type) insn->rec->arg[2]))
+                return leaf_why = "a switch on a long", 0;
+            continue;
         case GL_vprefix_local: case GL_vpostfix_local:
             /* ++ and -- of a local in memory, in its slot. */
             if (insn->rec->top.bits || !leaf_type((Type) insn->rec->arg[1]))
@@ -5719,6 +5730,22 @@ static void leaf_insn(const Ins *insn, int blk, int at)
     case GL_vaddr_local:
         lea_rr_ix(R_HL, inline_moved((int) insn->rec->arg[0]));
         leaf_result(insn->res);
+        return;
+    case GL_gen_switch_load:
+        ld_rr_ix(R_HL, inline_moved((int) insn->rec->arg[0]));
+        return;
+    case GL_gen_switch_case:
+        /* ld de, value; or a; sbc hl, de; add hl, de: HL as it was for the
+         * next, Z where it was the value. No edge of a case has copies to
+         * make: the SSA form refuses a phi a case jumps to. */
+        ld_rr_imm(R_DE, (int) (insn->rec->arg[0] & 0xffffff));
+        or_a_a();
+        sbc_hl_rr(R_DE);
+        add_hl_rr(R_DE);
+        if (block_now[insn->target] >= 0)
+            gen_jump_cc_to(JP_Z, block_now[insn->target]);
+        else
+            jump_forward(jump_op(JP_Z), insn->target);
         return;
     case GL_vpush_local: {
         Type type = (Type) insn->rec->arg[1];
