@@ -99,6 +99,10 @@ typedef struct {
 } SVal;
 
 #define HOME_SLOT (-1)
+#define HOME_GLOBAL (-3)                /* leaf backend: a global's address,
+                                         * loaded where it is read, `slot` its
+                                         * symbol and leaf_global_off what is
+                                         * added to it -- see emit_leaf */
 
 typedef struct {
     int first;                  /* its first instruction */
@@ -4115,6 +4119,7 @@ static Type *leaf_holds, leaf_hl_type;
  * OR of two such: 1 to 3, as vwidth says it, and the same for a value made
  * in more than one place. */
 static unsigned char *leaf_widths, leaf_hl_width = 3;
+static int *leaf_global_off;    /* a HOME_GLOBAL value's offset from its symbol */
 
 /* Whether a type is one the code here holds: an int or narrower, a
  * pointer, not a short -- which it would have to widen through IY -- and
@@ -4381,8 +4386,14 @@ static Type leaf_a_type;
 static int  leaf_skip_until = -1;
 
 static int  leaf_byte_to_a(const Ent *ent);
+static int  leaf_byte_ok(const Ent *ent);
 
 enum { R_AF_BYTE = 1, R_L_BYTE, R_E_BYTE };     /* where leaf_pop left a byte */
+
+/* Where A was last stored to a byte's slot, and which: a read of that slot
+ * straight after it, with nothing jumping in between, is A as it is. */
+static int      leaf_a_stored_at = -1, leaf_a_stored_slot;
+static unsigned leaf_a_stored_epoch;
 
 /* The values under the top, on the machine stack: whether each is a byte
  * pushed with push af -- its byte then the high one of the pair it is
@@ -4491,7 +4502,10 @@ static void leaf_load(const Ent *ent, int reg)
         return;
     }
     type = vals[val].type;
-    if (vals[val].reg == R_BC) {
+    if (vals[val].reg == HOME_GLOBAL) {
+        ld_rr_imm(reg, leaf_global_off[val]);   /* the link adds the address */
+        fixup_add(vals[val].slot, out_here() - ACC_INT_SIZE);
+    } else if (vals[val].reg == R_BC) {
         push_rr(R_BC);
         pop_rr(reg);
     } else if (vals[val].reg == HOME_SLOT && iy_web >= 0
@@ -4617,6 +4631,9 @@ static void leaf_result_a(int val, Type type)
     }
     if (to_slot) {
         ld_ix_a(vals[val].slot);
+        leaf_a_stored_at = out_here();
+        leaf_a_stored_slot = vals[val].slot;
+        leaf_a_stored_epoch = out_rewinds;
         vals[val].used = 0;             /* stored: leaf_result notes it only */
         leaf_result(val);
         vals[val].used = 1;
@@ -4842,6 +4859,34 @@ static int leaf_known_width(const Ent *ent)
     return width;
 }
 
+/* Whether an operand is a global's address the link fills in, loaded where
+ * it is read: then a read or a write through it is (nn). */
+static int leaf_global(const Ent *ent)
+{
+    if (ent->val == S_CONST)            /* or a constant one: bss, image */
+        return ent->attr.kind == VAL_CONST || ent->attr.kind == VAL_BSS
+               || ent->attr.kind == VAL_ADDR;
+
+    return ent->val >= 0 && !vals[ent->val].fwd && vals[ent->val].reg == HOME_GLOBAL;
+}
+
+/* That address, as the operand of the instruction just begun: the offset,
+ * and the fixup the link adds the address to -- or the constant, with what
+ * moves it, as leaf_load makes one. */
+static void leaf_global_nn(const Ent *ent)
+{
+    if (ent->val == S_CONST) {
+        if (ent->attr.kind == VAL_ADDR)
+            out_reloc(out_here());
+        else if (ent->attr.kind == VAL_BSS)
+            gen_bss_fixup(out_here());
+        out_word24(ent->attr.kind == VAL_ADDR ? moved_at(ent->attr.val) : ent->attr.val);
+        return;
+    }
+    out_word24(leaf_global_off[ent->val]);
+    fixup_add(vals[ent->val].slot, out_here() - ACC_INT_SIZE);
+}
+
 /* An int read through IY into a value whose home is IY too -- p = p->next
  * -- as ld iy, (iy+d), where the pointer read through dies there (`dies`):
  * IY is both. Answers whether it was. */
@@ -4865,7 +4910,16 @@ static int leaf_iy_read(int val, int disp, int dies)
 static int leaf_keep_a(const Ins *insn, Type to, int result)
 {
     Type type = leaf_a_type;
+    int val = insn->in[0].val;
 
+    /* A byte in a slot or in BC made a byte: into A, and on from there. */
+    if (val >= 0 && !vals[val].fwd && type_size(to) == 1 && to != TY_BOOL
+        && type_size(vals[val].type) == 1 && vals[val].type != TY_BOOL
+        && leaf_byte_ok(&insn->in[0])) {
+        (void) leaf_byte_to_a(&insn->in[0]);
+        leaf_result_a(result, to);
+        return 1;
+    }
     if (!leaf_top_in_a || insn->in[0].val < 0 || !vals[insn->in[0].val].fwd
         || to == TY_BOOL
         || (type_size(to) != 1 && type_size(to) != ACC_INT_SIZE))
@@ -5010,7 +5064,9 @@ static int leaf_byte_to_a(const Ent *ent)
         out_byte(0x79);                         /* ld a, c */
     } else if (vals[val].reg == HOME_SLOT && !(iy_web >= 0
                && vals[val].slot == fixed_slot[iy_web])) {
-        ld_a_ix(vals[val].slot);
+        if (!(leaf_a_stored_at == out_here() && leaf_a_stored_slot == vals[val].slot
+              && leaf_a_stored_epoch == out_rewinds && join_at != out_here()))
+            ld_a_ix(vals[val].slot);    /* not stored there just now */
     } else {
         return 0;
     }
@@ -5031,7 +5087,9 @@ static int leaf_compare(const Ins *insn, int op)
              && vals[insn->in[0].val].reg == HOME_SLOT)) {
         Type held = leaf_held(&insn->in[0]);
         int is_signed = !type_unsigned(held), low = is_signed ? -128 : 0;
-        int high = is_signed ? 127 : 255, bias = is_signed ? 0x80 : 0;
+        int high = is_signed ? 127 : 255;
+        int bias = is_signed && op != TK_EQ && op != TK_NE ? 0x80 : 0;
+                                        /* equal is equal, either way */
         int want = op == TK_LE || op == TK_GT ? number + 1 : number;
 
         if (number >= low && number <= high && want <= high
@@ -5223,6 +5281,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
     case GL_vpush_const: case GL_vpush_bss:
         return;                         /* made again where read */
     case GL_vpush_global_addr:
+        if (insn->res >= 0 && vals[insn->res].reg == HOME_GLOBAL)
+            return;                     /* loaded where it is read */
         ld_rr_imm(R_HL, 0);
         fixup_add((int) insn->rec->arg[0], out_here() - ACC_INT_SIZE);
         leaf_result(insn->res);
@@ -5308,6 +5368,17 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             leaf_result(insn->res);
             return;
         }
+        if (leaf_global(&insn->in[0])) {        /* ld a, (nn) or ld hl, (nn) */
+            out_byte(type_size(read) == 1 ? 0x3a : 0x2a);
+            leaf_global_nn(&insn->in[0]);
+            if (type_size(read) == 1) {
+                leaf_result_a(insn->res, read);
+            } else {
+                leaf_hl_type = read;
+                leaf_result(insn->res);
+            }
+            return;
+        }
         if (type_size(read) == 1) {
             if (leaf_in_iy(&insn->in[0])) {
                 out_byte3(0xfd, 0x7e, 0);       /* ld a, (iy+0) */
@@ -5345,10 +5416,12 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         Type type = (Type) insn->rec->arg[1];
         int disp = inline_moved((int) insn->rec->arg[0]);
 
-        if (type_size(type) == ACC_INT_SIZE)
-            ld_rr_ix(R_HL, disp);
-        else
-            load_narrow_into(R_HL, disp, type == TY_BOOL ? TY_UCHAR : type);
+        if (type_size(type) == 1) {
+            ld_a_ix(disp);                      /* a byte stays in A */
+            leaf_result_a(insn->res, type);
+            return;
+        }
+        ld_rr_ix(R_HL, disp);
         leaf_hl_type = type;
         leaf_result(insn->res);
         return;
@@ -5448,6 +5521,17 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         return;
     }
     case GL_vmember:
+        /* A member of a global, left for its one use: the global's address
+         * with the offset added, loaded -- or read, or written -- there. */
+        if (insn->in[0].val >= 0 && vals[insn->in[0].val].reg == HOME_GLOBAL
+            && insn->res >= 0 && vals[insn->res].fwd) {
+            vals[insn->res].fwd = 0;
+            vals[insn->res].reg = HOME_GLOBAL;
+            vals[insn->res].slot = vals[insn->in[0].val].slot;
+            leaf_global_off[insn->res] = leaf_global_off[insn->in[0].val]
+                                         + (int) insn->rec->arg[0];
+            return;
+        }
         /* The member's address: the pointer and its offset. The read or
          * write is the vderef or vstore_indirect after it. */
         number = (int) insn->rec->arg[0];
@@ -5519,6 +5603,25 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             out_byte2(0x36, number & 0xff);     /* ld (hl), n */
             if (insn->res >= 0 && vals[insn->res].used) {
                 ld_rr_imm(R_HL, number);
+                leaf_result(insn->res);
+            }
+            return;
+        }
+        /* To a global's member, (nn): an int from HL, a byte from A. */
+        if (leaf_global(&insn->in[0]) && insn->in[1].val >= 0 && to != TY_BOOL
+            && ((type_size(to) == 1 && leaf_byte_ok(&insn->in[1]))
+                || type_size(to) == ACC_INT_SIZE)) {
+            if (type_size(to) == 1) {
+                (void) leaf_byte_to_a(&insn->in[1]);
+                out_byte(0x32);                 /* ld (nn), a */
+                leaf_global_nn(&insn->in[0]);
+                leaf_result_a(insn->res, to);
+            } else {
+                leaf_operand_hl(insn, 1);
+                if (!leaf_fits(leaf_held(&insn->in[1]), to))
+                    leaf_narrow(to);
+                out_byte(0x22);                 /* ld (nn), hl */
+                leaf_global_nn(&insn->in[0]);
                 leaf_result(insn->res);
             }
             return;
@@ -5611,6 +5714,39 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             }
             if (step < 1 || step > 4) {
                 fail = "a step the code here does not make";
+                return;
+            }
+
+            /* An unsigned byte in A on top, added to or taken from what is
+             * under it or loaded -- a table indexed by a byte: the byte
+             * zero-extended into DE, A kept while the left comes to HL. */
+            if (step == 1 && scaled != 0 && leaf_top_in_a
+                && insn->in[1].val >= 0 && vals[insn->in[1].val].fwd
+                && (type_unsigned(leaf_a_type) || leaf_known_width(&insn->in[1]) == 1)
+                && !(insn->in[0].val >= 0 && vals[insn->in[0].val].fwd
+                     && leaf_nstacked && leaf_stacked_af[leaf_nstacked - 1])
+                && (insn->in[0].val == S_CONST
+                    || (insn->in[0].val >= 0
+                        && (vals[insn->in[0].val].fwd
+                            || type_size(vals[insn->in[0].val].type) == ACC_INT_SIZE)))) {
+                /* (a narrow left, loaded, is widened through A) */
+                leaf_depth--;
+                leaf_top_in_hl = leaf_top_in_a = 0;
+                if (insn->in[0].val >= 0 && vals[insn->in[0].val].fwd) {
+                    (void) leaf_pop(R_HL, 1);   /* the left: A kept */
+                    leaf_depth--;
+                } else {
+                    leaf_load(&insn->in[0], R_HL);
+                }
+                ld_rr_imm(R_DE, 0);
+                out_byte(0x5f);                 /* ld e, a */
+                if (number == TK_PLUS) {
+                    add_hl_rr(R_DE);
+                } else {
+                    or_a_a();
+                    sbc_hl_rr(R_DE);
+                }
+                leaf_result(insn->res);
                 return;
             }
             right = leaf_operands_in(insn, step == 1);
@@ -5706,12 +5842,29 @@ static void leaf_insn(const Ins *insn, int blk, int at)
     case GL_gen_call: {
         const Sym *callee = sym_at((int) insn->rec->arg[0]);
         int fn = (int) insn->rec->arg[0], first = (int) insn->rec->arg[2];
-        int nparams = (int) insn->rec->arg[3], arg, homes;
+        int nparams = (int) insn->rec->arg[3], arg, homes, waiting = 0;
 
         /* The arguments pushed last first, each as its parameter's type,
          * so the first is at the lowest address -- as agondev passes them.
          * Only the last may be left on the stack, in HL. */
         leaf_widen_a();
+
+        /* IY and BC, where a value in either lives across the call, kept
+         * on the stack under the arguments -- push iy, push bc: a byte or
+         * two each way -- unless an argument waits on the machine stack,
+         * which that would bury: then in their slots, after them. */
+        homes = leaf_live_homes(at, blk);
+        for (arg = 0; arg != insn->nin; arg++)
+            if (insn->in[arg].val >= 0 && vals[insn->in[arg].val].fwd)
+                waiting++;
+        if (waiting > 1 || (waiting && !leaf_top_in_hl))
+            waiting = -1;               /* on the machine stack: slots */
+        if (waiting >= 0) {
+            if (homes & 1)
+                out_byte2(0xfd, 0xe5);  /* push iy */
+            if (homes & 2)
+                push_rr(R_BC);
+        }
         for (arg = insn->nin - 1; arg >= 0; arg--) {
             const Ent *ent = &insn->in[arg];
             int waiting = 0, before;
@@ -5739,8 +5892,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 leaf_convert(ent, sym_param_type(first, arg));
             push_rr(R_HL);
         }
-        homes = leaf_live_homes(at, blk);
-        leaf_keep_homes(homes, 0);
+        if (waiting < 0)
+            leaf_keep_homes(homes, 0);
         if (sym_flags(fn) & SYMF_DEFINED) {
             want(fn);
             out_reloc(out_here() + 1);
@@ -5751,7 +5904,14 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         }
         for (arg = 0; arg != insn->nin; arg++)
             pop_rr(R_DE);
-        leaf_keep_homes(homes, 1);
+        if (waiting < 0) {
+            leaf_keep_homes(homes, 1);
+        } else {
+            if (homes & 2)
+                pop_rr(R_BC);
+            if (homes & 1)
+                out_byte2(0xfd, 0xe1);  /* pop iy */
+        }
 
         /* A byte's answer is in A, and stays there; the rest in HL. */
         if (callee->type != TY_VOID && type_size(callee->type) == 1) {
@@ -5895,11 +6055,13 @@ static void emit_leaf(void)
     leaf_hl_width = 3;
     leaf_holds = realloc(leaf_holds, ((size_t) nvals + 1) * sizeof *leaf_holds);
     leaf_widths = realloc(leaf_widths, (size_t) nvals + 1);
-    if (!leaf_holds || !leaf_widths)
+    leaf_global_off = realloc(leaf_global_off, ((size_t) nvals + 1) * sizeof *leaf_global_off);
+    if (!leaf_holds || !leaf_widths || !leaf_global_off)
         acc_error("out of memory for the SSA form");
     for (at = 0; at != nvals; at++) {
         leaf_holds[at] = TY_VOID;
         leaf_widths[at] = 3;
+        leaf_global_off[at] = 0;
     }
 
     blocks_from = out_here();
@@ -5909,6 +6071,17 @@ static void emit_leaf(void)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
     leaf_save_slots();
+
+    /* A global's address left on the stack for one use is loaded where it
+     * is used instead, as a constant is: a table indexed by what is made
+     * after it pushed it and popped it back. */
+    for (at = 1; at != ninsns; at++)
+        if (insns[at].op == GL_vpush_global_addr && insns[at].res >= 0
+            && vals[insns[at].res].fwd) {
+            vals[insns[at].res].fwd = 0;
+            vals[insns[at].res].reg = HOME_GLOBAL;
+            vals[insns[at].res].slot = (int) insns[at].rec->arg[0];
+        }
     give_slots();
     inline_slots();
 

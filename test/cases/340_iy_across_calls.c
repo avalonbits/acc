@@ -25,6 +25,25 @@ static struct node *first(struct node *head, int skip)
     return head;
 }
 
+static int at(const char *s, int back) { return s[1 + back]; }
+
+/* The first argument made and waiting on the machine stack while the
+ * second is: IY kept in a slot of its own, since pushing it there would
+ * bury that argument. */
+static int total(struct node *head, const char *name)
+{
+    struct node *p;
+    char two[2];
+    int t = 0;
+
+    two[0] = 5;
+    two[1] = 9;
+    for (p = head; p; p = p->next)
+        t += at(two, -1) + p->value + same(p->name, name);
+
+    return t;
+}
+
 static int find(struct node *head, int skip, const char *name)
 {
     struct node *p;
@@ -46,5 +65,6 @@ int main(void)
     right += find(&a, 1, "beta") == 2;
     right += find(&a, 1, "alpha") == -1;
     right += find(&a, 3, "gamma") == -1;
-    return right == 5 ? 42 : right;
+    right += total(&a, "beta") == 5 * 3 + (1 + 2 + 3) + 1;
+    return right == 6 ? 42 : right;
 }
