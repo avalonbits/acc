@@ -5290,6 +5290,7 @@ static void emit_insn_regs(const Ins *insn, int blk, int at)
 }
 
 long ssa_cost_made, ssa_cost_first;
+int ssa_size_made, ssa_size_first;
 
 
 static long block_weight(int blk)
@@ -5462,6 +5463,8 @@ static void costs(const int *block_start, int end)
             byte_block[at - from] = blk;
     }
     ssa_cost_made = code_cost(out_img + (from - out_base), end - from, byte_block);
+    ssa_size_made = end - from;
+    ssa_size_first = gl_first_len;
     free(byte_block);
 }
 

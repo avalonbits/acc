@@ -297,5 +297,10 @@ OPTACC_LEAF=1 all "$OPT" "an int written to a _Bool as its test"  3600280134 yes
     "$flag void f(struct s *p, int a) { p->b = a; }"
 OPTACC_LEAF=1 all "$OPT" "a comparison written as it is"         3600280134 no \
     "$flag void f(struct s *p, int a, int b) { p->b = a < b; }"
+# The pick keeps the first pass's code where what is made here is costlier
+# to run or bigger: x * x is cheaper here, by the estimate, and bigger.
+OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+    ssa "cheaper but bigger, not kept" "ssa f the first pass's code is smaller" \
+    'int f(int x) { return x * x; }'
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
