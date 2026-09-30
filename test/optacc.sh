@@ -390,5 +390,11 @@ OPTACC_LEAF=1 all "$OPT" "o++ sunk past the block's last store" ed230077fd23 yes
 # One phi copy into a slot, through HL alone: ld hl, (ix+6); ld (ix-3), hl.
 copy='char *g(char *, int); char *f(char *o, int n) { char *start = o; while (n--) { char *old = o; o = g(o, n); if (!o) o = old; } return start == o ? 0 : o; }'
 OPTACC_LEAF=1 all "$OPT" "one phi copy into a slot, not pushed"  dd2706dd2ffd yes "$copy"
+# A long whose low three bytes are all that is kept is made here; one whose
+# truth is asked -- all four bytes -- is not.
+leafs "a long read and kept as an int, made here" yes \
+    'void g(long *); int f(void) { long v = 0; g(&v); return (int) v; }'
+leafs "a long made a _Bool, not"                 no \
+    'int f(const long *p) { return (_Bool) *p; }'
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
