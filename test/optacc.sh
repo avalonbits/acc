@@ -326,28 +326,50 @@ OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
     ssa "the leaf backend's lost, the hybrid path's made" \
     "ssa f made, not by the leaf backend" \
     'extern const unsigned char tab[256]; _Bool f(char c) { return (tab[(unsigned char) c] & 4) != 0; }'
-# A list walked with its node in IY across a call: IY kept in a slot around
-# the call it lives across, and not around the one before it is made --
-# ld (ix+d), iy once; p = p->next as ld iy, (iy+0); the _Bool answer tested
-# in A as IY comes back, ld iy, (ix+d) then or a; and the first argument,
+# A list walked with its node in IY across a call: IY kept around the call
+# it lives across, and not around the one before it is made -- push iy
+# once, under the arguments; p = p->next as ld iy, (iy+0); the _Bool answer
+# tested in A as IY comes back, pop iy then or a; and the first argument,
 # read through IY, left in HL while the parameter after it goes around it,
 # ld de, (ix+12) then push de.
 walk='struct n { struct n *next; const char *name; int value; };
 struct n *first(struct n *, int); _Bool same(const char *, const char *);
 int f(struct n *h, int k, const char *s) { struct n *p; for (p = first(h, k); p; p = p->next) if (same(p->name, s)) return p->value; return -1; }'
 OPTACC_LEAF=1 all "$OPT" "p = p->next, ld iy, (iy+0)"            fd3700     yes "$walk"
-OPTACC_LEAF=1 all "$OPT" "the answer tested in A as IY comes back" 'dd31..b72[08]' yes "$walk"
+OPTACC_LEAF=1 all "$OPT" "the answer tested in A as IY comes back" 'fde1b72[08]' yes "$walk"
 OPTACC_LEAF=1 all "$OPT" "the next argument around the first, by DE" dd170cd5 yes "$walk"
 printf '%s\n' "$walk" > "$tmp/c.c"
 rm -f "$tmp/c.o"
 OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
     OPTACC_LEAF=1 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" >/dev/null 2>&1
-saves=$(text_hex "$tmp/c.o" | grep -o 'dd3e' | wc -l)
+saves=$(text_hex "$tmp/c.o" | grep -o 'fde5' | wc -l)
 if [ "$saves" = 1 ]; then
     pass=$((pass + 1))
 else
     printf '  FAIL %-50s saved %s times\n' "IY saved around one call of two" "$saves"
     fail=$((fail + 1))
 fi
+
+# A table indexed by a byte, as zap's character classes are: the byte kept
+# in A from its store to its slot to its use -- ld (ix+d), a and no read
+# back -- the table's address loaded where it is used rather than pushed
+# and popped round the byte, and the byte zero-extended into DE: ld hl, tab;
+# ld de, 0; ld e, a; add hl, de.
+table='extern const unsigned char tab[256];
+__attribute__((always_inline)) static inline int space(char c) { return tab[(unsigned char) c] & 1; }
+int f(const char *p, const char *e) { while (p < e && space(*p)) p++; return (int) (e - p); }'
+OPTACC_LEAF=1 all "$OPT" "a table indexed by a byte kept in A" 'dd77..21000000110000005f19' yes "$table"
+# A byte local whose address is taken, read into A and compared there:
+# ld a, (ix+d); cp 0x78, not widened on the way.
+OPTACC_LEAF=1 all "$OPT" "a byte in memory read into A" 'dd7e..fe78' yes \
+    'void g(char *); int f(void) { char c; g(&c); return c == 0x78; }'
+# A global's member, (nn): the offset in the instruction and the link adding
+# the address -- ld hl, (nn), ld (nn), hl, and a byte's ld a, (nn).
+global='struct { unsigned char m; int a, b; } g; int f(int x) { g.a = x; return g.b + g.m; }'
+OPTACC_LEAF=1 all "$OPT" "a global's member read, ld hl, (nn)"  2a040000 yes "$global"
+OPTACC_LEAF=1 all "$OPT" "and written, ld (nn), hl"            22010000 yes "$global"
+OPTACC_LEAF=1 all "$OPT" "a byte's, ld a, (nn)"                3a000000 yes "$global"
+OPTACC_LEAF=1 all "$OPT" "an extern's, the offset for the link"  2a040000 yes \
+    'extern struct { unsigned char m; int a, b; } h; int f(void) { return h.b; }'
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
