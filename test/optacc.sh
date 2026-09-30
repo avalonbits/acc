@@ -297,6 +297,14 @@ OPTACC_LEAF=1 all "$OPT" "an int written to a _Bool as its test"  3600280134 yes
     "$flag void f(struct s *p, int a) { p->b = a; }"
 OPTACC_LEAF=1 all "$OPT" "a comparison written as it is"         3600280134 no \
     "$flag void f(struct s *p, int a, int b) { p->b = a < b; }"
+# Locals that stay in memory, made here: an array, a local whose address
+# is taken, a struct.
+leafs "a local array, made here"                 yes \
+    'void g(char *); int f(int i) { char buf[8]; buf[i] = 1; g(buf); return buf[0]; }'
+leafs "a local whose address is taken, made here" yes \
+    'void g(int *); int f(void) { int n = 3; g(&n); return n + 1; }'
+leafs "a struct local, made here"                yes \
+    'struct s { int a, b; }; void g(struct s *); int f(void) { struct s x; x.a = 1; g(&x); return x.b; }'
 # The pick keeps the first pass's code where what is made here is costlier
 # to run or bigger: x * x is cheaper here, by the estimate, and bigger.
 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \

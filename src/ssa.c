@@ -4103,17 +4103,46 @@ static int leaf_ok(void)
         const Ins *insn = &insns[at];
         int op = insn->op, arith;
 
+        /* A _Bool is a byte of 0 or 1, made so by leaf_convert. */
         for (operand = 0; operand != insn->nin; operand++)
-            if (!leaf_type(insn->in[operand].attr.type))
+            if (!leaf_type(insn->in[operand].attr.type)
+                && insn->in[operand].attr.type != TY_BOOL)
                 return leaf_why = "an operand wider than an int", 0;
-        if (insn->res >= 0 && !leaf_type(vals[insn->res].type))
+        if (insn->res >= 0 && !leaf_type(vals[insn->res].type)
+            && vals[insn->res].type != TY_BOOL)
             return leaf_why = "a value wider than an int", 0;
         switch (op) {
         case I_FRAME:
-            if (insn->rec->op != GL_gen_local && !frame_of_value(insn))
+            /* The frame is laid down again as the first pass laid it, arrays
+             * and all; a claim of IY only for a local that is values now,
+             * or where it claims nothing -- not a `register` local. */
+            switch (insn->rec->op) {
+            case GL_gen_local: case GL_gen_local_array:
+            case GL_gen_local_array_size:
+                continue;
+            case GL_gen_iy_claim:
+                if (!((int) insn->rec->arg[2] & SQ_REGISTER))
+                    continue;
+                break;
+            }
+            if (!frame_of_value(insn))
                 return leaf_why = "a frame not of scalars", 0;
             continue;
-        case I_BR: case I_JMP: case I_SET: case I_CONV: case I_STEP:
+        case GL_vaddr_array: case GL_vaddr_local:
+            continue;
+        case GL_vpush_local: case GL_vstore_local:
+            /* A local that stays in memory -- its address taken -- read or
+             * written in its slot. */
+            if (insn->rec->top.bits
+                || (!leaf_type((Type) insn->rec->arg[1])
+                    && (Type) insn->rec->arg[1] != TY_BOOL))
+                return leaf_why = "a local in memory not a scalar", 0;
+            continue;
+        case I_STEP:
+            if (insn->local_type == TY_BOOL)
+                return leaf_why = "a _Bool stepped", 0;
+            continue;
+        case I_BR: case I_JMP: case I_SET: case I_CONV:
         case GL_vdrop: case GL_gen_stmt_end: case GL_gen_value_end:
         case GL_gen_return:
         case GL_vneg: case GL_vnot: case GL_vtruth: case GL_vconvert:
@@ -4603,6 +4632,23 @@ static int leaf_is_01(const Ent *ent)
     return leaf_held(ent) == TY_BOOL;
 }
 
+/* The value in HL, `from`, made a `to`: a _Bool is 0 or 1 by whether the
+ * value is 0 -- 256 is true, not its low byte -- and anything narrower cut
+ * down, where it is not in range already. */
+static void leaf_convert(const Ent *from, Type to)
+{
+    if (to == TY_BOOL && !leaf_is_01(from)) {
+        add_hl_rr(R_BC);
+        or_a_a();
+        sbc_hl_rr(R_BC);                /* Z when HL is 0, BC as it was */
+        leaf_truth_value(JP_NZ);
+    } else if (!leaf_fits(leaf_held(from), to)) {
+        leaf_narrow(to);
+    } else {
+        leaf_hl_type = leaf_held(from);
+    }
+}
+
 static void leaf_insn(const Ins *insn, int blk, int at)
 {
     int op = insn->op, number, cc;
@@ -4664,19 +4710,13 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         Type to = op == I_SET ? vals[insn->target].type : insn->local_type;
 
         leaf_operand_hl(insn, 0);
-        if (!leaf_fits(leaf_held(&insn->in[0]), to))
-            leaf_narrow(to);
-        else
-            leaf_hl_type = leaf_held(&insn->in[0]);
+        leaf_convert(&insn->in[0], to);
         leaf_result(op == I_SET ? insn->target : insn->res);
         return;
     }
     case GL_vconvert: case GL_vcast:
         leaf_operand_hl(insn, 0);
-        if (!leaf_fits(leaf_held(&insn->in[0]), (Type) insn->rec->arg[0]))
-            leaf_narrow((Type) insn->rec->arg[0]);
-        else
-            leaf_hl_type = leaf_held(&insn->in[0]);
+        leaf_convert(&insn->in[0], (Type) insn->rec->arg[0]);
         leaf_result(insn->res);
         return;
     case I_STEP:
@@ -4739,6 +4779,43 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             leaf_operand_hl(insn, 0);
             leaf_read(read, 0, 0);
         }
+        leaf_result(insn->res);
+        return;
+    }
+    case GL_vaddr_array:
+        /* A local array's address, as the first pass makes it, and taken
+         * off its stack: the frame is laid out there, and the array's
+         * place is known only when it ends. */
+        vaddr_array((int) insn->rec->arg[0], (Type) insn->rec->arg[1]);
+        vdrop();
+        leaf_result(insn->res);
+        return;
+    case GL_vaddr_local:
+        lea_rr_ix(R_HL, inline_moved((int) insn->rec->arg[0]));
+        leaf_result(insn->res);
+        return;
+    case GL_vpush_local: {
+        Type type = (Type) insn->rec->arg[1];
+        int disp = inline_moved((int) insn->rec->arg[0]);
+
+        if (type_size(type) == ACC_INT_SIZE)
+            ld_rr_ix(R_HL, disp);
+        else
+            load_narrow_into(R_HL, disp, type == TY_BOOL ? TY_UCHAR : type);
+        leaf_hl_type = type;
+        leaf_result(insn->res);
+        return;
+    }
+    case GL_vstore_local: {
+        Type type = (Type) insn->rec->arg[1];
+        int disp = inline_moved((int) insn->rec->arg[0]);
+
+        leaf_operand_hl(insn, 0);
+        leaf_convert(&insn->in[0], type);
+        if (type_size(type) == ACC_INT_SIZE)
+            ld_ix_rr(disp, R_HL);
+        else
+            store_narrow(disp, type);
         leaf_result(insn->res);
         return;
     }
@@ -4948,8 +5025,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             } else {
                 leaf_load(ent, R_HL);
             }
-            if (arg < nparams && !leaf_fits(leaf_held(ent), sym_param_type(first, arg)))
-                leaf_narrow(sym_param_type(first, arg));
+            if (arg < nparams)
+                leaf_convert(ent, sym_param_type(first, arg));
             push_rr(R_HL);
         }
         if (sym_flags(fn) & SYMF_DEFINED) {
