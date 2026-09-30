@@ -2108,6 +2108,11 @@ static int         ntrampolines, trampolines_cap;
 
 static int  regs_on(void);
 static void edge_moves(int from, int to);
+static void leaf_edge(int from, int to);
+static int  falls_to(int blk, int target);
+static int  leaf_mode;          /* this function made by emit_leaf */
+static void costs(const int *block_start, int end);
+static int  blocks_from;        /* where the function made here begins */
 
 /* The copies of the trampolines waiting, each then a jump on to its
  * block: made where the code before cannot fall into them. */
@@ -2119,7 +2124,9 @@ static void emit_trampolines(void)
         int to = trampolines[tramp].to;
 
         gen_label(trampolines[tramp].hole);
-        if (regs_on())
+        if (leaf_mode)
+            leaf_edge(trampolines[tramp].from, to);
+        else if (regs_on())
             edge_moves(trampolines[tramp].from, to);
         else
             edge_copies(trampolines[tramp].from, to);
@@ -2365,6 +2372,46 @@ static int narrow_unwidened(int val)
            && op != GL_gen_call && op != GL_gen_call_indirect;
 }
 
+/* Whether a value read from memory, and read lazily -- a local, or through
+ * a pointer, which the classic backend reads where the value is used --
+ * would wait on the classic stack across something that may write that
+ * memory: a call, or a store. `int z = y; b(&y); c(z, y);` read y for z
+ * after b had changed it. */
+static int read_then_written(int def, int use)
+{
+    int op = insns[def].op, at;
+
+    if (op != GL_vpush_local && op != GL_vderef && op != GL_vmember)
+        return 0;
+    for (at = def + 1; at < use; at++)
+        switch (insns[at].op) {
+        case GL_gen_call: case GL_gen_call_indirect: case GL_vstore_indirect:
+        case GL_vstore_local: case GL_vprefix_indirect:
+        case GL_vpostfix_indirect: case GL_vprefix_local:
+        case GL_vpostfix_local: case GL_gen_copy_to_array:
+        case GL_gen_zero_array:
+            return 1;
+        }
+
+    return 0;
+}
+
+/* With the code made here, whether a value is an argument of a call other
+ * than its last: the arguments are pushed last first, and a value left on
+ * the stack for one would be under the ones after it. */
+static int leaf_early_argument(int val, int use)
+{
+    int operand;
+
+    if (insns[use].op != GL_gen_call)
+        return 0;
+    for (operand = 0; operand + 1 < insns[use].nin; operand++)
+        if (insns[use].in[operand].val == val)
+            return 1;
+
+    return 0;
+}
+
 /* Which values are left on the classic stack: read once, in the block that
  * makes them, and in stack order -- checked by walking each block with a
  * stack of its own, and a value that is not where the classic stack would
@@ -2399,6 +2446,8 @@ static void find_forwarded(void)
                 uses[phis[phi].in[pred]] += 2;
     for (val = 0; val != nvals; val++)
         vals[val].fwd = def_at[val] >= 0 && uses[val] == 1
+                        && !(leaf_mode && leaf_early_argument(val, use_at[val]))
+                        && !read_then_written(def_at[val], use_at[val])
                         && use_at[val] > def_at[val]
                         && insns[use_at[val]].block == insns[def_at[val]].block
                         && !narrow_unwidened(val);
@@ -2475,6 +2524,9 @@ static const int home_regs[NHOMES] = { R_BC, R_DE };
 static int homes_wanted(void)
 {
     const char *homes = getenv("OPTACC_HOMES");
+
+    if (leaf_mode)
+        return 1;                       /* DE is the code's own */
 
     return homes && *homes == '2' ? 2 : homes && *homes == '0' ? 0 : 1;
 }
@@ -2791,8 +2843,10 @@ static void plan_fixed(const int *order, int nroots)
         for (member = root; member >= 0; member = web_next[member])
             if (vals[member].fwd || vals[member].reg != HOME_SLOT
                 || !reg_eligible(member) || !gen_iy_can(vals[member].type)
-                || type_size(vals[member].type) != ACC_INT_SIZE)
-                fits = 0;           /* a narrow one is widened at each read */
+                || type_size(vals[member].type) != ACC_INT_SIZE
+                || (leaf_mode && across_calls[member]))
+                fits = 0;           /* a narrow one is widened at each read,
+                                     * and a call does not keep IY */
 
         /* Nor a parameter out of (ix+d)'s reach: the classic backend
          * reaches one through IY, which it cannot then load into IY. */
@@ -2861,6 +2915,10 @@ static void plan_homes(void)
             int insn_at;
 
             if (vals[member].reg == -2 || !reg_eligible(member))
+                fits = 0;
+
+            /* The code made here saves no register around a call. */
+            if (leaf_mode && across_calls[member])
                 fits = 0;
 
             /* A switch's tests load DE: a value across them is in BC. */
@@ -3394,6 +3452,7 @@ static int native_on(void)
 enum { AT_NONE, AT_CONST, AT_STACK, AT_REG, AT_SLOT };
 
 static int skip_branch = -1;    /* the branch selected with its comparison */
+static int fused_from = -1;     /* and what made it, the rest between made too */
 
 /* Where an int-wide operand is, and the register or displacement in
  * `*where`; AT_NONE when it is not something the code here handles. */
@@ -3566,7 +3625,7 @@ static int mirror(int op)
 /* The branch after the comparison at `at`, on the flags it left: jp on `cc`
  * when the comparison is true -- turned over when the branch jumps on false
  * -- to its block, or to the copies on the way there. */
-static void branch_on(int cc, const Ins *branch, int blk, int at)
+static void branch_to(int cc, const Ins *branch, int blk)
 {
     int target = branch->target;
 
@@ -3583,6 +3642,11 @@ static void branch_on(int cc, const Ins *branch, int blk, int at)
     } else {
         jump_forward(jump_op(cc), target);
     }
+}
+
+static void branch_on(int cc, const Ins *branch, int blk, int at)
+{
+    branch_to(cc, branch, blk);
     skip_branch = at + 1;
 }
 
@@ -3880,6 +3944,1199 @@ static int native_step(const Ins *insn, int at)
     return 1;
 }
 
+/* ------------------------------------------------------------------ */
+/* a backend of opt-acc's own: leaf functions                          */
+
+/* With OPTACC_LEAF, a function that calls nothing and holds nothing wider
+ * than an int -- milestone 3's first slice of a backend of its own -- is
+ * made here from its SSA form, every instruction selected here and none
+ * through gen.h. HL is the accumulator, and holds the value on top of the
+ * stack the log's calls kept; the values under it wait on the machine
+ * stack, pushed. DE is the other side of a binary operator and A the byte
+ * of a narrow one. Values that live longer are in BC or IY, or in a frame
+ * slot -- homes as plan_homes gives them, BC alone of the pairs, since DE
+ * and HL are this code's. Anything it does not make declines the whole
+ * function, which goes to the code before. */
+
+static int leaf_on(void)
+{
+    return getenv("OPTACC_LEAF") != NULL;
+}
+
+static const char *leaf_why;    /* why the function is not made here */
+
+/* The type each value made here is held as -- a byte read, widened; a
+ * narrowing's -- where its own type, the first pass's, says less; and the
+ * type of what is in HL now, which leaf_result gives the value made. */
+static Type *leaf_holds, leaf_hl_type;
+
+/* Whether a type is one the code here holds: an int or narrower, a
+ * pointer, not a short -- which it would have to widen through IY -- and
+ * not a _Bool, whose steps and conversions are to 0 or 1. */
+static int leaf_type(Type type)
+{
+    return type != TY_VOID && type != TY_BOOL && !type_is_struct(type)
+           && !type_wide(type)
+           && !type_float(type) && type_size(type) != 2
+           && type_size(type) <= ACC_INT_SIZE;
+}
+
+static int leaf_const(const Ent *ent, int *number)
+{
+    if (ent->val == S_CONST && ent->attr.kind == VAL_WIDE) {
+        *number = (int) (uint32_t) ent->wide;
+        return 1;
+    }
+
+    return ent->val == S_CONST && ent->attr.kind == VAL_CONST
+           && (*number = ent->attr.val, 1);
+}
+
+/* The width a value is known to have, 1 to 3 bytes: a constant's own, or
+ * what the first pass knew of it (vwidth). */
+static int leaf_width(const Ent *ent)
+{
+    Value attr = ent->attr;
+
+    if (ent->val == S_CONST && attr.kind != VAL_CONST)
+        return 3;
+
+    /* An unsigned narrow value is widened with zeros in a register. */
+    if (ent->val >= 0 && type_unsigned(vals[ent->val].type)
+        && !type_pointer(vals[ent->val].type)
+        && type_size(vals[ent->val].type) < ACC_INT_SIZE)
+        return type_size(vals[ent->val].type);
+
+    return vwidth(&attr);
+}
+
+/* Whether an operand is a constant 0 to 255: OR or XOR with one changes
+ * the low byte alone, whatever the other side holds above it. */
+static int leaf_byte_const(const Ent *ent)
+{
+    int number;
+
+    return leaf_const(ent, &number) && number >= 0 && number <= 0xff;
+}
+
+/* Whether an operator is one the code here makes, as its operands are:
+ * add and subtract, a pointer's by a step of 1, 2 or 4; the comparisons;
+ * a shift left by a constant up to 8; and AND, OR and XOR where the
+ * answer is a byte -- the top byte of HL has no name to work on. */
+static int leaf_operator(const Ins *insn, int arith)
+{
+    Type left = insn->in[0].attr.type, right = insn->in[1].attr.type;
+    int number, step;
+
+    switch (arith) {
+    case TK_LT: case TK_GT: case TK_LE: case TK_GE: case TK_EQ: case TK_NE:
+        return 1;
+    case TK_PLUS: case TK_MINUS:
+        if (type_pointer(left) && type_pointer(right))
+            step = type_step(left, insn->in[0].attr.ext) == 1 ? 1 : 0;
+                                        /* a difference wider is a divide */
+        else if (type_pointer(left))
+            step = type_step(left, insn->in[0].attr.ext);
+        else if (type_pointer(right))
+            step = type_step(right, insn->in[1].attr.ext);
+        else
+            step = 1;
+        if (step >= 1 && step <= 4)
+            return 1;
+        return leaf_why = "a pointer's step the code here does not make", 0;
+    case TK_SHL:
+        if (leaf_const(&insn->in[1], &number) && number >= 0 && number <= 8)
+            return 1;
+        return leaf_why = "a shift by a variable", 0;
+    case TK_AMP:
+        if (leaf_width(&insn->in[0]) == 1 || leaf_width(&insn->in[1]) == 1)
+            return 1;
+        return leaf_why = "an AND wider than a byte", 0;
+    case TK_PIPE: case TK_CARET:
+        if ((leaf_width(&insn->in[0]) == 1 && leaf_width(&insn->in[1]) == 1)
+            || leaf_byte_const(&insn->in[1]) || leaf_byte_const(&insn->in[0]))
+            return 1;
+        return leaf_why = "an OR or XOR wider than a byte", 0;
+    }
+
+    return leaf_why = "an operator the code here does not make", 0;
+}
+
+/* Whether a call is one the code here makes: to a function by name, not
+ * one of those gen_call makes in place of a call -- memcpy and the rest,
+ * exit -- nor setjmp or longjmp, with its parameters and its answer ints
+ * or narrower. */
+static int leaf_call_ok(const Ins *insn)
+{
+    static const char *const builtins[] = {
+        "memcpy", "memmove", "memset", "exit", "setjmp", "longjmp", NULL
+    };
+    const Sym *callee = sym_at((int) insn->rec->arg[0]);
+    int first = (int) insn->rec->arg[2], nparams = (int) insn->rec->arg[3];
+    int at;
+
+    for (at = 0; builtins[at]; at++)
+        if (!strcmp(name_text(callee->name), builtins[at]))
+            return leaf_why = "a call gen_call makes in place", 0;
+    if (callee->type != TY_VOID && callee->type != TY_BOOL
+        && !leaf_type(callee->type))
+        return leaf_why = "a call answering wider than an int", 0;
+    for (at = 0; at != nparams; at++)
+        if (!leaf_type(sym_param_type(first, at))
+            && sym_param_type(first, at) != TY_BOOL)
+            return leaf_why = "a call taking wider than an int", 0;
+
+    return 1;
+}
+
+/* Whether every instruction is one the code here makes. */
+static int leaf_ok(void)
+{
+    int at, operand;
+    Type returns = sym_at(gl_fn)->type;
+
+    /* A _Bool answer is fine: gen_return makes the 0 or 1 of it. */
+    if (returns != TY_VOID && returns != TY_BOOL && !leaf_type(returns))
+        return leaf_why = "an answer wider than an int", 0;
+
+    for (at = 1; at != ninsns; at++) {
+        const Ins *insn = &insns[at];
+        int op = insn->op, arith;
+
+        for (operand = 0; operand != insn->nin; operand++)
+            if (!leaf_type(insn->in[operand].attr.type))
+                return leaf_why = "an operand wider than an int", 0;
+        if (insn->res >= 0 && !leaf_type(vals[insn->res].type))
+            return leaf_why = "a value wider than an int", 0;
+        switch (op) {
+        case I_FRAME:
+            if (insn->rec->op != GL_gen_local && !frame_of_value(insn))
+                return leaf_why = "a frame not of scalars", 0;
+            continue;
+        case I_BR: case I_JMP: case I_SET: case I_CONV: case I_STEP:
+        case GL_vdrop: case GL_gen_stmt_end: case GL_gen_value_end:
+        case GL_gen_return:
+        case GL_vneg: case GL_vnot: case GL_vtruth: case GL_vconvert:
+        case GL_vcast: case GL_vpush_bss: case GL_vpush_const:
+        case GL_vpush_global_addr:
+            continue;
+        case GL_gen_call:
+            if (!leaf_call_ok(insn))
+                return 0;
+            continue;
+        case GL_vmember:
+            if (insn->rec->top.bits || insn->res < 0
+                || !type_pointer(vals[insn->res].type))
+                return leaf_why = "a member not reached by its address", 0;
+            continue;
+        case GL_vderef: case GL_vstore_indirect:
+            /* What is read or written is what the pointer points at, which
+             * a short is not in the code here; nor a bit-field. */
+            if (!type_pointer(insn->in[0].attr.type)
+                || !leaf_type(type_deref(insn->in[0].attr.type))
+                || insn->rec->top.bits || insn->in[0].attr.bits)
+                return leaf_why = "a read or write not of a scalar", 0;
+            continue;
+        case GL_vapply:
+            arith = (int) insn->rec->arg[0];
+            if (insn->rec->arg[1])
+                return leaf_why = "an operator on bytes", 0;
+            if (!leaf_operator(insn, arith))
+                return 0;
+            continue;
+        }
+        return leaf_why = gl_names[op < GL_COUNT ? op : 0] ? gl_names[op < GL_COUNT ? op : 0]
+                                                           : "an instruction", 0;
+    }
+
+    return 1;
+}
+
+/* The values left on the stack for the next instruction: how many, and
+ * whether the top is in HL still. The rest are on the machine stack. */
+static int leaf_depth, leaf_top_in_hl;
+
+/* HL free for the instruction at `at`: a value left there that this one
+ * does not read goes to the machine stack. */
+static void leaf_free_hl(const Ins *insn)
+{
+    int operand, reads_top = 0;
+
+    for (operand = 0; operand != insn->nin; operand++)
+        if (insn->in[operand].val >= 0 && vals[insn->in[operand].val].fwd)
+            reads_top = 1;
+    if (leaf_top_in_hl && !reads_top) {
+        push_rr(R_HL);
+        leaf_top_in_hl = 0;
+    }
+}
+
+/* An operand, not one left on the stack, into `reg`, HL or DE. */
+static void leaf_load(const Ent *ent, int reg)
+{
+    int val = ent->val;
+    Type type;
+
+    if (val == S_CONST || val == UNDEF) {
+        int number = val == UNDEF ? 0 : ent->attr.kind == VAL_WIDE
+                     ? (int) (uint32_t) ent->wide : ent->attr.val;
+
+        if (val != UNDEF && ent->attr.kind == VAL_ADDR)
+            out_reloc(out_here() + 1);
+        else if (val != UNDEF && ent->attr.kind == VAL_BSS)
+            gen_bss_fixup(out_here() + 1);
+        ld_rr_imm(reg, val == UNDEF ? 0 : ent->attr.kind == VAL_ADDR
+                               ? moved_at(number) : number);
+        return;
+    }
+    type = vals[val].type;
+    if (vals[val].reg == R_BC) {
+        push_rr(R_BC);
+        pop_rr(reg);
+    } else if (vals[val].reg == HOME_SLOT && iy_web >= 0
+               && vals[val].slot == fixed_slot[iy_web]) {
+        lea_rr_iy(reg, 0);
+    } else if (type_size(type) == ACC_INT_SIZE) {
+        ld_rr_ix(reg, vals[val].slot);
+    } else {
+        load_narrow_into(reg, vals[val].slot, type);
+    }
+}
+
+/* The top of the stack into HL, where it is not. */
+static void leaf_top_to_hl(void)
+{
+    if (!leaf_top_in_hl) {
+        pop_rr(R_HL);
+        leaf_top_in_hl = 1;
+    }
+}
+
+/* One operand into HL -- the stack's top, or loaded. */
+static void leaf_operand_hl(const Ins *insn, int operand)
+{
+    const Ent *ent = &insn->in[operand];
+
+    if (ent->val >= 0 && vals[ent->val].fwd) {
+        leaf_top_to_hl();
+        leaf_depth--;
+        leaf_top_in_hl = 0;
+    } else {
+        leaf_load(ent, R_HL);
+    }
+}
+
+/* A binary operator's two operands: the left into HL, the right into DE
+ * -- or, with `bc_too`, left in BC where it lives, for an instruction with
+ * a form for BC. Answers the right's register. */
+static int leaf_operands_in(const Ins *insn, int bc_too)
+{
+    const Ent *left = &insn->in[0], *right = &insn->in[1];
+    int lfwd = left->val >= 0 && vals[left->val].fwd;
+    int rfwd = right->val >= 0 && vals[right->val].fwd;
+
+    if (lfwd && rfwd) {
+        leaf_top_to_hl();
+        ex_de_hl();                     /* the right, on top */
+        pop_rr(R_HL);                   /* the left, under it */
+        leaf_depth -= 2;
+    } else if (rfwd) {
+        leaf_top_to_hl();
+        ex_de_hl();
+        leaf_depth--;
+        leaf_load(left, R_HL);
+    } else if (lfwd) {
+        leaf_top_to_hl();
+        leaf_depth--;
+        if (bc_too && right->val >= 0 && vals[right->val].reg == R_BC) {
+            leaf_top_in_hl = 0;
+            return R_BC;
+        }
+        leaf_load(right, R_DE);
+    } else {
+        leaf_load(left, R_HL);
+        if (bc_too && right->val >= 0 && vals[right->val].reg == R_BC)
+            return R_BC;
+        leaf_load(right, R_DE);
+    }
+    leaf_top_in_hl = 0;
+
+    return R_DE;
+}
+
+
+/* The value `val`, made in HL, to where it lives -- or left on the stack. */
+static void leaf_result(int val)
+{
+    /* Held as what made it -- but not a value made in more than one
+     * place, the answer of ?: or a phi, which each makes differently. */
+    if (val >= 0 && leaf_holds)
+        leaf_holds[val] = def_at[val] >= 0 ? leaf_hl_type : TY_VOID;
+    leaf_hl_type = TY_VOID;
+    if (val < 0 || !vals[val].used)
+        return;
+    if (vals[val].fwd) {
+        leaf_depth++;
+        leaf_top_in_hl = 1;
+        return;
+    }
+    if (vals[val].reg == R_BC) {
+        push_rr(R_HL);
+        pop_rr(R_BC);
+    } else if (iy_web >= 0 && vals[val].slot == fixed_slot[iy_web]) {
+        push_rr(R_HL);
+        out_byte2(0xfd, 0xe1);          /* pop iy */
+    } else if (type_size(vals[val].type) == ACC_INT_SIZE) {
+        ld_ix_rr(vals[val].slot, R_HL);
+    } else {
+        store_narrow(vals[val].slot, vals[val].type);
+    }
+}
+
+/* Whether a value held as `from` is in `to`'s range already, so that
+ * narrowing it to `to` would change nothing: the same type, or an
+ * unsigned one narrower, or a signed one no wider going to signed. */
+static int leaf_fits(Type from, Type to)
+{
+    if (from == to || type_size(to) == ACC_INT_SIZE)
+        return 1;
+    if (type_size(from) < type_size(to) && type_unsigned(from)
+        && !type_pointer(from))
+        return 1;
+
+    return type_size(from) <= type_size(to) && !type_unsigned(from)
+           && !type_unsigned(to);
+}
+
+/* The type an operand is held as in a register: what it was made as, or a
+ * constant's range. */
+static Type leaf_held(const Ent *ent)
+{
+    int number;
+
+    if (leaf_const(ent, &number))
+        return number >= 0 && number <= 0xff ? TY_UCHAR
+               : number >= -128 && number <= 127 ? TY_CHAR : TY_INT;
+    if (ent->val >= 0 && leaf_holds && leaf_holds[ent->val] != TY_VOID)
+        return leaf_holds[ent->val];
+
+    return ent->val >= 0 ? vals[ent->val].type : ent->attr.type;
+}
+
+/* HL made the narrow type `type` from what is in L: its byte widened. */
+static void leaf_narrow(Type type)
+{
+    if (type_size(type) != 1)
+        return;
+    leaf_hl_type = type;
+    ld_a_l();
+    if (type_unsigned(type)) {
+        or_a_a();
+        sbc_hl_hl();
+    } else {
+        out_byte2(0xcb, 0x05);          /* rlc l: the sign into carry */
+        sbc_hl_hl();
+    }
+    ld_l_a();
+}
+
+/* A byte read from (HL) -- or from `(iy+d)` with `iy` -- into HL, widened
+ * as `type` wants; or the int there. */
+static void leaf_read(Type type, int iy, int disp)
+{
+    leaf_hl_type = type;
+    if (type_size(type) == ACC_INT_SIZE) {
+        if (iy)
+            out_byte3(0xfd, 0x27, disp);        /* ld hl, (iy+d) */
+        else
+            ld_hl_ind_hl();
+        return;
+    }
+    if (iy)
+        out_byte3(0xfd, 0x7e, disp);            /* ld a, (iy+d) */
+    else
+        ld_a_hl();
+    if (type_unsigned(type)) {
+        or_a_a();
+        sbc_hl_hl();
+    } else {
+        ld_l_a();
+        out_byte2(0xcb, 0x05);                  /* rlc l */
+        sbc_hl_hl();
+    }
+    ld_l_a();
+}
+
+/* Whether the value is the one in IY. */
+static int leaf_in_iy(const Ent *ent)
+{
+    return ent->val >= 0 && !vals[ent->val].fwd && vals[ent->val].reg == HOME_SLOT
+           && iy_web >= 0 && vals[ent->val].slot == fixed_slot[iy_web];
+}
+
+/* The branch that the truth value `val`, made at `at`, reaches through
+ * nothing but conversions and truth tests of it -- `(x & 4) != 0` made a
+ * _Bool, and `!` of that -- or -1. `*cc` is turned about by each `!`: a
+ * conversion of 0 or 1 to any type the code here makes is 0 or 1 still. */
+static int leaf_truth_branch(int at, int val, int *cc)
+{
+    int next;
+
+    for (next = at + 1; next < ninsns && val >= 0 && vals[val].fwd; next++) {
+        const Ins *insn = &insns[next];
+
+        if (insn->op == GL_vdrop && insn->nin == 0)
+            continue;
+        if (insn->nin != 1 || insn->in[0].val != val)
+            return -1;
+        if (insn->op == I_BR)
+            return insn->target >= 0 ? next : -1;
+        if (insn->op == GL_vtruth && (int) insn->rec->arg[0] == TK_EQ)
+            *cc ^= 0x08;
+        else if (insn->op != GL_vtruth && insn->op != GL_vconvert)
+            return -1;
+        val = insn->res;
+    }
+
+    return -1;
+}
+
+/* The jump for the branch that the truth value made at `at` reaches, on
+ * flags `cc` true, made with it and the steps between left out; 0 if
+ * there is none, and the value is to be made. */
+static int leaf_branch(int cc, int blk, int at)
+{
+    int next = leaf_truth_branch(at, insns[at].res, &cc);
+
+    if (next < 0)
+        return 0;
+    branch_to(cc, &insns[next], blk);
+    skip_branch = next;
+    fused_from = at;
+
+    return 1;
+}
+
+/* An AND with a byte, made in A, and compared with 0 by what follows: the
+ * branch that comparison reaches taken on the AND's own flags, and the
+ * comparison and what is between left out. */
+static int leaf_and_branch(const Ins *insn, int blk, int at)
+{
+    int next = at + 1, op, zero;
+    const Ins *test;
+
+    while (next < ninsns && insns[next].op == GL_vdrop && insns[next].nin == 0)
+        next++;
+    if (next == ninsns || insn->res < 0 || !vals[insn->res].fwd)
+        return 0;
+    test = &insns[next];
+    op = test->op == GL_vapply ? (int) test->rec->arg[0] : 0;
+    if ((op != TK_EQ && op != TK_NE) || test->nin != 2
+        || test->in[0].val != insn->res || !leaf_const(&test->in[1], &zero)
+        || zero != 0 || !leaf_branch(op == TK_EQ ? JP_Z : JP_NZ, blk, next))
+        return 0;
+    fused_from = at;
+
+    return 1;
+}
+
+/* A comparison: flags and the condition that says it is true, from HL less
+ * DE, both moved by 0x800000 when signed. */
+/* A value's byte into A, where it has one: a narrow value in BC or a slot,
+ * or in HL. Answers whether it could. */
+static int leaf_byte_to_a(const Ent *ent)
+{
+    int val = ent->val;
+
+    if (val < 0)
+        return 0;
+    if (vals[val].fwd) {
+        leaf_top_to_hl();
+        leaf_depth--;
+        leaf_top_in_hl = 0;
+        ld_a_l();
+    } else if (vals[val].reg == R_BC) {
+        out_byte(0x79);                         /* ld a, c */
+    } else if (vals[val].reg == HOME_SLOT && !(iy_web >= 0
+               && vals[val].slot == fixed_slot[iy_web])) {
+        ld_a_ix(vals[val].slot);
+    } else {
+        return 0;
+    }
+
+    return 1;
+}
+
+static int leaf_compare(const Ins *insn, int op)
+{
+    int number;
+
+    /* A byte against a constant in its range: in A, a cp -- a signed char
+     * moved by 0x80 first, which makes the order an unsigned one. */
+    if (insn->in[0].val >= 0 && leaf_const(&insn->in[1], &number)
+        && type_size(leaf_held(&insn->in[0])) == 1
+        && !(insn->in[0].val >= 0 && !vals[insn->in[0].val].fwd
+             && iy_web >= 0 && vals[insn->in[0].val].slot == fixed_slot[iy_web]
+             && vals[insn->in[0].val].reg == HOME_SLOT)) {
+        Type held = leaf_held(&insn->in[0]);
+        int is_signed = !type_unsigned(held), low = is_signed ? -128 : 0;
+        int high = is_signed ? 127 : 255, bias = is_signed ? 0x80 : 0;
+        int want = op == TK_LE || op == TK_GT ? number + 1 : number;
+
+        if (number >= low && number <= high && want <= high
+            && leaf_byte_to_a(&insn->in[0])) {
+            if (bias)
+                out_byte2(0xee, bias);          /* xor n */
+            out_byte2(0xfe, (want + bias) & 0xff);     /* cp n */
+
+            return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
+                   ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
+        }
+    }
+
+    /* Against 0 for equality: the byte in A where the value is one, the
+     * pair tested where it is not -- add hl, bc and back, BC as it was. */
+    if ((op == TK_EQ || op == TK_NE) && leaf_const(&insn->in[1], &number)
+        && number == 0) {
+        const Ent *ent = &insn->in[0];
+
+        int byte = leaf_width(ent) == 1 || leaf_held(ent) == TY_UCHAR;
+
+        if (ent->val >= 0 && !vals[ent->val].fwd && vals[ent->val].reg == R_BC
+            && byte) {
+            out_byte(0x79);                     /* ld a, c */
+        } else {
+            leaf_operand_hl(insn, 0);
+            if (byte) {
+                ld_a_l();
+            } else {
+                add_hl_rr(R_BC);
+                or_a_a();
+                sbc_hl_rr(R_BC);
+                return op == TK_EQ ? JP_Z : JP_NZ;
+            }
+        }
+        or_a_a();
+
+        return op == TK_EQ ? JP_Z : JP_NZ;
+    }
+
+    int is_signed = !type_unsigned(insn->in[0].attr.type)
+                    && !type_unsigned(insn->in[1].attr.type)
+                    && op != TK_EQ && op != TK_NE;
+    int right;
+
+    /* Unsigned, with the left side in BC and the right not: the right into
+     * HL and BC taken from it where it is, the comparison turned about. */
+    if (!is_signed && insn->in[0].val >= 0 && !vals[insn->in[0].val].fwd
+        && vals[insn->in[0].val].reg == R_BC
+        && !(insn->in[1].val >= 0 && vals[insn->in[1].val].reg == R_BC)) {
+        leaf_operand_hl(insn, 1);
+        leaf_top_in_hl = 0;
+        op = mirror(op);
+        if (op == TK_LE || op == TK_GT)
+            out_byte(0x37);                     /* scf: HL - BC - 1 */
+        else
+            or_a_a();
+        sbc_hl_rr(R_BC);
+
+        return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
+               ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
+    }
+    if (is_signed && leaf_const(&insn->in[1], &number)) {
+        leaf_operand_hl(insn, 0);
+        ld_rr_imm(R_DE, 0x800000);
+        add_hl_rr(R_DE);
+        ld_rr_imm(R_DE, (number + 0x800000) & 0xffffff);
+        if (op == TK_LE || op == TK_GT)
+            out_byte(0x37);
+        else
+            or_a_a();
+        sbc_hl_rr(R_DE);
+
+        return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
+               ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
+    }
+    right = leaf_operands_in(insn, !is_signed);
+
+    if (is_signed) {
+        push_rr(R_BC);
+        ld_rr_imm(R_BC, 0x800000);
+        add_hl_rr(R_BC);
+        ex_de_hl();
+        add_hl_rr(R_BC);
+        ex_de_hl();
+        pop_rr(R_BC);
+    }
+    if (op == TK_LE || op == TK_GT)
+        out_byte(0x37);                         /* scf: HL - DE - 1 */
+    else
+        or_a_a();
+    sbc_hl_rr(right);
+
+    return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT ? JP_NC
+           : op == TK_EQ ? JP_Z : JP_NZ;
+}
+
+/* A 0 or 1 into HL from flags `cc` true. */
+static void leaf_truth_value(int cc)
+{
+    ld_rr_imm(R_HL, 0);
+    out_byte2(0x20 + ((cc ^ 0x08) & 0x18), 1);  /* jr !cc, past */
+    inc_hl();
+}
+
+static void leaf_insn(const Ins *insn, int blk, int at)
+{
+    int op = insn->op, number, cc;
+
+    /* Between a comparison and the branch it was made with: nothing. */
+    if (at > fused_from && at < skip_branch)
+        return;
+
+    /* A step in place, where the value and the new one share BC or IY:
+     * HL is not touched. An unsigned char steps its byte alone, and wraps
+     * as its type does. */
+    if (op == I_STEP && insn->in[0].val >= 0 && insn->kills & 1
+        && ((vals[insn->res].reg == R_BC && vals[insn->in[0].val].reg == R_BC)
+            || (leaf_in_iy(&insn->in[0])
+                && leaf_in_iy(&(Ent) { insn->res, { 0 }, 0 })))
+        && (insn->local_type == TY_UCHAR
+            || (type_size(insn->local_type) == ACC_INT_SIZE
+                && (!type_pointer(insn->local_type)
+                    || type_step(insn->local_type, insn->in[0].attr.ext) == 1)))
+        && !(insn->local_type == TY_UCHAR && leaf_in_iy(&insn->in[0]))) {
+        int count = insn->step_op == TK_MINUS ? -1 : 1;
+
+        if (insn->local_type == TY_UCHAR)
+            out_byte(count < 0 ? 0x0d : 0x0c);          /* dec c, inc c */
+        else
+            step_reg(leaf_in_iy(&insn->in[0]) ? -1 : R_BC, count);
+        return;
+    }
+
+    /* HL made free for what uses it: not a frame call, a statement's end,
+     * a constant made again where read, or a drop of nothing. */
+    if (!(op == I_BR && at == skip_branch) && op != I_FRAME
+        && op != GL_gen_stmt_end && op != GL_gen_value_end
+        && op != GL_vpush_const && op != GL_vpush_bss
+        && !(op == GL_vdrop && insn->nin == 0))
+        leaf_free_hl(insn);
+    switch (op) {
+    case I_FRAME: case GL_vdrop: case GL_gen_stmt_end: case GL_gen_value_end:
+        if (op == GL_vdrop) {
+            int operand;
+
+            for (operand = 0; operand != insn->nin; operand++)
+                if (insn->in[operand].val >= 0 && vals[insn->in[operand].val].fwd) {
+                    if (!leaf_top_in_hl)
+                        pop_rr(R_HL);
+                    leaf_top_in_hl = 0;
+                    leaf_depth--;
+                }
+        }
+        return;
+    case GL_vpush_const: case GL_vpush_bss:
+        return;                         /* made again where read */
+    case GL_vpush_global_addr:
+        ld_rr_imm(R_HL, 0);
+        fixup_add((int) insn->rec->arg[0], out_here() - ACC_INT_SIZE);
+        leaf_result(insn->res);
+        return;
+    case I_SET: case I_CONV: {
+        Type to = op == I_SET ? vals[insn->target].type : insn->local_type;
+
+        leaf_operand_hl(insn, 0);
+        if (!leaf_fits(leaf_held(&insn->in[0]), to))
+            leaf_narrow(to);
+        else
+            leaf_hl_type = leaf_held(&insn->in[0]);
+        leaf_result(op == I_SET ? insn->target : insn->res);
+        return;
+    }
+    case GL_vconvert: case GL_vcast:
+        leaf_operand_hl(insn, 0);
+        if (!leaf_fits(leaf_held(&insn->in[0]), (Type) insn->rec->arg[0]))
+            leaf_narrow((Type) insn->rec->arg[0]);
+        else
+            leaf_hl_type = leaf_held(&insn->in[0]);
+        leaf_result(insn->res);
+        return;
+    case I_STEP:
+        if (insn->in[0].val >= 0 && leaf_in_iy(&insn->in[0]) && insn->kills & 1
+            && leaf_in_iy(&(Ent) { insn->res, { 0 }, 0 })
+            && type_size(insn->local_type) == ACC_INT_SIZE
+            && (!type_pointer(insn->local_type)
+                || type_step(insn->local_type, insn->in[0].attr.ext) == 1)) {
+            step_reg(-1, insn->step_op == TK_MINUS ? -1 : 1);   /* inc iy */
+            return;
+        }
+        if (vals[insn->res].reg == R_BC && insn->in[0].val >= 0
+            && vals[insn->in[0].val].reg == R_BC && insn->kills & 1
+            && type_size(insn->local_type) == ACC_INT_SIZE
+            && !type_pointer(insn->local_type)) {
+            step_reg(R_BC, insn->step_op == TK_MINUS ? -1 : 1);
+            return;
+        }
+        leaf_operand_hl(insn, 0);
+        number = type_pointer(insn->local_type)
+                 ? type_step(insn->local_type, insn->in[0].attr.ext) : 1;
+        if (number > 4)
+            ld_rr_imm(R_DE, insn->step_op == TK_MINUS ? -number : number), add_hl_rr(R_DE);
+        else
+            step_reg(R_HL, insn->step_op == TK_MINUS ? -number : number);
+        leaf_narrow(insn->local_type);
+        leaf_result(insn->res);
+        return;
+    case GL_vneg: case GL_vnot:
+        leaf_operand_hl(insn, 0);
+        ex_de_hl();
+        if (op == GL_vneg)
+            or_a_a();
+        else
+            out_byte(0x37);             /* scf: -1 - x is ~x */
+        sbc_hl_hl();
+        or_a_a();
+        sbc_hl_rr(R_DE);
+        leaf_result(insn->res);
+        return;
+    case GL_vtruth:
+        leaf_operand_hl(insn, 0);
+        add_hl_rr(R_BC);                /* Z when HL is 0, BC as it was */
+        or_a_a();
+        sbc_hl_rr(R_BC);
+        cc = (int) insn->rec->arg[0] == TK_EQ ? JP_Z : JP_NZ;
+        if (leaf_branch(cc, blk, at))
+            return;
+        leaf_truth_value(cc);
+        leaf_result(insn->res);
+        return;
+    case GL_vderef: {
+        /* What is read is what the pointer points at: the value the first
+         * pass had after it is already widened to an int. */
+        Type read = type_deref(insn->in[0].attr.type);
+
+        if (leaf_in_iy(&insn->in[0])) {
+            leaf_read(read, 1, 0);
+        } else {
+            leaf_operand_hl(insn, 0);
+            leaf_read(read, 0, 0);
+        }
+        leaf_result(insn->res);
+        return;
+    }
+    case GL_vmember:
+        /* The member's address: the pointer and its offset. The read or
+         * write is the vderef or vstore_indirect after it. */
+        number = (int) insn->rec->arg[0];
+        if (leaf_in_iy(&insn->in[0]) && disp_fits(number)) {
+            lea_rr_iy(R_HL, number);
+        } else {
+            leaf_operand_hl(insn, 0);
+            if (number > 0 && number <= 4)
+                step_reg(R_HL, number);
+            else if (number) {
+                ld_rr_imm(R_DE, number);
+                add_hl_rr(R_DE);
+            }
+        }
+        leaf_result(insn->res);
+        return;
+    case GL_vstore_indirect: {
+        Type to = type_deref(insn->in[0].attr.type);
+
+        if (leaf_const(&insn->in[1], &number) && type_size(to) == 1) {
+            leaf_operand_hl(insn, 0);
+            out_byte2(0x36, number & 0xff);     /* ld (hl), n */
+            if (insn->res >= 0 && vals[insn->res].used) {
+                ld_rr_imm(R_HL, number);
+                leaf_result(insn->res);
+            }
+            return;
+        }
+        number = leaf_operands_in(insn, 1);
+        if (type_size(to) == 1)
+            out_byte(number == R_BC ? 0x71 : 0x73);     /* ld (hl), c / e */
+        else if (number == R_BC)
+            out_byte2(0xed, 0x0f);                      /* ld (hl), bc */
+        else
+            ld_ind_hl_de();
+        if (insn->res >= 0 && vals[insn->res].used) {
+            if (number == R_BC) {
+                push_rr(R_BC);
+                pop_rr(R_DE);
+            }
+            ex_de_hl();
+            leaf_narrow(to);
+            leaf_result(insn->res);
+        }
+        return;
+    }
+    case GL_vapply:
+        number = (int) insn->rec->arg[0];
+        switch (number) {
+        case TK_LT: case TK_GT: case TK_LE: case TK_GE: case TK_EQ: case TK_NE:
+            cc = leaf_compare(insn, number);
+            if (leaf_branch(cc, blk, at))
+                return;
+            leaf_truth_value(cc);
+            leaf_result(insn->res);
+            return;
+        case TK_PLUS: case TK_MINUS: {
+            Type ltype = insn->in[0].attr.type, rtype = insn->in[1].attr.type;
+            int step = 1, scaled = -1, right;
+
+            if (type_pointer(ltype) && type_pointer(rtype)) {
+                if (type_step(ltype, insn->in[0].attr.ext) != 1)
+                    fail = "a difference of pointers to wider things";
+            } else if (type_pointer(ltype)) {
+                step = type_step(ltype, insn->in[0].attr.ext), scaled = 1;
+            } else if (type_pointer(rtype)) {
+                step = type_step(rtype, insn->in[1].attr.ext), scaled = 0;
+            }
+            if (step < 1 || step > 4) {
+                fail = "a step the code here does not make";
+                return;
+            }
+            right = leaf_operands_in(insn, step == 1);
+            if (scaled == 1 && step != 1)
+                ex_de_hl();             /* the int, on the right, into HL */
+            if (step == 3) {
+                push_rr(R_DE);          /* the pointer */
+                push_rr(R_HL);
+                add_hl_hl();
+                pop_rr(R_DE);
+                add_hl_rr(R_DE);        /* the int three times */
+                pop_rr(R_DE);
+            }
+            if (step == 2 || step == 4)
+                add_hl_hl();
+            if (step == 4)
+                add_hl_hl();
+            if (scaled == 1 && step != 1)
+                ex_de_hl();             /* and the pointer back */
+            if (number == TK_PLUS) {
+                add_hl_rr(right);
+            } else {
+                or_a_a();
+                sbc_hl_rr(right);
+            }
+            leaf_result(insn->res);
+            return;
+        }
+        case TK_SHL:
+            if (!leaf_const(&insn->in[1], &number) || number < 0 || number > 8) {
+                fail = "a shift by a variable";
+                return;
+            }
+            leaf_operand_hl(insn, 0);
+            while (number--)
+                add_hl_hl();
+            leaf_result(insn->res);
+            return;
+        case TK_AMP: case TK_PIPE: case TK_CARET: {
+            int byte_op = number == TK_AMP ? 0xa3 : number == TK_PIPE ? 0xb3 : 0xab;
+
+            if (number != TK_AMP && (leaf_byte_const(&insn->in[0])
+                                     || leaf_byte_const(&insn->in[1]))) {
+                int which = leaf_byte_const(&insn->in[1]) ? 1 : 0, byte;
+
+                (void) leaf_const(&insn->in[which], &byte);
+                leaf_operand_hl(insn, 1 - which);
+                ld_a_l();
+                out_byte2(number == TK_PIPE ? 0xf6 : 0xee, byte);   /* or n, xor n */
+                ld_l_a();
+                leaf_result(insn->res);
+                return;
+            }
+            if (number == TK_AMP && (leaf_byte_const(&insn->in[0])
+                                     || leaf_byte_const(&insn->in[1]))) {
+                int which = leaf_byte_const(&insn->in[1]) ? 1 : 0, byte;
+
+                (void) leaf_const(&insn->in[which], &byte);
+                if (!leaf_byte_to_a(&insn->in[1 - which])) {
+                    leaf_operand_hl(insn, 1 - which);
+                    ld_a_l();
+                }
+                out_byte2(0xe6, byte);                  /* and n */
+                if (leaf_and_branch(insn, blk, at))
+                    return;
+                sbc_hl_hl();            /* and leaves carry clear */
+                ld_l_a();
+                leaf_hl_type = TY_UCHAR;
+                leaf_result(insn->res);
+                return;
+            }
+            if (leaf_operands_in(insn, 1) == R_BC)
+                byte_op -= 2;           /* and c, or c, xor c */
+            ld_a_l();
+            out_byte(byte_op);          /* and e, or e, xor e */
+            if (number == TK_AMP)
+                sbc_hl_hl();            /* and leaves carry clear */
+            ld_l_a();
+            leaf_result(insn->res);
+            return;
+        }
+        }
+        fail = "internal: an operator leaf_ok let through";
+        return;
+    case GL_gen_call: {
+        const Sym *callee = sym_at((int) insn->rec->arg[0]);
+        int fn = (int) insn->rec->arg[0], first = (int) insn->rec->arg[2];
+        int nparams = (int) insn->rec->arg[3], arg;
+
+        /* The arguments pushed last first, each as its parameter's type,
+         * so the first is at the lowest address -- as agondev passes them.
+         * Only the last may be left on the stack, in HL. */
+        for (arg = insn->nin - 1; arg >= 0; arg--) {
+            const Ent *ent = &insn->in[arg];
+
+            if (ent->val >= 0 && vals[ent->val].fwd) {
+                leaf_top_to_hl();
+                leaf_depth--;
+                leaf_top_in_hl = 0;
+            } else {
+                leaf_load(ent, R_HL);
+            }
+            if (arg < nparams && !leaf_fits(leaf_held(ent), sym_param_type(first, arg)))
+                leaf_narrow(sym_param_type(first, arg));
+            push_rr(R_HL);
+        }
+        if (sym_flags(fn) & SYMF_DEFINED) {
+            want(fn);
+            out_reloc(out_here() + 1);
+            out_opcode24(0xcd, callee->val);            /* call nn */
+        } else {
+            out_opcode24(0xcd, 0);
+            fixup_add(fn, out_here() - ACC_INT_SIZE);
+        }
+        for (arg = 0; arg != insn->nin; arg++)
+            pop_rr(R_DE);
+
+        /* A byte's answer is in A, the rest in HL. */
+        if (callee->type != TY_VOID && type_size(callee->type) == 1) {
+            if (type_unsigned(callee->type)) {
+                or_a_a();
+                sbc_hl_hl();
+            } else {
+                ld_l_a();
+                out_byte2(0xcb, 0x05);          /* rlc l */
+                sbc_hl_hl();
+            }
+            ld_l_a();
+        }
+        leaf_hl_type = callee->type == TY_BOOL ? TY_UCHAR : callee->type;
+        leaf_result(insn->res);
+        return;
+    }
+    case GL_gen_return:
+        /* A constant answer goes to gen_return as the constant, which
+         * knows it -- a return of one made before is a jump back to it --
+         * and makes a _Bool of it as it is; anything else in HL. */
+        if (insn->nin && insn->in[0].val == S_CONST) {
+            load_constant(&insn->in[0]);
+        } else if (insn->nin) {
+            leaf_operand_hl(insn, 0);
+            vpush(VAL_REG, insn->in[0].attr.type, R_HL);
+        }
+        if (leaf_depth)
+            fail = "internal: values left under a return";
+        call(insn);
+        return;
+    case I_JMP:
+        if (insn->target < 0)
+            return;
+        leaf_edge(blk, insn->target);
+        if (block_now[insn->target] >= 0)
+            gen_jump_to(block_now[insn->target]);
+        else if (!falls_to(blk, insn->target) || block_last[blk] != at)
+            jump_forward(gen_jump(), insn->target);
+        return;
+    case I_BR:
+        if (at == skip_branch)
+            return;
+        if (insn->target < 0) {
+            if (insn->nin)
+                leaf_operand_hl(insn, 0);
+            return;
+        }
+        leaf_operand_hl(insn, 0);
+        add_hl_rr(R_BC);
+        or_a_a();
+        sbc_hl_rr(R_BC);
+        branch_to(JP_NZ, insn, blk);
+        return;
+    }
+    fail = "internal: an instruction leaf_ok let through";
+}
+
+/* Whether `blk`'s end falls into `target`: it is the next block, or only
+ * blocks nothing reaches lie between, which are not made. */
+static int falls_to(int blk, int target)
+{
+    int between;
+
+    if (target <= blk)
+        return 0;
+    for (between = blk + 1; between != target; between++)
+        if (rpo_num[between] >= 0)
+            return 0;
+
+    return 1;
+}
+
+/* The copies an edge makes into its target's phis: every value the edge
+ * brings pushed first, then each popped to its phi's home -- the last
+ * first -- so that none is written before all are read. */
+static void leaf_edge(int from, int to)
+{
+    int dests[MAX_LOCALS * 4], nmoves = 0, pred, phi;
+
+    for (pred = 0; pred != preds[to].count; pred++) {
+        if (preds[to].at[pred] != from)
+            continue;
+        for (phi = 0; phi != nphis; phi++) {
+            const Phi *join = &phis[phi];
+            int source;
+            Ent ent;
+
+            if (!join->live || join->block != to)
+                continue;
+            source = join->in[pred];
+            if (source < 0 || source == join->val || !vals[join->val].used
+                || (vals[source].reg == vals[join->val].reg
+                    && (vals[source].reg != HOME_SLOT
+                        || vals[source].slot == vals[join->val].slot))
+                || nmoves == (int) (sizeof dests / sizeof dests[0]))
+                continue;
+            memset(&ent, 0, sizeof ent);
+            ent.val = source;
+            ent.attr.type = vals[source].type;
+            if (vals[source].reg == R_BC) {
+                push_rr(R_BC);
+            } else {
+                leaf_load(&ent, R_HL);
+                push_rr(R_HL);
+            }
+            dests[nmoves++] = join->val;
+        }
+        break;
+    }
+    while (nmoves--) {
+        int dest = dests[nmoves];
+
+        if (vals[dest].reg == R_BC) {
+            pop_rr(R_BC);
+        } else {
+            pop_rr(R_HL);
+            vals[dest].fwd = 0;
+            leaf_result(dest);
+        }
+    }
+}
+
+static void emit_leaf(void)
+{
+    int at, blk, local, *block_start;
+
+    block_now = malloc((size_t) nblocks * sizeof *block_now);
+    block_start = malloc(((size_t) nblocks + 1) * sizeof *block_start);
+    if (!block_now || !block_start)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != nblocks; at++)
+        block_now[at] = block_start[at] = -1;
+    npending = 0;
+    nmoved = 0;
+    ntrampolines = 0;
+    skip_branch = fused_from = -1;
+    leaf_depth = 0;
+    leaf_top_in_hl = 0;
+    leaf_hl_type = TY_VOID;
+    leaf_holds = realloc(leaf_holds, ((size_t) nvals + 1) * sizeof *leaf_holds);
+    if (!leaf_holds)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != nvals; at++)
+        leaf_holds[at] = TY_VOID;
+
+    blocks_from = out_here();
+    call(&insns[0]);
+    nlocal_moves = 0;
+    for (at = 1; at != ninsns; at++)
+        if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
+            frame_again(&insns[at]);
+    give_slots();
+    inline_slots();
+
+    /* Each parameter into its first value's home, if not its own slot. */
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].ok && locals[local].is_param) {
+            int val = locals[local].entry_val;
+            Type type = locals[local].type;
+
+            if (!vals[val].used || (vals[val].reg == HOME_SLOT
+                                    && vals[val].slot == locals[local].offset))
+                continue;
+            if (vals[val].reg == R_BC) {
+                if (type_size(type) == ACC_INT_SIZE) {
+                    ld_rr_ix(R_BC, locals[local].offset);
+                } else if (type_unsigned(type)) {
+                    load_narrow_into(R_BC, locals[local].offset, type);
+                } else {
+                    load_narrow_into(R_HL, locals[local].offset, type);
+                    push_rr(R_HL);
+                    pop_rr(R_BC);
+                }
+                leaf_holds[val] = type;
+            } else {
+                if (type_size(type) == ACC_INT_SIZE)
+                    ld_rr_ix(R_HL, locals[local].offset);
+                else
+                    load_narrow_into(R_HL, locals[local].offset, type);
+                leaf_result(val);
+            }
+        }
+
+    for (blk = 0; blk != nblocks && !fail; blk++) {
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+        int falls = 1;
+
+        if (blk && rpo_num[blk] < 0)
+            continue;                   /* nothing reaches it */
+        if (blk)
+            emit_block_start(blk);
+        else
+            block_now[0] = out_here();
+        block_start[blk] = block_now[blk];
+        for (at = blocks[blk].first; at != end && !fail; at++) {
+            if (at == 0)
+                continue;
+            leaf_insn(&insns[at], blk, at);
+            if (at == end - 1 && (insns[at].op == I_JMP
+                                  || insns[at].op == GL_gen_return))
+                falls = 0;
+        }
+        if (fail)
+            break;
+        if (leaf_depth)
+            fail = "internal: values left on the stack at a block's end";
+        if (falls && blk + 1 < nblocks)
+            leaf_edge(blk, blk + 1);
+        if (!falls)
+            emit_trampolines();
+    }
+    if (ntrampolines && !fail) {
+        int over = gen_jump();
+
+        emit_trampolines();
+        gen_label(over);
+    }
+    if (!fail)
+        costs(block_start, out_here());
+    free(block_start);
+    free(block_now);
+    block_now = NULL;
+}
+
 static void emit_insn_regs(const Ins *insn, int blk, int at)
 {
     switch (insn->op) {
@@ -3984,7 +5241,6 @@ static void emit_insn_regs(const Ins *insn, int blk, int at)
 
 long ssa_cost_made, ssa_cost_first;
 
-static int blocks_from;         /* where the function made here begins */
 
 static long block_weight(int blk)
 {
@@ -4358,6 +5614,7 @@ int ssa_generate(const char **why)
     ninsns = nvals = nblocks = nholes = nheres = nstk = ninlined = nmerged = 0;
     fail = NULL;
     ssa_cost_made = ssa_cost_first = 0;
+    leaf_mode = 0;
     keep_records(gl_log, gl_n, keep);
 
     new_block(-1);
@@ -4388,6 +5645,8 @@ int ssa_generate(const char **why)
         if (regs_on()) {
             int val;
 
+            leaf_why = NULL;
+            leaf_mode = leaf_on() && leaf_ok();
             find_forwarded();
             for (val = 0; val != nvals && !fail; val++)
                 if (type_is_struct(vals[val].type) && !vals[val].fwd
@@ -4410,7 +5669,14 @@ int ssa_generate(const char **why)
         forget();
         return 0;
     }
-    if (regs_on())
+    if (leaf_mode && getenv("OPTACC_SSA_STATS"))
+        fprintf(stderr, "leaf %s\n", name_text(sym_at(gl_fn)->name));
+    else if (leaf_on() && regs_on() && getenv("OPTACC_SSA_STATS"))
+        fprintf(stderr, "not leaf %s: %s\n", name_text(sym_at(gl_fn)->name),
+                leaf_why ? leaf_why : "?");
+    if (leaf_mode)
+        emit_leaf();
+    else if (regs_on())
         emit_regs();
     else
         emit();

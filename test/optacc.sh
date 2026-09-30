@@ -250,5 +250,42 @@ frame='int f(int a) { int x = a + 1, y = x * 2, z = y - 3; return z; }'
 all "$OPT" "the frame without the locals made values"  21fdffff yes "$frame"
 emits "$OPT" "which the first pass's has"              21f7ffff yes "$frame"
 
+# With OPTACC_LEAF, a function that calls nothing and holds nothing wider
+# than an int is made by a backend of opt-acc's own, every instruction
+# selected in ssa.c. OPTACC_SSA_STATS says which: `leaf f`.
+# leafs <name> <yes|no> <source>
+leafs() {
+    local what=$1 want=$2 got=no
+
+    printf '%s\n' "$3" > "$tmp/c.c"
+    rm -f "$tmp/c.o"
+    OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_LEAF=1 \
+        OPTACC_PICK=0 OPTACC_SSA_STATS=1 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 \
+        | grep -q '^leaf f$' && got=yes
+    if [ "$got" = "$want" ]; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-50s leaf: want %s, got %s\n' "$what" "$want" "$got"
+        fail=$((fail + 1))
+    fi
+}
+leafs "a loop on bytes through a table, made here" yes "$byte"
+leafs "a function that calls, made here too"      yes \
+    'int g(int); int f(int a) { return g(a) + 1; }'
+leafs "one that calls memcpy, not"                 no \
+    'void *memcpy(void *, const void *, unsigned); void f(char *a, char *b) { memcpy(a, b, 4); }'
+OPTACC_LEAF=1 all "$OPT" "a char in BC compared in A"   79ee80fec1 yes \
+    'int f(char c) { return c >= 0x41 && c <= 0x5a; }'
+leafs "one that holds a long, not"                no \
+    'long f(long a) { return a + 1; }'
+OPTACC_LEAF=1 all "$OPT" "and its counter stepped as a byte"   0d18 yes "$byte"
+# A byte tested through a table, as zap's character classes are: the AND
+# made in A and branched on straight from its flags -- and 0x20, jr nz --
+# through the inlined _Bool's conversion and the `!` of it.
+OPTACC_LEAF=1 all "$OPT" "a byte's AND branched on from its flags"   e62020 yes \
+    'extern const unsigned char tab[256];
+__attribute__((always_inline)) static inline _Bool alpha(char c) { return (tab[(unsigned char) c] & 0x20) != 0; }
+int f(const char *p) { if (!alpha(*p)) return 5; return 3; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
