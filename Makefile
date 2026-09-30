@@ -230,6 +230,7 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/errors.sh
 	@ACC=$(BIN)/acc-asan test/run.sh
 	@test/optacc.sh
+	@test/optacc-zap.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/opt-acc-asan test/run.sh
 	@ACC=$(BIN)/opt-acc-asan test/floatrt.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/opt-acc-asan test/printf.sh || [ $$? -eq 77 ]

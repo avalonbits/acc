@@ -297,10 +297,34 @@ OPTACC_LEAF=1 all "$OPT" "an int written to a _Bool as its test"  3600280134 yes
     "$flag void f(struct s *p, int a) { p->b = a; }"
 OPTACC_LEAF=1 all "$OPT" "a comparison written as it is"         3600280134 no \
     "$flag void f(struct s *p, int a, int b) { p->b = a < b; }"
+# Locals that stay in memory, made here: an array, a local whose address
+# is taken, a struct.
+leafs "a local array, made here"                 yes \
+    'void g(char *); int f(int i) { char buf[8]; buf[i] = 1; g(buf); return buf[0]; }'
+leafs "a local whose address is taken, made here" yes \
+    'void g(int *); int f(void) { int n = 3; g(&n); return n + 1; }'
+leafs "a struct local, made here"                yes \
+    'struct s { int a, b; }; void g(struct s *); int f(void) { struct s x; x.a = 1; g(&x); return x.b; }'
+# AND, OR and XOR of ints, made here: by the helper where all three bytes
+# may be set, and a byte at a time where the code here knows two are
+# enough -- what each side was masked with.
+OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+OPTACC_PICK=0 wants "$OPT" "an OR of ints, by the helper"        acc_rt_or yes \
+    'int f(int x, int y) { return x | y; }'
+OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+OPTACC_PICK=0 wants "$OPT" "an OR of two bytes' worth, without it" acc_rt_or no \
+    'int f(int x, int y) { return (x & 0xff00) | (y & 0xff); }'
 # The pick keeps the first pass's code where what is made here is costlier
 # to run or bigger: x * x is cheaper here, by the estimate, and bigger.
 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
     ssa "cheaper but bigger, not kept" "ssa f the first pass's code is smaller" \
     'int f(int x) { return x * x; }'
+# Where the leaf backend's code loses the pick, the hybrid path's is made
+# and weighed too, before the first pass's is kept: a character class's
+# test is the hybrid path's.
+OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+    ssa "the leaf backend's lost, the hybrid path's made" \
+    "ssa f made, not by the leaf backend" \
+    'extern const unsigned char tab[256]; _Bool f(char c) { return (tab[(unsigned char) c] & 4) != 0; }'
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
