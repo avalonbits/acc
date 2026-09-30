@@ -278,7 +278,7 @@ OPTACC_LEAF=1 all "$OPT" "a char in BC compared in A"   79ee80fec1 yes \
     'int f(char c) { return c >= 0x41 && c <= 0x5a; }'
 leafs "one that holds a long, not"                no \
     'long f(long a) { return a + 1; }'
-OPTACC_LEAF=1 all "$OPT" "and its counter stepped as a byte"   0d18 yes "$byte"
+OPTACC_LEAF=1 all "$OPT" "and its counter stepped as a byte, p after it"   0dfd2318 yes "$byte"
 # A byte tested through a table, as zap's character classes are: the AND
 # made in A and branched on straight from its flags -- and 0x20, jr nz --
 # through the inlined _Bool's conversion and the `!` of it.
@@ -371,5 +371,24 @@ OPTACC_LEAF=1 all "$OPT" "and written, ld (nn), hl"            22010000 yes "$gl
 OPTACC_LEAF=1 all "$OPT" "a byte's, ld a, (nn)"                3a000000 yes "$global"
 OPTACC_LEAF=1 all "$OPT" "an extern's, the offset for the link"  2a040000 yes \
     'extern struct { unsigned char m; int a, b; } h; int f(void) { return h.b; }'
+# An unsigned byte shifted right by a constant, srl a in A, not the helper.
+OPTACC_LEAF=1 all "$OPT" "a byte shifted right in A, srl a"  cb3f yes \
+    'int f(unsigned char *p) { return *p >> 1; }'
+# `*o++ = g(*s++)`: each step sunk past the reads of the old value, past
+# the other's step and the call, so old and new share a home and the step
+# is made where the value is -- o in IY, ld (hl), a then inc iy; s in its
+# slot, ld hl, (ix+9); inc hl; ld (ix+9), hl -- and the one phi copy left,
+# n's, made straight, not pushed and popped back into HL on the way.
+steps='char g(char); void f(char *o, const char *s, int n) { while (n--) *o++ = g(*s++); }'
+OPTACC_LEAF=1 all "$OPT" "o++ stepped in IY after its store"   ed230077fd23   yes "$steps"
+OPTACC_LEAF=1 all "$OPT" "s++ stepped in its slot after the call" dd270923dd2f09 yes "$steps"
+OPTACC_LEAF=1 all "$OPT" "one phi copy, not through the stack"  e5e1           no  "$steps"
+# A step whose last reader ends its block, falling on to the next: sunk
+# past it too, so o is stepped in IY after the store, not copied.
+tail='char g(int); void f(char *o, int s) { if (s) *o++ = g(s); *o = 0; }'
+OPTACC_LEAF=1 all "$OPT" "o++ sunk past the block's last store" ed230077fd23 yes "$tail"
+# One phi copy into a slot, through HL alone: ld hl, (ix+6); ld (ix-3), hl.
+copy='char *g(char *, int); char *f(char *o, int n) { char *start = o; while (n--) { char *old = o; o = g(o, n); if (!o) o = old; } return start == o ? 0 : o; }'
+OPTACC_LEAF=1 all "$OPT" "one phi copy into a slot, not pushed"  dd2706dd2ffd yes "$copy"
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
