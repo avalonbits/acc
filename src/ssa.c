@@ -4089,6 +4089,23 @@ static int leaf_call_ok(const Ins *insn)
     return 1;
 }
 
+/* How far `x++` moves a `type` reached through a pointer: 1 for a
+ * number, the size of what it points at for a pointer -- a scalar's,
+ * whose size needs no more than its type -- and 0 where that is not 1 to
+ * 4, which the code here does not make with the address in DE. */
+static int leaf_indirect_step(Type type)
+{
+    Type to;
+
+    if (!type_pointer(type))
+        return 1;
+    to = type_deref(type);
+    if (type_is_struct(to) || (!leaf_type(to) && to != TY_BOOL))
+        return 0;
+
+    return type_size(to) >= 1 && type_size(to) <= 4 ? type_size(to) : 0;
+}
+
 /* Whether every instruction is one the code here makes. */
 static int leaf_ok(void)
 {
@@ -4130,6 +4147,21 @@ static int leaf_ok(void)
             continue;
         case GL_vaddr_array: case GL_vaddr_local:
             continue;
+        case GL_vprefix_local: case GL_vpostfix_local:
+            /* ++ and -- of a local in memory, in its slot. */
+            if (insn->rec->top.bits || !leaf_type((Type) insn->rec->arg[1]))
+                return leaf_why = "a step of a local in memory not a scalar", 0;
+            continue;
+        case GL_vprefix_indirect: case GL_vpostfix_indirect: {
+            /* ++ and -- through a pointer. */
+            Type target = type_pointer(insn->in[0].attr.type)
+                          ? type_deref(insn->in[0].attr.type) : TY_VOID;
+
+            if (insn->rec->top.bits || insn->in[0].attr.bits
+                || !leaf_type(target) || !leaf_indirect_step(target))
+                return leaf_why = "a step through a pointer not of a scalar", 0;
+            continue;
+        }
         case GL_vpush_local: case GL_vstore_local:
             /* A local that stays in memory -- its address taken -- read or
              * written in its slot. */
@@ -4816,6 +4848,87 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             ld_ix_rr(disp, R_HL);
         else
             store_narrow(disp, type);
+        leaf_result(insn->res);
+        return;
+    }
+    case GL_vprefix_local: case GL_vpostfix_local: {
+        /* A byte stepped where it is, inc (ix+d), and read before or after;
+         * anything wider in HL, and the old value kept only if it is used. */
+        Type type = (Type) insn->rec->arg[1];
+        int disp = inline_moved((int) insn->rec->arg[0]);
+        int count = type_pointer(type) ? type_step(type, (int) insn->rec->arg[2]) : 1;
+        int post = op == GL_vpostfix_local;
+        int used = insn->res >= 0 && vals[insn->res].used;
+
+        if ((int) insn->rec->arg[3] == TK_MINUS)
+            count = -count;
+        if (type_size(type) == 1) {
+            if (used && post)
+                load_narrow_into(R_HL, disp, type);
+            frame_byte(count < 0 ? 0x35 : 0x34, disp);  /* inc/dec (ix+d) */
+            if (used && !post)
+                load_narrow_into(R_HL, disp, type);
+        } else {
+            ld_rr_ix(R_HL, disp);
+            if (used && post)
+                push_rr(R_HL);
+            if (count > 4 || count < -4) {
+                ld_rr_imm(R_DE, count);
+                add_hl_rr(R_DE);
+            } else {
+                step_reg(R_HL, count);
+            }
+            ld_ix_rr(disp, R_HL);
+            if (used && post)
+                pop_rr(R_HL);
+        }
+        leaf_hl_type = type;
+        leaf_result(insn->res);
+        return;
+    }
+    case GL_vprefix_indirect: case GL_vpostfix_indirect: {
+        /* Through the pointer in HL: a byte stepped where it is, inc (hl);
+         * an int or a pointer read into DE and HL, stepped, and written
+         * back, the address in DE meanwhile. */
+        Type target = type_deref(insn->in[0].attr.type);
+        int count = leaf_indirect_step(target);
+        int post = op == GL_vpostfix_indirect;
+        int used = insn->res >= 0 && vals[insn->res].used;
+
+        if ((int) insn->rec->arg[0] == TK_MINUS)
+            count = -count;
+        leaf_operand_hl(insn, 0);
+        if (type_size(target) == 1) {
+            if (used && post)
+                ld_a_hl();
+            out_byte(count < 0 ? 0x35 : 0x34);          /* inc/dec (hl) */
+            if (used && !post)
+                ld_a_hl();
+            if (used) {
+                if (type_unsigned(target)) {
+                    or_a_a();
+                    sbc_hl_hl();
+                } else {
+                    ld_l_a();
+                    out_byte2(0xcb, 0x05);              /* rlc l */
+                    sbc_hl_hl();
+                }
+                ld_l_a();
+            }
+        } else {
+            out_byte2(0xed, 0x17);                      /* ld de, (hl) */
+            ex_de_hl();                                 /* old, address */
+            if (used && post)
+                push_rr(R_HL);
+            step_reg(R_HL, count);
+            ex_de_hl();
+            out_byte2(0xed, 0x1f);                      /* ld (hl), de */
+            if (used && post)
+                pop_rr(R_HL);
+            else if (used)
+                ex_de_hl();
+        }
+        leaf_hl_type = target;
         leaf_result(insn->res);
         return;
     }
