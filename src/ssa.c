@@ -4224,6 +4224,96 @@ static int leaf_ok(void)
  * whether the top is in HL still. The rest are on the machine stack. */
 static int leaf_depth, leaf_top_in_hl;
 
+/* Or the top is a byte in A alone, not yet widened into HL: a byte read,
+ * or a byte's AND, OR or XOR, left there for what takes a byte -- another
+ * such operator, a byte's store, a test -- and widened, as its type says,
+ * by whatever wants HL. leaf_top_in_hl is set with it. */
+static int  leaf_top_in_a;
+static Type leaf_a_type;
+
+/* Instructions made with one before them, and so left out when their
+ * turn comes: this one and those before it. */
+static int  leaf_skip_until = -1;
+
+static int  leaf_byte_to_a(const Ent *ent);
+
+enum { R_AF_BYTE = 1, R_L_BYTE, R_E_BYTE };     /* where leaf_pop left a byte */
+
+/* The values under the top, on the machine stack: whether each is a byte
+ * pushed with push af -- its byte then the high one of the pair it is
+ * popped into -- and the byte's type. */
+static unsigned char *leaf_stacked_af;
+static Type          *leaf_stacked_type;
+static int            leaf_nstacked, leaf_stacked_cap;
+
+/* The byte in A widened into HL, where the top is one. */
+static void leaf_widen_a(void)
+{
+    if (!leaf_top_in_a)
+        return;
+    leaf_top_in_a = 0;
+    if (type_unsigned(leaf_a_type)) {
+        or_a_a();
+        sbc_hl_hl();
+    } else {
+        ld_l_a();
+        out_byte2(0xcb, 0x05);          /* rlc l: the sign into carry */
+        sbc_hl_hl();
+    }
+    ld_l_a();
+}
+
+/* The top, in HL or a byte in A, onto the machine stack. */
+static void leaf_push_top(void)
+{
+    if (leaf_nstacked == leaf_stacked_cap) {
+        leaf_stacked_cap = leaf_stacked_cap ? leaf_stacked_cap * 2 : 16;
+        leaf_stacked_af = realloc(leaf_stacked_af, (size_t) leaf_stacked_cap);
+        leaf_stacked_type = realloc(leaf_stacked_type,
+                                    (size_t) leaf_stacked_cap * sizeof *leaf_stacked_type);
+        if (!leaf_stacked_af || !leaf_stacked_type)
+            acc_error("out of memory for the SSA form");
+    }
+    leaf_stacked_af[leaf_nstacked] = (unsigned char) leaf_top_in_a;
+    leaf_stacked_type[leaf_nstacked] = leaf_a_type;
+    leaf_nstacked++;
+    if (leaf_top_in_a)
+        out_byte(0xf5);                 /* push af */
+    else
+        push_rr(R_HL);
+    leaf_top_in_hl = leaf_top_in_a = 0;
+}
+
+/* The value on top of the machine stack popped into `reg`, HL or DE, and
+ * widened there -- or, `byte` set, left a byte: then the answer is the
+ * register it is in, E, D or A. */
+static int leaf_pop(int reg, int byte)
+{
+    int af;
+
+    leaf_nstacked--;
+    af = leaf_stacked_af[leaf_nstacked];
+    if (byte && af) {
+        out_byte(0xf1);                 /* pop af: the byte where it was */
+        return R_AF_BYTE;
+    }
+    pop_rr(reg);
+    if (byte)
+        return reg == R_HL ? R_L_BYTE : R_E_BYTE;
+    if (af) {                           /* the byte in H or D, widened */
+        out_byte(reg == R_HL ? 0x7c : 0x7a);    /* ld a, h / ld a, d */
+        if (reg == R_DE)
+            ex_de_hl();
+        leaf_top_in_a = 1;
+        leaf_a_type = leaf_stacked_type[leaf_nstacked];
+        leaf_widen_a();
+        if (reg == R_DE)
+            ex_de_hl();
+    }
+
+    return 0;
+}
+
 /* HL free for the instruction at `at`: a value left there that this one
  * does not read goes to the machine stack. */
 static void leaf_free_hl(const Ins *insn)
@@ -4233,10 +4323,8 @@ static void leaf_free_hl(const Ins *insn)
     for (operand = 0; operand != insn->nin; operand++)
         if (insn->in[operand].val >= 0 && vals[insn->in[operand].val].fwd)
             reads_top = 1;
-    if (leaf_top_in_hl && !reads_top) {
-        push_rr(R_HL);
-        leaf_top_in_hl = 0;
-    }
+    if (leaf_top_in_hl && !reads_top)
+        leaf_push_top();
 }
 
 /* An operand, not one left on the stack, into `reg`, HL or DE. */
@@ -4274,8 +4362,9 @@ static void leaf_load(const Ent *ent, int reg)
 /* The top of the stack into HL, where it is not. */
 static void leaf_top_to_hl(void)
 {
+    leaf_widen_a();
     if (!leaf_top_in_hl) {
-        pop_rr(R_HL);
+        (void) leaf_pop(R_HL, 0);
         leaf_top_in_hl = 1;
     }
 }
@@ -4306,7 +4395,7 @@ static int leaf_operands_in(const Ins *insn, int bc_too)
     if (lfwd && rfwd) {
         leaf_top_to_hl();
         ex_de_hl();                     /* the right, on top */
-        pop_rr(R_HL);                   /* the left, under it */
+        (void) leaf_pop(R_HL, 0);       /* the left, under it */
         leaf_depth -= 2;
     } else if (rfwd) {
         leaf_top_to_hl();
@@ -4362,6 +4451,42 @@ static void leaf_result(int val)
     } else {
         store_narrow(vals[val].slot, vals[val].type);
     }
+}
+
+/* The value `val`, made in A: a byte, `type`. The stack's top stays in A
+ * for what takes a byte; a byte's slot takes it from A; anywhere else it
+ * is widened into HL first. */
+static void leaf_result_a(int val, Type type)
+{
+    int to_slot = val >= 0 && vals[val].used && !vals[val].fwd
+                  && vals[val].reg == HOME_SLOT
+                  && !(iy_web >= 0 && vals[val].slot == fixed_slot[iy_web])
+                  && type_size(vals[val].type) == 1;
+
+    leaf_hl_type = type;
+    if (leaf_hl_width == 3 && type_unsigned(type))
+        leaf_hl_width = 1;
+    if (val < 0 || !vals[val].used) {
+        leaf_result(val);
+        return;
+    }
+    if (to_slot) {
+        ld_ix_a(vals[val].slot);
+        vals[val].used = 0;             /* stored: leaf_result notes it only */
+        leaf_result(val);
+        vals[val].used = 1;
+        return;
+    }
+    if (val >= 0 && vals[val].used && vals[val].fwd) {
+        leaf_result(val);
+        leaf_top_in_a = 1;
+        leaf_a_type = type;
+        return;
+    }
+    leaf_top_in_a = 1;                  /* widened as it would be on top */
+    leaf_a_type = type;
+    leaf_widen_a();
+    leaf_result(val);
 }
 
 /* Whether a value held as `from` is in `to`'s range already, so that
@@ -4572,6 +4697,82 @@ static int leaf_known_width(const Ent *ent)
     return width;
 }
 
+/* A conversion of the byte in A on the stack's top, to a byte -- the byte
+ * is the same, and now of that type -- or to an int, which widening as the
+ * byte's own type makes. Not to a _Bool, which is a test. */
+static int leaf_keep_a(const Ins *insn, Type to, int result)
+{
+    Type type = leaf_a_type;
+
+    if (!leaf_top_in_a || insn->in[0].val < 0 || !vals[insn->in[0].val].fwd
+        || to == TY_BOOL
+        || (type_size(to) != 1 && type_size(to) != ACC_INT_SIZE))
+        return 0;
+    if (type_size(to) == 1)
+        type = to;
+    leaf_depth--;
+    leaf_top_in_hl = leaf_top_in_a = 0;
+    leaf_result_a(result, type);
+
+    return 1;
+}
+
+/* Whether an operand's byte can be had in A without HL: the stack's top,
+ * or a value in BC or a slot of its own. */
+static int leaf_byte_ok(const Ent *ent)
+{
+    return ent->val >= 0
+           && (vals[ent->val].fwd || vals[ent->val].reg == R_BC
+               || (vals[ent->val].reg == HOME_SLOT
+                   && !(iy_web >= 0 && vals[ent->val].slot == fixed_slot[iy_web])));
+}
+
+/* A byte's AND, OR or XOR -- the answer a byte, as leaf_bitwise found --
+ * in A: the side on top of the stack, or the left, into A where it is not
+ * there already, and the other from where it is -- a constant, (ix+d), C,
+ * or under it on the stack. */
+static int leaf_byte_op(const Ins *insn, int op)
+{
+    static const unsigned char with_n[] = { 0xe6, 0xf6, 0xee };
+    static const unsigned char with_ix[] = { 0xa6, 0xb6, 0xae };
+    static const unsigned char with_c[] = { 0xa1, 0xb1, 0xa9 };
+    static const unsigned char with_e[] = { 0xa3, 0xb3, 0xab };
+    int kind = op == TK_AMP ? 0 : op == TK_PIPE ? 1 : 2, number;
+    int rfwd = insn->in[1].val >= 0 && vals[insn->in[1].val].fwd;
+    const Ent *in_a = rfwd ? &insn->in[1] : &insn->in[0];
+    const Ent *other = rfwd ? &insn->in[0] : &insn->in[1];
+
+    if (!leaf_byte_ok(in_a))
+        return 0;
+    if (leaf_const(other, &number)) {
+        (void) leaf_byte_to_a(in_a);
+        out_byte2(with_n[kind], number & 0xff);
+    } else if (other->val >= 0 && vals[other->val].fwd) {
+        (void) leaf_byte_to_a(in_a);            /* the top */
+        if (leaf_nstacked && leaf_stacked_af[leaf_nstacked - 1]) {
+            leaf_nstacked--;
+            pop_rr(R_DE);                       /* the one under it, in D */
+            out_byte(with_e[kind] - 1);         /* and d, or d, xor d */
+        } else {
+            (void) leaf_pop(R_DE, 1);           /* in E */
+            out_byte(with_e[kind]);
+        }
+        leaf_depth--;
+    } else if (other->val >= 0 && vals[other->val].reg == R_BC) {
+        (void) leaf_byte_to_a(in_a);
+        out_byte(with_c[kind]);
+    } else if (leaf_byte_ok(other)) {
+        (void) leaf_byte_to_a(in_a);
+        frame_byte(with_ix[kind], vals[other->val].slot);
+    } else {
+        return 0;
+    }
+    leaf_hl_width = 1;
+    leaf_result_a(insn->res, TY_UCHAR);
+
+    return 1;
+}
+
 /* AND, OR and XOR wider than a byte, which leaf_insn's byte forms do not
  * make: a constant's bytes where the top one is left alone; both sides two
  * bytes wide or less -- for an AND either -- a byte at a time against DE;
@@ -4632,11 +4833,17 @@ static int leaf_byte_to_a(const Ent *ent)
 
     if (val < 0)
         return 0;
-    if (vals[val].fwd) {
-        leaf_top_to_hl();
+    if (vals[val].fwd && leaf_top_in_a) {
+        leaf_depth--;
+        leaf_top_in_hl = leaf_top_in_a = 0;     /* in A already */
+    } else if (vals[val].fwd && leaf_top_in_hl) {
         leaf_depth--;
         leaf_top_in_hl = 0;
         ld_a_l();
+    } else if (vals[val].fwd) {
+        if (leaf_pop(R_HL, 1) != R_AF_BYTE)     /* pop af, or pop hl */
+            ld_a_l();
+        leaf_depth--;
     } else if (vals[val].reg == R_BC) {
         out_byte(0x79);                         /* ld a, c */
     } else if (vals[val].reg == HOME_SLOT && !(iy_web >= 0
@@ -4669,7 +4876,10 @@ static int leaf_compare(const Ins *insn, int op)
             && leaf_byte_to_a(&insn->in[0])) {
             if (bias)
                 out_byte2(0xee, bias);          /* xor n */
-            out_byte2(0xfe, (want + bias) & 0xff);     /* cp n */
+            if (((want + bias) & 0xff) == 0)
+                or_a_a();               /* cp 0: the same flags */
+            else
+                out_byte2(0xfe, (want + bias) & 0xff);     /* cp n */
 
             return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
                    ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
@@ -4683,11 +4893,10 @@ static int leaf_compare(const Ins *insn, int op)
         const Ent *ent = &insn->in[0];
 
         int byte = leaf_width(ent) == 1 || leaf_held(ent) == TY_UCHAR
-                   || leaf_held(ent) == TY_BOOL;
+                   || leaf_held(ent) == TY_BOOL || leaf_known_width(ent) == 1;
 
-        if (ent->val >= 0 && !vals[ent->val].fwd && vals[ent->val].reg == R_BC
-            && byte) {
-            out_byte(0x79);                     /* ld a, c */
+        if (byte && leaf_byte_ok(ent)) {
+            (void) leaf_byte_to_a(ent);         /* ld a, c; or in A already */
         } else {
             leaf_operand_hl(insn, 0);
             if (byte) {
@@ -4804,7 +5013,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
     int op = insn->op, number, cc;
 
     /* Between a comparison and the branch it was made with: nothing. */
-    if (at > fused_from && at < skip_branch)
+    if ((at > fused_from && at < skip_branch) || at <= leaf_skip_until)
         return;
 
     /* A step in place, where the value and the new one share BC or IY:
@@ -4843,8 +5052,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             for (operand = 0; operand != insn->nin; operand++)
                 if (insn->in[operand].val >= 0 && vals[insn->in[operand].val].fwd) {
                     if (!leaf_top_in_hl)
-                        pop_rr(R_HL);
-                    leaf_top_in_hl = 0;
+                        (void) leaf_pop(R_HL, 1);   /* dropped: as it is */
+                    leaf_top_in_hl = leaf_top_in_a = 0;
                     leaf_depth--;
                 }
         }
@@ -4859,12 +5068,16 @@ static void leaf_insn(const Ins *insn, int blk, int at)
     case I_SET: case I_CONV: {
         Type to = op == I_SET ? vals[insn->target].type : insn->local_type;
 
+        if (leaf_keep_a(insn, to, op == I_SET ? insn->target : insn->res))
+            return;
         leaf_operand_hl(insn, 0);
         leaf_convert(&insn->in[0], to);
         leaf_result(op == I_SET ? insn->target : insn->res);
         return;
     }
     case GL_vconvert: case GL_vcast:
+        if (leaf_keep_a(insn, (Type) insn->rec->arg[0], insn->res))
+            return;
         leaf_operand_hl(insn, 0);
         leaf_convert(&insn->in[0], (Type) insn->rec->arg[0]);
         leaf_result(insn->res);
@@ -4923,6 +5136,16 @@ static void leaf_insn(const Ins *insn, int blk, int at)
          * pass had after it is already widened to an int. */
         Type read = type_deref(insn->in[0].attr.type);
 
+        if (type_size(read) == 1) {
+            if (leaf_in_iy(&insn->in[0])) {
+                out_byte3(0xfd, 0x7e, 0);       /* ld a, (iy+0) */
+            } else {
+                leaf_operand_hl(insn, 0);
+                ld_a_hl();
+            }
+            leaf_result_a(insn->res, read);
+            return;
+        }
         if (leaf_in_iy(&insn->in[0])) {
             leaf_read(read, 1, 0);
         } else {
@@ -5055,6 +5278,27 @@ static void leaf_insn(const Ins *insn, int blk, int at)
          * write is the vderef or vstore_indirect after it. */
         number = (int) insn->rec->arg[0];
         if (leaf_in_iy(&insn->in[0]) && disp_fits(number)) {
+            int next = at + 1;
+
+            /* Read straight away: ld a, (iy+d) or ld hl, (iy+d), the
+             * address never made. */
+            while (next < ninsns && insns[next].op == GL_vdrop && insns[next].nin == 0)
+                next++;
+            if (next < ninsns && insns[next].op == GL_vderef
+                && insns[next].in[0].val == insn->res && insn->res >= 0
+                && vals[insn->res].fwd) {
+                Type read = type_deref(insns[next].in[0].attr.type);
+
+                if (type_size(read) == 1) {
+                    out_byte3(0xfd, 0x7e, number);      /* ld a, (iy+d) */
+                    leaf_result_a(insns[next].res, read);
+                } else {
+                    leaf_read(read, 1, number);
+                    leaf_result(insns[next].res);
+                }
+                leaf_skip_until = next;
+                return;
+            }
             lea_rr_iy(R_HL, number);
         } else {
             leaf_operand_hl(insn, 0);
@@ -5079,6 +5323,21 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 ld_rr_imm(R_HL, number);
                 leaf_result(insn->res);
             }
+            return;
+        }
+        /* A byte in A, written where the address says. */
+        if (type_size(to) == 1 && to != TY_BOOL && leaf_top_in_a
+            && insn->in[1].val >= 0 && vals[insn->in[1].val].fwd) {
+            leaf_depth--;
+            leaf_top_in_hl = leaf_top_in_a = 0;
+            if (insn->in[0].val >= 0 && vals[insn->in[0].val].fwd) {
+                (void) leaf_pop(R_HL, 1);       /* an address: A kept */
+                leaf_depth--;
+            } else {
+                leaf_load(&insn->in[0], R_HL);  /* not A: an address */
+            }
+            out_byte(0x77);                     /* ld (hl), a */
+            leaf_result_a(insn->res, to);
             return;
         }
         number = leaf_operands_in(insn, 1);
@@ -5200,6 +5459,13 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 int which = leaf_byte_const(&insn->in[1]) ? 1 : 0, byte;
 
                 (void) leaf_const(&insn->in[which], &byte);
+                if (leaf_known_width(&insn->in[1 - which]) == 1
+                    && leaf_byte_ok(&insn->in[1 - which])) {
+                    (void) leaf_byte_to_a(&insn->in[1 - which]);
+                    out_byte2(number == TK_PIPE ? 0xf6 : 0xee, byte);   /* or n, xor n */
+                    leaf_result_a(insn->res, TY_UCHAR);
+                    return;
+                }
                 leaf_hl_width = (unsigned char) leaf_known_width(&insn->in[1 - which]);
                 leaf_operand_hl(insn, 1 - which);
                 ld_a_l();
@@ -5220,14 +5486,10 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 out_byte2(0xe6, byte);                  /* and n */
                 if (leaf_and_branch(insn, blk, at))
                     return;
-                sbc_hl_hl();            /* and leaves carry clear */
-                ld_l_a();
-                leaf_hl_type = TY_UCHAR;
-                leaf_hl_width = 1;
-                leaf_result(insn->res);
+                leaf_result_a(insn->res, TY_UCHAR);
                 return;
             }
-            if (leaf_bitwise(insn, number, byte_op))
+            if (leaf_bitwise(insn, number, byte_op) || leaf_byte_op(insn, number))
                 return;
             if (leaf_operands_in(insn, 1) == R_BC)
                 byte_op -= 2;           /* and c, or c, xor c */
@@ -5413,9 +5675,9 @@ static void emit_leaf(void)
     npending = 0;
     nmoved = 0;
     ntrampolines = 0;
-    skip_branch = fused_from = -1;
-    leaf_depth = 0;
-    leaf_top_in_hl = 0;
+    skip_branch = fused_from = leaf_skip_until = -1;
+    leaf_depth = leaf_nstacked = 0;
+    leaf_top_in_hl = leaf_top_in_a = 0;
     leaf_hl_type = TY_VOID;
     leaf_hl_width = 3;
     leaf_holds = realloc(leaf_holds, ((size_t) nvals + 1) * sizeof *leaf_holds);
@@ -5487,7 +5749,7 @@ static void emit_leaf(void)
         }
         if (fail)
             break;
-        if (leaf_depth)
+        if (leaf_depth || leaf_nstacked)
             fail = "internal: values left on the stack at a block's end";
         if (falls && blk + 1 < nblocks)
             leaf_edge(blk, blk + 1);
