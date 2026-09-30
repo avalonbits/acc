@@ -4214,16 +4214,16 @@ static int leaf_operator(const Ins *insn, int arith)
         return 1;
     case TK_PLUS: case TK_MINUS:
         if (type_pointer(left) && type_pointer(right))
-            step = type_step(left, insn->in[0].attr.ext) == 1 ? 1 : 0;
-                                        /* a difference wider is a divide */
+            step = type_step(left, insn->in[0].attr.ext);
         else if (type_pointer(left))
             step = type_step(left, insn->in[0].attr.ext);
         else if (type_pointer(right))
             step = type_step(right, insn->in[1].attr.ext);
         else
             step = 1;
-        if (step >= 1 && step <= 4)
-            return 1;
+        if (step >= 1)
+            return 1;                   /* past 4, scaled or divided -- see
+                                         * leaf_wide_step */
         return leaf_why = "a pointer's step the code here does not make", 0;
     case TK_SHL: case TK_SHR: case TK_STAR: case TK_SLASH: case TK_PERCENT:
         return 1;                       /* in HL, or by the helper */
@@ -4505,6 +4505,8 @@ static int  leaf_skip_until = -1;
 
 static int  leaf_byte_to_a(const Ent *ent);
 static int  leaf_byte_ok(const Ent *ent);
+static int  leaf_mul_ok(int by);
+static void leaf_mul(int by);
 
 enum { R_AF_BYTE = 1, R_L_BYTE, R_E_BYTE };     /* where leaf_pop left a byte */
 
@@ -5196,6 +5198,51 @@ static int leaf_byte_op(const Ins *insn, int op)
     leaf_result_a(insn->res, TY_UCHAR);
 
     return 1;
+}
+
+/* HL times `by`, BC kept: by doublings and additions where leaf_mul_ok
+ * says, else by the helper, BC the constant. DE is lost. */
+static void leaf_times(int by)
+{
+    if (leaf_mul_ok(by)) {
+        leaf_mul(by);
+        return;
+    }
+    push_rr(R_BC);
+    ld_rr_imm(R_BC, by);
+    rt_call(RT_MUL);
+    pop_rr(R_BC);
+}
+
+/* A pointer and an int, the pointer's step past 4 -- a struct's size -- the
+ * int scaled by it, the pointer waiting on the stack; `scaled` which side
+ * is the pointer, 1 the left, 0 the right; or, `scaled` -1, two pointers'
+ * difference in bytes divided by it, by the helper. BC kept. */
+static void leaf_wide_step(const Ins *insn, int op, int step, int scaled)
+{
+    (void) leaf_operands_in(insn, 0);   /* left in HL, right in DE */
+    if (scaled < 0) {
+        or_a_a();
+        sbc_hl_rr(R_DE);
+        push_rr(R_BC);
+        ld_rr_imm(R_BC, step);
+        rt_call(RT_DIVS);
+        pop_rr(R_BC);
+    } else {
+        if (scaled == 1)
+            ex_de_hl();                 /* the int into HL, the pointer DE */
+        push_rr(R_DE);
+        leaf_times(step);
+        pop_rr(R_DE);
+        if (scaled == 1 && op == TK_MINUS) {
+            ex_de_hl();                 /* pointer less the scaled int */
+            or_a_a();
+            sbc_hl_rr(R_DE);
+        } else {
+            add_hl_rr(R_DE);
+        }
+    }
+    leaf_result(insn->res);
 }
 
 /* An operator the first pass's helpers make, HL and BC to HL, every other
@@ -5993,15 +6040,22 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             int step = 1, scaled = -1, right;
 
             if (type_pointer(ltype) && type_pointer(rtype)) {
-                if (type_step(ltype, insn->in[0].attr.ext) != 1)
-                    fail = "a difference of pointers to wider things";
+                step = type_step(ltype, insn->in[0].attr.ext);
+                if (step != 1) {
+                    leaf_wide_step(insn, number, step, -1);
+                    return;
+                }
             } else if (type_pointer(ltype)) {
                 step = type_step(ltype, insn->in[0].attr.ext), scaled = 1;
             } else if (type_pointer(rtype)) {
                 step = type_step(rtype, insn->in[1].attr.ext), scaled = 0;
             }
-            if (step < 1 || step > 4) {
+            if (step < 1) {
                 fail = "a step the code here does not make";
+                return;
+            }
+            if (step > 4) {
+                leaf_wide_step(insn, number, step, scaled);
                 return;
             }
 
