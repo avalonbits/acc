@@ -580,6 +580,18 @@ static void build_one(const GenRec *rec)
             fail = "a relabel of nothing";
             return;
         }
+        /* A constant stays the constant: where the first pass had it in a
+         * register -- the answer of a call compiled in place, popped into
+         * one and pushed as it -- its record says register, and taken
+         * whole, a `1` was passed on as register 0. */
+        if (stk[nstk - 1].val == S_CONST && !val_const(rec->top.kind)) {
+            Value attr = rec->top;
+
+            attr.kind = stk[nstk - 1].attr.kind;
+            attr.val = stk[nstk - 1].attr.val;
+            stk[nstk - 1].attr = attr;
+            return;
+        }
         stk[nstk - 1].attr = rec->top;
         stk[nstk - 1].wide = rec->wide;
         return;
