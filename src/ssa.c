@@ -4131,9 +4131,11 @@ static int leaf_ok(void)
             continue;
         case GL_vderef: case GL_vstore_indirect:
             /* What is read or written is what the pointer points at, which
-             * a short is not in the code here; nor a bit-field. */
+             * a short is not in the code here; nor a bit-field. A _Bool is
+             * a byte, written as 0 or 1. */
             if (!type_pointer(insn->in[0].attr.type)
-                || !leaf_type(type_deref(insn->in[0].attr.type))
+                || (!leaf_type(type_deref(insn->in[0].attr.type))
+                    && type_deref(insn->in[0].attr.type) != TY_BOOL)
                 || insn->rec->top.bits || insn->in[0].attr.bits)
                 return leaf_why = "a read or write not of a scalar", 0;
             continue;
@@ -4295,10 +4297,11 @@ static void leaf_result(int val)
 
 /* Whether a value held as `from` is in `to`'s range already, so that
  * narrowing it to `to` would change nothing: the same type, or an
- * unsigned one narrower, or a signed one no wider going to signed. */
+ * unsigned one narrower, or a signed one no wider going to signed. A
+ * value held as _Bool is 0 or 1, which every type holds. */
 static int leaf_fits(Type from, Type to)
 {
-    if (from == to || type_size(to) == ACC_INT_SIZE)
+    if (from == to || from == TY_BOOL || type_size(to) == ACC_INT_SIZE)
         return 1;
     if (type_size(from) < type_size(to) && type_unsigned(from)
         && !type_pointer(from))
@@ -4500,7 +4503,8 @@ static int leaf_compare(const Ins *insn, int op)
         && number == 0) {
         const Ent *ent = &insn->in[0];
 
-        int byte = leaf_width(ent) == 1 || leaf_held(ent) == TY_UCHAR;
+        int byte = leaf_width(ent) == 1 || leaf_held(ent) == TY_UCHAR
+                   || leaf_held(ent) == TY_BOOL;
 
         if (ent->val >= 0 && !vals[ent->val].fwd && vals[ent->val].reg == R_BC
             && byte) {
@@ -4584,6 +4588,19 @@ static void leaf_truth_value(int cc)
     ld_rr_imm(R_HL, 0);
     out_byte2(0x20 + ((cc ^ 0x08) & 0x18), 1);  /* jr !cc, past */
     inc_hl();
+    leaf_hl_type = TY_BOOL;
+}
+
+/* Whether an operand is 0 or 1 already: a constant that is, or a value
+ * held as _Bool -- a comparison's answer, or a _Bool read. */
+static int leaf_is_01(const Ent *ent)
+{
+    int number;
+
+    if (leaf_const(ent, &number))
+        return number == 0 || number == 1;
+
+    return leaf_held(ent) == TY_BOOL;
 }
 
 static void leaf_insn(const Ins *insn, int blk, int at)
@@ -4746,6 +4763,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         Type to = type_deref(insn->in[0].attr.type);
 
         if (leaf_const(&insn->in[1], &number) && type_size(to) == 1) {
+            if (to == TY_BOOL)
+                number = number != 0;
             leaf_operand_hl(insn, 0);
             out_byte2(0x36, number & 0xff);     /* ld (hl), n */
             if (insn->res >= 0 && vals[insn->res].used) {
@@ -4755,6 +4774,37 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             return;
         }
         number = leaf_operands_in(insn, 1);
+
+        /* A _Bool written with a value that may be other than 0 or 1: the
+         * value tested, BC and DE as they were, and 0 written and stepped
+         * to 1 where it is not 0. */
+        if (to == TY_BOOL && !leaf_is_01(&insn->in[1])) {
+            if (number == R_BC) {
+                push_rr(R_HL);
+                or_a_a();
+                sbc_hl_hl();
+                sbc_hl_rr(R_BC);                /* Z when BC is 0 */
+                pop_rr(R_HL);
+            } else {
+                ex_de_hl();
+                add_hl_rr(R_BC);
+                or_a_a();
+                sbc_hl_rr(R_BC);                /* Z when DE is 0 */
+                ex_de_hl();
+            }
+            out_byte2(0x36, 0);                 /* ld (hl), 0 */
+            out_byte2(0x28, 1);                 /* jr z, past */
+            out_byte(0x34);                     /* inc (hl) */
+            if (insn->res >= 0 && vals[insn->res].used) {
+                ld_a_hl();
+                or_a_a();
+                sbc_hl_hl();
+                ld_l_a();
+                leaf_hl_type = TY_BOOL;
+                leaf_result(insn->res);
+            }
+            return;
+        }
         if (type_size(to) == 1)
             out_byte(number == R_BC ? 0x71 : 0x73);     /* ld (hl), c / e */
         else if (number == R_BC)

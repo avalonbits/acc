@@ -287,5 +287,15 @@ OPTACC_LEAF=1 all "$OPT" "a byte's AND branched on from its flags"   e62020 yes 
 __attribute__((always_inline)) static inline _Bool alpha(char c) { return (tab[(unsigned char) c] & 0x20) != 0; }
 int f(const char *p) { if (!alpha(*p)) return 5; return 3; }'
 
+# A _Bool through a pointer, made here: written as the test of what may be
+# anything -- ld (hl), 0; jr z; inc (hl) -- and as it is where that is 0 or
+# 1 already, a comparison's answer.
+flag='struct s { int n; _Bool b; };'
+leafs "a _Bool member read and written, made here" yes \
+    "$flag int f(struct s *p, int a) { p->b = a; return p->b; }"
+OPTACC_LEAF=1 all "$OPT" "an int written to a _Bool as its test"  3600280134 yes \
+    "$flag void f(struct s *p, int a) { p->b = a; }"
+OPTACC_LEAF=1 all "$OPT" "a comparison written as it is"         3600280134 no \
+    "$flag void f(struct s *p, int a, int b) { p->b = a < b; }"
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
