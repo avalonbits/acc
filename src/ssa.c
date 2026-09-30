@@ -4228,6 +4228,14 @@ static int leaf_call_ok(const Ins *insn)
     return 1;
 }
 
+/* Whether a value of `type` is one the code here holds: a scalar no
+ * wider than an int, a _Bool, or a struct or an array -- its address. */
+static int leaf_value_type(Type type)
+{
+    return leaf_type(type) || type == TY_BOOL || type_is_struct(type)
+           || type_is_array(type);
+}
+
 /* How far `x++` moves a `type` reached through a pointer: 1 for a
  * number, the size of what it points at for a pointer -- a scalar's,
  * whose size needs no more than its type -- and 0 where that is not 1 to
@@ -4259,13 +4267,12 @@ static int leaf_ok(void)
         const Ins *insn = &insns[at];
         int op = insn->op, arith;
 
-        /* A _Bool is a byte of 0 or 1, made so by leaf_convert. */
+        /* A _Bool is a byte of 0 or 1, made so by leaf_convert; a struct
+         * or an array as a value is its address. */
         for (operand = 0; operand != insn->nin; operand++)
-            if (!leaf_type(insn->in[operand].attr.type)
-                && insn->in[operand].attr.type != TY_BOOL)
+            if (!leaf_value_type(insn->in[operand].attr.type))
                 return leaf_why = "an operand wider than an int", 0;
-        if (insn->res >= 0 && !leaf_type(vals[insn->res].type)
-            && vals[insn->res].type != TY_BOOL)
+        if (insn->res >= 0 && !leaf_value_type(vals[insn->res].type))
             return leaf_why = "a value wider than an int", 0;
         switch (op) {
         case I_FRAME:
@@ -4332,10 +4339,14 @@ static int leaf_ok(void)
         case GL_vderef: case GL_vstore_indirect:
             /* What is read or written is what the pointer points at, which
              * a short is not in the code here; nor a bit-field. A _Bool is
-             * a byte, written as 0 or 1. */
+             * a byte, written as 0 or 1; a struct read is its address, and
+             * written, a copy; an array read is its address too. */
             if (!type_pointer(insn->in[0].attr.type)
                 || (!leaf_type(type_deref(insn->in[0].attr.type))
-                    && type_deref(insn->in[0].attr.type) != TY_BOOL)
+                    && type_deref(insn->in[0].attr.type) != TY_BOOL
+                    && !type_is_struct(type_deref(insn->in[0].attr.type))
+                    && !(op == GL_vderef
+                         && type_is_array(type_deref(insn->in[0].attr.type))))
                 || insn->rec->top.bits || insn->in[0].attr.bits)
                 return leaf_why = "a read or write not of a scalar", 0;
             continue;
@@ -5292,6 +5303,11 @@ static void leaf_insn(const Ins *insn, int blk, int at)
          * pass had after it is already widened to an int. */
         Type read = type_deref(insn->in[0].attr.type);
 
+        if (type_is_struct(read) || type_is_array(read)) {
+            leaf_operand_hl(insn, 0);           /* the address is the value */
+            leaf_result(insn->res);
+            return;
+        }
         if (type_size(read) == 1) {
             if (leaf_in_iy(&insn->in[0])) {
                 out_byte3(0xfd, 0x7e, 0);       /* ld a, (iy+0) */
@@ -5447,7 +5463,10 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 && vals[insn->res].fwd) {
                 Type read = type_deref(insns[next].in[0].attr.type);
 
-                if (type_size(read) == 1) {
+                if (type_is_struct(read) || type_is_array(read)) {
+                    lea_rr_iy(R_HL, number);            /* its address */
+                    leaf_result(insns[next].res);
+                } else if (type_size(read) == 1) {
                     out_byte3(0xfd, 0x7e, number);      /* ld a, (iy+d) */
                     leaf_result_a(insns[next].res, read);
                 } else if (!leaf_iy_read(insns[next].res, number, insn->kills & 1)) {
@@ -5471,6 +5490,27 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         return;
     case GL_vstore_indirect: {
         Type to = type_deref(insn->in[0].attr.type);
+
+        /* A struct: its bytes copied, ldir from the value's address to
+         * the pointer's, BC kept; the copy's address the answer. */
+        if (type_is_struct(to)) {
+            int bytes = ext_bytes(insn->in[1].attr.ext);
+
+            (void) leaf_operands_in(insn, 0);   /* where to, from */
+            ex_de_hl();
+            if (bytes) {
+                push_rr(R_BC);
+                push_rr(R_DE);
+                ld_rr_imm(R_BC, bytes);
+                out_byte2(0xed, 0xb0);          /* ldir */
+                pop_rr(R_HL);
+                pop_rr(R_BC);
+            } else {
+                ex_de_hl();
+            }
+            leaf_result(insn->res);
+            return;
+        }
 
         if (leaf_const(&insn->in[1], &number) && type_size(to) == 1) {
             if (to == TY_BOOL)
