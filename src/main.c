@@ -67,6 +67,7 @@ __attribute__((noreturn)) static void help(void)
         "  -D <n>[=<v>]    define a macro, as #define; -U <n> undefines one\r\n"
         "  -include <f>    read <f> before the source\r\n"
         "  -b <hex>        the address to load at; 40000 unless given\r\n"
+        "  -moslet         a moslet, for /mos: loaded at B0000\r\n"
         "  -r <file>       write the offsets inside the image -b moved\r\n"
         "  -map <file>     write where each function and variable went\r\n"
         "  -p              print what main returned, as six hex digits\r\n"
@@ -414,6 +415,8 @@ int main(int argc, char **argv)
                 lex_add_include(argv[i]);
             else
                 usage();
+        } else if (!strcmp(argv[i], "-moslet")) {
+            out_base = ACC_MOSLET_BASE;         /* see gen.h */
         } else if (argv[i][0] == '-' && argv[i][1] == 'b') {
             const char *arg = argv[i][2] ? argv[i] + 2
                             : ++i < argc  ? argv[i] : NULL;
