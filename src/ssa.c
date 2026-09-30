@@ -4739,9 +4739,25 @@ static Type leaf_held(const Ent *ent)
     return ent->val >= 0 ? vals[ent->val].type : ent->attr.type;
 }
 
-/* HL made the narrow type `type` from what is in L: its byte widened. */
+/* HL made the narrow type `type` from what is in L: its byte widened --
+ * or from what is in HL's low two bytes, for a short: the top byte cleared,
+ * or filled with bit 15, through DE. */
 static void leaf_narrow(Type type)
 {
+    if (type_size(type) == 2) {
+        leaf_hl_type = type;
+        ex_de_hl();
+        if (type_unsigned(type)) {
+            ld_rr_imm(R_HL, 0);
+            leaf_hl_width = 2;
+        } else {
+            out_byte(0x7a);                 /* ld a, d */
+            out_byte(0x17);                 /* rla: bit 15 into carry */
+            sbc_hl_hl();
+        }
+        out_byte2(0x62, 0x6b);              /* ld h, d; ld l, e */
+        return;
+    }
     if (type_size(type) != 1)
         return;
     leaf_hl_type = type;
