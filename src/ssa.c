@@ -2111,8 +2111,92 @@ static void edge_moves(int from, int to);
 static void leaf_edge(int from, int to);
 static int  falls_to(int blk, int target);
 static int  leaf_mode;          /* this function made by emit_leaf */
+static int  leaf_iy_saved_at, leaf_bc_saved_at;    /* IY and BC across a
+                                                     * call: see leaf_save_slots */
 static void costs(const int *block_start, int end);
 static int  blocks_from;        /* where the function made here begins */
+
+/* Slots for IY and BC across a call, where a value that lives across one
+ * has either for its home: before the values' own, so as near the frame
+ * pointer as the frame allows. */
+static void leaf_save_slots(void)
+{
+    int val, iy = 0, bc = 0;
+
+    for (val = 0; val != nvals; val++)
+        if (vals[val].used && !vals[val].fwd && across_calls[val]) {
+            if (vals[val].reg == R_BC)
+                bc = 1;
+            else if (iy_web >= 0 && web_root(val) == iy_web)
+                iy = 1;
+        }
+    leaf_iy_saved_at = iy ? gen_local(ACC_INT_SIZE) : 0;
+    leaf_bc_saved_at = bc ? gen_local(ACC_INT_SIZE) : 0;
+}
+
+/* Which of IY and BC the call at `at`, in `blk`, has to keep: 1 for IY,
+ * 2 for BC, where a value with that home is live after it -- the block's
+ * live-out walked back to it, not counting what the call itself makes. */
+static int leaf_live_homes(int at, int blk)
+{
+    int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns, pos, val;
+    int operand, homes = 0;
+    unsigned char *live = malloc((size_t) nvals + 1);
+
+    if (!live)
+        acc_error("out of memory for the SSA form");
+    memcpy(live, &LIVE_BIT(live_out, blk, 0), (size_t) nvals);
+    for (pos = end - 1; pos > at; pos--) {
+        const Ins *insn = &insns[pos];
+        int made = insn->res >= 0 ? insn->res
+                   : insn->op == I_SET ? insn->target : -1;
+
+        if (made >= 0)
+            live[made] = 0;
+        for (operand = 0; operand != insn->nin; operand++)
+            if (insn->in[operand].val >= 0)
+                live[insn->in[operand].val] = 1;
+    }
+    if (insns[at].res >= 0)
+        live[insns[at].res] = 0;
+    for (val = 0; val != nvals; val++)
+        if (live[val] && !vals[val].fwd) {
+            if (vals[val].reg == R_BC)
+                homes |= 2;
+            else if (iy_web >= 0 && web_root(val) == iy_web)
+                homes |= 1;
+        }
+    free(live);
+
+    return homes;
+}
+
+/* IY and BC -- those of `homes` -- kept around a call, `back` set to put
+ * them back after it: straight to and from their slots within (ix+d)'s
+ * reach, and past it through HL before the call, which is free then, and
+ * DE after. */
+static void leaf_keep_homes(int homes, int back)
+{
+    if (!(homes & 1)) {
+        /* IY is not live across it */
+    } else if (disp_fits(leaf_iy_saved_at)) {
+        frame_byte(back ? 0x31 : 0x3e, leaf_iy_saved_at);   /* ld iy, (ix+d) */
+    } else if (!back) {
+        out_byte2(0xfd, 0xe5);                  /* push iy */
+        pop_rr(R_HL);
+        ld_ix_rr(leaf_iy_saved_at, R_HL);
+    } else {
+        ld_rr_ix(R_DE, leaf_iy_saved_at);
+        push_rr(R_DE);
+        out_byte2(0xfd, 0xe1);                  /* pop iy */
+    }
+    if (homes & 2) {
+        if (back)
+            ld_rr_ix(R_BC, leaf_bc_saved_at);
+        else
+            ld_ix_rr(leaf_bc_saved_at, R_BC);
+    }
+}
 
 /* The copies of the trampolines waiting, each then a jump on to its
  * block: made where the code before cannot fall into them. */
@@ -2396,18 +2480,50 @@ static int read_then_written(int def, int use)
     return 0;
 }
 
+/* Whether a value is a parameter's, as the function began: in its slot or
+ * the home it was loaded into, whatever happens on the stack. */
+static int leaf_parameter(int val)
+{
+    int local;
+
+    for (local = 0; val >= 0 && local != nlocals; local++)
+        if (locals[local].ok && locals[local].is_param
+            && locals[local].entry_val == val)
+            return 1;
+
+    return 0;
+}
+
 /* With the code made here, whether a value is an argument of a call other
- * than its last: the arguments are pushed last first, and a value left on
- * the stack for one would be under the ones after it. */
+ * than its last that cannot wait on the stack for it: the arguments are
+ * pushed last first, so one left on the stack would be under the ones after
+ * it -- unless each of those is loaded where it is, through DE around it:
+ * a constant, or a parameter as it came, of an int or the parameter's
+ * own type, so that nothing converts it on the way. */
 static int leaf_early_argument(int val, int use)
 {
-    int operand;
+    const Ins *call = &insns[use];
+    int operand, later, first, nparams;
 
-    if (insns[use].op != GL_gen_call)
+    if (call->op != GL_gen_call)
         return 0;
-    for (operand = 0; operand + 1 < insns[use].nin; operand++)
-        if (insns[use].in[operand].val == val)
-            return 1;
+    first = (int) call->rec->arg[2];
+    nparams = (int) call->rec->arg[3];
+    for (operand = 0; operand + 1 < call->nin; operand++) {
+        if (call->in[operand].val != val)
+            continue;
+        for (later = operand + 1; later < call->nin; later++) {
+            const Ent *ent = &call->in[later];
+            Type type = later < nparams ? sym_param_type(first, later) : TY_INT;
+
+            if (!(ent->val == S_CONST || leaf_parameter(ent->val)))
+                return 1;
+            if (type_size(type) != ACC_INT_SIZE
+                && !(ent->val >= 0 && vals[ent->val].type == type))
+                return 1;
+        }
+        return 0;
+    }
 
     return 0;
 }
@@ -2840,13 +2956,21 @@ static void plan_fixed(const int *order, int nroots)
     for (at = 0; at != nroots && !iy_taken_already() && getenv("OPTACC_IY"); at++) {
         int root = order[at], member, fits = 1;
 
-        for (member = root; member >= 0; member = web_next[member])
+        long across = 0;
+
+        for (member = root; member >= 0; member = web_next[member]) {
             if (vals[member].fwd || vals[member].reg != HOME_SLOT
                 || !reg_eligible(member) || !gen_iy_can(vals[member].type)
-                || type_size(vals[member].type) != ACC_INT_SIZE
-                || (leaf_mode && across_calls[member]))
-                fits = 0;           /* a narrow one is widened at each read,
-                                     * and a call does not keep IY */
+                || type_size(vals[member].type) != ACC_INT_SIZE)
+                fits = 0;           /* a narrow one is widened at each read */
+            across += across_calls[member];
+        }
+
+        /* A call does not keep IY: the leaf backend saves it in a slot
+         * around each, which is worth it where it is read more often than
+         * it is saved. */
+        if (leaf_mode && across && 2 * across > web_weight[root])
+            fits = 0;
 
         /* Nor a parameter out of (ix+d)'s reach: the classic backend
          * reaches one through IY, which it cannot then load into IY. */
@@ -2917,9 +3041,6 @@ static void plan_homes(void)
             if (vals[member].reg == -2 || !reg_eligible(member))
                 fits = 0;
 
-            /* The code made here saves no register around a call. */
-            if (leaf_mode && across_calls[member])
-                fits = 0;
 
             /* A switch's tests load DE: a value across them is in BC. */
             for (insn_at = vals[member].def;
@@ -3454,6 +3575,7 @@ enum { AT_NONE, AT_CONST, AT_STACK, AT_REG, AT_SLOT };
 static int skip_branch = -1;    /* the branch selected with its comparison */
 static int fused_from = -1;     /* and what made it, the rest between made too */
 static int leaf_jump_left_out;  /* the block's jump left out: it falls on */
+
 
 /* Where an int-wide operand is, and the register or displacement in
  * `*where`; AT_NONE when it is not something the code here handles. */
@@ -4697,6 +4819,23 @@ static int leaf_known_width(const Ent *ent)
     return width;
 }
 
+/* An int read through IY into a value whose home is IY too -- p = p->next
+ * -- as ld iy, (iy+d), where the pointer read through dies there (`dies`):
+ * IY is both. Answers whether it was. */
+static int leaf_iy_read(int val, int disp, int dies)
+{
+    if (!dies || val < 0 || !vals[val].used || vals[val].fwd
+        || !leaf_in_iy(&(Ent) { val, { 0 }, 0 }))
+        return 0;
+    out_byte3(0xfd, 0x37, disp);        /* ld iy, (iy+d): not fd 31, which
+                                         * is ld ix, (iy+d) */
+    vals[val].used = 0;                 /* there: leaf_result notes it only */
+    leaf_result(val);
+    vals[val].used = 1;
+
+    return 1;
+}
+
 /* A conversion of the byte in A on the stack's top, to a byte -- the byte
  * is the same, and now of that type -- or to an int, which widening as the
  * byte's own type makes. Not to a _Bool, which is a test. */
@@ -5121,10 +5260,15 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         leaf_result(insn->res);
         return;
     case GL_vtruth:
-        leaf_operand_hl(insn, 0);
-        add_hl_rr(R_BC);                /* Z when HL is 0, BC as it was */
-        or_a_a();
-        sbc_hl_rr(R_BC);
+        if (leaf_known_width(&insn->in[0]) == 1 && leaf_byte_ok(&insn->in[0])) {
+            (void) leaf_byte_to_a(&insn->in[0]);
+            or_a_a();                   /* Z when the byte is 0 */
+        } else {
+            leaf_operand_hl(insn, 0);
+            add_hl_rr(R_BC);            /* Z when HL is 0, BC as it was */
+            or_a_a();
+            sbc_hl_rr(R_BC);
+        }
         cc = (int) insn->rec->arg[0] == TK_EQ ? JP_Z : JP_NZ;
         if (leaf_branch(cc, blk, at))
             return;
@@ -5146,6 +5290,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             leaf_result_a(insn->res, read);
             return;
         }
+        if (leaf_in_iy(&insn->in[0]) && leaf_iy_read(insn->res, 0, insn->kills & 1))
+            return;
         if (leaf_in_iy(&insn->in[0])) {
             leaf_read(read, 1, 0);
         } else {
@@ -5292,7 +5438,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 if (type_size(read) == 1) {
                     out_byte3(0xfd, 0x7e, number);      /* ld a, (iy+d) */
                     leaf_result_a(insns[next].res, read);
-                } else {
+                } else if (!leaf_iy_read(insns[next].res, number, insn->kills & 1)) {
                     leaf_read(read, 1, number);
                     leaf_result(insns[next].res);
                 }
@@ -5508,18 +5654,32 @@ static void leaf_insn(const Ins *insn, int blk, int at)
     case GL_gen_call: {
         const Sym *callee = sym_at((int) insn->rec->arg[0]);
         int fn = (int) insn->rec->arg[0], first = (int) insn->rec->arg[2];
-        int nparams = (int) insn->rec->arg[3], arg;
+        int nparams = (int) insn->rec->arg[3], arg, homes;
 
         /* The arguments pushed last first, each as its parameter's type,
          * so the first is at the lowest address -- as agondev passes them.
          * Only the last may be left on the stack, in HL. */
+        leaf_widen_a();
         for (arg = insn->nin - 1; arg >= 0; arg--) {
             const Ent *ent = &insn->in[arg];
+            int waiting = 0, before;
 
+            for (before = 0; before != arg; before++)
+                if (insn->in[before].val >= 0 && vals[insn->in[before].val].fwd)
+                    waiting = 1;
             if (ent->val >= 0 && vals[ent->val].fwd) {
                 leaf_top_to_hl();
                 leaf_depth--;
                 leaf_top_in_hl = 0;
+            } else if (waiting) {
+                /* One before it waits on the stack: that one into HL, and
+                 * this one around it, through DE, as it is --
+                 * leaf_early_argument saw to that. Pushed with the waiting
+                 * one still on the machine stack, it would bury it. */
+                leaf_top_to_hl();
+                leaf_load(ent, R_DE);
+                push_rr(R_DE);
+                continue;
             } else {
                 leaf_load(ent, R_HL);
             }
@@ -5527,6 +5687,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 leaf_convert(ent, sym_param_type(first, arg));
             push_rr(R_HL);
         }
+        homes = leaf_live_homes(at, blk);
+        leaf_keep_homes(homes, 0);
         if (sym_flags(fn) & SYMF_DEFINED) {
             want(fn);
             out_reloc(out_here() + 1);
@@ -5537,20 +5699,14 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         }
         for (arg = 0; arg != insn->nin; arg++)
             pop_rr(R_DE);
+        leaf_keep_homes(homes, 1);
 
-        /* A byte's answer is in A, the rest in HL. */
+        /* A byte's answer is in A, and stays there; the rest in HL. */
         if (callee->type != TY_VOID && type_size(callee->type) == 1) {
-            if (type_unsigned(callee->type)) {
-                or_a_a();
-                sbc_hl_hl();
-            } else {
-                ld_l_a();
-                out_byte2(0xcb, 0x05);          /* rlc l */
-                sbc_hl_hl();
-            }
-            ld_l_a();
+            leaf_result_a(insn->res, callee->type == TY_BOOL ? TY_UCHAR : callee->type);
+            return;
         }
-        leaf_hl_type = callee->type == TY_BOOL ? TY_UCHAR : callee->type;
+        leaf_hl_type = callee->type;
         leaf_result(insn->res);
         return;
     }
@@ -5587,10 +5743,15 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 leaf_operand_hl(insn, 0);
             return;
         }
-        leaf_operand_hl(insn, 0);
-        add_hl_rr(R_BC);
-        or_a_a();
-        sbc_hl_rr(R_BC);
+        if (leaf_known_width(&insn->in[0]) == 1 && leaf_byte_ok(&insn->in[0])) {
+            (void) leaf_byte_to_a(&insn->in[0]);
+            or_a_a();
+        } else {
+            leaf_operand_hl(insn, 0);
+            add_hl_rr(R_BC);
+            or_a_a();
+            sbc_hl_rr(R_BC);
+        }
         branch_to(JP_NZ, insn, blk);
         return;
     }
@@ -5695,6 +5856,7 @@ static void emit_leaf(void)
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
+    leaf_save_slots();
     give_slots();
     inline_slots();
 
