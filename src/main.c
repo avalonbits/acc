@@ -548,11 +548,19 @@ int main(int argc, char **argv)
         gen_objects = 1;
         lex_want_deps();
         out_base = 0;
+#ifdef OPT_ACC
+        if (getenv("OPTACC_INLINE") && inline_counts_fork())
+            out = inline_count_out;     /* a child, which reports to this one */
+#endif
         out_open(out, 0);
         out_may_flush = OUT_FLUSH_COPY;
         lex_open(in);
         translation_unit();
         lex_end();
+#ifdef OPT_ACC
+        if (inline_count_mode)
+            inline_counts_report();
+#endif
         bss_end();
         gen_finish();
 #ifdef ACC_TABLE_STATS
@@ -576,12 +584,20 @@ int main(int argc, char **argv)
         /* A program from a source, and whatever it calls from the objects
          * and libraries named with it -- and from the default library --
          * linked in after it, as a link of its object would. */
+#ifdef OPT_ACC
+        if (getenv("OPTACC_INLINE") && inline_counts_fork())
+            out = inline_count_out;     /* a child, which reports to this one */
+#endif
         out_open(out, 1);
         out_may_flush = OUT_FLUSH_COPY;
         gen_startup(ending, out);
         lex_open(in);
         translation_unit();
         lex_end();
+#ifdef OPT_ACC
+        if (inline_count_mode)
+            inline_counts_report();
+#endif
         bss_end();
         lex_close();                    /* its window is room for the link */
         sym_members_free();

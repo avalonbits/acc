@@ -16,12 +16,48 @@
 
 static void call_through(void);
 
+#ifdef OPT_ACC
+/* The locals as a stack: an inlined call's body gives its room back where
+ * it ends, for what comes after to take again. locals_size is the most
+ * they ever took, and the spills are below that. */
+static int local_depth, scope_marks[32], nscopes;
+
+void gen_local_scope(int open)
+{
+    if (open) {
+        if (nscopes < 32)
+            scope_marks[nscopes] = local_depth;
+        nscopes++;
+
+        return;
+    }
+    if (--nscopes < 32)
+        local_depth = scope_marks[nscopes];
+}
+
+/* From here every local below all the room taken: for values that live
+ * through the whole function, past where any body's locals were. */
+void gen_local_settle(void)
+{
+    local_depth = locals_size;
+}
+
+int gen_local(int size)
+{
+    local_depth += size;
+    if (local_depth > locals_size)
+        locals_size = local_depth;
+
+    return -local_depth;
+}
+#else
 int gen_local(int size)
 {
     locals_size += size;
 
     return -locals_size;
 }
+#endif
 
 /* How many bytes of declared locals are kept where (ix+d) can reach them.
  *
@@ -48,7 +84,11 @@ int gen_local(int size)
 
 int gen_local_fits(int size)
 {
+#ifdef OPT_ACC
+    return local_depth + size <= NEAR_LOCALS;
+#else
     return locals_size + size <= NEAR_LOCALS;
+#endif
 }
 
 int gen_local_far(int size)
@@ -401,6 +441,9 @@ void gen_func_begin(int fn, int nparams, Type returns)
     vtop = 0;
     vsp = vstack;
     locals_size = 0;
+#ifdef OPT_ACC
+    local_depth = nscopes = 0;
+#endif
     spill_used = 0;
     spill_peak = 0;
     spill_locked = 0;

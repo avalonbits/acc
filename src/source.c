@@ -609,6 +609,67 @@ void lex_record_from(char *text, char *end)
     record_depth = depth;
 }
 
+#ifdef OPT_ACC
+/* A function's whole body, kept by opt-acc for a call to read again in
+ * place (inline.c) -- beside lex_record, which a for loop in the body uses
+ * for its step, and grown as it goes: the host has the room. */
+static char       *body_rec;
+static size_t      body_len, body_cap;
+static const char *body_start;
+static int         body_depth, body_on;
+
+static const char no_room[] = "out of memory for an inline function";
+
+__attribute__((noinline))
+static void body_flush(void)
+{
+    size_t n = (size_t) (cursor - body_start);
+
+    if (depth != body_depth)
+        return;
+    if (body_len + n + 1 > body_cap) {
+        body_cap = (body_len + n + 1) * 2;
+        body_rec = realloc(body_rec, body_cap);
+        if (!body_rec)
+            acc_error(no_room);
+    }
+    memcpy(body_rec + body_len, body_start, n);
+    body_len += n;
+    body_start = cursor;
+}
+
+void lex_body_record_from(void)
+{
+    body_len = 0;
+    body_start = cursor;
+    body_depth = depth;
+    body_on = 1;
+}
+
+/* The body kept, to the `}` that is the current token, which is left out:
+ * a string of its own, or NULL where it ended at another level. */
+char *lex_body_record_take(void)
+{
+    char *text;
+
+    if (!body_on)
+        return NULL;
+    body_on = 0;
+    if (depth != body_depth)
+        return NULL;
+    body_flush();
+    if (!body_len || body_rec[body_len - 1] != '}')
+        return NULL;
+    text = malloc(body_len);
+    if (!text)
+        acc_error(no_room);
+    memcpy(text, body_rec, body_len - 1);
+    text[body_len - 1] = '\0';
+
+    return text;
+}
+#endif
+
 /* The text kept, from lex_record_from to the `]` that is the current
  * token, which is left out: its end, or NULL if it could not be kept. */
 char *lex_record_take(void)
@@ -766,12 +827,19 @@ int refill(void)
     tok_at = NULL;
     if (lex_record)
         record_flush();
+#ifdef OPT_ACC
+    if (body_on)
+        body_flush();
+#endif
     *src_end = src_held;                /* put back what the sentinel hid */
     keep = (size_t) (src_raw - cursor);
     if (keep && cursor != src)
         memmove(src, cursor, keep);
     cursor = src;
     record_start = cursor;              /* where a size being kept goes on */
+#ifdef OPT_ACC
+    body_start = cursor;
+#endif
     src_raw = src + keep;
 
     /* Until the window is full or the file has no more. Reading until it is
@@ -982,6 +1050,10 @@ int pop_source(void)
      * text cannot be had. */
     if (lex_record && depth < record_depth)
         lex_record = NULL;
+#ifdef OPT_ACC
+    if (body_on && depth < body_depth)
+        body_on = 0;
+#endif
 
     /* The handle set aside when this level was pushed, back where it was. */
     if (open_files[depth].at >= 0) {

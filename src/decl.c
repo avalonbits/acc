@@ -585,6 +585,10 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
     in_body = 1;
     if (nvla_params | nvla_texts)
         vla_params_enter();
+#ifdef OPT_ACC
+    if (!variadic && !(nvla_params | nvla_texts) && !nstruct_params)
+        inline_body_begin(fn);
+#endif
     next();                     /* the body's `{` */
     if (tok == TK_KW_RETURN && decl_static && decl_inline_fn
         && !variadic && !(nvla_params | nvla_texts) && !nstruct_params)
@@ -595,6 +599,9 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
     in_body = 0;
     labels_end();
     gen_func_end();
+#ifdef OPT_ACC
+    inline_func_done(fn, out_here() - sym_at(fn)->val);
+#endif
 
     sym_drop_locals();
 

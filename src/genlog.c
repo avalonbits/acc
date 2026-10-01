@@ -62,6 +62,7 @@ static GenMark gl_start;
 
 const unsigned char *gl_first_code;
 int gl_first_from, gl_first_len;
+int gl_backend;                 /* the last function's: see parse_int.h */
 static int     gl_start_nwants, gl_start_nstatics;
 static long    gl_start_nrelocs;
 static int     gl_start_finish[4];
@@ -453,6 +454,7 @@ static void gl_function_end(void)
     int first_fixups = nfixups, first_rt = nrt_fixups;
     int first_bss = nbss_fixups;
 
+    gl_backend = BACKEND_FIRST;
     if (getenv("GENLOG_STATS"))
         gl_stats();
     if (gl_break == -1 && getenv("GENLOG_BREAK"))
@@ -567,6 +569,7 @@ static void gl_function_end(void)
                     made <= 0 ? why : ssa_leaf_tried && !ssa_made_leaf
                     ? "made, not by the leaf backend" : "made");
         if (made > 0) {
+            gl_backend = ssa_made_leaf ? BACKEND_LEAF : BACKEND_SSA;
             free(first);
             free(first_relocs);
             return;

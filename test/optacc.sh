@@ -410,12 +410,17 @@ OPTACC_LEAF=1 all "$OPT" "o++ sunk past the block's last store" ed230077fd23 yes
 # One phi copy into a slot, through HL alone: ld hl, (ix+6); ld (ix-3), hl.
 copy='char *g(char *, int); char *f(char *o, int n) { char *start = o; while (n--) { char *old = o; o = g(o, n); if (!o) o = old; } return start == o ? 0 : o; }'
 OPTACC_LEAF=1 all "$OPT" "one phi copy into a slot, not pushed"  dd2706dd2ffd yes "$copy"
-# A long whose low three bytes are all that is kept is made here; one whose
-# truth is asked -- all four bytes -- is not.
+# A long whose low three bytes are all that is kept is made here, read as
+# an int.
 leafs "a long read and kept as an int, made here" yes \
     'void g(long *); int f(void) { long v = 0; g(&v); return (int) v; }'
-leafs "a long made a _Bool, not"                 no \
+# One whose four bytes are wanted -- its truth, a sum, a compare -- is
+# made here too, the long in a frame slot and each instruction with it in
+# made by the first pass's code.
+leafs "a long made a _Bool, made here too"        yes \
     'int f(const long *p) { return (_Bool) *p; }'
+leafs "a long sum kept, made here too"            yes \
+    'int f(const unsigned char *p, int n) { unsigned long s = 0; for (int i = 0; i < n; i++) s = s * 31 + p[i]; return (int) (s >> 8); }'
 # Constants written to members of the struct a pointer in IY points at:
 # ld (iy+d), n for a byte, 1 for a _Bool given 5, and ld hl, n / ld
 # (iy+d), hl for an int -- -2 too, which is `-` of 2 folded -- with no
@@ -482,5 +487,94 @@ void f(void) { typedef int B[m]; void *g(B); }'
 sorted='struct node { int key; struct node *next; };
 void f(struct node **head, struct node *n) { while (*head && (*head)->key < n->key) head = &(*head)->next; n->next = *head; *head = n; }'
 OPTACC_LEAF=1 all "$OPT" "a signed compare, BC free, not saved"  c501000080 no "$sorted"
+# A local whose address is taken stays in memory, and is no `register`
+# local: IY is free for the loop's pointer all the same.
+iyfree='int g(int *); int f(const char *s, int n) { int x = 0; int c = 0; g(&x); while (n--) c += *s++; return c + x; }'
+OPTACC_LEAF=1 all "$OPT" "IY beside a local in memory, inc iy"   fd23 yes "$iyfree"
+# IY shared as BC is, by values live in different places: the first
+# loop's pointer, loaded into it, and the second loop's counter after it.
+twoloops='int f(const char *s, const char *t, int n) { int sum = 0, k = n; while (k--) sum += *s++; k = n; while (k--) sum -= *t++; return sum; }'
+OPTACC_LEAF=1 all "$OPT" "IY for one loop's pointer and the next's count" 'dd3106.*fde1' yes "$twoloops"
+# A short stepped or read through a pointer, by the first pass's code; and
+# a frame past what (ix+d) reaches, its far locals where the arrays are:
+# made here.
+leafs "a short stepped through a pointer, made here" yes \
+    'struct c { char tag; unsigned short count; }; int f(struct c *p, int n) { int t = 0; while (n--) { p->count++; t += p->count; p++; } return t; }'
+leafs "a frame past (ix+d), made here"           yes \
+    'int f(int n) { int v0 = n; int v1 = v0 + 1; int v2 = v1 + 2; int v3 = v2 + 3; int v4 = v3 + 4; int v5 = v4 + 5; int v6 = v5 + 6; int v7 = v6 + 7; int v8 = v7 + 8; int v9 = v8 + 9; int v10 = v9 + 10; int v11 = v10 + 11; int v12 = v11 + 12; int v13 = v12 + 13; int v14 = v13 + 14; int v15 = v14 + 15; int v16 = v15 + 16; int v17 = v16 + 17; int v18 = v17 + 18; int v19 = v18 + 19; int v20 = v19 + 20; int v21 = v20 + 21; int v22 = v21 + 22; int v23 = v22 + 23; int v24 = v23 + 24; int v25 = v24 + 25; int v26 = v25 + 26; int v27 = v26 + 27; int v28 = v27 + 28; int v29 = v28 + 29; int v30 = v29 + 30; int v31 = v30 + 31; int v32 = v31 + 32; int v33 = v32 + 33; int v34 = v33 + 34; int v35 = v34 + 35; int v36 = v35 + 36; int v37 = v36 + 37; int v38 = v37 + 38; int v39 = v38 + 39; int v40 = v39 + 40; int v41 = v40 + 41; int v42 = v41 + 42; int v43 = v42 + 43; int v44 = v43 + 44; int v45 = v44 + 45; int v46 = v45 + 46; int v47 = v46 + 47; int v48 = v47 + 48; int v49 = v48 + 49; int v50 = v49 + 50; int v51 = v50 + 51; int v52 = v51 + 52; int v53 = v52 + 53; int v54 = v53 + 54; int v55 = v54 + 55; int v56 = v55 + 56; int v57 = v56 + 57; int v58 = v57 + 58; int v59 = v58 + 59; int v60 = v59 + 60; int v61 = v60 + 61; int v62 = v61 + 62; int v63 = v62 + 63; int v64 = v63 + 64; int v65 = v64 + 65; int v66 = v65 + 66; int v67 = v66 + 67; int v68 = v67 + 68; int v69 = v68 + 69; int k = n, s = 0; while (k--) s += v69; return s; }'
+# A function of more than 64 locals within reach -- 70 chars, and a loop's
+# counter and sum declared after them -- keeps them as values: the sum is
+# in IY, and the answer read from it.
+c70='int f(int n) { char v0 = (char) n; char v1 = (char) (v0 + 1); char v2 = (char) (v1 + 2); char v3 = (char) (v2 + 3); char v4 = (char) (v3 + 4); char v5 = (char) (v4 + 5); char v6 = (char) (v5 + 6); char v7 = (char) (v6 + 7); char v8 = (char) (v7 + 8); char v9 = (char) (v8 + 9); char v10 = (char) (v9 + 10); char v11 = (char) (v10 + 11); char v12 = (char) (v11 + 12); char v13 = (char) (v12 + 13); char v14 = (char) (v13 + 14); char v15 = (char) (v14 + 15); char v16 = (char) (v15 + 16); char v17 = (char) (v16 + 17); char v18 = (char) (v17 + 18); char v19 = (char) (v18 + 19); char v20 = (char) (v19 + 20); char v21 = (char) (v20 + 21); char v22 = (char) (v21 + 22); char v23 = (char) (v22 + 23); char v24 = (char) (v23 + 24); char v25 = (char) (v24 + 25); char v26 = (char) (v25 + 26); char v27 = (char) (v26 + 27); char v28 = (char) (v27 + 28); char v29 = (char) (v28 + 29); char v30 = (char) (v29 + 30); char v31 = (char) (v30 + 31); char v32 = (char) (v31 + 32); char v33 = (char) (v32 + 33); char v34 = (char) (v33 + 34); char v35 = (char) (v34 + 35); char v36 = (char) (v35 + 36); char v37 = (char) (v36 + 37); char v38 = (char) (v37 + 38); char v39 = (char) (v38 + 39); char v40 = (char) (v39 + 40); char v41 = (char) (v40 + 41); char v42 = (char) (v41 + 42); char v43 = (char) (v42 + 43); char v44 = (char) (v43 + 44); char v45 = (char) (v44 + 45); char v46 = (char) (v45 + 46); char v47 = (char) (v46 + 47); char v48 = (char) (v47 + 48); char v49 = (char) (v48 + 49); char v50 = (char) (v49 + 50); char v51 = (char) (v50 + 51); char v52 = (char) (v51 + 52); char v53 = (char) (v52 + 53); char v54 = (char) (v53 + 54); char v55 = (char) (v54 + 55); char v56 = (char) (v55 + 56); char v57 = (char) (v56 + 57); char v58 = (char) (v57 + 58); char v59 = (char) (v58 + 59); char v60 = (char) (v59 + 60); char v61 = (char) (v60 + 61); char v62 = (char) (v61 + 62); char v63 = (char) (v62 + 63); char v64 = (char) (v63 + 64); char v65 = (char) (v64 + 65); char v66 = (char) (v65 + 66); char v67 = (char) (v66 + 67); char v68 = (char) (v67 + 68); char v69 = (char) (v68 + 69); int k = n, s = 0; while (k--) s += v69; return s; }'
+OPTACC_LEAF=1 all "$OPT" "a sum in IY after 70 locals"  ed2300ddf9 yes "$c70"
+
+# With OPTACC_INLINE, a static function called from one place, its address
+# never taken, has its whole body read in place of the call, and is gone
+# from the object -- where that leaves the caller no bigger than it and the
+# body were apart, which two compiles before the one kept measure.
+# inlined <name> <function> <yes|no> <source>
+inlined() {
+    local what=$1 want=$3 got=yes
+
+    printf '%s\n' "$4" > "$tmp/c.c"
+    rm -f "$tmp/c.o"
+    if ! OPTACC_INLINE=1 OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 \
+         OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+         "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" -map "$tmp/c.map" >/dev/null 2>&1; then
+        printf '  FAIL %-50s could not compile it\n' "$what"
+        fail=$((fail + 1)); return
+    fi
+    grep -q "^$2 " "$tmp/c.map" && got=no
+    if [ "$got" = "$want" ]; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-50s %s read in place: want %s, got %s\n' "$what" "$2" "$want" "$got"
+        fail=$((fail + 1))
+    fi
+}
+pick='static int pick(int a, int b) { if (a > b) return a; return b; }'
+inlined "a static called once, read in place"     pick yes \
+    "$pick int f(int x, int y) { return pick(x, y) + 1; }"
+inlined "one called twice, called"                pick no \
+    "$pick int f(int x, int y) { return pick(x, y) + pick(y, x); }"
+inlined "one whose address is taken, called"      pick no \
+    "$pick int (*fp)(int, int) = pick; int f(int x, int y) { return pick(x, y); }"
+inlined "a void one, read in place"               put yes \
+    'static void put(char *p, int n) { while (n--) *p++ = 0; } void f(char *q) { put(q, 4); }'
+# suffix_bit, from zap: its tests are smaller as the first pass makes them,
+# the loop calling it as the leaf backend does, and merged one backend
+# makes both -- 88 bytes more than apart. So it is called.
+sfx='enum { S_SIS = 1, S_LIS, S_SIL, S_LIL }; struct st { int adl; } state; const char *mnemonic_of(const char *s, int n);
+static int suffix_bit(const char *t, int n, int adl, unsigned char *out) { const char c0 = (char) (t[0] | 0x20); const char c1 = n > 1 ? (char) (t[1] | 0x20) : 0; const char c2 = n > 2 ? (char) (t[2] | 0x20) : 0;
+ if (n == 1) { if (c0 == 115) { *out = adl ? S_SIL : S_SIS; return 1; } if (c0 == 108) { *out = adl ? S_LIL : S_LIS; return 1; } return 0; }
+ if (n == 2) { if (c0 != 105) return 0; if (c1 == 115) { *out = adl ? S_LIS : S_SIS; return 1; } if (c1 == 108) { *out = adl ? S_LIL : S_SIL; return 1; } return 0; }
+ if (n == 3 && c1 == 105) { if (c0 == 115 && c2 == 115) { *out = S_SIS; return 1; } if (c0 == 115 && c2 == 108) { *out = S_SIL; return 1; } if (c0 == 108 && c2 == 115) { *out = S_LIS; return 1; } if (c0 == 108 && c2 == 108) { *out = S_LIL; return 1; } }
+ return 0; }
+const char *f(const char *s, int n, unsigned char *suffix) { int i = 1; while (i < n && s[i] != 46) i++; if (i == n) return 0; if (!suffix_bit(&s[i + 1], n - i - 1, state.adl, suffix)) return 0; return mnemonic_of(s, i); }'
+inlined "one that makes its caller bigger, called" suffix_bit no "$sfx"
+# lists' insert_sorted: its loop made from its SSA form, and called from a
+# function the first pass makes -- smaller merged, and slower, the loop in
+# the first pass's code. So it is called.
+sorted_in='struct node { int key; struct node *next; }; struct node pool[8]; unsigned long seed;
+static void insert_sorted(struct node **head, struct node *n) { while (*head && (*head)->key < n->key) head = &(*head)->next; n->next = *head; *head = n; }
+unsigned long f(void) { unsigned long state = seed, check = 0; struct node *head = 0; for (int i = 0; i < 8; i++) { state = state * 1103515245UL + 12345UL; pool[i].key = (int) (state >> 12 & 0x3fff); } for (int i = 0; i < 8; i++) insert_sorted(&head, &pool[i]); for (const struct node *n = head; n; n = n->next) check = check * 3 + (unsigned long) n->key; return check; }'
+inlined "one into a caller a worse backend makes, called" insert_sorted no "$sorted_in"
+# The arguments stored to the body's locals as each is made, not left on
+# the stack for the next call to spill: three locals and the answer, and
+# no more, in the frame.
+args='int g(int); static int mix(int a, int b, int c) { if (a > b) return a - c; return b + c; } int f(int k) { return mix(g(k), g(k + 1), g(k + 2)); }'
+OPTACC_INLINE=1 emits "$OPT" "arguments stored as they are made"  ed22f4f9 yes "$args"
+# A body's locals give their room back where it ends: the second body's
+# take the first's, and the frame is 18 bytes, not 30.
+twobodies='void touch(int *, int *); static int a(int k) { int x, y; touch(&x, &y); return x + y + k; } static int b(int k) { int u, v; touch(&u, &v); return u - v + k; } int f(int k) { int s = a(k); int t = b(k); return s + t; }'
+OPTACC_INLINE=1 all "$OPT" "two bodies' locals in the same room"  ed22eef9 yes "$twobodies"
+# A slot one body gave back and another takes as another type is not
+# shared as a VLA's length is: neither reads the other's, and the function
+# is made from its SSA form.
+retyped='int g(int); static int a(int x, int n) { int last; if (n) last = g(x); if (n) return last; return x; } static char *b(char *x, int n) { char *hit; if (n) hit = x + g(n); if (n) return hit; return x; } char *f(char *q, int n) { int s = a(n, n); char *t = b(q, s); return t; }'
+OPTACC_INLINE=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+    OPTACC_LEAF=1 ssa "a slot given back, taken as another type" \
+    "ssa f made, not by the leaf backend" "$retyped"
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

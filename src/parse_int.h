@@ -45,6 +45,9 @@ struct Inline {
     NameRef *ids;               /* every other name in the text */
     int     *id_sym;            /* what each was where it was written */
     int     *id_macro;
+#ifdef OPT_ACC
+    int      body;              /* the whole body: see inline_body_expand */
+#endif
 };
 
 /* C's precedence, loosest first. The numbers are relative and only their
@@ -150,6 +153,23 @@ int inline_fits(int fn, Type ret);
 __attribute__((noinline)) void return_kept(int line, const char *spot);
 const struct Inline *inline_usable(int fn);
 __attribute__((noinline)) void inline_expand(const struct Inline *in, int fn);
+#ifdef OPT_ACC
+extern int inline_count_mode;     /* a child's run: see inline_child */
+extern char inline_count_out[];   /* where a child writes, and removes */
+int  inline_counts_fork(void);    /* 1 in a child */
+void inline_counts_report(void);  /* a child's findings, sent; it ends */
+void inline_count_call(int fn);
+void inline_func_done(int fn, int size);  /* its code made, so many bytes */
+void inline_count_address(int fn);
+void inline_body_begin(int fn);   /* the body's `{` read: keep it? */
+void inline_body_end(void);       /* its `}` the current token */
+int  inline_body_returning(void); /* whether a return is a body's */
+int  inline_body_call(const struct Inline *in, int fn, int line, const char *spot);
+void call_args_stored(int fn, const int *slots, int n, int line, const char *spot);
+void inline_statement(void);     /* stmt.c */
+int  gen_stack_depth(void);       /* vstack.c */
+void inline_body_return(void);
+#endif
 
 /* type.c */
 extern unsigned char base_const;

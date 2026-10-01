@@ -134,6 +134,10 @@ void    prescan_begin(void);
 void    prescan_param(NameRef name, int offset, int can);
 int     prescan_body(const char *at, NameRef *wants, int *param);
 void    prescan_claim(int offset, Type type, NameRef name);
+/* genlog.c: which backend made the last function, worst first -- a body
+ * read in place of a call is made by its caller's (inline.c). */
+enum { BACKEND_FIRST, BACKEND_SSA, BACKEND_LEAF };
+extern int gl_backend;
 void    gen_iy_take(int offset);     /* vstack.c: the one it chose */
 #endif
 int  gen_iy_pick(int offset, Type type, int quals);  /* a parameter */
@@ -228,6 +232,7 @@ extern int gen_pending_sym;            /* whose address it needs, not yet known 
  * they are the assignments themselves. */
 #ifdef OPT_ACC
 void gen_data_begin(void);            /* func.c */
+void gen_local_scope(int open);       /* an inlined body's locals, 1 then 0 */
 void gen_data_end(void);
 void gen_pending_clear(void);
 #else

@@ -85,6 +85,8 @@ typedef struct {
     Type local_type;            /* I_CONV, I_STEP: the local's type */
     unsigned char kills;        /* the operands this is the last read of, a
                                  * bit each (find_clashes) */
+    unsigned char delegated;    /* leaf backend: made by the first pass's
+                                 * code, for a wide value (leaf_delegate) */
     unsigned char mem_store;    /* I_STEP: of a cached local, whose new
                                  * value is written to its memory too */
 } Ins;
@@ -459,7 +461,7 @@ static int frame(int op)
     switch (op) {
     case GL_gen_local: case GL_gen_local_far: case GL_gen_local_array:
     case GL_gen_local_array_size: case GL_gen_iy_claim:
-    case GL_gen_iy_param: case GL_gen_iy_take:
+    case GL_gen_iy_param: case GL_gen_iy_take: case GL_gen_local_scope:
         return 1;
     }
 
@@ -942,7 +944,7 @@ static void thread_answers(void)
  * reaches it, and where paths with different values meet, a phi joins
  * them. What is left of the local is its values; its slot is not used. */
 
-#define MAX_LOCALS 64
+#define MAX_LOCALS 256           /* zap's biggest have more than 64 */
 #define UNDEF (-3)              /* no value reaches: a read before any write */
 
 typedef struct {
@@ -1020,13 +1022,17 @@ static int local_of(int offset, Type type)
 /* Whether another local shares `local`'s slot: then a read that nothing
  * of its own type reaches is taken to be of the other's value -- a VLA's
  * length is written as an int and read as unsigned -- and the function is
- * left to the first pass. */
+ * left to the first pass. Only a type of the same kind, signed or not: a
+ * slot an inlined call's body gave back is another's of any type, and
+ * neither ever reads the other's. */
 static int local_shared(int local)
 {
     int at;
 
     for (at = 0; at != nlocals; at++)
-        if (at != local && locals[at].offset == locals[local].offset)
+        if (at != local && locals[at].offset == locals[local].offset
+            && (locals[at].type & ~TY_UNSIGNED)
+               == (locals[local].type & ~TY_UNSIGNED))
             return 1;
 
     return 0;
@@ -1544,15 +1550,28 @@ static void cache_step(Ins *insn, int at, int local, int old)
 static int *cur_def;            /* by local: a stack of values, one a push */
 static int *cur_top;
 static int  cur_cap;
+static int *undo;               /* the locals pushed, in the order pushed */
+static int  nundo, undo_cap;
 
+static void undo_push(int local)
+{
+    if (nundo == undo_cap) {
+        undo_cap = undo_cap ? 2 * undo_cap : 256;
+        undo = realloc(undo, (size_t) undo_cap * sizeof *undo);
+        if (!undo)
+            acc_error("out of memory for the SSA form");
+    }
+    undo[nundo++] = local;
+}
+
+/* The dominator tree can be thousands deep, so a frame holds no array. */
 static void rename_block(int blk)
 {
-    int pushed[MAX_LOCALS], at, end, succ, phi, kid;
+    int mark = nundo, at, end, succ, phi, kid;
 
-    memset(pushed, 0, sizeof pushed);
 #define DEF_PUSH(local, val) do {                                        \
         cur_def[(local) * cur_cap + cur_top[local]++] = (val);           \
-        pushed[local]++;                                                 \
+        undo_push(local);                                                \
     } while (0)
 #define DEF_TOP(local) (cur_top[local] ? cur_def[(local) * cur_cap          \
                                                  + cur_top[local] - 1]    \
@@ -1674,8 +1693,8 @@ static void rename_block(int blk)
     }
     for (kid = 0; kid != dom_kids[blk].count; kid++)
         rename_block(dom_kids[blk].at[kid]);
-    for (at = 0; at != nlocals; at++)
-        cur_top[at] -= pushed[at];
+    while (nundo != mark)
+        cur_top[undo[--nundo]]--;
 #undef DEF_PUSH
 #undef DEF_TOP
 }
@@ -2301,6 +2320,7 @@ static void call(const Ins *insn)
         break;
     case GL_gen_local:          (void) gen_local(ARG(0, int)); break;
     case GL_gen_local_far:      (void) gen_local_far(ARG(0, int)); break;
+    case GL_gen_local_scope:    gen_local_scope(ARG(0, int)); break;
     case GL_gen_local_array:    (void) gen_local_array(); break;
     case GL_gen_local_array_size:
         gen_local_array_size(ARG(0, int), ARG(1, int));
@@ -2484,7 +2504,9 @@ static void give_slots(void)
         int at = gen_local(ACC_INT_SIZE);
 
         gen_iy_take(at);
-        fixed_slot[iy_web] = at;
+        for (val = 0; val != nvals; val++)
+            if (web_root(val) == val && fixed_slot[val] == IY_SLOT)
+                fixed_slot[val] = at;
     }
     for (val = 0; fixed_slot && val != nvals; val++)
         if (!vals[val].fwd && vals[val].reg == HOME_SLOT
@@ -2571,7 +2593,7 @@ static void leaf_save_slots(void)
         if (vals[val].used && !vals[val].fwd && across_calls[val]) {
             if (vals[val].reg == R_BC)
                 bc = 1;
-            else if (iy_web >= 0 && web_root(val) == iy_web)
+            else if (iy_web >= 0 && fixed_slot[web_root(val)] == fixed_slot[iy_web])
                 iy = 1;
         }
     leaf_iy_saved_at = iy ? gen_local(ACC_INT_SIZE) : 0;
@@ -2607,7 +2629,7 @@ static int leaf_live_homes(int at, int blk)
         if (live[val] && !vals[val].fwd) {
             if (vals[val].reg == R_BC)
                 homes |= 2;
-            else if (iy_web >= 0 && web_root(val) == iy_web)
+            else if (iy_web >= 0 && fixed_slot[web_root(val)] == fixed_slot[iy_web])
                 homes |= 1;
         }
     free(live);
@@ -2701,9 +2723,12 @@ static int iy_taken_already(void)
 {
     int at;
 
+    /* A declaration logs a claim whatever it is, and only a `register`
+     * one takes IY: one in memory, its address taken, takes nothing. */
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at])
-            && (insns[at].rec->op == GL_gen_iy_claim
+            && ((insns[at].rec->op == GL_gen_iy_claim
+                 && ((int) insns[at].rec->arg[2] & SQ_REGISTER))
                 || insns[at].rec->op == GL_gen_iy_param
                 || insns[at].rec->op == GL_gen_iy_take))
             return 1;
@@ -2810,6 +2835,7 @@ static void emit(void)
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
+    gen_local_settle();                 /* the values' slots live throughout */
     give_slots();
     inline_slots();
 
@@ -2974,6 +3000,9 @@ static int leaf_early_argument(int val, int use)
  * makes them, and in stack order -- checked by walking each block with a
  * stack of its own, and a value that is not where the classic stack would
  * have it is taken out and the walk made again. */
+static int leaf_long(Type type);
+static int leaf_long_ok(int val);
+
 static void find_forwarded(void)
 {
     int *uses = calloc((size_t) nvals + 1, sizeof *uses);
@@ -3008,7 +3037,11 @@ static void find_forwarded(void)
                         && !read_then_written(def_at[val], use_at[val])
                         && use_at[val] > def_at[val]
                         && insns[use_at[val]].block == insns[def_at[val]].block
-                        && !narrow_unwidened(val);
+                        && !narrow_unwidened(val)
+                        && !(leaf_mode && (type_wide(vals[val].type)
+                                           || type_float(vals[val].type))
+                             && !(leaf_long(vals[val].type) && leaf_long_ok(val)
+                                  && !insns[def_at[val]].delegated));
 
     do {
         int blk;
@@ -3445,9 +3478,24 @@ static void plan_fixed(const int *order, int nroots)
                 fits = 0;
         if (!fits)
             continue;
-        iy_web = root;
+
+        /* For the code made here, IY is shared as BC is: by every web
+         * that fits and is live nowhere another in IY is -- the first, the
+         * heaviest, named iy_web. */
+        if (iy_web >= 0) {
+            int other, clash = 0;
+
+            if (!leaf_mode)
+                break;
+            for (other = 0; other != nvals && !clash; other++)
+                if (web_root(other) == other && fixed_slot[other] == IY_SLOT)
+                    clash = webs_clash(other, root);
+            if (clash)
+                continue;
+        } else {
+            iy_web = root;
+        }
         fixed_slot[root] = IY_SLOT;     /* made in give_slots */
-        break;
     }
     for (local = 0; local != nlocals; local++) {
         int root;
@@ -4792,6 +4840,35 @@ static int leaf_indirect_step(Type type)
 }
 
 /* Whether every instruction is one the code here makes. */
+/* Whether an instruction with a wide value -- a long or a float -- in it
+ * can be left to the first pass's code (leaf_delegate): its operands put
+ * on the classic stack, the call made again, and its answer taken back.
+ * The wide values themselves live in frame slots. */
+static int leaf_delegable(const Ins *insn)
+{
+    int operand;
+
+    switch (insn->op) {
+    case GL_vapply: case GL_vconvert: case GL_vcast: case GL_vtruth:
+    case GL_vneg: case GL_vnot: case GL_vpush_local: case GL_vstore_local:
+    case GL_vderef: case GL_vstore_indirect: case I_CONV: case I_STEP:
+    case GL_vprefix_indirect: case GL_vpostfix_indirect:
+    case GL_vprefix_local: case GL_vpostfix_local:
+        break;
+    case GL_vdrop:
+        return 1;                       /* a value in a slot: nothing */
+    default:
+        return 0;
+    }
+    if (insn->rec->top.bits)
+        return 0;
+    for (operand = 0; operand != insn->nin; operand++)
+        if (insn->in[operand].attr.bits || type_is_struct(insn->in[operand].attr.type))
+            return 0;
+
+    return 1;
+}
+
 static int leaf_ok(void)
 {
     int at, operand;
@@ -4809,6 +4886,7 @@ static int leaf_ok(void)
          * or an array as a value is its address; a long, only where all
          * that is ever kept of it is its low three bytes -- see
          * leaf_long_ok -- or a constant one dropped. */
+        insns[at].delegated = 0;
         for (operand = 0; operand != insn->nin; operand++)
             if (!leaf_value_type(insn->in[operand].attr.type)
                 && !(leaf_long(insn->in[operand].attr.type)
@@ -4816,13 +4894,35 @@ static int leaf_ok(void)
                          ? leaf_long_ok(insn->in[operand].val)
                          : insn->in[operand].val == S_CONST
                            && (op == GL_vdrop
-                               || (op == GL_vstore_indirect && operand == 1)))))
-                return leaf_why = "an operand wider than an int", 0;
+                               || (op == GL_vstore_indirect && operand == 1))))) {
+                if (!leaf_delegable(insn))
+                    return leaf_why = "an operand wider than an int", 0;
+                insns[at].delegated = 1;
+            }
         if (insn->res >= 0 && !leaf_value_type(vals[insn->res].type)
             && !(leaf_long(vals[insn->res].type) && leaf_long_ok(insn->res)
                  && (op == GL_vpush_local || op == GL_vderef
-                     || op == GL_vstore_local || op == GL_vstore_indirect)))
-            return leaf_why = "a value wider than an int", 0;
+                     || op == GL_vstore_local || op == GL_vstore_indirect))) {
+            if (!leaf_delegable(insn))
+                return leaf_why = "a value wider than an int", 0;
+            insns[at].delegated = 1;
+        }
+        /* A read or write through a pointer of something wide: the
+         * pointer and an int written are narrow, the memory is not -- but
+         * for a long read as its low three bytes, or a constant written,
+         * which the code here makes. */
+        if ((op == GL_vderef || op == GL_vstore_indirect)
+            && type_pointer(insn->in[0].attr.type)
+            && (type_wide(type_deref(insn->in[0].attr.type))
+                || type_float(type_deref(insn->in[0].attr.type)))
+            && !(leaf_long(type_deref(insn->in[0].attr.type))
+                 && (op == GL_vderef
+                     ? insn->res >= 0 && leaf_long_ok(insn->res)
+                     : insn->in[1].val == S_CONST))
+            && leaf_delegable(insn))
+            insns[at].delegated = 1;
+        if (insn->delegated)
+            continue;
         switch (op) {
         case I_FRAME:
             /* The frame is laid down again as the first pass laid it, arrays
@@ -4830,7 +4930,8 @@ static int leaf_ok(void)
              * or where it claims nothing -- not a `register` local. */
             switch (insn->rec->op) {
             case GL_gen_local: case GL_gen_local_array:
-            case GL_gen_local_array_size:
+            case GL_gen_local_array_size: case GL_gen_local_far:
+            case GL_gen_local_scope:
                 continue;
             case GL_gen_iy_claim:
                 if (!((int) insn->rec->arg[2] & SQ_REGISTER))
@@ -4855,8 +4956,11 @@ static int leaf_ok(void)
             continue;
         case GL_vprefix_local: case GL_vpostfix_local:
             /* ++ and -- of a local in memory, in its slot. */
-            if (insn->rec->top.bits || !leaf_type((Type) insn->rec->arg[1]))
-                return leaf_why = "a step of a local in memory not a scalar", 0;
+            if (insn->rec->top.bits || !leaf_type((Type) insn->rec->arg[1])) {
+                if (!leaf_delegable(insn))
+                    return leaf_why = "a step of a local in memory not a scalar", 0;
+                insns[at].delegated = 1;        /* the first pass's code */
+            }
             continue;
         case GL_vprefix_indirect: case GL_vpostfix_indirect: {
             /* ++ and -- through a pointer. */
@@ -4864,8 +4968,12 @@ static int leaf_ok(void)
                           ? type_deref(insn->in[0].attr.type) : TY_VOID;
 
             if (insn->rec->top.bits || insn->in[0].attr.bits
-                || !leaf_type(target) || !leaf_indirect_step(target))
-                return leaf_why = "a step through a pointer not of a scalar", 0;
+                || !leaf_type(target) || !leaf_indirect_step(target)) {
+                if (!leaf_delegable(insn))
+                    return leaf_why = "a step through a pointer not of a scalar", 0;
+                insns[at].delegated = 1;        /* the first pass's code */
+                continue;
+            }
             continue;
         }
         case GL_vpush_local: case GL_vstore_local:
@@ -4915,13 +5023,25 @@ static int leaf_ok(void)
                     && !type_is_struct(type_deref(insn->in[0].attr.type))
                     && !(op == GL_vderef
                          && type_is_array(type_deref(insn->in[0].attr.type))))
-                || insn->rec->top.bits || insn->in[0].attr.bits)
+                || insn->rec->top.bits || insn->in[0].attr.bits) {
+                /* A short, say: the first pass's code reads or writes it. */
+                if (type_pointer(insn->in[0].attr.type) && leaf_delegable(insn)) {
+                    insns[at].delegated = 1;
+                    continue;
+                }
                 return leaf_why = "a read or write not of a scalar", 0;
+            }
             continue;
         case GL_gen_data:
             continue;                   /* a string's bytes, jumped over */
         case GL_vapply:
             arith = (int) insn->rec->arg[0];
+            /* Narrowed to a short: the first pass's code makes it. */
+            if (insn->rec->arg[1] && type_size((Type) insn->rec->arg[1]) != 1
+                && leaf_delegable(insn)) {
+                insns[at].delegated = 1;
+                continue;
+            }
             if (insn->rec->arg[1] && !leaf_narrow_ok(insn, arith))
                 return leaf_why = "an operator on bytes", 0;
             if (insn->rec->arg[1])
@@ -6098,6 +6218,120 @@ static int leaf_slot_to_home(int val, int disp, Type type)
     return 1;
 }
 
+/* One operand of a delegated instruction onto the classic stack: a
+ * constant made again, a value in its slot -- or IY's, which the first
+ * pass's code reads as its local in IY -- or in BC as it is, the one left
+ * on the stack here from HL, and a global's address through DE. */
+static int hl_taken;             /* leaf_delegate: an operand is in HL */
+
+static void leaf_delegate_operand(const Ent *ent, int fwd_reg)
+{
+    int val = ent->val;
+
+    if (val < 0 || (vals[val].reg == HOME_SLOT && !vals[val].fwd)) {
+        load(ent);
+        return;
+    }
+    if (vals[val].fwd) {
+        vpush_reg(fwd_reg);             /* leaf_delegate put it there */
+    } else if (vals[val].reg == R_BC) {
+        vpush_reg(R_BC);
+    } else {
+        int reg = fwd_reg == R_HL && !hl_taken ? R_HL : R_DE;
+
+        leaf_load(ent, reg);
+        vpush_reg(reg);
+        hl_taken |= reg == R_HL;
+    }
+    (vsp - 1)->type = ent->attr.type;
+    vset_ext(ent->attr.ext);
+    vset_quals(ent->attr.quals);
+}
+
+/* An instruction with a wide value in it, made by the first pass's code:
+ * its operands on the classic stack, the call made again, and the answer
+ * -- a wide one into its slot, anything narrower into HL as the code here
+ * makes it. BC, which that code may take for itself, is saved around it
+ * where a value is in it; IY is the first pass's own local, which its code
+ * saves where it uses IY. */
+static void leaf_delegate(const Ins *insn, int at)
+{
+    int operand, keep_bc, res = insn->res, nfwd = 0, global = 0, pushed_at;
+    int fwd_reg[2] = { R_HL, R_HL };
+
+    /* What is on the stack here: one into HL, or two -- a store's address
+     * and its value -- the left into HL and the right into DE. */
+    for (operand = 0; operand != insn->nin; operand++) {
+        int val = insn->in[operand].val;
+
+        nfwd += val >= 0 && vals[val].fwd;
+        global |= val >= 0 && !vals[val].fwd && vals[val].reg == HOME_GLOBAL;
+    }
+    if (nfwd > 2 || (nfwd == 2 && (insn->nin != 2 || global))) {
+        fail = "internal: a wide value's instruction with too much on the stack";
+        return;
+    }
+    if (nfwd == 2) {
+        (void) leaf_operands_in(insn, 0);
+        fwd_reg[1] = R_DE;
+    } else {
+        for (operand = 0; operand != insn->nin; operand++)
+            if (insn->in[operand].val >= 0 && vals[insn->in[operand].val].fwd) {
+                leaf_operand_hl(insn, operand);     /* the one on the stack */
+                break;
+            }
+    }
+    if (vtop != 0) {
+        fail = "internal: the classic stack not empty for a wide value";
+        return;
+    }
+    hl_taken = nfwd != 0;
+    for (operand = 0; operand != insn->nin && !fail; operand++)
+        leaf_delegate_operand(&insn->in[operand], fwd_reg[operand < 2 ? operand : 1]);
+
+    /* What the code here loads is loaded; what the first pass makes from
+     * here on may take BC. */
+    keep_bc = leaf_bc_busy(at);
+    pushed_at = out_here();
+    if (keep_bc)
+        push_rr(R_BC);
+    switch (insn->op) {
+    case I_CONV:
+        vconvert(insn->local_type);
+        break;
+    case I_STEP:
+        vpush_const(1, TY_INT);
+        vapply((unsigned char) insn->step_op, type_narrow(insn->local_type));
+        vconvert(insn->local_type);
+        break;
+    default:
+        call(insn);
+        break;
+    }
+    if (res < 0 || !vals[res].used) {
+        while (vtop)
+            vdrop();
+    } else if (type_wide(vals[res].type) || type_float(vals[res].type)) {
+        vstore_local(vals[res].slot, vals[res].type);
+        vdrop();
+    } else {
+        int reg = vpop_reg();
+
+        if (reg != R_HL)
+            mov_rr(R_HL, reg);
+        leaf_hl_type = vals[res].type;
+    }
+    if (vtop != 0)
+        fail = "internal: the classic stack not empty after a wide value";
+    if (keep_bc && out_here() == pushed_at + 1)
+        out_rewind(pushed_at);          /* nothing made: nothing to keep */
+    else if (keep_bc)
+        pop_rr(R_BC);
+    if (res >= 0 && vals[res].used
+        && !(type_wide(vals[res].type) || type_float(vals[res].type)))
+        leaf_result(res);
+}
+
 static void leaf_insn(const Ins *insn, int blk, int at)
 {
     int op = insn->op, number, value, cc;
@@ -6141,6 +6375,10 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         && op != GL_vpush_const && op != GL_vpush_bss && op != GL_gen_data
         && !(op == GL_vdrop && insn->nin == 0))
         leaf_free_hl(insn);
+    if (insn->delegated && op != GL_vdrop) {
+        leaf_delegate(insn, at);
+        return;
+    }
     switch (op) {
     case I_FRAME: case GL_vdrop: case GL_gen_stmt_end: case GL_gen_value_end:
         if (op == GL_vdrop) {
@@ -6493,7 +6731,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 next++;
             if (next < ninsns && insns[next].op == GL_vderef
                 && insns[next].in[0].val == insn->res && insn->res >= 0
-                && vals[insn->res].fwd) {
+                && vals[insn->res].fwd && !insns[next].delegated) {
                 Type read = type_deref(insns[next].in[0].attr.type);
 
                 if (leaf_long(read))
@@ -6515,7 +6753,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
              * ld hl, n / ld (iy+d), hl -- the address never made. */
             if (next < ninsns && insns[next].op == GL_vstore_indirect
                 && insns[next].in[0].val == insn->res && insn->res >= 0
-                && vals[insn->res].fwd
+                && vals[insn->res].fwd && !insns[next].delegated
                 && leaf_const(&insns[next].in[1], &value)) {
                 Type to = type_deref(insns[next].in[0].attr.type);
 
@@ -7232,6 +7470,7 @@ static void emit_leaf(void)
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
+    gen_local_settle();                 /* the values' slots live throughout */
     leaf_save_slots();
 
     /* A global's address left on the stack for one use is loaded where it
@@ -7639,6 +7878,7 @@ static void emit_regs(void)
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
+    gen_local_settle();                 /* the values' slots live throughout */
     give_slots();
     inline_slots();
 
@@ -7881,6 +8121,7 @@ int ssa_generate(const char **why)
 
         return made;
     }
+    gen_local_settle();                 /* plan_slots counts from all of it */
     if (fail || !plan_slots()) {
         *why = fail;
         forget();
