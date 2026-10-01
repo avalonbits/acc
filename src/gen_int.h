@@ -322,6 +322,11 @@ void relax_function(const Mark *from, int frame_at);
 #ifdef OPT_ACC
 extern int frame_cut_len;          /* relax_function's cut of the prologue */
 void gen_local_settle(void);       /* locals below all the room taken */
+void relax_cut_code(Cut *cuts, int ncuts, const Mark *from, int fn_from,
+                    int fn_to);
+void peep_function(const Mark *from, int start);   /* peep.c */
+int  peep_analyse(const Mark *from, int start, int end);
+int  peep_gone(int at);
 #endif
 #ifdef OPT_ACC
 void relax_state(int *nwants_at, int *nstatics_at, int restore);

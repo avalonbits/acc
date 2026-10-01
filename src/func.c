@@ -15,6 +15,9 @@
 #include "gen_int.h"
 
 static void call_through(void);
+#ifdef OPT_ACC
+static int func_start;          /* the function's first byte, for peep.c */
+#endif
 
 #ifdef OPT_ACC
 /* The locals as a stack: an inlined call's body gives its room back where
@@ -433,6 +436,9 @@ void gen_func_begin(int fn, int nparams, Type returns)
     (void) nparams;
 
     sym_at(fn)->val = out_here();
+#ifdef OPT_ACC
+    func_start = out_here();
+#endif
     nconst_rets = 0;
     npool = npool_sites = 0;
     out_on_rewind = gen_rewound;
@@ -580,6 +586,7 @@ void gen_func_end(void)
 #endif
 #ifdef OPT_ACC
     relax_function(&func_mark, frame_lea());
+    peep_function(&func_mark, func_start);
 #else
     relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
 #endif

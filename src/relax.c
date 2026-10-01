@@ -627,6 +627,31 @@ static void branch_over(int *at, unsigned char *cc, int n)
 int frame_cut_len;
 #endif
 
+#ifdef OPT_ACC
+/* Instructions peep.c took out of the function from `fn_from` to `fn_to`:
+ * cut as a jump's operand is, and the symbols among the function's bytes --
+ * a block static's, jumped over -- moved with them. */
+void relax_cut_code(Cut *cuts, int ncuts, const Mark *from, int fn_from,
+                    int fn_to)
+{
+    int i;
+
+    cut_out(cuts, ncuts, 1, from);
+    for (i = 0; i < sym_nglobals(); i += (int) sizeof(Sym)) {
+        Sym *sym = sym_at(i);
+        int to;
+
+        if (sym->val <= fn_from || sym->val >= fn_to
+            || sym->kind == SYM_CONST || sym->kind == SYM_TYPEDEF)
+            continue;
+        to = out_cut_moved(sym->val);
+        if (to < 0)
+            acc_error("internal: a symbol in code taken out");
+        sym->val = to;
+    }
+}
+#endif
+
 void relax_function(const Mark *from, int frame_at)
 {
     Cut *cuts;
