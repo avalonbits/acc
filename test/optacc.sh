@@ -408,6 +408,7 @@ OPTACC_LEAF=1 all "$OPT" "a _Bool member, ld (iy+2), 1"     fd360201   yes "$mem
 OPTACC_LEAF=1 all "$OPT" "an int member, ld (iy+3), hl"     21fefffffd2f03 yes "$members"
 OPTACC_LEAF=1 all "$OPT" "no address pushed and popped"     e5e1       no  "$members"
 OPTACC_LEAF=1 all "$OPT" "op++ in IY, lea iy, iy+6"         ed3306     yes "$members"
+OPTACC_LEAF=1 all "$OPT" "op into IY at entry, ld iy, (ix+6)" dd3106   yes "$members"
 # A branch on a constant is no test in the leaf backend either: `while
 # (1)` falls into its body, a macro's `do ... while (0)` out of it.
 consts='int f(int x) { do x += 2; while (0); while (1) { if (x > 9) break; x++; } return x; }'
@@ -417,5 +418,11 @@ OPTACC_LEAF=1 all "$OPT" "no constant tested"               09b7ed42 no "$consts
 # the first pass has them: made here.
 leafs "a string literal, made here"               yes \
     'int puts(const char *); int f(int x) { puts(x ? "yes" : "no"); return "abc"[x]; }'
+# A long constant written through a pointer: made here, the low three
+# bytes and then the top one -- ld (iy+3), hl / ld (iy+6), 0x12 for a
+# member through IY.
+longs='typedef struct { char *name; long addr; } node; void f(node *n) { n->addr = 0x12345678; }'
+leafs "a long constant written, made here"        yes "$longs"
+OPTACC_LEAF=1 all "$OPT" "its bytes, ld (iy+3), hl / ld (iy+6), n" 21785634fd2f03fd360612 yes "$longs"
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

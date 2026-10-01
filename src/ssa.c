@@ -4389,12 +4389,14 @@ static int leaf_ok(void)
                 && !(leaf_long(insn->in[operand].attr.type)
                      && (insn->in[operand].val >= 0
                          ? leaf_long_ok(insn->in[operand].val)
-                         : op == GL_vdrop && insn->in[operand].val == S_CONST)))
+                         : insn->in[operand].val == S_CONST
+                           && (op == GL_vdrop
+                               || (op == GL_vstore_indirect && operand == 1)))))
                 return leaf_why = "an operand wider than an int", 0;
         if (insn->res >= 0 && !leaf_value_type(vals[insn->res].type)
             && !(leaf_long(vals[insn->res].type) && leaf_long_ok(insn->res)
                  && (op == GL_vpush_local || op == GL_vderef
-                     || op == GL_vstore_local)))
+                     || op == GL_vstore_local || op == GL_vstore_indirect)))
             return leaf_why = "a value wider than an int", 0;
         switch (op) {
         case I_FRAME:
@@ -4482,6 +4484,9 @@ static int leaf_ok(void)
                 || (!leaf_type(type_deref(insn->in[0].attr.type))
                     && type_deref(insn->in[0].attr.type) != TY_BOOL
                     && !(op == GL_vderef && leaf_long(type_deref(insn->in[0].attr.type)))
+                    && !(op == GL_vstore_indirect
+                         && leaf_long(type_deref(insn->in[0].attr.type))
+                         && insn->in[1].val == S_CONST)
                     && !type_is_struct(type_deref(insn->in[0].attr.type))
                     && !(op == GL_vderef
                          && type_is_array(type_deref(insn->in[0].attr.type))))
@@ -5987,6 +5992,16 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                     leaf_skip_until = next;
                     return;
                 }
+                /* A long: its low three bytes from HL, its top one after. */
+                if (leaf_long(to) && disp_fits(number + 3)) {
+                    ld_rr_imm(R_HL, value);
+                    out_iy_d(0x2f, number);             /* ld (iy+d), hl */
+                    out_iy_d(0x36, number + 3);         /* ld (iy+d+3), n */
+                    out_byte((int) ((unsigned) value >> 24));
+                    leaf_result(insns[next].res);
+                    leaf_skip_until = next;
+                    return;
+                }
             }
             lea_rr_iy(R_HL, number);
         } else {
@@ -6024,6 +6039,21 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             return;
         }
 
+        /* A long, which leaf_ok lets through only as a constant: the low
+         * three bytes, ld (hl), de, and the top one. HL is the address
+         * three on; the answer, if it is read, its low three bytes. */
+        if (leaf_long(to) && leaf_const(&insn->in[1], &number)) {
+            leaf_operand_hl(insn, 0);
+            ld_rr_imm(R_DE, number);
+            out_byte2(0xed, 0x1f);              /* ld (hl), de */
+            step_reg(R_HL, 3);
+            out_byte2(0x36, (int) ((unsigned) number >> 24));  /* ld (hl), n */
+            if (insn->res >= 0 && vals[insn->res].used) {
+                ld_rr_imm(R_HL, number);
+                leaf_result(insn->res);
+            }
+            return;
+        }
         if (leaf_const(&insn->in[1], &number) && type_size(to) == 1) {
             if (to == TY_BOOL)
                 number = number != 0;
@@ -6615,6 +6645,12 @@ static void emit_leaf(void)
                     pop_rr(R_BC);
                 }
                 leaf_holds[val] = type;
+            } else if (iy_web >= 0 && vals[val].reg == HOME_SLOT
+                       && vals[val].slot == fixed_slot[iy_web]
+                       && type_size(type) == ACC_INT_SIZE) {
+                frame_byte(0x31, locals[local].offset);     /* ld iy, (ix+d) */
+                leaf_holds[val] = type;
+                leaf_widths[val] = 3;
             } else {
                 if (type_size(type) == ACC_INT_SIZE)
                     ld_rr_ix(R_HL, locals[local].offset);
