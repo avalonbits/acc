@@ -17,6 +17,39 @@
 
 static void wide_bytes_at(int disp, uint64_t bits, int n);
 
+/* The pair a wide value goes through three bytes at a time: IY, the
+ * backend's scratch -- or, for opt-acc, in a function where a local lives
+ * in IY, DE or BC where nothing is in it, which saves pushing and popping
+ * IY around the move, four bytes. The loads and stores are the same
+ * length in each. wide_pair says which: 0 IY, 1 DE, 2 BC; and the
+ * opcodes, by it. acc keeps to IY: the few functions it holds a local in
+ * IY -- `register` -- and moves a long in were not worth its bytes. */
+static const unsigned char pair_ld_ix[3] = { 0x31, 0x17, 0x07 };   /* ld rr, (ix+d) */
+static const unsigned char pair_st_ix[3] = { 0x3e, 0x1f, 0x0f };   /* ld (ix+d), rr */
+
+#ifdef OPT_ACC
+static unsigned char wide_pair;
+
+static void wide_pair_begin(void)
+{
+    wide_pair = 0;
+    if (iy_local)
+        wide_pair = !reg_busy(R_DE) ? 1 : !reg_busy(R_BC) ? 2 : 0;
+    if (!wide_pair)
+        iy_save();
+}
+
+static void wide_pair_end(void)
+{
+    if (!wide_pair)
+        iy_restore();
+}
+#else
+#define wide_pair       0
+#define wide_pair_begin iy_save
+#define wide_pair_end   iy_restore
+#endif
+
 /* lea rr, ix+d -- the address of a frame slot, which is what the helpers take.
  * The second byte is the register, and these are the assembler's own numbers
  * rather than a reading of the opcode map: guessing DE cost a debugging pass. */
@@ -78,14 +111,14 @@ static void copy_long(int to, int from, int n)
      * already hold -- twelve bytes of code where a byte at a time was
      * twenty-four. */
     if (n >= ACC_INT_SIZE && (to + n <= from || from + n <= to)) {
-        iy_save();
+        wide_pair_begin();
         for (i = 0; i < n; i += ACC_INT_SIZE) {
             if (i > n - ACC_INT_SIZE)
                 i = n - ACC_INT_SIZE;
-            out_byte3(0xdd, 0x31, from + i);    /* ld iy, (ix+d) */
-            out_byte3(0xdd, 0x3e, to + i);      /* ld (ix+d), iy */
+            out_byte3(0xdd, pair_ld_ix[wide_pair], from + i);  /* ld iy, (ix+d) */
+            out_byte3(0xdd, pair_st_ix[wide_pair], to + i);    /* ld (ix+d), iy */
         }
-        iy_restore();
+        wide_pair_end();
 
         return;
     }
@@ -334,7 +367,7 @@ void wide_through_hl(int slot, int n, int store)
     int i, at = 0;
 
     if (n >= ACC_INT_SIZE && disp_fits(slot) && disp_fits(slot + n - 1)) {
-        iy_save();
+        wide_pair_begin();
         for (i = 0; i < n; i += ACC_INT_SIZE) {
             if (i > n - ACC_INT_SIZE)
                 i = n - ACC_INT_SIZE;
@@ -342,15 +375,16 @@ void wide_through_hl(int slot, int n, int store)
                 inc_hl();
                 at++;
             }
+            /* ld (hl), rr and ld rr, (hl) have ld (ix+d)'s opcodes */
             if (store) {
-                out_byte3(0xdd, 0x31, slot + i);    /* ld iy, (ix+d) */
-                out_byte2(0xed, 0x3e);              /* ld (hl), iy */
+                out_byte3(0xdd, pair_ld_ix[wide_pair], slot + i);  /* ld iy, (ix+d) */
+                out_byte2(0xed, pair_st_ix[wide_pair]);            /* ld (hl), iy */
             } else {
-                out_byte2(0xed, 0x31);              /* ld iy, (hl) */
-                out_byte3(0xdd, 0x3e, slot + i);    /* ld (ix+d), iy */
+                out_byte2(0xed, pair_ld_ix[wide_pair]);            /* ld iy, (hl) */
+                out_byte3(0xdd, pair_st_ix[wide_pair], slot + i);  /* ld (ix+d), iy */
             }
         }
-        iy_restore();
+        wide_pair_end();
 
         return;
     }
@@ -392,20 +426,23 @@ static void wide_bytes_at(int disp, uint64_t bits, int n)
     if (n >= ACC_INT_SIZE && disp_fits(disp) && disp_fits(disp + n - 1)) {
         int last = -1;
 
-        iy_save();
+        wide_pair_begin();
         for (i = 0; i < n; i += ACC_INT_SIZE) {
             if (i > n - ACC_INT_SIZE)
                 i = n - ACC_INT_SIZE;
             /* IY already holds these three bytes -- a zero's runs are all
              * alike -- so it is stored again without the load. */
             if (last < 0 || memcmp(bytes + last, bytes + i, 3)) {
-                out_byte2(0xfd, 0x21);          /* ld iy, nn */
+                if (wide_pair)                  /* ld de, nn / ld bc, nn */
+                    out_byte(wide_pair == 1 ? 0x11 : 0x01);
+                else
+                    out_byte2(0xfd, 0x21);      /* ld iy, nn */
                 out_byte3(bytes[i], bytes[i + 1], bytes[i + 2]);
             }
-            out_byte3(0xdd, 0x3e, disp + i);    /* ld (ix+d), iy */
+            out_byte3(0xdd, pair_st_ix[wide_pair], disp + i);  /* ld (ix+d), iy */
             last = i;
         }
-        iy_restore();
+        wide_pair_end();
 
         return;
     }
@@ -945,10 +982,10 @@ static int long_const_bytes(int op, Type result)
             break;
         }
         k /= 8;
-        iy_save();
-        out_byte3(0xdd, 0x31, src + 1 - k);             /* ld iy, (ix+d) */
-        out_byte3(0xdd, 0x3e, left + 1);                /* ld (ix+d), iy */
-        iy_restore();
+        wide_pair_begin();
+        out_byte3(0xdd, pair_ld_ix[wide_pair], src + 1 - k);   /* ld iy, (ix+d) */
+        out_byte3(0xdd, pair_st_ix[wide_pair], left + 1);      /* ld (ix+d), iy */
+        wide_pair_end();
         out_byte(0xaf);                                 /* xor a, a */
         for (i = 0; i < k; i++)
             ld_ix_a(left + i);
@@ -970,10 +1007,10 @@ static int long_const_bytes(int op, Type result)
             ld_a_ix(src + 3);
             out_byte2(0x17, 0x9f);                      /* rla; sbc a, a */
         }
-        iy_save();
-        out_byte3(0xdd, 0x31, src + k);                 /* ld iy, (ix+d) */
-        out_byte3(0xdd, 0x3e, left);                    /* ld (ix+d), iy */
-        iy_restore();
+        wide_pair_begin();
+        out_byte3(0xdd, pair_ld_ix[wide_pair], src + k);   /* ld iy, (ix+d) */
+        out_byte3(0xdd, pair_st_ix[wide_pair], left);      /* ld (ix+d), iy */
+        wide_pair_end();
         for (i = 4 - k; i < 4; i++)
             ld_ix_a(left + i);
         break;

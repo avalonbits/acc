@@ -86,7 +86,11 @@ regloop='int f(const char *p, int n) { register int s = 0; while (n--) s += *p++
 prologue=dde5dd21000000dd39         # push ix; ld ix, 0; add ix, sp
 wants "$ACC" "a frame: acc calls the prologue"     acc_rt_frameset yes "$framed"
 wants "$OPT" "a frame: opt-acc does not"           acc_rt_frameset no  "$framed"
-emits "$OPT" "a frame: opt-acc writes it out"      "${prologue}21......39f9" yes "$framed"
+emits "$OPT" "a frame: opt-acc writes it out"      "${prologue}ed22..f9" yes "$framed"
+# -- lea hl, ix-frame / ld sp, hl, where the frame is in its reach, and
+# ld hl, -frame / add hl, sp / ld sp, hl where it is not.
+bigframe='int f(int x) { int a[60]; a[x & 63] = x; return a[0]; }'
+emits "$OPT" "a big frame: ld hl, -frame"          "${prologue}21......39f9" yes "$bigframe"
 emits "$ACC" "a frame: acc does not"               "$prologue" no "$framed"
 # No frame: the load and the two after it are cut, and the body follows.
 emits "$OPT" "no frame: the nine bytes, then the body" "${prologue}21070000" yes "$empty"
@@ -98,6 +102,11 @@ lea_hl_iy=ed2300                    # lea hl, iy+0: a read of the IY local
 longloop='long f(const char *p, int n) { long t = 1; int s = 0; while (n--) s += *p++; return s + t; }'
 emits "$OPT" "a loop with a long: opt-acc keeps a local in IY" "$lea_hl_iy" yes "$longloop"
 emits "$OPT" "a loop without: left to the SSA form"  "$lea_hl_iy" no "$loop"
+# There a long goes three bytes at a time through DE or BC, where free,
+# rather than IY with the local pushed and popped around every move.
+crctable='unsigned long t[256]; void f(void) { for (unsigned n = 0; n < 256; n++) { unsigned long c = n; for (int k = 0; k < 8; k++) c = c & 1 ? 0xedb88320UL ^ (c >> 1) : c >> 1; t[n] = c; } }'
+emits "$OPT" "a long beside a local in IY, kept there"   "$lea_hl_iy" yes "$crctable"
+emits "$OPT" "and moved without pushing IY"             fde5 no "$crctable"
 emits "$ACC" "a loop: acc does not unasked"        "$lea_hl_iy" no  "$loop"
 emits "$ACC" "a loop: acc does when told register" "$lea_hl_iy" yes "$regloop"
 
@@ -257,8 +266,8 @@ OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
     ssa "a struct read for a member" "ssa f made" \
     'struct s { int a, b; }; int f(struct s *p, int i) { return p[i].b + (*p).a; }'
 frame='int f(int a) { int x = a + 1, y = x * 2, z = y - 3; return z; }'
-all "$OPT" "the frame without the locals made values"  21fdffff yes "$frame"
-emits "$OPT" "which the first pass's has"              21f7ffff yes "$frame"
+all "$OPT" "the frame without the locals made values"  ed22fdf9 yes "$frame"
+emits "$OPT" "which the first pass's has"              ed22f7f9 yes "$frame"
 
 # With OPTACC_LEAF, a function that calls nothing and holds nothing wider
 # than an int is made by a backend of opt-acc's own, every instruction

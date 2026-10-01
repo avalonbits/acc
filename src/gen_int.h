@@ -320,6 +320,9 @@ extern int relax_cap;
 extern int *arr_cut_at, narr_cuts, arr_cuts_cap;
 void relax_function(const Mark *from, int frame_at);
 #ifdef OPT_ACC
+extern int frame_cut_len;          /* relax_function's cut of the prologue */
+#endif
+#ifdef OPT_ACC
 void relax_state(int *nwants_at, int *nstatics_at, int restore);
 void finish_state(int *saved, int restore);   /* four ints */
 

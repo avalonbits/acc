@@ -623,6 +623,10 @@ static void branch_over(int *at, unsigned char *cc, int n)
     }
 }
 
+#ifdef OPT_ACC
+int frame_cut_len;
+#endif
+
 void relax_function(const Mark *from, int frame_at)
 {
     Cut *cuts;
@@ -669,12 +673,13 @@ void relax_function(const Mark *from, int frame_at)
 
         /* A frame of no bytes, which the prologue made room to set up before
          * it knew: the ld hl of its size, taken out with the jumps'
-         * operands. It comes before every jump in the function, so the runs
+         * operands -- or, for opt-acc, what frame_lea left of a small
+         * frame's. It comes before every jump in the function, so the runs
          * are still in order, and nothing jumps into it. */
         if (frame_at >= 0) {
             cut->at = frame_at;
 #ifdef OPT_ACC
-            cut->len = 6;               /* and opt-acc's add hl, sp; ld sp, hl */
+            cut->len = frame_cut_len;   /* see frame_lea */
 #else
             cut->len = 4;
 #endif
