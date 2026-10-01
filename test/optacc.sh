@@ -396,5 +396,22 @@ leafs "a long read and kept as an int, made here" yes \
     'void g(long *); int f(void) { long v = 0; g(&v); return (int) v; }'
 leafs "a long made a _Bool, not"                 no \
     'int f(const long *p) { return (_Bool) *p; }'
+# Constants written to members of the struct a pointer in IY points at:
+# ld (iy+d), n for a byte, 1 for a _Bool given 5, and ld hl, n / ld
+# (iy+d), hl for an int -- -2 too, which is `-` of 2 folded -- with no
+# address made in HL and pushed; and the pointer stepped by the struct's
+# size in place, lea iy, iy+6.
+members='typedef struct { unsigned char r0, r1; _Bool b; int i; } dop;
+void f(dop *op, int n) { while (n--) { op->r0 = 7; op->b = 5; op->i = -2; op++; } }'
+OPTACC_LEAF=1 all "$OPT" "a byte member, ld (iy+0), 7"      fd360007   yes "$members"
+OPTACC_LEAF=1 all "$OPT" "a _Bool member, ld (iy+2), 1"     fd360201   yes "$members"
+OPTACC_LEAF=1 all "$OPT" "an int member, ld (iy+3), hl"     21fefffffd2f03 yes "$members"
+OPTACC_LEAF=1 all "$OPT" "no address pushed and popped"     e5e1       no  "$members"
+OPTACC_LEAF=1 all "$OPT" "op++ in IY, lea iy, iy+6"         ed3306     yes "$members"
+# A branch on a constant is no test in the leaf backend either: `while
+# (1)` falls into its body, a macro's `do ... while (0)` out of it.
+consts='int f(int x) { do x += 2; while (0); while (1) { if (x > 9) break; x++; } return x; }'
+leafs "constant conditions, made here"             yes "$consts"
+OPTACC_LEAF=1 all "$OPT" "no constant tested"               09b7ed42 no "$consts"
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

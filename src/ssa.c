@@ -745,7 +745,13 @@ static void build_one(const GenRec *rec)
         return;
     }
     if ((val_const(rec->top.kind) || rec->top.kind == VAL_WIDE) && pure(op)) {
+        int operand, values = 0;
+
         insn->op = GL_vdrop;            /* folded: nothing to emit */
+        for (operand = 0; operand != insn->nin; operand++)
+            values += insn->in[operand].val != S_CONST;
+        if (!values)
+            insn->nin = 0;              /* and nothing to drop: `-2` */
         push(result(rec, -1));
         return;
     }
@@ -5547,7 +5553,7 @@ static void leaf_convert(const Ent *from, Type to)
 
 static void leaf_insn(const Ins *insn, int blk, int at)
 {
-    int op = insn->op, number, cc;
+    int op = insn->op, number, value, cc;
 
     /* Between a comparison and the branch it was made with: nothing. */
     if ((at > fused_from && at < skip_branch) || at <= leaf_skip_until)
@@ -5555,7 +5561,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
 
     /* A step in place, where the value and the new one share BC or IY:
      * HL is not touched. An unsigned char steps its byte alone, and wraps
-     * as its type does. */
+     * as its type does; a pointer in IY steps by up to 127 with lea. */
     if (op == I_STEP && insn->in[0].val >= 0 && insn->kills & 1
         && ((vals[insn->res].reg == R_BC && vals[insn->in[0].val].reg == R_BC)
             || (leaf_in_iy(&insn->in[0])
@@ -5563,12 +5569,17 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         && (insn->local_type == TY_UCHAR
             || (type_size(insn->local_type) == ACC_INT_SIZE
                 && (!type_pointer(insn->local_type)
-                    || type_step(insn->local_type, insn->in[0].attr.ext) == 1)))
+                    || (number = type_step(insn->local_type,
+                                           insn->in[0].attr.ext)) == 1
+                    || (leaf_in_iy(&insn->in[0]) && number > 1
+                        && number <= 127))))
         && !(insn->local_type == TY_UCHAR && leaf_in_iy(&insn->in[0]))) {
         int count = insn->step_op == TK_MINUS ? -1 : 1;
 
         if (insn->local_type == TY_UCHAR)
             out_byte(count < 0 ? 0x0d : 0x0c);          /* dec c, inc c */
+        else if (type_pointer(insn->local_type) && number > 1)
+            out_byte3(0xed, 0x33, count * number & 0xff);   /* lea iy, iy+d */
         else
             step_reg(leaf_in_iy(&insn->in[0]) ? -1 : R_BC, count);
         return;
@@ -5933,6 +5944,34 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 }
                 leaf_skip_until = next;
                 return;
+            }
+            /* A constant written there straight away: ld (iy+d), n, or
+             * ld hl, n / ld (iy+d), hl -- the address never made. */
+            if (next < ninsns && insns[next].op == GL_vstore_indirect
+                && insns[next].in[0].val == insn->res && insn->res >= 0
+                && vals[insn->res].fwd
+                && leaf_const(&insns[next].in[1], &value)) {
+                Type to = type_deref(insns[next].in[0].attr.type);
+
+                if (to == TY_BOOL)
+                    value = value != 0;
+                if (type_size(to) == 1) {
+                    out_iy_d(0x36, number);             /* ld (iy+d), n */
+                    out_byte(value & 0xff);
+                    if (insns[next].res >= 0 && vals[insns[next].res].used) {
+                        ld_rr_imm(R_HL, value);
+                        leaf_result(insns[next].res);
+                    }
+                    leaf_skip_until = next;
+                    return;
+                }
+                if (type_size(to) == ACC_INT_SIZE && !type_is_struct(to)) {
+                    ld_rr_imm(R_HL, value);
+                    out_iy_d(0x2f, number);             /* ld (iy+d), hl */
+                    leaf_result(insns[next].res);
+                    leaf_skip_until = next;
+                    return;
+                }
             }
             lea_rr_iy(R_HL, number);
         } else {
@@ -6379,6 +6418,18 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         if (insn->target < 0) {
             if (insn->nin)
                 leaf_operand_hl(insn, 0);
+            return;
+        }
+        /* On a constant: never taken, nothing -- a macro's do ... while
+         * (0) -- or always, a jump with the edge's copies. */
+        if (leaf_const(&insn->in[0], &number)) {
+            if ((number != 0) != insn->sense)
+                return;
+            leaf_edge(blk, insn->target);
+            if (block_now[insn->target] >= 0)
+                gen_jump_to(block_now[insn->target]);
+            else
+                jump_forward(gen_jump(), insn->target);
             return;
         }
         if (leaf_known_width(&insn->in[0]) == 1 && leaf_byte_ok(&insn->in[0])) {
