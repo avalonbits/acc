@@ -425,11 +425,13 @@ void inline_count_address(int fn)
 }
 
 /* What the children said of each function: its bytes made with no body
- * read in place (alone), and with every body that can be (merged); and
- * which bodies each took, those inside a body it took among them. */
+ * read in place (alone), and with every body that can be (merged), and
+ * which backend made each; and which bodies each took, those inside a body
+ * it took among them. */
 struct InlineSize {
     NameRef name;
     int     alone, merged;
+    int     alone_backend, merged_backend;
 };
 
 struct InlinePair {
@@ -460,6 +462,7 @@ static struct InlineSize *size_of(NameRef name, int add)
     }
     fsizes[nfsizes].name = name;
     fsizes[nfsizes].alone = fsizes[nfsizes].merged = -1;
+    fsizes[nfsizes].alone_backend = fsizes[nfsizes].merged_backend = 0;
 
     return &fsizes[nfsizes++];
 }
@@ -501,14 +504,17 @@ static void refuse(NameRef caller)
     refused[nrefused++] = caller;
 }
 
-static void size_note(NameRef name, int mode, int size)
+static void size_note(NameRef name, int mode, int size, int backend)
 {
     struct InlineSize *at = size_of(name, 1);
 
-    if (mode == CHILD_SIZES)
+    if (mode == CHILD_SIZES) {
         at->alone = size;
-    else
+        at->alone_backend = backend;
+    } else {
         at->merged = size;
+        at->merged_backend = backend;
+    }
 }
 
 /* A function's code made, `size` bytes of it: noted in a child, for its
@@ -516,7 +522,7 @@ static void size_note(NameRef name, int mode, int size)
 void inline_func_done(int fn, int size)
 {
     if (inline_count_mode == CHILD_SIZES || inline_count_mode == CHILD_TRIAL)
-        size_note(sym_at(fn)->name, inline_count_mode, size);
+        size_note(sym_at(fn)->name, inline_count_mode, size, gl_backend);
 }
 
 /* A child that compiles the file: CHILD_IN in it, which compiles and then
@@ -574,7 +580,7 @@ static int inline_child(int mode)
     }
     text[len] = '\0';
     for (line = text; *line; line = next_line) {
-        int calls, address, size, used = 0;
+        int calls, address, size, backend, used = 0;
         char caller[128];
 
         next_line = strchr(line, '\n');
@@ -588,9 +594,10 @@ static int inline_child(int mode)
 
             c->calls = calls;
             c->address = address;
-        } else if (sscanf(line, "S %d %n", &size, &used) == 1 && used) {
+        } else if (sscanf(line, "S %d %d %n", &size, &backend, &used) == 2
+                   && used) {
             size_note(name_intern(line + used, (int) strlen(line + used)),
-                      mode, size);
+                      mode, size, backend);
         } else if (sscanf(line, "I %127s %n", caller, &used) == 1 && used) {
             pair_add(name_intern(caller, (int) strlen(caller)),
                      name_intern(line + used, (int) strlen(line + used)));
@@ -603,7 +610,10 @@ static int inline_child(int mode)
 
 /* Each caller that took a body, and came out bigger than it and the
  * bodies it took were apart, takes none: the same calls are made as
- * calls. A size not known -- a function left out, say -- is refused too. */
+ * calls. So does one a worse backend made than made a body it took apart:
+ * lists' insert_sorted, made from its SSA form, ran 14% slower read into a
+ * main the first pass made, for 36 bytes less. A size not known -- a
+ * function left out, say -- is refused too. */
 static void inline_decide(void)
 {
     int at, other;
@@ -626,7 +636,8 @@ static void inline_decide(void)
             if (pairs[other].caller != caller)
                 continue;
             part = size_of(pairs[other].callee, 0);
-            if (!part || part->alone < 0) {
+            if (!part || part->alone < 0
+                || part->alone_backend > whole->merged_backend) {
                 grow = 1;
                 break;
             }
@@ -699,10 +710,13 @@ void inline_counts_report(void)
     for (at = 0; at != ncounts; at++)
         REPORT("C %d %d %s\n", counts[at].calls, counts[at].address,
                name_text(counts[at].name));
-    for (at = 0; at != nfsizes; at++)
-        REPORT("S %d %s\n", inline_count_mode == CHILD_SIZES ? fsizes[at].alone
-                                                   : fsizes[at].merged,
+    for (at = 0; at != nfsizes; at++) {
+        int sizes = inline_count_mode == CHILD_SIZES;
+
+        REPORT("S %d %d %s\n", sizes ? fsizes[at].alone : fsizes[at].merged,
+               sizes ? fsizes[at].alone_backend : fsizes[at].merged_backend,
                name_text(fsizes[at].name));
+    }
     for (at = 0; at != npairs; at++)
         REPORT("I %s %s\n", name_text(pairs[at].caller),
                name_text(pairs[at].callee));

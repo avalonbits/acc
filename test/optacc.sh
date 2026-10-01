@@ -552,6 +552,13 @@ static int suffix_bit(const char *t, int n, int adl, unsigned char *out) { const
  return 0; }
 const char *f(const char *s, int n, unsigned char *suffix) { int i = 1; while (i < n && s[i] != 46) i++; if (i == n) return 0; if (!suffix_bit(&s[i + 1], n - i - 1, state.adl, suffix)) return 0; return mnemonic_of(s, i); }'
 inlined "one that makes its caller bigger, called" suffix_bit no "$sfx"
+# lists' insert_sorted: its loop made from its SSA form, and called from a
+# function the first pass makes -- smaller merged, and slower, the loop in
+# the first pass's code. So it is called.
+sorted_in='struct node { int key; struct node *next; }; struct node pool[8]; unsigned long seed;
+static void insert_sorted(struct node **head, struct node *n) { while (*head && (*head)->key < n->key) head = &(*head)->next; n->next = *head; *head = n; }
+unsigned long f(void) { unsigned long state = seed, check = 0; struct node *head = 0; for (int i = 0; i < 8; i++) { state = state * 1103515245UL + 12345UL; pool[i].key = (int) (state >> 12 & 0x3fff); } for (int i = 0; i < 8; i++) insert_sorted(&head, &pool[i]); for (const struct node *n = head; n; n = n->next) check = check * 3 + (unsigned long) n->key; return check; }'
+inlined "one into a caller a worse backend makes, called" insert_sorted no "$sorted_in"
 # The arguments stored to the body's locals as each is made, not left on
 # the stack for the next call to spill: three locals and the answer, and
 # no more, in the frame.
