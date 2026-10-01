@@ -6,7 +6,8 @@
 #   add hl, sp; ld sp, hl, where acc calls acc_rt_frameset -- and cut to its
 #   first nine bytes when there is no frame;
 # - the local a loop uses most kept in IY, chosen by reading the body first
-#   (src/prescan.c), where acc needs it declared register;
+#   (src/prescan.c), where acc needs it declared register -- in a body with
+#   a long or a float, which the SSA form's code leaves to this;
 # - every function compiled a second time, from the log of the parser's
 #   calls (src/genlog.c), with the same code to come out;
 # - with OPTACC_SSA, functions built as SSA from that log (src/ssa.c), and
@@ -91,7 +92,12 @@ emits "$ACC" "a frame: acc does not"               "$prologue" no "$framed"
 emits "$OPT" "no frame: the nine bytes, then the body" "${prologue}21070000" yes "$empty"
 
 lea_hl_iy=ed2300                    # lea hl, iy+0: a read of the IY local
-emits "$OPT" "a loop: opt-acc keeps a local in IY" "$lea_hl_iy" yes "$loop"
+# The pre-scan chooses IY only where a body has a long or a float, which
+# keeps the function to the first pass; anywhere else the SSA form's code
+# is made, and chooses its own -- the first pass alone is what is checked.
+longloop='long f(const char *p, int n) { long t = 1; int s = 0; while (n--) s += *p++; return s + t; }'
+emits "$OPT" "a loop with a long: opt-acc keeps a local in IY" "$lea_hl_iy" yes "$longloop"
+emits "$OPT" "a loop without: left to the SSA form"  "$lea_hl_iy" no "$loop"
 emits "$ACC" "a loop: acc does not unasked"        "$lea_hl_iy" no  "$loop"
 emits "$ACC" "a loop: acc does when told register" "$lea_hl_iy" yes "$regloop"
 
@@ -164,7 +170,11 @@ phis "a parameter stepped, a phi"   yes \
     'int f(int n) { int s = 0; while (n) { s += n; n--; } return s; }'
 phis "a local whose address is taken, none" no \
     'void g(int *); int f(void) { int i; for (i = 0; i < 9; i++) g(&i); return i; }'
-ssa "a long where paths join, left" "ssa f a long or a float where paths join" \
+# A long where paths join is more than a phi's copies carry: the form is
+# made again with the longs left in memory, the rest of it values.
+ssa "a long where paths join, kept in memory" "ssa f made" \
+    'long f(long n) { long s = 0; while (n) s += n--; return s; }'
+phis "and no phi for it"                no \
     'long f(long n) { long s = 0; while (n) s += n--; return s; }'
 
 # && and || in a condition jump where their answer would send the branch,
@@ -351,14 +361,15 @@ else
 fi
 
 # A table indexed by a byte, as zap's character classes are: the byte kept
-# in A from its store to its slot to its use -- ld (ix+d), a and no read
-# back -- the table's address loaded where it is used rather than pushed
-# and popped round the byte, and the byte zero-extended into DE: ld hl, tab;
-# ld de, 0; ld e, a; add hl, de.
+# in A from where it is read to its use -- not stored, since that is its
+# one read -- the table's address loaded where it is used rather than
+# pushed and popped round the byte, and the byte zero-extended into DE:
+# ld hl, tab; ld de, 0; ld e, a; add hl, de.
 table='extern const unsigned char tab[256];
 __attribute__((always_inline)) static inline int space(char c) { return tab[(unsigned char) c] & 1; }
 int f(const char *p, const char *e) { while (p < e && space(*p)) p++; return (int) (e - p); }'
-OPTACC_LEAF=1 all "$OPT" "a table indexed by a byte kept in A" 'dd77..21000000110000005f19' yes "$table"
+OPTACC_LEAF=1 all "$OPT" "a table indexed by a byte kept in A" '7e21000000110000005f19' yes "$table"
+OPTACC_LEAF=1 all "$OPT" "and the byte not stored"             dd77 no "$table"
 # A byte local whose address is taken, read into A and compared there:
 # ld a, (ix+d); cp 0x78, not widened on the way.
 OPTACC_LEAF=1 all "$OPT" "a byte in memory read into A" 'dd7e..fe78' yes \
@@ -408,6 +419,7 @@ OPTACC_LEAF=1 all "$OPT" "a _Bool member, ld (iy+2), 1"     fd360201   yes "$mem
 OPTACC_LEAF=1 all "$OPT" "an int member, ld (iy+3), hl"     21fefffffd2f03 yes "$members"
 OPTACC_LEAF=1 all "$OPT" "no address pushed and popped"     e5e1       no  "$members"
 OPTACC_LEAF=1 all "$OPT" "op++ in IY, lea iy, iy+6"         ed3306     yes "$members"
+OPTACC_LEAF=1 all "$OPT" "op into IY at entry, ld iy, (ix+6)" dd3106   yes "$members"
 # A branch on a constant is no test in the leaf backend either: `while
 # (1)` falls into its body, a macro's `do ... while (0)` out of it.
 consts='int f(int x) { do x += 2; while (0); while (1) { if (x > 9) break; x++; } return x; }'
@@ -417,5 +429,49 @@ OPTACC_LEAF=1 all "$OPT" "no constant tested"               09b7ed42 no "$consts
 # the first pass has them: made here.
 leafs "a string literal, made here"               yes \
     'int puts(const char *); int f(int x) { puts(x ? "yes" : "no"); return "abc"[x]; }'
+# A long constant written through a pointer: made here, the low three
+# bytes and then the top one -- ld (iy+3), hl / ld (iy+6), 0x12 for a
+# member through IY.
+longs='typedef struct { char *name; long addr; } node; void f(node *n) { n->addr = 0x12345678; }'
+leafs "a long constant written, made here"        yes "$longs"
+OPTACC_LEAF=1 all "$OPT" "its bytes, ld (iy+3), hl / ld (iy+6), n" 21785634fd2f03fd360612 yes "$longs"
+# Two inlined bodies whose byte parameters, a char and an unsigned char,
+# share a slot: each is a value of its own, not a local in memory widened,
+# stored and read back.
+shared='extern const unsigned char cl[256];
+static inline int sp(char c) { return cl[(unsigned char) c] & 1; }
+static inline int al(unsigned char u) { return (cl[u] & 2) != 0; }
+int f(const char *p, const char *e) { int n = 0; while (p < e) { n += sp(*p); n += al(*p); p++; } return n; }'
+OPTACC_LEAF=1 all "$OPT" "shared-slot bytes, no widen and narrow" 6fcb05ed626f7d no "$shared"
+# And each byte, read once and straight from A -- by the signed one's
+# table index, and into DE by the unsigned one's -- is not stored at all.
+OPTACC_LEAF=1 all "$OPT" "a byte read once from A, not stored" dd77 no "$shared"
+# A local whose address a call takes, kept in a register between the
+# calls: the loop steps p in BC and writes it through, inc bc / ld (ix+6),
+# bc, with no read of it from memory -- and after the call, read again.
+cached='extern const unsigned char cl[256]; int parse(const char **pp);
+int f(const char *p, const char *e) { int n = 0; while (p < e && (cl[(unsigned char) *p] & 1)) p++;
+n += parse(&p); while (p < e && (cl[(unsigned char) *p] & 1)) p++; return n + (int) (e - p); }'
+OPTACC_LEAF=1 all "$OPT" "a cached p stepped and written through" 03dd0f06 yes "$cached"
+OPTACC_LEAF=1 all "$OPT" "and not read in the loop"             dd270606 no "$cached"
+OPTACC_LEAF=1 all "$OPT" "read again straight into BC"          dd0706 yes "$cached"
+OPTACC_LEAF=1 all "$OPT" "not through HL and the stack"         dd2706e5c1 no "$cached"
+# One the leaf backend cannot make is made by the hybrid path, uncached.
+OPTACC_LEAF=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
+    ssa "a cached local, not the leaf backend's" "ssa f made" \
+    'int g(char **); int f(void) { char text[] = "abc"; char *p = text; g(&p); return p[0] + p[1]; }'
+# The pick goes back to where a function began once for each way it weighs;
+# where values were on the stack there -- the function before left a VLA
+# prototype's bound -- each time from its own copy of them, which were
+# freed twice.
+OPTACC_LEAF=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+    ssa "gone back to more than once"   "ssa f made" \
+    'extern int m, n; void a(void) { typedef int A3[3]; typedef A3 An3[n]; void h(An3[][m]); }
+void f(void) { typedef int B[m]; void *g(B); }'
+# A signed comparison moves both sides by 0x800000 through BC, saving BC
+# only where a value lives there -- lists' insert_sorted has none.
+sorted='struct node { int key; struct node *next; };
+void f(struct node **head, struct node *n) { while (*head && (*head)->key < n->key) head = &(*head)->next; n->next = *head; *head = n; }'
+OPTACC_LEAF=1 all "$OPT" "a signed compare, BC free, not saved"  c501000080 no "$sorted"
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

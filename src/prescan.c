@@ -22,6 +22,12 @@
  * asked only of the few that might be chosen and the ones called; the walk
  * knows names by their text.
  *
+ * Only a body that names long, float or double is chosen for: the SSA
+ * form's code stays the first pass's there, where the leaf backend does
+ * not make wide values, and its loops want IY. Anywhere else the SSA form
+ * chooses its own, and the first pass's choice made 152 of zap's functions
+ * bigger for 18 it made smaller.
+ *
  * This is opt-acc's alone (see docs/optimizer-plan.md): acc compiles in
  * one pass on the Agon, and a second reading of every body is more than
  * its budget allows, where opt-acc runs on the host and has none. acc's
@@ -780,6 +786,21 @@ done:
     ps_buf = NULL;
     if (ps_bad)
         return 0;
+
+    /* Only a body with a wide value in it -- one that names long, float or
+     * double. Without one the SSA form's code is made, and chooses its own
+     * value for IY better; with one it is the first pass's code that
+     * stays, and its loops want this choice. */
+    {
+        int wide = 0;
+
+        for (ent = ps_names; ent != ps_end && !wide; ent++)
+            wide = (ent->len == 4 && !memcmp(ent->text, "long", 4))
+                   || (ent->len == 5 && !memcmp(ent->text, "float", 5))
+                   || (ent->len == 6 && !memcmp(ent->text, "double", 6));
+        if (!wide)
+            return 0;
+    }
 
     /* The calls a local in IY would be saved around. */
     for (ent = ps_names; ent != ps_end; ent++)
