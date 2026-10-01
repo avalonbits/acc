@@ -6677,6 +6677,56 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 leaf_result(insn->res);
                 return;
             }
+            /* A pointer and an int in BC: the pointer in HL, and BC added
+             * -- or taken -- as many times as the step. `a[j]` with j in
+             * BC is lea hl, iy+0 / add hl, bc three times. */
+            if (scaled >= 0 && insn->in[scaled].val >= 0
+                && !vals[insn->in[scaled].val].fwd
+                && vals[insn->in[scaled].val].reg == R_BC
+                && (number == TK_PLUS || scaled == 1)) {
+                int times;
+
+                leaf_operand_hl(insn, 1 - scaled);      /* the pointer */
+                for (times = 0; times != step; times++) {
+                    if (number == TK_PLUS) {
+                        add_hl_rr(R_BC);
+                    } else {
+                        or_a_a();
+                        sbc_hl_rr(R_BC);
+                    }
+                }
+                leaf_result(insn->res);
+                return;
+            }
+            /* The pointer in BC and the int anywhere: the int into HL and
+             * scaled there -- three times through DE -- and BC added, or
+             * the scaled int taken from it. */
+            if (scaled >= 0 && step > 1 && insn->in[1 - scaled].val >= 0
+                && !vals[insn->in[1 - scaled].val].fwd
+                && vals[insn->in[1 - scaled].val].reg == R_BC
+                && (number == TK_PLUS || scaled == 1)) {
+                leaf_operand_hl(insn, scaled);          /* the int */
+                if (step == 3) {
+                    push_rr(R_HL);
+                    pop_rr(R_DE);
+                }
+                add_hl_hl();
+                if (step == 3)
+                    add_hl_rr(R_DE);
+                if (step == 4)
+                    add_hl_hl();
+                if (number == TK_PLUS) {
+                    add_hl_rr(R_BC);
+                } else {
+                    ex_de_hl();
+                    push_rr(R_BC);
+                    pop_rr(R_HL);
+                    or_a_a();
+                    sbc_hl_rr(R_DE);
+                }
+                leaf_result(insn->res);
+                return;
+            }
             right = leaf_operands_in(insn, step == 1);
             if (scaled == 1 && step != 1)
                 ex_de_hl();             /* the int, on the right, into HL */
