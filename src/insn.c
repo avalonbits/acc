@@ -242,6 +242,7 @@ void fill_hl_with_zero(void)
 int and_a_imm(int v)  { out_byte2(0xe6, v & 0xff); return 0; }
 int or_a_imm(int v)   { out_byte2(0xf6, v & 0xff); return 0; }
 int xor_a_imm(int v)  { out_byte2(0xee, v & 0xff); return 0; }
+int cp_a_imm(int v)   { out_byte2(0xfe, v & 0xff); return 0; }
 
 /* HL = HL * a constant, as doublings and additions rather than a call.
  *

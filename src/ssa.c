@@ -4411,8 +4411,8 @@ static int leaf_ok(void)
             continue;
         case GL_gen_switch_load:
             /* A switch on an int or narrower: its value from its slot into
-             * HL, and each case a comparison and a jump, as the first pass
-             * makes them. */
+             * HL, or a char into A, and each case a comparison and a jump,
+             * as the first pass makes them. */
             if (type_wide((Type) insn->rec->arg[1]))
                 return leaf_why = "a switch on a long", 0;
             continue;
@@ -5416,7 +5416,7 @@ static int leaf_compare(const Ins *insn, int op)
             if (((want + bias) & 0xff) == 0)
                 or_a_a();               /* cp 0: the same flags */
             else
-                out_byte2(0xfe, (want + bias) & 0xff);     /* cp n */
+                cp_a_imm(want + bias);
 
             return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
                    ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
@@ -5732,21 +5732,37 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         leaf_result(insn->res);
         return;
     case GL_gen_switch_load:
-        ld_rr_ix(R_HL, inline_moved((int) insn->rec->arg[0]));
+        if (type_size((Type) insn->rec->arg[1]) == 1)
+            ld_a_ix(inline_moved((int) insn->rec->arg[0]));
+        else
+            ld_rr_ix(R_HL, inline_moved((int) insn->rec->arg[0]));
         return;
-    case GL_gen_switch_case:
+    case GL_gen_switch_case: {
+        long value = insn->rec->arg[0];
+        Type type = (Type) insn->rec->arg[2];
+
         /* ld de, value; or a; sbc hl, de; add hl, de: HL as it was for the
-         * next, Z where it was the value. No edge of a case has copies to
+         * next, Z where it was the value. A char is cp n, and has no test
+         * for a value it cannot have. No edge of a case has copies to
          * make: the SSA form refuses a phi a case jumps to. */
-        ld_rr_imm(R_DE, (int) (insn->rec->arg[0] & 0xffffff));
-        or_a_a();
-        sbc_hl_rr(R_DE);
-        add_hl_rr(R_DE);
+        if (type_size(type) == 1) {
+            int byte = (int) value;
+
+            if ((((unsigned) byte + (type_unsigned(type) ? 0 : 128)) & 0xffffff) > 255)
+                return;
+            cp_a_imm(byte);
+        } else {
+            ld_rr_imm(R_DE, (int) (value & 0xffffff));
+            or_a_a();
+            sbc_hl_rr(R_DE);
+            add_hl_rr(R_DE);
+        }
         if (block_now[insn->target] >= 0)
             gen_jump_cc_to(JP_Z, block_now[insn->target]);
         else
             jump_forward(jump_op(JP_Z), insn->target);
         return;
+    }
     case GL_vpush_local: {
         Type type = (Type) insn->rec->arg[1];
         int disp = inline_moved((int) insn->rec->arg[0]);

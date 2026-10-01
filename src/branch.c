@@ -499,9 +499,13 @@ void gen_jump_if_true_to(int target)
 }
 
 /* The value a switch compares its cases with, into HL -- and for a long its
- * top byte into A -- once, ahead of all the tests. */
+ * top byte into A, and a char into A alone -- once, ahead of all the tests. */
 void gen_switch_load(int slot, Type type)
 {
+    if (type_size(type) == 1) {
+        ld_a_ix(slot);
+        return;
+    }
     ld_rr_ix(R_HL, slot);
     if (type_wide(type)) {
         ld_a_ix(slot + ACC_INT_SIZE);
@@ -515,10 +519,21 @@ void gen_switch_load(int slot, Type type)
  * The add puts HL back for the next case and leaves the zero flag as the
  * subtraction set it, so the value is loaded once however many cases there
  * are. A long compares its top byte in A first and skips the rest when that
- * differs. */
+ * differs. A char is compared in A, and has no test for a value it
+ * cannot have. */
 void gen_switch_case(long value, uint32_t high, Type type, int target,
                      int slot)
 {
+    if (type_size(type) == 1) {
+        /* cp n / jp z, target, for a value the char can have: 0 to 255
+         * unsigned, -128 to 127 signed. The case is an int's three bytes,
+         * which on the host are not negative. */
+        if ((((unsigned) value + (type_unsigned(type) ? 0 : 128)) & 0xffffff) <= 255) {
+            cp_a_imm((int) value);
+            patch_to(jump_op(JP_Z), target);
+        }
+        return;
+    }
     /* A long long compares its top five bytes from the frame, one at a time,
      * and the low three in HL as anything else does. Each miss jumps past
      * the rest of the case: the groups after it, seven bytes each, and the
@@ -530,11 +545,11 @@ void gen_switch_case(long value, uint32_t high, Type type, int target,
             uint32_t half = k >= 4 ? high : (uint32_t) value;
 
             ld_a_ix(slot + k);
-            out_byte2(0xfe, (int) (half >> (k % 4 * 8)) & 0xff);   /* cp n */
+            cp_a_imm((int) (half >> (k % 4 * 8)));
             out_byte2(0x20, 12 + (k - ACC_INT_SIZE) * 7);   /* jr nz */
         }
     } else if (type_wide(type)) {
-        out_byte2(0xfe, (int) ((unsigned long) value >> 24) & 0xff);  /* cp n */
+        cp_a_imm((int) ((unsigned long) value >> 24));
         out_byte2(0x20, 12);                    /* jr nz, past the rest */
     }
     out_byte(0x11);                             /* ld de, value */
