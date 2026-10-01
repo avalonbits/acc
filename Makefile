@@ -115,7 +115,7 @@ $(BIN)/acc: $(SRC) $(HDR) src/acc_build.h | $(BIN)
 
 # opt-acc: the same sources with its own passes turned on, for the host only
 # (docs/optimizer-plan.md). Makefile.agon never sees OPT_SRC.
-OPT_SRC = src/prescan.c src/genlog.c src/ssa.c
+OPT_SRC = src/prescan.c src/genlog.c src/ssa.c src/peep.c
 
 # The wrappers genlog.c logs the parser's calls through, from gen.h.
 src/genlog_calls.h: src/gen.h src/genlog.py
@@ -241,6 +241,7 @@ test: all unit agon
 	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_ANY_GAIN=1 OPTACC_PICK=0 ACC=$(BIN)/opt-acc-asan test/run.sh
 	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_PICK=0 ACC=$(BIN)/opt-acc-asan test/run.sh
 	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_PICK=0 OPTACC_INLINE=1 ACC=$(BIN)/opt-acc-asan test/run.sh
+	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 ACC=$(BIN)/opt-acc-asan test/run.sh
 	@ACC=$(BIN)/acc-asan test/self.sh
 	@ACC=$(BIN)/acc-asan test/selfbuild.sh
 	@if [ -f $(BIN)/acc.bin ]; then test/target.sh || [ $$? -eq 77 ]; \
@@ -273,6 +274,8 @@ unit: | $(BIN)
 	@$(BIN)/test_ctype
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_out test/test_out.c src/image.c src/reloc.c -Wl,--wrap=realloc
 	@$(BIN)/test_out
+	@$(CC) $(SAN) $(WARN) -DOPT_ACC -Isrc -Itest -o $(BIN)/test_peep test/test_peep.c src/peep.c
+	@$(BIN)/test_peep
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -DACC_HASH_STATS -o $(BIN)/test_sym test/test_sym.c src/sym.c $(LEX_SRC) src/float.c
 	@$(BIN)/test_sym
 	@$(CC) $(SAN) $(WARN) -Isrc -Itest -o $(BIN)/test_float test/test_float.c src/float.c -lm
