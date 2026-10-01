@@ -213,6 +213,7 @@ static GenRec *gl_begin(int op)
         gl_nmarks = 0;
         gl_on = 1;
         free(gl_start.saved);           /* the last function's: see gl_back */
+        ssa_keep_moves();
         gen_mark(&gl_start);
         relax_state(&gl_start_nwants, &gl_start_nstatics, 0);
         gl_start_nrelocs = gl_reloc_count();
@@ -417,6 +418,7 @@ static void gl_back(void)
         memcpy(back.saved, gl_start.saved, (size_t) back.vtop * sizeof *back.saved);
     }
     gen_rollback(&back);
+    ssa_restore();
     relax_state(&gl_start_nwants, &gl_start_nstatics, 1);
     finish_state(gl_start_finish, 1);
     gl_marks(gl_start_marks, 1);

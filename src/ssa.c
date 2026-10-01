@@ -114,6 +114,15 @@ typedef struct {
     int old_at;                 /* where it started in the first pass */
 } Block;
 
+/* A block's statics: the records of their bytes, and the symbols settled
+ * after them -- and the symbols moved with them, to be put back where a
+ * function made here is gone back from (ssa_restore). */
+static const GenRec **raws;
+static int nraws, raws_cap;
+static int *settles, nsettles, settles_cap;
+static struct { int sym, val; } *moved_syms;
+static int nmoved_syms, moved_syms_cap;
+
 static Ins   *insns;
 static int    ninsns, insns_cap;
 static SVal  *vals;
@@ -615,7 +624,18 @@ static void build_one(const GenRec *rec)
 
     switch (op) {
     case GL_RAW:
-        fail = "a static local's bytes";
+        /* A block's static: its bytes, made again where the function's
+         * code starts (emit_raws). With relocations among them, not yet. */
+        if (rec->arg[3]) {
+            fail = "a static local's bytes, with addresses";
+            return;
+        }
+        GROW(raws, nraws, raws_cap);
+        raws[nraws++] = rec;
+        return;
+    case GL_gen_settle:
+        GROW(settles, nsettles, settles_cap);
+        settles[nsettles++] = (int) rec->arg[0];
         return;
     case GL_gen_inline_begin:
         /* A call compiled in place: its parameters are locals in the
@@ -641,7 +661,7 @@ static void build_one(const GenRec *rec)
     case GL_gen_data_begin: case GL_gen_data_end: case GL_gen_pending_clear:
     case GL_gen_data_fixup: case GL_gen_bss_symbol: case GL_gen_bss_reserve:
     case GL_gen_bss_reserve_aligned: case GL_gen_bss_move:
-    case GL_gen_bss_forget: case GL_gen_bss_fixup: case GL_gen_settle:
+    case GL_gen_bss_forget: case GL_gen_bss_fixup:
     case GL_gen_late_fixup: case GL_gen_slot: case GL_gen_link_fixup:
     case GL_out_rewind: case GL_out_seek:
         fail = "a static local";
@@ -943,6 +963,13 @@ typedef struct {
 static Local locals[MAX_LOCALS];
 static int   nlocals;
 
+/* A long or a float the paths join with is more than the copies into a
+ * phi can carry: the form is made again with every local that wide left
+ * in memory, wide_in_memory, so that the rest of the function -- the int
+ * loops around a long checksum -- still become values. */
+static const char wide_phi[] = "a long or a float where paths join";
+static int wide_in_memory;
+
 /* Slots the first pass reads or holds itself -- a switch's value, the
  * local in IY -- which no local there can be cached for. */
 static int pinned[MAX_LOCALS], npinned;
@@ -1032,7 +1059,8 @@ static void local_seen(int offset, Type type, int ext)
     locals[at].offset = offset;
     locals[at].type = type;
     locals[at].ext = ext;
-    locals[at].ok = !type_is_struct(type) && local_of(offset, TY_VOID) < 0;
+    locals[at].ok = !type_is_struct(type) && local_of(offset, TY_VOID) < 0
+                    && !(wide_in_memory && type_wide(type));
     locals[at].is_param = offset > 0;
     locals[at].entry_val = -1;
     locals[at].cached = 0;
@@ -1744,7 +1772,7 @@ static void to_values(void)
         if (!phi->live)
             continue;
         if (type_wide(vals[phi->val].type))
-            fail = "a long or a float where paths join";
+            fail = wide_phi;
         for (pred = 0; pred != preds[phi->block].count && !fail; pred++) {
             int from = preds[phi->block].at[pred];
 
@@ -2063,6 +2091,7 @@ typedef struct {
 } Moved;
 
 static Moved *moved;
+
 static int    nmoved, moved_cap;
 
 static int moved_at(int at)
@@ -2074,6 +2103,63 @@ static int moved_at(int at)
             return at - moved[idx].old_at + moved[idx].new_at;
 
     return at;
+}
+
+/* The block's statics' bytes, jumped over where the code starts, as the
+ * first pass had them where they were declared; their addresses moved
+ * with them -- moved_at for the constants that are them, and each symbol
+ * among them before it is settled. */
+static void emit_raws(void)
+{
+    int over, at, settle;
+
+    if (!nraws)
+        return;
+    over = gen_jump();
+    for (at = 0; at != nraws; at++) {
+        const unsigned char *bytes = (const unsigned char *) gl_kept(raws[at]->arg[2]);
+        int len = (int) raws[at]->arg[1], byte;
+
+        GROW(moved, nmoved, moved_cap);
+        moved[nmoved].old_at = (int) raws[at]->arg[0];
+        moved[nmoved].len = len;
+        moved[nmoved].new_at = out_here();
+        nmoved++;
+        for (byte = 0; byte != len; byte++)
+            out_byte(bytes[byte]);
+    }
+    for (settle = 0; settle != nsettles; settle++) {
+        Sym *sym = sym_at(settles[settle]);
+
+        for (at = 0; at != nmoved; at++)
+            if (sym->val >= moved[at].old_at
+                && sym->val < moved[at].old_at + moved[at].len) {
+                GROW(moved_syms, nmoved_syms, moved_syms_cap);
+                moved_syms[nmoved_syms].sym = settles[settle];
+                moved_syms[nmoved_syms].val = sym->val;
+                nmoved_syms++;
+                sym->val += moved[at].new_at - moved[at].old_at;
+                break;
+            }
+        gen_settle(settles[settle]);
+    }
+    gen_label(over);
+}
+
+/* A new function: the last one's statics stay where they were made. */
+void ssa_keep_moves(void)
+{
+    nmoved_syms = 0;
+}
+
+/* Each symbol emit_raws moved back where the first pass had it: the code
+ * made here is being gone back from. */
+void ssa_restore(void)
+{
+    while (nmoved_syms) {
+        nmoved_syms--;
+        sym_at(moved_syms[nmoved_syms].sym)->val = moved_syms[nmoved_syms].val;
+    }
 }
 
 /* A constant onto the classic backend's stack, made again. */
@@ -2737,6 +2823,7 @@ static void emit(void)
             vdrop();
         }
 
+    emit_raws();
     for (blk = 0; blk != nblocks && !fail; blk++) {
         int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
         int falls = 1;
@@ -7198,6 +7285,7 @@ static void emit_leaf(void)
             }
         }
 
+    emit_raws();
     for (blk = 0; blk != nblocks && !fail; blk++) {
         int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
         int falls = 1;
@@ -7575,6 +7663,7 @@ static void emit_regs(void)
         }
     pins_clear();
 
+    emit_raws();
     for (blk = 0; blk != nblocks && !fail; blk++) {
         int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
         int falls = 1;
@@ -7722,6 +7811,7 @@ int ssa_generate(const char **why)
     if (!keep)
         acc_error("out of memory for the SSA form");
     ninsns = nvals = nblocks = nholes = nheres = nstk = ninlined = nmerged = 0;
+    nraws = nsettles = 0;
     fail = NULL;
     ssa_cost_made = ssa_cost_first = 0;
     leaf_mode = ssa_made_leaf = ssa_cached_refused = ssa_cached_used = 0;
@@ -7780,6 +7870,16 @@ int ssa_generate(const char **why)
             if (getenv("OPTACC_SSA_DUMP"))
                 dump();
         }
+    }
+    if (fail == wide_phi && !wide_in_memory) {
+        int made;
+
+        forget();
+        wide_in_memory = 1;
+        made = ssa_generate(why);
+        wide_in_memory = 0;
+
+        return made;
     }
     if (fail || !plan_slots()) {
         *why = fail;

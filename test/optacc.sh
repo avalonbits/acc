@@ -164,7 +164,11 @@ phis "a parameter stepped, a phi"   yes \
     'int f(int n) { int s = 0; while (n) { s += n; n--; } return s; }'
 phis "a local whose address is taken, none" no \
     'void g(int *); int f(void) { int i; for (i = 0; i < 9; i++) g(&i); return i; }'
-ssa "a long where paths join, left" "ssa f a long or a float where paths join" \
+# A long where paths join is more than a phi's copies carry: the form is
+# made again with the longs left in memory, the rest of it values.
+ssa "a long where paths join, kept in memory" "ssa f made" \
+    'long f(long n) { long s = 0; while (n) s += n--; return s; }'
+phis "and no phi for it"                no \
     'long f(long n) { long s = 0; while (n) s += n--; return s; }'
 
 # && and || in a condition jump where their answer would send the branch,
