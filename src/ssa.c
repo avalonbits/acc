@@ -5790,6 +5790,20 @@ static int leaf_byte_to_a(const Ent *ent)
     return 1;
 }
 
+/* Whether BC holds a value at instruction `at`: one that lives there and
+ * is made by then and read after -- its interval, end to end. */
+static int leaf_bc_busy(int at)
+{
+    int val;
+
+    for (val = 0; val != nvals; val++)
+        if (vals[val].reg == R_BC && vals[val].used && !vals[val].fwd
+            && vals[val].def <= at && at <= vals[val].last)
+            return 1;
+
+    return 0;
+}
+
 static int leaf_compare(const Ins *insn, int op)
 {
     int number;
@@ -5888,13 +5902,17 @@ static int leaf_compare(const Ins *insn, int op)
     right = leaf_operands_in(insn, !is_signed);
 
     if (is_signed) {
-        push_rr(R_BC);
+        int keep = leaf_bc_busy((int) (insn - insns));
+
+        if (keep)
+            push_rr(R_BC);
         ld_rr_imm(R_BC, 0x800000);
         add_hl_rr(R_BC);
         ex_de_hl();
         add_hl_rr(R_BC);
         ex_de_hl();
-        pop_rr(R_BC);
+        if (keep)
+            pop_rr(R_BC);
     }
     if (op == TK_LE || op == TK_GT)
         out_byte(0x37);                         /* scf: HL - DE - 1 */
