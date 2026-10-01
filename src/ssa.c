@@ -944,7 +944,7 @@ static void thread_answers(void)
  * reaches it, and where paths with different values meet, a phi joins
  * them. What is left of the local is its values; its slot is not used. */
 
-#define MAX_LOCALS 64
+#define MAX_LOCALS 256           /* zap's biggest have more than 64 */
 #define UNDEF (-3)              /* no value reaches: a read before any write */
 
 typedef struct {
@@ -1546,15 +1546,28 @@ static void cache_step(Ins *insn, int at, int local, int old)
 static int *cur_def;            /* by local: a stack of values, one a push */
 static int *cur_top;
 static int  cur_cap;
+static int *undo;               /* the locals pushed, in the order pushed */
+static int  nundo, undo_cap;
 
+static void undo_push(int local)
+{
+    if (nundo == undo_cap) {
+        undo_cap = undo_cap ? 2 * undo_cap : 256;
+        undo = realloc(undo, (size_t) undo_cap * sizeof *undo);
+        if (!undo)
+            acc_error("out of memory for the SSA form");
+    }
+    undo[nundo++] = local;
+}
+
+/* The dominator tree can be thousands deep, so a frame holds no array. */
 static void rename_block(int blk)
 {
-    int pushed[MAX_LOCALS], at, end, succ, phi, kid;
+    int mark = nundo, at, end, succ, phi, kid;
 
-    memset(pushed, 0, sizeof pushed);
 #define DEF_PUSH(local, val) do {                                        \
         cur_def[(local) * cur_cap + cur_top[local]++] = (val);           \
-        pushed[local]++;                                                 \
+        undo_push(local);                                                \
     } while (0)
 #define DEF_TOP(local) (cur_top[local] ? cur_def[(local) * cur_cap          \
                                                  + cur_top[local] - 1]    \
@@ -1676,8 +1689,8 @@ static void rename_block(int blk)
     }
     for (kid = 0; kid != dom_kids[blk].count; kid++)
         rename_block(dom_kids[blk].at[kid]);
-    for (at = 0; at != nlocals; at++)
-        cur_top[at] -= pushed[at];
+    while (nundo != mark)
+        cur_top[undo[--nundo]]--;
 #undef DEF_PUSH
 #undef DEF_TOP
 }
@@ -2486,7 +2499,9 @@ static void give_slots(void)
         int at = gen_local(ACC_INT_SIZE);
 
         gen_iy_take(at);
-        fixed_slot[iy_web] = at;
+        for (val = 0; val != nvals; val++)
+            if (web_root(val) == val && fixed_slot[val] == IY_SLOT)
+                fixed_slot[val] = at;
     }
     for (val = 0; fixed_slot && val != nvals; val++)
         if (!vals[val].fwd && vals[val].reg == HOME_SLOT
@@ -2573,7 +2588,7 @@ static void leaf_save_slots(void)
         if (vals[val].used && !vals[val].fwd && across_calls[val]) {
             if (vals[val].reg == R_BC)
                 bc = 1;
-            else if (iy_web >= 0 && web_root(val) == iy_web)
+            else if (iy_web >= 0 && fixed_slot[web_root(val)] == fixed_slot[iy_web])
                 iy = 1;
         }
     leaf_iy_saved_at = iy ? gen_local(ACC_INT_SIZE) : 0;
@@ -2609,7 +2624,7 @@ static int leaf_live_homes(int at, int blk)
         if (live[val] && !vals[val].fwd) {
             if (vals[val].reg == R_BC)
                 homes |= 2;
-            else if (iy_web >= 0 && web_root(val) == iy_web)
+            else if (iy_web >= 0 && fixed_slot[web_root(val)] == fixed_slot[iy_web])
                 homes |= 1;
         }
     free(live);
@@ -3457,9 +3472,24 @@ static void plan_fixed(const int *order, int nroots)
                 fits = 0;
         if (!fits)
             continue;
-        iy_web = root;
+
+        /* For the code made here, IY is shared as BC is: by every web
+         * that fits and is live nowhere another in IY is -- the first, the
+         * heaviest, named iy_web. */
+        if (iy_web >= 0) {
+            int other, clash = 0;
+
+            if (!leaf_mode)
+                break;
+            for (other = 0; other != nvals && !clash; other++)
+                if (web_root(other) == other && fixed_slot[other] == IY_SLOT)
+                    clash = webs_clash(other, root);
+            if (clash)
+                continue;
+        } else {
+            iy_web = root;
+        }
         fixed_slot[root] = IY_SLOT;     /* made in give_slots */
-        break;
     }
     for (local = 0; local != nlocals; local++) {
         int root;
@@ -4816,6 +4846,8 @@ static int leaf_delegable(const Ins *insn)
     case GL_vapply: case GL_vconvert: case GL_vcast: case GL_vtruth:
     case GL_vneg: case GL_vnot: case GL_vpush_local: case GL_vstore_local:
     case GL_vderef: case GL_vstore_indirect: case I_CONV: case I_STEP:
+    case GL_vprefix_indirect: case GL_vpostfix_indirect:
+    case GL_vprefix_local: case GL_vpostfix_local:
         break;
     case GL_vdrop:
         return 1;                       /* a value in a slot: nothing */
@@ -4892,7 +4924,7 @@ static int leaf_ok(void)
              * or where it claims nothing -- not a `register` local. */
             switch (insn->rec->op) {
             case GL_gen_local: case GL_gen_local_array:
-            case GL_gen_local_array_size:
+            case GL_gen_local_array_size: case GL_gen_local_far:
                 continue;
             case GL_gen_iy_claim:
                 if (!((int) insn->rec->arg[2] & SQ_REGISTER))
@@ -4917,8 +4949,11 @@ static int leaf_ok(void)
             continue;
         case GL_vprefix_local: case GL_vpostfix_local:
             /* ++ and -- of a local in memory, in its slot. */
-            if (insn->rec->top.bits || !leaf_type((Type) insn->rec->arg[1]))
-                return leaf_why = "a step of a local in memory not a scalar", 0;
+            if (insn->rec->top.bits || !leaf_type((Type) insn->rec->arg[1])) {
+                if (!leaf_delegable(insn))
+                    return leaf_why = "a step of a local in memory not a scalar", 0;
+                insns[at].delegated = 1;        /* the first pass's code */
+            }
             continue;
         case GL_vprefix_indirect: case GL_vpostfix_indirect: {
             /* ++ and -- through a pointer. */
@@ -4926,8 +4961,12 @@ static int leaf_ok(void)
                           ? type_deref(insn->in[0].attr.type) : TY_VOID;
 
             if (insn->rec->top.bits || insn->in[0].attr.bits
-                || !leaf_type(target) || !leaf_indirect_step(target))
-                return leaf_why = "a step through a pointer not of a scalar", 0;
+                || !leaf_type(target) || !leaf_indirect_step(target)) {
+                if (!leaf_delegable(insn))
+                    return leaf_why = "a step through a pointer not of a scalar", 0;
+                insns[at].delegated = 1;        /* the first pass's code */
+                continue;
+            }
             continue;
         }
         case GL_vpush_local: case GL_vstore_local:
@@ -4977,13 +5016,25 @@ static int leaf_ok(void)
                     && !type_is_struct(type_deref(insn->in[0].attr.type))
                     && !(op == GL_vderef
                          && type_is_array(type_deref(insn->in[0].attr.type))))
-                || insn->rec->top.bits || insn->in[0].attr.bits)
+                || insn->rec->top.bits || insn->in[0].attr.bits) {
+                /* A short, say: the first pass's code reads or writes it. */
+                if (type_pointer(insn->in[0].attr.type) && leaf_delegable(insn)) {
+                    insns[at].delegated = 1;
+                    continue;
+                }
                 return leaf_why = "a read or write not of a scalar", 0;
+            }
             continue;
         case GL_gen_data:
             continue;                   /* a string's bytes, jumped over */
         case GL_vapply:
             arith = (int) insn->rec->arg[0];
+            /* Narrowed to a short: the first pass's code makes it. */
+            if (insn->rec->arg[1] && type_size((Type) insn->rec->arg[1]) != 1
+                && leaf_delegable(insn)) {
+                insns[at].delegated = 1;
+                continue;
+            }
             if (insn->rec->arg[1] && !leaf_narrow_ok(insn, arith))
                 return leaf_why = "an operator on bytes", 0;
             if (insn->rec->arg[1])
