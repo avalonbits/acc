@@ -487,5 +487,9 @@ void f(void) { typedef int B[m]; void *g(B); }'
 sorted='struct node { int key; struct node *next; };
 void f(struct node **head, struct node *n) { while (*head && (*head)->key < n->key) head = &(*head)->next; n->next = *head; *head = n; }'
 OPTACC_LEAF=1 all "$OPT" "a signed compare, BC free, not saved"  c501000080 no "$sorted"
+# A local whose address is taken stays in memory, and is no `register`
+# local: IY is free for the loop's pointer all the same.
+iyfree='int g(int *); int f(const char *s, int n) { int x = 0; int c = 0; g(&x); while (n--) c += *s++; return c + x; }'
+OPTACC_LEAF=1 all "$OPT" "IY beside a local in memory, inc iy"   fd23 yes "$iyfree"
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

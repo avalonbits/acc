@@ -2703,9 +2703,12 @@ static int iy_taken_already(void)
 {
     int at;
 
+    /* A declaration logs a claim whatever it is, and only a `register`
+     * one takes IY: one in memory, its address taken, takes nothing. */
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at])
-            && (insns[at].rec->op == GL_gen_iy_claim
+            && ((insns[at].rec->op == GL_gen_iy_claim
+                 && ((int) insns[at].rec->arg[2] & SQ_REGISTER))
                 || insns[at].rec->op == GL_gen_iy_param
                 || insns[at].rec->op == GL_gen_iy_take))
             return 1;
