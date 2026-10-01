@@ -397,6 +397,17 @@ static int jump_on_truth(int when_true)
     if (type_wide(vtype()))
         vtruth(TK_NE);
 
+    /* A constant: always the jump or never, with nothing tested. `while
+     * (1)`, `if (0)` and a macro's `do ... while (0)` are these. A float
+     * is wide, so it is a truth already. */
+    if ((vsp - 1)->kind == VAL_CONST) {
+        int truth = (vsp - 1)->val != 0;
+
+        vdrop();
+
+        return truth == when_true ? jump_op(JP_ANY) : 0;
+    }
+
     if (logic_from >= 0 && out_here() == logic_to && logic_epoch == out_rewinds
         && vtop == 1
         && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
