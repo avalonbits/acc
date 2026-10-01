@@ -81,6 +81,18 @@ static int lagged(const int *p, const int *end, int lag)
     return sum;
 }
 
+/* An index worked out, so in neither BC nor a slot: int + pointer, the
+ * pointer on the right, and a pointer less it. */
+static int worked(const int *base, int n)
+{
+    int sum = 0;
+
+    for (int k = 0; k < n; k++)
+        sum += (k ^ 1)[base] * 10 + *(base + n - 1 - (k ^ 1));
+
+    return sum;
+}
+
 static int sum_shorts(const short *s, int n)
 {
     int sum = 0;
@@ -128,6 +140,9 @@ int main(void)
         right += ints_back(ints + 5, 4) == 58980;
         /* ints[0..2] seen from ints[2..4] */
         right += lagged(ints + 2, ints + 5, 2) == 321;
+        /* k ^ 1 over 0..3 is 1, 0, 3, 2: each element ten times, and each
+         * from the other end once */
+        right += worked(ints, 4) == 43210 + 4321;
     }
-    return right == 6 ? 42 : right;
+    return right == 7 ? 42 : right;
 }

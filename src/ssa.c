@@ -6728,6 +6728,26 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 return;
             }
             right = leaf_operands_in(insn, step == 1);
+
+            /* Three bytes: the int in DE added to the pointer, or taken
+             * from it, three times -- no copy of either kept on the stack
+             * while the int is scaled. */
+            if (step == 3) {
+                int times;
+
+                if (scaled == 0)
+                    ex_de_hl();         /* the pointer into HL */
+                for (times = 0; times != 3; times++) {
+                    if (number == TK_PLUS) {
+                        add_hl_rr(R_DE);
+                    } else {
+                        or_a_a();
+                        sbc_hl_rr(R_DE);
+                    }
+                }
+                leaf_result(insn->res);
+                return;
+            }
             if (scaled == 1 && step != 1)
                 ex_de_hl();             /* the int, on the right, into HL */
             if (step == 3) {
