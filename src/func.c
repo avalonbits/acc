@@ -443,6 +443,33 @@ void gen_func_begin(int fn, int nparams, Type returns)
 
 static void gen_forget(void);
 
+#ifdef OPT_ACC
+/* opt-acc's prologue, its frame known: with none, the ld hl and the two
+ * after it cut; with up to 128 bytes, ld hl, -frame / add hl, sp made
+ * lea hl, ix-frame -- IX is SP there -- three bytes for five, and the two
+ * left over cut. Where relax_function cuts, and how much (frame_cut_len),
+ * or -1. */
+static int frame_lea(void)
+{
+    int size = frame_size();
+    unsigned char *op = out_img + (frame_patch - 1 - out_base);
+
+    if (!size) {
+        frame_cut_len = 6;
+
+        return frame_patch - 1;
+    }
+    if (size > 128)
+        return -1;
+    op[0] = 0xed;                       /* lea hl, ix-frame */
+    op[1] = 0x22;
+    op[2] = (unsigned char) -size;
+    frame_cut_len = 2;
+
+    return frame_patch + 2;
+}
+#endif
+
 void gen_func_end(void)
 {
     /* A return that is the last thing in the function jumps to the next
@@ -508,7 +535,11 @@ void gen_func_end(void)
     if (!frame_size())
         rt_fixups[frame_call].which = RT_FRAMESET0;
 #endif
+#ifdef OPT_ACC
+    relax_function(&func_mark, frame_lea());
+#else
     relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
+#endif
     pool_emit();
     static_end();
     gen_forget();
