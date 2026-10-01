@@ -85,6 +85,8 @@ typedef struct {
     Type local_type;            /* I_CONV, I_STEP: the local's type */
     unsigned char kills;        /* the operands this is the last read of, a
                                  * bit each (find_clashes) */
+    unsigned char delegated;    /* leaf backend: made by the first pass's
+                                 * code, for a wide value (leaf_delegate) */
     unsigned char mem_store;    /* I_STEP: of a cached local, whose new
                                  * value is written to its memory too */
 } Ins;
@@ -2974,6 +2976,9 @@ static int leaf_early_argument(int val, int use)
  * makes them, and in stack order -- checked by walking each block with a
  * stack of its own, and a value that is not where the classic stack would
  * have it is taken out and the walk made again. */
+static int leaf_long(Type type);
+static int leaf_long_ok(int val);
+
 static void find_forwarded(void)
 {
     int *uses = calloc((size_t) nvals + 1, sizeof *uses);
@@ -3008,7 +3013,11 @@ static void find_forwarded(void)
                         && !read_then_written(def_at[val], use_at[val])
                         && use_at[val] > def_at[val]
                         && insns[use_at[val]].block == insns[def_at[val]].block
-                        && !narrow_unwidened(val);
+                        && !narrow_unwidened(val)
+                        && !(leaf_mode && (type_wide(vals[val].type)
+                                           || type_float(vals[val].type))
+                             && !(leaf_long(vals[val].type) && leaf_long_ok(val)
+                                  && !insns[def_at[val]].delegated));
 
     do {
         int blk;
@@ -4792,6 +4801,33 @@ static int leaf_indirect_step(Type type)
 }
 
 /* Whether every instruction is one the code here makes. */
+/* Whether an instruction with a wide value -- a long or a float -- in it
+ * can be left to the first pass's code (leaf_delegate): its operands put
+ * on the classic stack, the call made again, and its answer taken back.
+ * The wide values themselves live in frame slots. */
+static int leaf_delegable(const Ins *insn)
+{
+    int operand;
+
+    switch (insn->op) {
+    case GL_vapply: case GL_vconvert: case GL_vcast: case GL_vtruth:
+    case GL_vneg: case GL_vnot: case GL_vpush_local: case GL_vstore_local:
+    case GL_vderef: case GL_vstore_indirect: case I_CONV: case I_STEP:
+        break;
+    case GL_vdrop:
+        return 1;                       /* a value in a slot: nothing */
+    default:
+        return 0;
+    }
+    if (insn->rec->top.bits)
+        return 0;
+    for (operand = 0; operand != insn->nin; operand++)
+        if (insn->in[operand].attr.bits || type_is_struct(insn->in[operand].attr.type))
+            return 0;
+
+    return 1;
+}
+
 static int leaf_ok(void)
 {
     int at, operand;
@@ -4809,6 +4845,7 @@ static int leaf_ok(void)
          * or an array as a value is its address; a long, only where all
          * that is ever kept of it is its low three bytes -- see
          * leaf_long_ok -- or a constant one dropped. */
+        insns[at].delegated = 0;
         for (operand = 0; operand != insn->nin; operand++)
             if (!leaf_value_type(insn->in[operand].attr.type)
                 && !(leaf_long(insn->in[operand].attr.type)
@@ -4816,13 +4853,35 @@ static int leaf_ok(void)
                          ? leaf_long_ok(insn->in[operand].val)
                          : insn->in[operand].val == S_CONST
                            && (op == GL_vdrop
-                               || (op == GL_vstore_indirect && operand == 1)))))
-                return leaf_why = "an operand wider than an int", 0;
+                               || (op == GL_vstore_indirect && operand == 1))))) {
+                if (!leaf_delegable(insn))
+                    return leaf_why = "an operand wider than an int", 0;
+                insns[at].delegated = 1;
+            }
         if (insn->res >= 0 && !leaf_value_type(vals[insn->res].type)
             && !(leaf_long(vals[insn->res].type) && leaf_long_ok(insn->res)
                  && (op == GL_vpush_local || op == GL_vderef
-                     || op == GL_vstore_local || op == GL_vstore_indirect)))
-            return leaf_why = "a value wider than an int", 0;
+                     || op == GL_vstore_local || op == GL_vstore_indirect))) {
+            if (!leaf_delegable(insn))
+                return leaf_why = "a value wider than an int", 0;
+            insns[at].delegated = 1;
+        }
+        /* A read or write through a pointer of something wide: the
+         * pointer and an int written are narrow, the memory is not -- but
+         * for a long read as its low three bytes, or a constant written,
+         * which the code here makes. */
+        if ((op == GL_vderef || op == GL_vstore_indirect)
+            && type_pointer(insn->in[0].attr.type)
+            && (type_wide(type_deref(insn->in[0].attr.type))
+                || type_float(type_deref(insn->in[0].attr.type)))
+            && !(leaf_long(type_deref(insn->in[0].attr.type))
+                 && (op == GL_vderef
+                     ? insn->res >= 0 && leaf_long_ok(insn->res)
+                     : insn->in[1].val == S_CONST))
+            && leaf_delegable(insn))
+            insns[at].delegated = 1;
+        if (insn->delegated)
+            continue;
         switch (op) {
         case I_FRAME:
             /* The frame is laid down again as the first pass laid it, arrays
@@ -6098,6 +6157,120 @@ static int leaf_slot_to_home(int val, int disp, Type type)
     return 1;
 }
 
+/* One operand of a delegated instruction onto the classic stack: a
+ * constant made again, a value in its slot -- or IY's, which the first
+ * pass's code reads as its local in IY -- or in BC as it is, the one left
+ * on the stack here from HL, and a global's address through DE. */
+static int hl_taken;             /* leaf_delegate: an operand is in HL */
+
+static void leaf_delegate_operand(const Ent *ent, int fwd_reg)
+{
+    int val = ent->val;
+
+    if (val < 0 || (vals[val].reg == HOME_SLOT && !vals[val].fwd)) {
+        load(ent);
+        return;
+    }
+    if (vals[val].fwd) {
+        vpush_reg(fwd_reg);             /* leaf_delegate put it there */
+    } else if (vals[val].reg == R_BC) {
+        vpush_reg(R_BC);
+    } else {
+        int reg = fwd_reg == R_HL && !hl_taken ? R_HL : R_DE;
+
+        leaf_load(ent, reg);
+        vpush_reg(reg);
+        hl_taken |= reg == R_HL;
+    }
+    (vsp - 1)->type = ent->attr.type;
+    vset_ext(ent->attr.ext);
+    vset_quals(ent->attr.quals);
+}
+
+/* An instruction with a wide value in it, made by the first pass's code:
+ * its operands on the classic stack, the call made again, and the answer
+ * -- a wide one into its slot, anything narrower into HL as the code here
+ * makes it. BC, which that code may take for itself, is saved around it
+ * where a value is in it; IY is the first pass's own local, which its code
+ * saves where it uses IY. */
+static void leaf_delegate(const Ins *insn, int at)
+{
+    int operand, keep_bc, res = insn->res, nfwd = 0, global = 0, pushed_at;
+    int fwd_reg[2] = { R_HL, R_HL };
+
+    /* What is on the stack here: one into HL, or two -- a store's address
+     * and its value -- the left into HL and the right into DE. */
+    for (operand = 0; operand != insn->nin; operand++) {
+        int val = insn->in[operand].val;
+
+        nfwd += val >= 0 && vals[val].fwd;
+        global |= val >= 0 && !vals[val].fwd && vals[val].reg == HOME_GLOBAL;
+    }
+    if (nfwd > 2 || (nfwd == 2 && (insn->nin != 2 || global))) {
+        fail = "internal: a wide value's instruction with too much on the stack";
+        return;
+    }
+    if (nfwd == 2) {
+        (void) leaf_operands_in(insn, 0);
+        fwd_reg[1] = R_DE;
+    } else {
+        for (operand = 0; operand != insn->nin; operand++)
+            if (insn->in[operand].val >= 0 && vals[insn->in[operand].val].fwd) {
+                leaf_operand_hl(insn, operand);     /* the one on the stack */
+                break;
+            }
+    }
+    if (vtop != 0) {
+        fail = "internal: the classic stack not empty for a wide value";
+        return;
+    }
+    hl_taken = nfwd != 0;
+    for (operand = 0; operand != insn->nin && !fail; operand++)
+        leaf_delegate_operand(&insn->in[operand], fwd_reg[operand < 2 ? operand : 1]);
+
+    /* What the code here loads is loaded; what the first pass makes from
+     * here on may take BC. */
+    keep_bc = leaf_bc_busy(at);
+    pushed_at = out_here();
+    if (keep_bc)
+        push_rr(R_BC);
+    switch (insn->op) {
+    case I_CONV:
+        vconvert(insn->local_type);
+        break;
+    case I_STEP:
+        vpush_const(1, TY_INT);
+        vapply((unsigned char) insn->step_op, type_narrow(insn->local_type));
+        vconvert(insn->local_type);
+        break;
+    default:
+        call(insn);
+        break;
+    }
+    if (res < 0 || !vals[res].used) {
+        while (vtop)
+            vdrop();
+    } else if (type_wide(vals[res].type) || type_float(vals[res].type)) {
+        vstore_local(vals[res].slot, vals[res].type);
+        vdrop();
+    } else {
+        int reg = vpop_reg();
+
+        if (reg != R_HL)
+            mov_rr(R_HL, reg);
+        leaf_hl_type = vals[res].type;
+    }
+    if (vtop != 0)
+        fail = "internal: the classic stack not empty after a wide value";
+    if (keep_bc && out_here() == pushed_at + 1)
+        out_rewind(pushed_at);          /* nothing made: nothing to keep */
+    else if (keep_bc)
+        pop_rr(R_BC);
+    if (res >= 0 && vals[res].used
+        && !(type_wide(vals[res].type) || type_float(vals[res].type)))
+        leaf_result(res);
+}
+
 static void leaf_insn(const Ins *insn, int blk, int at)
 {
     int op = insn->op, number, value, cc;
@@ -6141,6 +6314,10 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         && op != GL_vpush_const && op != GL_vpush_bss && op != GL_gen_data
         && !(op == GL_vdrop && insn->nin == 0))
         leaf_free_hl(insn);
+    if (insn->delegated && op != GL_vdrop) {
+        leaf_delegate(insn, at);
+        return;
+    }
     switch (op) {
     case I_FRAME: case GL_vdrop: case GL_gen_stmt_end: case GL_gen_value_end:
         if (op == GL_vdrop) {
@@ -6493,7 +6670,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 next++;
             if (next < ninsns && insns[next].op == GL_vderef
                 && insns[next].in[0].val == insn->res && insn->res >= 0
-                && vals[insn->res].fwd) {
+                && vals[insn->res].fwd && !insns[next].delegated) {
                 Type read = type_deref(insns[next].in[0].attr.type);
 
                 if (leaf_long(read))
@@ -6515,7 +6692,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
              * ld hl, n / ld (iy+d), hl -- the address never made. */
             if (next < ninsns && insns[next].op == GL_vstore_indirect
                 && insns[next].in[0].val == insn->res && insn->res >= 0
-                && vals[insn->res].fwd
+                && vals[insn->res].fwd && !insns[next].delegated
                 && leaf_const(&insns[next].in[1], &value)) {
                 Type to = type_deref(insns[next].in[0].attr.type);
 

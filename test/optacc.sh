@@ -410,12 +410,17 @@ OPTACC_LEAF=1 all "$OPT" "o++ sunk past the block's last store" ed230077fd23 yes
 # One phi copy into a slot, through HL alone: ld hl, (ix+6); ld (ix-3), hl.
 copy='char *g(char *, int); char *f(char *o, int n) { char *start = o; while (n--) { char *old = o; o = g(o, n); if (!o) o = old; } return start == o ? 0 : o; }'
 OPTACC_LEAF=1 all "$OPT" "one phi copy into a slot, not pushed"  dd2706dd2ffd yes "$copy"
-# A long whose low three bytes are all that is kept is made here; one whose
-# truth is asked -- all four bytes -- is not.
+# A long whose low three bytes are all that is kept is made here, read as
+# an int.
 leafs "a long read and kept as an int, made here" yes \
     'void g(long *); int f(void) { long v = 0; g(&v); return (int) v; }'
-leafs "a long made a _Bool, not"                 no \
+# One whose four bytes are wanted -- its truth, a sum, a compare -- is
+# made here too, the long in a frame slot and each instruction with it in
+# made by the first pass's code.
+leafs "a long made a _Bool, made here too"        yes \
     'int f(const long *p) { return (_Bool) *p; }'
+leafs "a long sum kept, made here too"            yes \
+    'int f(const unsigned char *p, int n) { unsigned long s = 0; for (int i = 0; i < n; i++) s = s * 31 + p[i]; return (int) (s >> 8); }'
 # Constants written to members of the struct a pointer in IY points at:
 # ld (iy+d), n for a byte, 1 for a _Bool given 5, and ld hl, n / ld
 # (iy+d), hl for an int -- -2 too, which is `-` of 2 folded -- with no
