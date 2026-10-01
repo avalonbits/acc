@@ -957,49 +957,84 @@ static void list_add(IntList *list, int item)
     list->at[list->count++] = item;
 }
 
-static int local_of(int offset)
+/* The local at `offset` read and written as `type`. Two locals of sibling
+ * scopes may share a slot, and a named local is only ever reached as its
+ * own type, so one of another type there is another local. */
+static int local_of(int offset, Type type)
 {
     int at;
 
     for (at = 0; at != nlocals; at++)
-        if (locals[at].offset == offset)
+        if (locals[at].offset == offset && locals[at].type == type)
             return at;
 
     return -1;
 }
 
-/* A local seen with `type`: added, or ruled out if seen with another. */
-static void local_seen(int offset, Type type, int ext)
+/* Whether another local shares `local`'s slot: then a read that nothing
+ * of its own type reaches is taken to be of the other's value -- a VLA's
+ * length is written as an int and read as unsigned -- and the function is
+ * left to the first pass. */
+static int local_shared(int local)
 {
-    int at = local_of(offset);
+    int at;
 
-    if (at < 0) {
-        if (nlocals == MAX_LOCALS)
-            return;
-        at = nlocals++;
-        locals[at].offset = offset;
-        locals[at].type = type;
-        locals[at].ext = ext;
-        locals[at].ok = !type_is_struct(type);
-        locals[at].is_param = offset > 0;
-        locals[at].entry_val = -1;
-        return;
-    }
-    if (locals[at].type != type)
-        locals[at].ok = 0;
+    for (at = 0; at != nlocals; at++)
+        if (at != local && locals[at].offset == locals[local].offset)
+            return 1;
+
+    return 0;
 }
 
+/* Whether every local at `offset` is values now -- and there is one: what
+ * the frame keeps, and IY, are by offset alone. */
+static int offset_all_values(int offset)
+{
+    int at, any = 0;
+
+    for (at = 0; at != nlocals; at++)
+        if (locals[at].offset == offset) {
+            if (!locals[at].ok)
+                return 0;
+            any = 1;
+        }
+
+    return any;
+}
+
+/* A local seen with `type`: added, unless its slot's address was taken. */
+static void local_seen(int offset, Type type, int ext)
+{
+    int at;
+
+    if (local_of(offset, type) >= 0 || nlocals == MAX_LOCALS)
+        return;
+    at = nlocals++;
+    locals[at].offset = offset;
+    locals[at].type = type;
+    locals[at].ext = ext;
+    locals[at].ok = !type_is_struct(type) && local_of(offset, TY_VOID) < 0;
+    locals[at].is_param = offset > 0;
+    locals[at].entry_val = -1;
+}
+
+/* Every local at `offset` ruled out, and any seen there later: its address
+ * is taken, or the first pass reads its slot itself. */
 static void local_ruled_out(int offset)
 {
-    int at = local_of(offset);
+    int at;
 
-    if (at < 0 && nlocals < MAX_LOCALS) {
+    for (at = 0; at != nlocals; at++)
+        if (locals[at].offset == offset)
+            locals[at].ok = 0;
+    if (local_of(offset, TY_VOID) < 0 && nlocals < MAX_LOCALS) {
         at = nlocals++;
         locals[at].offset = offset;
         locals[at].type = TY_VOID;
-    }
-    if (at >= 0)
         locals[at].ok = 0;
+        locals[at].is_param = offset > 0;
+        locals[at].entry_val = -1;
+    }
 }
 
 /* Whether a value's type is an array whose length is known when it runs,
@@ -1315,10 +1350,13 @@ static void rename_block(int blk)
         if (insn->op != GL_vpush_local && insn->op != GL_vstore_local
             && insn->op != GL_vprefix_local && insn->op != GL_vpostfix_local)
             continue;
-        local = local_of((int) insn->rec->arg[0]);
+        local = local_of((int) insn->rec->arg[0], (Type) insn->rec->arg[1]);
         if (local < 0 || !locals[local].ok)
             continue;
 
+        if (insn->op != GL_vstore_local && DEF_TOP(local) == UNDEF
+            && local_shared(local))
+            fail = "a shared slot read as another type";
         if (insn->op == GL_vpush_local) {
             repl[insn->res] = DEF_TOP(local);
             insn->op = GL_vdrop;
@@ -1456,6 +1494,14 @@ static void to_values(void)
             resolve(&insns[at].in[operand]);
     }
     live_phis();
+    for (at = 0; at != nphis; at++)
+        if (phis[at].live && local_shared(phis[at].local)) {
+            int pred;
+
+            for (pred = 0; pred != preds[phis[at].block].count; pred++)
+                if (phis[at].in[pred] == UNDEF)
+                    fail = "a shared slot read as another type";
+        }
 
     /* What the copies into phis cannot do yet: a phi wider than an int,
      * which a register cannot hold across them, and one a switch's case
@@ -1485,10 +1531,16 @@ static void to_values(void)
  * and is given no room. */
 static int local_gone(int from, int size)
 {
-    int local = local_of(from);
+    int local;
 
-    return local >= 0 && locals[local].ok && !locals[local].is_param
-           && type_bytes(locals[local].type, locals[local].ext) == size;
+    if (!offset_all_values(from))
+        return 0;
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].offset == from && !locals[local].is_param
+            && type_bytes(locals[local].type, locals[local].ext) == size)
+            return 1;
+
+    return 0;
 }
 
 /* The bytes of the first pass's locals kept in the frame. */
@@ -2323,12 +2375,9 @@ static int iy_taken_already(void)
  * made: the local in IY is one of them. */
 static int frame_of_value(const Ins *insn)
 {
-    int local;
-
     switch (insn->rec->op) {
     case GL_gen_iy_claim: case GL_gen_iy_param: case GL_gen_iy_take:
-        local = local_of((int) insn->rec->arg[0]);
-        return local >= 0 && locals[local].ok;
+        return offset_all_values((int) insn->rec->arg[0]);
     }
 
     return 0;

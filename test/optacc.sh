@@ -424,5 +424,13 @@ leafs "a string literal, made here"               yes \
 longs='typedef struct { char *name; long addr; } node; void f(node *n) { n->addr = 0x12345678; }'
 leafs "a long constant written, made here"        yes "$longs"
 OPTACC_LEAF=1 all "$OPT" "its bytes, ld (iy+3), hl / ld (iy+6), n" 21785634fd2f03fd360612 yes "$longs"
+# Two inlined bodies whose byte parameters, a char and an unsigned char,
+# share a slot: each is a value of its own, not a local in memory widened,
+# stored and read back.
+shared='extern const unsigned char cl[256];
+static inline int sp(char c) { return cl[(unsigned char) c] & 1; }
+static inline int al(unsigned char u) { return (cl[u] & 2) != 0; }
+int f(const char *p, const char *e) { int n = 0; while (p < e) { n += sp(*p); n += al(*p); p++; } return n; }'
+OPTACC_LEAF=1 all "$OPT" "shared-slot bytes, no widen and narrow" 6fcb05ed626f7d no "$shared"
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
