@@ -351,14 +351,15 @@ else
 fi
 
 # A table indexed by a byte, as zap's character classes are: the byte kept
-# in A from its store to its slot to its use -- ld (ix+d), a and no read
-# back -- the table's address loaded where it is used rather than pushed
-# and popped round the byte, and the byte zero-extended into DE: ld hl, tab;
-# ld de, 0; ld e, a; add hl, de.
+# in A from where it is read to its use -- not stored, since that is its
+# one read -- the table's address loaded where it is used rather than
+# pushed and popped round the byte, and the byte zero-extended into DE:
+# ld hl, tab; ld de, 0; ld e, a; add hl, de.
 table='extern const unsigned char tab[256];
 __attribute__((always_inline)) static inline int space(char c) { return tab[(unsigned char) c] & 1; }
 int f(const char *p, const char *e) { while (p < e && space(*p)) p++; return (int) (e - p); }'
-OPTACC_LEAF=1 all "$OPT" "a table indexed by a byte kept in A" 'dd77..21000000110000005f19' yes "$table"
+OPTACC_LEAF=1 all "$OPT" "a table indexed by a byte kept in A" '7e21000000110000005f19' yes "$table"
+OPTACC_LEAF=1 all "$OPT" "and the byte not stored"             dd77 no "$table"
 # A byte local whose address is taken, read into A and compared there:
 # ld a, (ix+d); cp 0x78, not widened on the way.
 OPTACC_LEAF=1 all "$OPT" "a byte in memory read into A" 'dd7e..fe78' yes \
@@ -432,5 +433,8 @@ static inline int sp(char c) { return cl[(unsigned char) c] & 1; }
 static inline int al(unsigned char u) { return (cl[u] & 2) != 0; }
 int f(const char *p, const char *e) { int n = 0; while (p < e) { n += sp(*p); n += al(*p); p++; } return n; }'
 OPTACC_LEAF=1 all "$OPT" "shared-slot bytes, no widen and narrow" 6fcb05ed626f7d no "$shared"
+# And each byte, read once and straight from A -- by the signed one's
+# table index, and into DE by the unsigned one's -- is not stored at all.
+OPTACC_LEAF=1 all "$OPT" "a byte read once from A, not stored" dd77 no "$shared"
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

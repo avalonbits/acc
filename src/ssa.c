@@ -4585,7 +4585,7 @@ enum { R_AF_BYTE = 1, R_L_BYTE, R_E_BYTE };     /* where leaf_pop left a byte */
 
 /* Where A was last stored to a byte's slot, and which: a read of that slot
  * straight after it, with nothing jumping in between, is A as it is. */
-static int      leaf_a_stored_at = -1, leaf_a_stored_slot;
+static int      leaf_a_stored_at = -1, leaf_a_stored_slot, leaf_a_store_from;
 static unsigned leaf_a_stored_epoch;
 
 /* The values under the top, on the machine stack: whether each is a byte
@@ -4735,6 +4735,21 @@ static void leaf_operand_hl(const Ins *insn, int operand)
     }
 }
 
+static int leaf_read_once(int val);
+
+/* Whether `ent` is a byte in a frame slot that A was stored to just now,
+ * nothing made since: A holds it. */
+static int leaf_a_has(const Ent *ent)
+{
+    int val = ent->val;
+
+    return val >= 0 && !vals[val].fwd && vals[val].reg == HOME_SLOT
+           && !(iy_web >= 0 && vals[val].slot == fixed_slot[iy_web])
+           && type_size(vals[val].type) == 1
+           && leaf_a_stored_at == out_here() && leaf_a_stored_slot == vals[val].slot
+           && leaf_a_stored_epoch == out_rewinds && join_at != out_here();
+}
+
 /* A binary operator's two operands: the left into HL, the right into DE
  * -- or, with `bc_too`, left in BC where it lives, for an instruction with
  * a form for BC. Answers the right's register. */
@@ -4762,6 +4777,16 @@ static int leaf_operands_in(const Ins *insn, int bc_too)
             return R_BC;
         }
         leaf_load(right, R_DE);
+    } else if (leaf_a_has(right) && type_unsigned(vals[right->val].type)) {
+        /* An unsigned byte stored from A just now: into DE from A, before
+         * the left comes to HL -- and not stored at all where this is its
+         * one read. */
+        if (leaf_read_once(right->val))
+            out_rewind(leaf_a_store_from);
+        leaf_a_stored_at = -1;
+        ld_rr_imm(R_DE, 0);
+        out_byte(0x5f);                 /* ld e, a */
+        leaf_load(left, R_HL);
     } else {
         leaf_load(left, R_HL);
         if (bc_too && right->val >= 0 && vals[right->val].reg == R_BC)
@@ -4823,6 +4848,7 @@ static void leaf_result_a(int val, Type type)
         return;
     }
     if (to_slot) {
+        leaf_a_store_from = out_here();
         ld_ix_a(vals[val].slot);
         leaf_a_stored_at = out_here();
         leaf_a_stored_slot = vals[val].slot;
@@ -5422,6 +5448,24 @@ static int leaf_bitwise(const Ins *insn, int op, int byte_op)
  * DE, both moved by 0x800000 when signed. */
 /* A value's byte into A, where it has one: a narrow value in BC or a slot,
  * or in HL. Answers whether it could. */
+/* Whether `val` is read by one instruction alone, and by no phi: then the
+ * slot it was stored to just now is read by nothing else. */
+static int leaf_read_once(int val)
+{
+    int at, operand, phi, pred, reads = 0;
+
+    for (phi = 0; phi != nphis; phi++)
+        for (pred = 0; phis[phi].live && pred != preds[phis[phi].block].count;
+             pred++)
+            if (phis[phi].in[pred] == val)
+                return 0;
+    for (at = 0; at != ninsns; at++)
+        for (operand = 0; operand != insns[at].nin; operand++)
+            reads += insns[at].in[operand].val == val;
+
+    return reads == 1;
+}
+
 static int leaf_byte_to_a(const Ent *ent)
 {
     int val = ent->val;
@@ -5446,6 +5490,10 @@ static int leaf_byte_to_a(const Ent *ent)
         if (!(leaf_a_stored_at == out_here() && leaf_a_stored_slot == vals[val].slot
               && leaf_a_stored_epoch == out_rewinds && join_at != out_here()))
             ld_a_ix(vals[val].slot);    /* not stored there just now */
+        else if (leaf_read_once(val)) {
+            out_rewind(leaf_a_store_from);  /* stored for this read alone */
+            leaf_a_stored_at = -1;
+        }
     } else {
         return 0;
     }
