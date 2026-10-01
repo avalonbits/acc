@@ -4488,6 +4488,8 @@ static int leaf_ok(void)
                 || insn->rec->top.bits || insn->in[0].attr.bits)
                 return leaf_why = "a read or write not of a scalar", 0;
             continue;
+        case GL_gen_data:
+            continue;                   /* a string's bytes, jumped over */
         case GL_vapply:
             arith = (int) insn->rec->arg[0];
             if (insn->rec->arg[1] && !leaf_narrow_ok(insn, arith))
@@ -5586,10 +5588,11 @@ static void leaf_insn(const Ins *insn, int blk, int at)
     }
 
     /* HL made free for what uses it: not a frame call, a statement's end,
-     * a constant made again where read, or a drop of nothing. */
+     * a constant made again where read, a string's bytes, or a drop of
+     * nothing. */
     if (!(op == I_BR && at == skip_branch) && op != I_FRAME
         && op != GL_gen_stmt_end && op != GL_gen_value_end
-        && op != GL_vpush_const && op != GL_vpush_bss
+        && op != GL_vpush_const && op != GL_vpush_bss && op != GL_gen_data
         && !(op == GL_vdrop && insn->nin == 0))
         leaf_free_hl(insn);
     switch (op) {
@@ -5608,6 +5611,18 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         return;
     case GL_vpush_const: case GL_vpush_bss:
         return;                         /* made again where read */
+    case GL_gen_data: {
+        /* A string's bytes, jumped over, as the first pass wrote them; its
+         * address, a constant, read through moved_at from here on. */
+        int bytes = (int) insn->rec->arg[1], put = gen_data(gl_kept(insn->rec->arg[0]), bytes);
+
+        GROW(moved, nmoved, moved_cap);
+        moved[nmoved].old_at = (int) insn->rec->ret;
+        moved[nmoved].len = bytes;
+        moved[nmoved].new_at = put;
+        nmoved++;
+        return;
+    }
     case GL_vpush_global_addr:
         if (insn->res >= 0 && vals[insn->res].reg == HOME_GLOBAL)
             return;                     /* loaded where it is read */

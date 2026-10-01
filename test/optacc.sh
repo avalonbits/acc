@@ -413,5 +413,9 @@ OPTACC_LEAF=1 all "$OPT" "op++ in IY, lea iy, iy+6"         ed3306     yes "$mem
 consts='int f(int x) { do x += 2; while (0); while (1) { if (x > 9) break; x++; } return x; }'
 leafs "constant conditions, made here"             yes "$consts"
 OPTACC_LEAF=1 all "$OPT" "no constant tested"               09b7ed42 no "$consts"
+# A string literal in a function, its bytes jumped over where it is, as
+# the first pass has them: made here.
+leafs "a string literal, made here"               yes \
+    'int puts(const char *); int f(int x) { puts(x ? "yes" : "no"); return "abc"[x]; }'
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
