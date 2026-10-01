@@ -212,6 +212,7 @@ static GenRec *gl_begin(int op)
         gl_nbytes = 0;
         gl_nmarks = 0;
         gl_on = 1;
+        free(gl_start.saved);           /* the last function's: see gl_back */
         gen_mark(&gl_start);
         relax_state(&gl_start_nwants, &gl_start_nstatics, 0);
         gl_start_nrelocs = gl_reloc_count();
@@ -404,7 +405,18 @@ static void gl_replay(void)
 /* Back to where the function began, as its first pass left things. */
 static void gl_back(void)
 {
-    gen_rollback(&gl_start);
+    GenMark back = gl_start;
+
+    /* gen_rollback frees the values the mark saved, and the pick goes back
+     * here more than once: each time from a copy of them, the mark's own
+     * kept until the next function's. */
+    if (back.saved) {
+        back.saved = malloc((size_t) back.vtop * sizeof *back.saved);
+        if (!back.saved)
+            acc_error("out of memory for the log");
+        memcpy(back.saved, gl_start.saved, (size_t) back.vtop * sizeof *back.saved);
+    }
+    gen_rollback(&back);
     relax_state(&gl_start_nwants, &gl_start_nstatics, 1);
     finish_state(gl_start_finish, 1);
     gl_marks(gl_start_marks, 1);
@@ -465,9 +477,17 @@ static void gl_function_end(void)
                        name_text(sym_at(gl_fn)->name)))) {
         const char *why = NULL;
         int picking = !(getenv("OPTACC_PICK") && *getenv("OPTACC_PICK") == '0');
-        int made, ssa_leaf_tried = 0;
+        int made, ssa_leaf_tried = 0, first_leaf, first_cached, first_refused;
 
         made = ssa_generate(&why);
+        first_leaf = ssa_made_leaf;
+        first_cached = ssa_cached_used;
+        first_refused = ssa_cached_refused;
+        if (made == 0 && ssa_cached_refused) {
+            ssa_leaf_off = 1;           /* the hybrid path's, uncached */
+            made = ssa_generate(&why);
+            ssa_leaf_off = 0;
+        }
 
         if (made < 0)
             acc_error("internal: generating %s from its SSA form: %s",
@@ -479,29 +499,65 @@ static void gl_function_end(void)
          * bytes for less than the gain the smaller code alone had: the
          * estimate weighs every path alike, and a path is not run alike.
          *
-         * Where what lost was the leaf backend's, the hybrid path's is
-         * made and weighed too: a function the leaf backend could take was
-         * one the hybrid path had won, and letting the leaf backend take
-         * more lost zap 131 bytes in br_byte alone. */
-        if (made > 0 && picking && ssa_loses(&why)) {
-            made = 0;
-            gl_back();
-            if (ssa_made_leaf) {
-                const char *leaf_why = why;
+         * Every way it can be made is weighed: the leaf backend's with
+         * locals cached, without, and the hybrid path's -- a function the
+         * leaf backend could take was one the hybrid path had won, which
+         * lost zap 131 bytes in br_byte alone, and caching made
+         * macro_expand's leaf code lose where it had won. Of those no
+         * costlier and no bigger than the first pass's, the smallest, and
+         * of two the same size the cheaper, is made again. */
+        if (made > 0 && picking) {
+            static const struct { int leaf_off, cache_off; } ways[] = {
+                { 0, 0 }, { 0, 1 }, { 1, 1 },
+            };
+            const char *lost = NULL;
+            int way, best = -1, best_size = 0, made_way = first_refused ? 2 : 0;
+            long best_cost = 0;
 
-                ssa_leaf_tried = 1;
-                ssa_leaf_off = 1;
-                made = ssa_generate(&why);
-                ssa_leaf_off = 0;
-                if (made < 0)
-                    acc_error("internal: generating %s from its SSA form: %s",
-                              name_text(sym_at(gl_fn)->name), why);
-                if (made > 0 && ssa_loses(&why)) {
-                    made = 0;
-                    gl_back();
-                } else if (made <= 0) {
-                    why = leaf_why;
+            /* The first is made already: way 0, or the hybrid path's where
+             * that was refused. */
+            for (way = made_way; way != (int) (sizeof ways / sizeof ways[0]); way++) {
+                const char *way_why = NULL;
+                int way_made = 1;
+
+                if (way == 1 && !(first_leaf && first_cached))
+                    continue;           /* the same as the first */
+                if (way == 2 && way != made_way && !first_leaf)
+                    continue;           /* the first was the hybrid path's */
+                if (way != made_way) {
+                    ssa_leaf_off = ways[way].leaf_off;
+                    ssa_cache_off = ways[way].cache_off;
+                    way_made = ssa_generate(&way_why);
+                    ssa_leaf_off = ssa_cache_off = 0;
+                    if (way_made < 0)
+                        acc_error("internal: generating %s from its SSA form: %s",
+                                  name_text(sym_at(gl_fn)->name), way_why);
                 }
+                if (way_made == 0)
+                    continue;
+                ssa_leaf_tried |= way == 2 && first_leaf;
+                if (ssa_loses(&way_why)) {
+                    lost = way_why;     /* the last way's, the hybrid path's */
+                } else if (best < 0 || ssa_size_made < best_size
+                           || (ssa_size_made == best_size
+                               && ssa_cost_made < best_cost)) {
+                    best = way;
+                    best_size = ssa_size_made;
+                    best_cost = ssa_cost_made;
+                }
+                gl_back();
+            }
+            made = 0;
+            why = lost ? lost : why;
+            if (best >= 0) {
+                ssa_leaf_off = ways[best].leaf_off;
+                ssa_cache_off = ways[best].cache_off;
+                made = ssa_generate(&why);
+                ssa_leaf_off = ssa_cache_off = 0;
+                if (made <= 0)
+                    acc_error("internal: generating %s again: %s",
+                              name_text(sym_at(gl_fn)->name),
+                              why ? why : "nothing made");
             }
         }
         if (getenv("OPTACC_SSA_STATS"))

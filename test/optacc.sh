@@ -436,5 +436,27 @@ OPTACC_LEAF=1 all "$OPT" "shared-slot bytes, no widen and narrow" 6fcb05ed626f7d
 # And each byte, read once and straight from A -- by the signed one's
 # table index, and into DE by the unsigned one's -- is not stored at all.
 OPTACC_LEAF=1 all "$OPT" "a byte read once from A, not stored" dd77 no "$shared"
+# A local whose address a call takes, kept in a register between the
+# calls: the loop steps p in BC and writes it through, inc bc / ld (ix+6),
+# bc, with no read of it from memory -- and after the call, read again.
+cached='extern const unsigned char cl[256]; int parse(const char **pp);
+int f(const char *p, const char *e) { int n = 0; while (p < e && (cl[(unsigned char) *p] & 1)) p++;
+n += parse(&p); while (p < e && (cl[(unsigned char) *p] & 1)) p++; return n + (int) (e - p); }'
+OPTACC_LEAF=1 all "$OPT" "a cached p stepped and written through" 03dd0f06 yes "$cached"
+OPTACC_LEAF=1 all "$OPT" "and not read in the loop"             dd270606 no "$cached"
+OPTACC_LEAF=1 all "$OPT" "read again straight into BC"          dd0706 yes "$cached"
+OPTACC_LEAF=1 all "$OPT" "not through HL and the stack"         dd2706e5c1 no "$cached"
+# One the leaf backend cannot make is made by the hybrid path, uncached.
+OPTACC_LEAF=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
+    ssa "a cached local, not the leaf backend's" "ssa f made" \
+    'int g(char **); int f(void) { char text[] = "abc"; char *p = text; g(&p); return p[0] + p[1]; }'
+# The pick goes back to where a function began once for each way it weighs;
+# where values were on the stack there -- the function before left a VLA
+# prototype's bound -- each time from its own copy of them, which were
+# freed twice.
+OPTACC_LEAF=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+    ssa "gone back to more than once"   "ssa f made" \
+    'extern int m, n; void a(void) { typedef int A3[3]; typedef A3 An3[n]; void h(An3[][m]); }
+void f(void) { typedef int B[m]; void *g(B); }'
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

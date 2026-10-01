@@ -85,6 +85,8 @@ typedef struct {
     Type local_type;            /* I_CONV, I_STEP: the local's type */
     unsigned char kills;        /* the operands this is the last read of, a
                                  * bit each (find_clashes) */
+    unsigned char mem_store;    /* I_STEP: of a cached local, whose new
+                                 * value is written to its memory too */
 } Ins;
 
 typedef struct {
@@ -96,6 +98,9 @@ typedef struct {
                                  * in, or HOME_SLOT for its frame slot */
     int  fwd;                   /* left on the classic stack for its one
                                  * use, never kept anywhere */
+    int  mem;                   /* a cached local's memory, read where it is
+                                 * read: the local's offset, or 0 */
+    int  of_cached;             /* a cached local's value: the local + 1 */
 } SVal;
 
 #define HOME_SLOT (-1)
@@ -200,6 +205,8 @@ static int new_val(Type type, int def)
     vals[nvals].used = 0;
     vals[nvals].reg = HOME_SLOT;
     vals[nvals].fwd = 0;
+    vals[nvals].mem = 0;
+    vals[nvals].of_cached = 0;
 
     return nvals++;
 }
@@ -925,10 +932,22 @@ typedef struct {
     int  ok;                    /* still a candidate */
     int  is_param;
     int  entry_val;             /* a parameter's value as the function begins */
+    int  mem_val;               /* cached: its memory as a value, for a phi
+                                 * on an edge where nothing is known */
+    int  cached;                /* its address taken, so memory still, but read
+                                 * from the value last read or written there
+                                 * until something may have written it: see
+                                 * cache_barrier */
 } Local;
 
 static Local locals[MAX_LOCALS];
 static int   nlocals;
+
+/* Slots the first pass reads or holds itself -- a switch's value, the
+ * local in IY -- which no local there can be cached for. */
+static int pinned[MAX_LOCALS], npinned;
+static int cached_any;          /* a read was answered from the cache */
+static int ncached;             /* how many locals are cached */
 
 /* A phi: the local it joins, the value it makes, and what each of its
  * block's predecessors brings -- a value, or UNDEF. */
@@ -1016,6 +1035,7 @@ static void local_seen(int offset, Type type, int ext)
     locals[at].ok = !type_is_struct(type) && local_of(offset, TY_VOID) < 0;
     locals[at].is_param = offset > 0;
     locals[at].entry_val = -1;
+    locals[at].cached = 0;
 }
 
 /* Every local at `offset` ruled out, and any seen there later: its address
@@ -1034,7 +1054,16 @@ static void local_ruled_out(int offset)
         locals[at].ok = 0;
         locals[at].is_param = offset > 0;
         locals[at].entry_val = -1;
+        locals[at].cached = 0;
     }
+}
+
+static void local_pinned(int offset)
+{
+    if (npinned < MAX_LOCALS)
+        pinned[npinned++] = offset;
+    else
+        nlocals = MAX_LOCALS + 1;       /* too many to follow: none, then */
 }
 
 /* Whether a value's type is an array whose length is known when it runs,
@@ -1055,7 +1084,7 @@ static void find_locals(void)
 {
     int at;
 
-    nlocals = 0;
+    nlocals = npinned = 0;
     for (at = 0; at != ninsns; at++)
         if (insns[at].rec && runtime_array(insns[at].rec->top.type,
                                            insns[at].rec->top.ext))
@@ -1079,6 +1108,11 @@ static void find_locals(void)
         case GL_gen_switch_load: case GL_gen_switch_case:
             local_ruled_out(insn->op == GL_gen_switch_load
                             ? (int) rec->arg[0] : (int) rec->arg[4]);
+            local_pinned(insn->op == GL_gen_switch_load
+                         ? (int) rec->arg[0] : (int) rec->arg[4]);
+            break;
+        case GL_gen_iy_claim: case GL_gen_iy_param: case GL_gen_iy_take:
+            local_pinned((int) rec->arg[0]);
             break;
         case GL_gen_call:
             /* longjmp comes back to setjmp with the frame as it is, and a
@@ -1207,6 +1241,122 @@ static void dominators(void)
     free(seen);
 }
 
+/* ------------------------------------------------------------------ */
+/* locals cached                                                       */
+
+/* A local whose address is taken stays memory: everything that reads it
+ * through a pointer, or in a call, has to find it there. But between
+ * those, where nothing may write it, a read gives what was last read or
+ * written there -- so with the leaf backend such a local is cached: every
+ * write still goes to memory, and a read is answered from the value last
+ * read or written, where one is sure to be it on every path. Where it is
+ * not, the read is made from memory, and that is the value from then on.
+ * Only ints and pointers, three bytes: zap's `p`, whose address the
+ * expression parser takes. */
+
+#define CACHE_NONE (-4)         /* memory may have changed: read it */
+
+extern int ssa_cache_off;
+
+static int leaf_on(void);
+static int regs_on(void);
+
+/* Whether an instruction writes no memory: anything not known not to is
+ * taken to. A local's own writes are cache_barrier's. */
+static int writes_no_memory(int op)
+{
+    switch (op) {
+    case GL_vpush_const: case GL_vpush_bss: case GL_vconst_addr:
+    case GL_vconst_bss: case GL_vpush_const_long: case GL_vpush_const_wide:
+    case GL_vpush_const_float: case GL_vconvert: case GL_vpush_local:
+    case GL_vapply: case GL_vaddr_local: case GL_vaddr_array: case GL_vderef:
+    case GL_vmember: case GL_vneg: case GL_vnot: case GL_vdrop:
+    case GL_gen_discard: case GL_gen_stmt_end: case GL_gen_value_end:
+    case GL_vpush_function: case GL_vpush_global_addr: case GL_vcast:
+    case GL_gen_here: case GL_gen_jump: case GL_gen_jump_to:
+    case GL_gen_jump_if_false: case GL_gen_jump_if_true_to:
+    case GL_gen_switch_load: case GL_gen_switch_case: case GL_gen_logic_left:
+    case GL_gen_logic_right: case GL_vtruth: case GL_vdup: case GL_vswap:
+    case GL_gen_cond_begin: case GL_gen_cond_middle: case GL_gen_cond_end:
+    case GL_gen_cond_middle_void: case GL_gen_cond_end_void: case GL_gen_label:
+    case GL_gen_return: case GL_gen_data: case GL_gen_func_begin:
+    case I_BR: case I_JMP: case I_FRAME:
+        return 1;
+    }
+
+    return 0;
+}
+
+/* Whether `insn` may change cached `local`'s memory other than by a write
+ * to it by name: anything that writes memory, or a write to another local
+ * kept in memory whose bytes overlap it -- two of sibling scopes may share
+ * a slot. */
+static int cache_barrier(const Ins *insn, int local)
+{
+    const Local *cached = &locals[local];
+    int op = insn->op;
+
+    if (op == GL_vstore_local || op == GL_vprefix_local || op == GL_vpostfix_local) {
+        int offset = (int) insn->rec->arg[0], other;
+        Type type = (Type) insn->rec->arg[1];
+        int bytes = type_wide(type) ? type_wide_bytes(type) : type_size(type);
+
+        if (offset == cached->offset && type == cached->type)
+            return 0;
+        other = local_of(offset, type);
+        if (other >= 0 && locals[other].ok)
+            return 0;                   /* values: no memory */
+
+        return offset < cached->offset + ACC_INT_SIZE
+               && cached->offset < offset + bytes;
+    }
+
+    return !writes_no_memory(op);
+}
+
+/* Whether `insn` reads or writes cached `local` by name, and if so in *known
+ * whether the local's value is known after it. */
+static int cache_event(const Ins *insn, int local, int *known)
+{
+    int op = insn->op, res = insn->res;
+
+    if ((op != GL_vpush_local && op != GL_vstore_local && op != GL_vprefix_local
+         && op != GL_vpostfix_local)
+        || (int) insn->rec->arg[0] != locals[local].offset
+        || (Type) insn->rec->arg[1] != locals[local].type)
+        return 0;
+    *known = op != GL_vpostfix_local && res >= 0
+             && vals[res].type == locals[local].type;
+
+    return 1;
+}
+
+/* Which locals are cached, each with a value standing for its memory. */
+static void choose_cached(void)
+{
+    int local;
+
+    cached_any = ncached = 0;
+    for (local = 0; local != nlocals; local++) {
+        Local *one = &locals[local];
+        int pin;
+
+        one->cached = leaf_on() && regs_on() && !ssa_cache_off
+                      && !one->ok && one->type != TY_VOID
+                      && !type_is_struct(one->type)
+                      && type_size(one->type) == ACC_INT_SIZE
+                      && !type_float(one->type);
+        for (pin = 0; pin != npinned; pin++)
+            if (pinned[pin] == one->offset)
+                one->cached = 0;
+        if (one->cached) {
+            one->mem_val = new_val(one->type, -1);
+            vals[one->mem_val].mem = one->offset;
+            ncached++;
+        }
+    }
+}
+
 /* The blocks where each local needs a phi: the iterated dominance frontier
  * of the blocks that write it. */
 static void place_phis(void)
@@ -1236,17 +1386,28 @@ static void place_phis(void)
     for (local = 0; local != nlocals; local++) {
         int nwork = 0;
 
-        if (!locals[local].ok)
+        if (!locals[local].ok && !locals[local].cached)
             continue;
         memset(writes, 0, (size_t) nblocks * sizeof *writes);
         memset(has_phi, 0, (size_t) nblocks * sizeof *has_phi);
-        if (locals[local].is_param) {
+        if (locals[local].is_param || locals[local].cached) {
             writes[0] = 1;
             work[nwork++] = 0;
         }
         for (at = 0; at != ninsns; at++) {
             const Ins *insn = &insns[at];
+            int known;
 
+            /* A cached local's every read and write is a value of its own,
+             * and so is every barrier, after which it is not known. */
+            if (locals[local].cached && rpo_num[insn->block] >= 0
+                && !writes[insn->block]
+                && (cache_event(insn, local, &known)
+                    || cache_barrier(insn, local))) {
+                writes[insn->block] = 1;
+                work[nwork++] = insn->block;
+                continue;
+            }
             if ((insn->op == GL_vstore_local || insn->op == GL_vprefix_local
                  || insn->op == GL_vpostfix_local)
                 && insn->rec->arg[0] == locals[local].offset
@@ -1268,6 +1429,8 @@ static void place_phis(void)
                 phis[nphis].local = local;
                 phis[nphis].val = new_val(locals[local].type,
                                           blocks[join].first);
+                if (locals[local].cached)
+                    vals[phis[nphis].val].of_cached = local + 1;
                 phis[nphis].in = malloc(((size_t) preds[join].count + 1)
                                         * sizeof (int));
                 if (!phis[nphis].in)
@@ -1317,6 +1480,36 @@ static void resolve(Ent *ent)
     }
 }
 
+/* `++` or `--` of a cached local whose value `old` is known, made a step
+ * to a new value -- written to the local's memory as well, by the code
+ * made for it -- and the expression's value the old or the new. */
+static void cache_step(Ins *insn, int at, int local, int old)
+{
+    int result = insn->res, stepped = new_val(locals[local].type, at);
+    Ent operand_ent;
+
+    memset(&operand_ent, 0, sizeof operand_ent);
+    operand_ent.attr = insn->rec->top;
+    operand_ent.attr.type = locals[local].type;
+    operand_ent.attr.ext = (unsigned char) insn->rec->arg[2];
+    operand_ent.attr.kind = VAL_LOCAL;
+    operand_ent.val = old;
+    resolve(&operand_ent);
+    repl = realloc(repl, (size_t) nvals * sizeof *repl);
+    if (!repl)
+        acc_error("out of memory for the SSA form");
+    repl[stepped] = -1;
+    insn->step_op = (int) insn->rec->arg[3];
+    insn->local_type = locals[local].type;
+    insn->nin = 1;
+    insn->in[0] = operand_ent;
+    insn->res = stepped;
+    repl[result] = insn->op == GL_vprefix_local ? stepped : old;
+    insn->op = I_STEP;
+    insn->mem_store = 1;
+    vals[stepped].of_cached = local + 1;
+}
+
 /* Each block, in the dominator tree's order: every read of a local turned
  * into the value that reaches it, every write into a new value, and each
  * successor's phis told what this block brings them. */
@@ -1347,10 +1540,41 @@ static void rename_block(int blk)
 
         for (operand = 0; operand != insn->nin; operand++)
             resolve(&insn->in[operand]);
+        if (ncached)
+            for (local = 0; local != nlocals; local++)
+                if (locals[local].cached && cache_barrier(insn, local))
+                    DEF_PUSH(local, CACHE_NONE);
         if (insn->op != GL_vpush_local && insn->op != GL_vstore_local
             && insn->op != GL_vprefix_local && insn->op != GL_vpostfix_local)
             continue;
         local = local_of((int) insn->rec->arg[0], (Type) insn->rec->arg[1]);
+        if (local >= 0 && locals[local].cached) {
+            int known;
+
+            /* Read from the cache where it holds the value; otherwise
+             * made in memory as before, and what it read or wrote is the
+             * value from here. */
+            (void) cache_event(insn, local, &known);
+            if (insn->res >= 0 && insn->op != GL_vpostfix_local)
+                vals[insn->res].of_cached = local + 1;
+            if (insn->op == GL_vpush_local && DEF_TOP(local) >= 0) {
+                repl[insn->res] = DEF_TOP(local);
+                insn->op = GL_vdrop;
+                insn->nin = 0;
+                insn->res = -1;
+                cached_any = 1;
+            } else if ((insn->op == GL_vprefix_local
+                        || insn->op == GL_vpostfix_local)
+                       && DEF_TOP(local) >= 0) {
+                /* ++ or -- of a known value: a step, written through. */
+                cache_step(insn, at, local, DEF_TOP(local));
+                DEF_PUSH(local, insn->res);
+                cached_any = 1;
+            } else {
+                DEF_PUSH(local, known ? insn->res : CACHE_NONE);
+            }
+            continue;
+        }
         if (local < 0 || !locals[local].ok)
             continue;
 
@@ -1412,8 +1636,12 @@ static void rename_block(int blk)
             if (preds[to].at[pred] != blk)
                 continue;
             for (phi = 0; phi != nphis; phi++)
-                if (phis[phi].block == to)
-                    phis[phi].in[pred] = DEF_TOP(phis[phi].local);
+                if (phis[phi].block == to) {
+                    int local = phis[phi].local, in = DEF_TOP(local);
+
+                    phis[phi].in[pred] = in == CACHE_NONE
+                                         ? locals[local].mem_val : in;
+                }
         }
     }
     for (kid = 0; kid != dom_kids[blk].count; kid++)
@@ -1471,10 +1699,11 @@ static void to_values(void)
         if (locals[local].ok && locals[local].is_param) {
             locals[local].entry_val = new_val(locals[local].type, 0);
         }
+    choose_cached();
     place_phis();
 
     repl = malloc(((size_t) nvals + 1) * sizeof *repl);
-    cur_cap = ninsns + nlocals + 8;
+    cur_cap = 2 * ninsns + nblocks + nlocals + 8;  /* a barrier is a def too */
     cur_def = malloc(((size_t) nlocals + 1) * (size_t) cur_cap * sizeof *cur_def);
     cur_top = calloc((size_t) nlocals + 1, sizeof *cur_top);
     if (!repl || !cur_def || !cur_top)
@@ -1484,6 +1713,8 @@ static void to_values(void)
     for (local = 0; local != nlocals; local++)
         if (locals[local].ok && locals[local].is_param)
             cur_def[local * cur_cap + cur_top[local]++] = locals[local].entry_val;
+        else if (locals[local].cached)
+            cur_def[local * cur_cap + cur_top[local]++] = CACHE_NONE;
     rename_block(0);
 
     /* What the blocks the entry does not reach read, resolved as well. */
@@ -1495,7 +1726,8 @@ static void to_values(void)
     }
     live_phis();
     for (at = 0; at != nphis; at++)
-        if (phis[at].live && local_shared(phis[at].local)) {
+        if (phis[at].live && !locals[phis[at].local].cached
+            && local_shared(phis[at].local)) {
             int pred;
 
             for (pred = 0; pred != preds[phis[at].block].count; pred++)
@@ -1586,6 +1818,19 @@ static void frame_again(const Ins *insn)
  * on it. */
 static int leaf_mode;             /* see emit_leaf */
 
+static int step_may_pass(const Ins *insn, int old)
+{
+    int op = insn->op;
+
+    if (op == GL_vderef || op == GL_vmember)
+        return insn->nin == 1 && insn->in[0].val == old;
+
+    if (op == I_CONV || op == I_STEP)
+        return !insn->mem_store;        /* a local's value, not memory */
+
+    return op != GL_vpush_local && writes_no_memory(op);
+}
+
 static void sink_steps(void)
 {
     int at;
@@ -1615,6 +1860,13 @@ static void sink_steps(void)
             /* Past a step of something else -- `*o++ = *s++` -- but not
              * of this: the two would change places. */
             if (reads_new || (insns[scan].op == I_STEP && reads_old))
+                break;
+
+            /* One written through to a cached local's memory, past
+             * nothing that may read or write memory but a read through
+             * the old value itself -- `*p++` -- which is in the same
+             * expression, and unsequenced with the step anyway. */
+            if (step.mem_store && !step_may_pass(&insns[scan], step.in[0].val))
                 break;
             if (reads_old)
                 read_old = scan;
@@ -1676,6 +1928,8 @@ static void live_ranges(void)
     for (local = 0; local != nlocals; local++)
         if (locals[local].ok && locals[local].is_param)
             LIVE_BIT(block_kill, 0, locals[local].entry_val) = 1;
+        else if (locals[local].cached)
+            LIVE_BIT(block_kill, 0, locals[local].mem_val) = 1;
     for (phi_at = 0; phi_at != nphis; phi_at++)
         if (phis[phi_at].live) {
             LIVE_BIT(block_kill, phis[phi_at].block, phis[phi_at].val) = 1;
@@ -2722,7 +2976,7 @@ static int reg_eligible(int val)
 {
     Type type = vals[val].type;
 
-    if (vals[val].fwd || !vals[val].used || type == TY_VOID
+    if (vals[val].fwd || !vals[val].used || vals[val].mem || type == TY_VOID
         || type_is_struct(type) || type_wide(type) || type_float(type)
         || type_size(type) > ACC_INT_SIZE)
         return 0;
@@ -2978,12 +3232,34 @@ static void coalesce(void)
         for (pred = 0; pred != preds[join->block].count; pred++) {
             int source = join->in[pred], into, from;
 
-            if (source < 0 || vals[source].fwd
+            if (source < 0 || vals[source].fwd || vals[source].mem
                 || vals[source].type != vals[join->val].type)
                 continue;
             into = web_root(join->val);
             from = web_root(source);
             if (into == from || webs_clash(into, from))
+                continue;
+            web_parent[from] = into;
+            web_next[web_tail[into]] = from;
+            web_tail[into] = web_tail[from];
+        }
+    }
+
+    /* A cached local's values, all of them its own value at some point,
+     * in one home where none clashes: the reload after a call then lands
+     * where the value was before it. */
+    for (val = 0; val != nvals; val++) {
+        int other;
+
+        if (!vals[val].of_cached || vals[val].fwd || !vals[val].used)
+            continue;
+        for (other = val + 1; other != nvals; other++) {
+            int into = web_root(val), from = web_root(other);
+
+            if (vals[other].of_cached != vals[val].of_cached || vals[other].fwd
+                || !vals[other].used
+                || vals[other].type != vals[val].type || into == from
+                || webs_clash(into, from))
                 continue;
             web_parent[from] = into;
             web_next[web_tail[into]] = from;
@@ -3095,6 +3371,11 @@ static void plan_fixed(const int *order, int nroots)
         if (!fixed_slot[root] && vals[root].reg == HOME_SLOT && !vals[root].fwd)
             fixed_slot[root] = locals[local].offset;
     }
+
+    /* A cached local's memory is its own slot. */
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].cached)
+            fixed_slot[web_root(locals[local].mem_val)] = locals[local].offset;
 }
 
 /* The webs, heaviest first, each given a register when every value in it
@@ -4186,6 +4467,14 @@ static int native_step(const Ins *insn, int at)
  * backend's lost the pick -- see genlog.c. ssa_made_leaf: whether the code
  * just made was the leaf backend's. */
 int ssa_leaf_off, ssa_made_leaf;
+
+/* ssa_cached_refused: the form had cached locals but was not the leaf
+ * backend's, which alone makes them: made again with ssa_leaf_off. */
+int ssa_cached_refused;
+
+/* ssa_cache_off: no local cached, for the pick to weigh the leaf backend's
+ * code without them; ssa_cached_used: the form just made had one. */
+int ssa_cache_off, ssa_cached_used;
 
 static int leaf_on(void)
 {
@@ -5655,6 +5944,55 @@ static void leaf_convert(const Ent *from, Type to)
     }
 }
 
+/* A cached local's step written through to its memory, from where the
+ * new value is: HL, BC, or IY (-1). HL is kept. */
+static void cache_write(const Ins *insn, int reg)
+{
+    int slot = inline_moved((int) insn->rec->arg[0]);
+
+    if (!insn->mem_store)
+        return;
+    if (reg == R_HL) {
+        ld_ix_rr(slot, R_HL);
+        return;
+    }
+    if (disp_fits(slot)) {
+        out_byte3(0xdd, reg == R_BC ? 0x0f : 0x3e, slot);  /* ld (ix+d), bc/iy */
+        return;
+    }
+    push_rr(R_HL);
+    if (reg == R_BC)
+        push_rr(R_BC);
+    else
+        out_byte2(0xfd, 0xe5);          /* push iy */
+    pop_rr(R_HL);
+    ld_ix_rr(slot, R_HL);
+    pop_rr(R_HL);
+}
+
+/* An int from the frame slot at `disp` made `val`, where val lives in BC or
+ * IY: loaded there straight, ld bc, (ix+d) or ld iy, (ix+d), not through HL
+ * and the stack. Returns 0, having made nothing, for any other home. */
+static int leaf_slot_to_home(int val, int disp, Type type)
+{
+    int to_iy;
+
+    if (val < 0 || !vals[val].used || vals[val].fwd
+        || type_size(vals[val].type) != ACC_INT_SIZE || !disp_fits(disp))
+        return 0;
+    to_iy = vals[val].reg == HOME_SLOT && iy_web >= 0
+            && vals[val].slot == fixed_slot[iy_web];
+    if (vals[val].reg != R_BC && !to_iy)
+        return 0;
+    frame_byte(to_iy ? 0x31 : 0x07, disp);         /* ld iy / bc, (ix+d) */
+    if (leaf_holds) {
+        leaf_holds[val] = def_at[val] >= 0 ? type : TY_VOID;
+        leaf_widths[val] = 3;
+    }
+
+    return 1;
+}
+
 static void leaf_insn(const Ins *insn, int blk, int at)
 {
     int op = insn->op, number, value, cc;
@@ -5686,6 +6024,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             out_byte3(0xed, 0x33, count * number & 0xff);   /* lea iy, iy+d */
         else
             step_reg(leaf_in_iy(&insn->in[0]) ? -1 : R_BC, count);
+        cache_write(insn, leaf_in_iy(&insn->in[0]) ? -1 : R_BC);
         return;
     }
 
@@ -5756,6 +6095,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             && (!type_pointer(insn->local_type)
                 || type_step(insn->local_type, insn->in[0].attr.ext) == 1)) {
             step_reg(-1, insn->step_op == TK_MINUS ? -1 : 1);   /* inc iy */
+            cache_write(insn, -1);
             return;
         }
         if (vals[insn->res].reg == R_BC && insn->in[0].val >= 0
@@ -5763,6 +6103,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             && type_size(insn->local_type) == ACC_INT_SIZE
             && !type_pointer(insn->local_type)) {
             step_reg(R_BC, insn->step_op == TK_MINUS ? -1 : 1);
+            cache_write(insn, R_BC);
             return;
         }
         leaf_operand_hl(insn, 0);
@@ -5773,6 +6114,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         else
             step_reg(R_HL, insn->step_op == TK_MINUS ? -number : number);
         leaf_narrow(insn->local_type);
+        cache_write(insn, R_HL);
         leaf_result(insn->res);
         return;
     case GL_vneg: case GL_vnot:
@@ -5900,6 +6242,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             leaf_result_a(insn->res, type);
             return;
         }
+        if (!leaf_long(type) && leaf_slot_to_home(insn->res, disp, type))
+            return;
         ld_rr_ix(R_HL, disp);                   /* a long's low three bytes */
         leaf_hl_type = leaf_long(type) ? TY_VOID : type;
         leaf_result(insn->res);
@@ -6641,8 +6985,14 @@ static void leaf_edge(int from, int to)
         memset(&ent, 0, sizeof ent);
         ent.val = sources[0];
         ent.attr.type = vals[sources[0]].type;
-        leaf_load(&ent, R_HL);
         vals[dests[0]].fwd = 0;
+        if (vals[sources[0]].reg == HOME_SLOT
+            && !(iy_web >= 0 && vals[sources[0]].slot == fixed_slot[iy_web])
+            && type_size(vals[sources[0]].type) == ACC_INT_SIZE
+            && leaf_slot_to_home(dests[0], vals[sources[0]].slot,
+                                 vals[sources[0]].type))
+            return;
+        leaf_load(&ent, R_HL);
         leaf_result(dests[0]);
         return;
     }
@@ -6721,6 +7071,9 @@ static void emit_leaf(void)
         }
     give_slots();
     inline_slots();
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].cached)
+            vals[locals[local].mem_val].slot = inline_moved(locals[local].offset);
 
     /* Each parameter into its first value's home, if not its own slot. */
     for (local = 0; local != nlocals; local++)
@@ -7283,7 +7636,7 @@ int ssa_generate(const char **why)
     ninsns = nvals = nblocks = nholes = nheres = nstk = ninlined = nmerged = 0;
     fail = NULL;
     ssa_cost_made = ssa_cost_first = 0;
-    leaf_mode = ssa_made_leaf = 0;
+    leaf_mode = ssa_made_leaf = ssa_cached_refused = ssa_cached_used = 0;
     keep_records(gl_log, gl_n, keep);
 
     new_block(-1);
@@ -7311,6 +7664,11 @@ int ssa_generate(const char **why)
         leaf_why = NULL;
         leaf_mode = leaf_on() && leaf_ok();
         ssa_made_leaf = leaf_mode;
+        ssa_cached_used = cached_any;
+        if (cached_any && !leaf_mode) {
+            ssa_cached_refused = 1;
+            fail = "a cached local, which the leaf backend alone makes";
+        }
         sink_steps();
     }
     if (!fail) {
