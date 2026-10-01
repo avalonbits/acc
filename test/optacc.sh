@@ -6,7 +6,8 @@
 #   add hl, sp; ld sp, hl, where acc calls acc_rt_frameset -- and cut to its
 #   first nine bytes when there is no frame;
 # - the local a loop uses most kept in IY, chosen by reading the body first
-#   (src/prescan.c), where acc needs it declared register;
+#   (src/prescan.c), where acc needs it declared register -- in a body with
+#   a long or a float, which the SSA form's code leaves to this;
 # - every function compiled a second time, from the log of the parser's
 #   calls (src/genlog.c), with the same code to come out;
 # - with OPTACC_SSA, functions built as SSA from that log (src/ssa.c), and
@@ -91,7 +92,12 @@ emits "$ACC" "a frame: acc does not"               "$prologue" no "$framed"
 emits "$OPT" "no frame: the nine bytes, then the body" "${prologue}21070000" yes "$empty"
 
 lea_hl_iy=ed2300                    # lea hl, iy+0: a read of the IY local
-emits "$OPT" "a loop: opt-acc keeps a local in IY" "$lea_hl_iy" yes "$loop"
+# The pre-scan chooses IY only where a body has a long or a float, which
+# keeps the function to the first pass; anywhere else the SSA form's code
+# is made, and chooses its own -- the first pass alone is what is checked.
+longloop='long f(const char *p, int n) { long t = 1; int s = 0; while (n--) s += *p++; return s + t; }'
+emits "$OPT" "a loop with a long: opt-acc keeps a local in IY" "$lea_hl_iy" yes "$longloop"
+emits "$OPT" "a loop without: left to the SSA form"  "$lea_hl_iy" no "$loop"
 emits "$ACC" "a loop: acc does not unasked"        "$lea_hl_iy" no  "$loop"
 emits "$ACC" "a loop: acc does when told register" "$lea_hl_iy" yes "$regloop"
 
