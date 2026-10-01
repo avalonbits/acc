@@ -228,6 +228,7 @@ extern int gen_pending_sym;            /* whose address it needs, not yet known 
  * they are the assignments themselves. */
 #ifdef OPT_ACC
 void gen_data_begin(void);            /* func.c */
+void gen_local_scope(int open);       /* an inlined body's locals, 1 then 0 */
 void gen_data_end(void);
 void gen_pending_clear(void);
 #else

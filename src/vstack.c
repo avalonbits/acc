@@ -192,6 +192,15 @@ void vpush_const(int val, Type type)
     vpush(VAL_CONST, type, val);
 }
 
+#ifdef OPT_ACC
+/* How many values are on the stack, for inline.c, which reads it without
+ * changing anything -- so not in gen.h, whose calls the log keeps. */
+int gen_stack_depth(void)
+{
+    return vtop;
+}
+#endif
+
 void vset_addr(void)
 {
     (vsp - 1)->kind = VAL_ADDR;

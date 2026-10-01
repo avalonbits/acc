@@ -507,5 +507,67 @@ leafs "a frame past (ix+d), made here"           yes \
 # in IY, and the answer read from it.
 c70='int f(int n) { char v0 = (char) n; char v1 = (char) (v0 + 1); char v2 = (char) (v1 + 2); char v3 = (char) (v2 + 3); char v4 = (char) (v3 + 4); char v5 = (char) (v4 + 5); char v6 = (char) (v5 + 6); char v7 = (char) (v6 + 7); char v8 = (char) (v7 + 8); char v9 = (char) (v8 + 9); char v10 = (char) (v9 + 10); char v11 = (char) (v10 + 11); char v12 = (char) (v11 + 12); char v13 = (char) (v12 + 13); char v14 = (char) (v13 + 14); char v15 = (char) (v14 + 15); char v16 = (char) (v15 + 16); char v17 = (char) (v16 + 17); char v18 = (char) (v17 + 18); char v19 = (char) (v18 + 19); char v20 = (char) (v19 + 20); char v21 = (char) (v20 + 21); char v22 = (char) (v21 + 22); char v23 = (char) (v22 + 23); char v24 = (char) (v23 + 24); char v25 = (char) (v24 + 25); char v26 = (char) (v25 + 26); char v27 = (char) (v26 + 27); char v28 = (char) (v27 + 28); char v29 = (char) (v28 + 29); char v30 = (char) (v29 + 30); char v31 = (char) (v30 + 31); char v32 = (char) (v31 + 32); char v33 = (char) (v32 + 33); char v34 = (char) (v33 + 34); char v35 = (char) (v34 + 35); char v36 = (char) (v35 + 36); char v37 = (char) (v36 + 37); char v38 = (char) (v37 + 38); char v39 = (char) (v38 + 39); char v40 = (char) (v39 + 40); char v41 = (char) (v40 + 41); char v42 = (char) (v41 + 42); char v43 = (char) (v42 + 43); char v44 = (char) (v43 + 44); char v45 = (char) (v44 + 45); char v46 = (char) (v45 + 46); char v47 = (char) (v46 + 47); char v48 = (char) (v47 + 48); char v49 = (char) (v48 + 49); char v50 = (char) (v49 + 50); char v51 = (char) (v50 + 51); char v52 = (char) (v51 + 52); char v53 = (char) (v52 + 53); char v54 = (char) (v53 + 54); char v55 = (char) (v54 + 55); char v56 = (char) (v55 + 56); char v57 = (char) (v56 + 57); char v58 = (char) (v57 + 58); char v59 = (char) (v58 + 59); char v60 = (char) (v59 + 60); char v61 = (char) (v60 + 61); char v62 = (char) (v61 + 62); char v63 = (char) (v62 + 63); char v64 = (char) (v63 + 64); char v65 = (char) (v64 + 65); char v66 = (char) (v65 + 66); char v67 = (char) (v66 + 67); char v68 = (char) (v67 + 68); char v69 = (char) (v68 + 69); int k = n, s = 0; while (k--) s += v69; return s; }'
 OPTACC_LEAF=1 all "$OPT" "a sum in IY after 70 locals"  ed2300ddf9 yes "$c70"
+
+# With OPTACC_INLINE, a static function called from one place, its address
+# never taken, has its whole body read in place of the call, and is gone
+# from the object -- where that leaves the caller no bigger than it and the
+# body were apart, which two compiles before the one kept measure.
+# inlined <name> <function> <yes|no> <source>
+inlined() {
+    local what=$1 want=$3 got=yes
+
+    printf '%s\n' "$4" > "$tmp/c.c"
+    rm -f "$tmp/c.o"
+    if ! OPTACC_INLINE=1 OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 \
+         OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+         "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" -map "$tmp/c.map" >/dev/null 2>&1; then
+        printf '  FAIL %-50s could not compile it\n' "$what"
+        fail=$((fail + 1)); return
+    fi
+    grep -q "^$2 " "$tmp/c.map" && got=no
+    if [ "$got" = "$want" ]; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-50s %s read in place: want %s, got %s\n' "$what" "$2" "$want" "$got"
+        fail=$((fail + 1))
+    fi
+}
+pick='static int pick(int a, int b) { if (a > b) return a; return b; }'
+inlined "a static called once, read in place"     pick yes \
+    "$pick int f(int x, int y) { return pick(x, y) + 1; }"
+inlined "one called twice, called"                pick no \
+    "$pick int f(int x, int y) { return pick(x, y) + pick(y, x); }"
+inlined "one whose address is taken, called"      pick no \
+    "$pick int (*fp)(int, int) = pick; int f(int x, int y) { return pick(x, y); }"
+inlined "a void one, read in place"               put yes \
+    'static void put(char *p, int n) { while (n--) *p++ = 0; } void f(char *q) { put(q, 4); }'
+# suffix_bit, from zap: its tests are smaller as the first pass makes them,
+# the loop calling it as the leaf backend does, and merged one backend
+# makes both -- 88 bytes more than apart. So it is called.
+sfx='enum { S_SIS = 1, S_LIS, S_SIL, S_LIL }; struct st { int adl; } state; const char *mnemonic_of(const char *s, int n);
+static int suffix_bit(const char *t, int n, int adl, unsigned char *out) { const char c0 = (char) (t[0] | 0x20); const char c1 = n > 1 ? (char) (t[1] | 0x20) : 0; const char c2 = n > 2 ? (char) (t[2] | 0x20) : 0;
+ if (n == 1) { if (c0 == 115) { *out = adl ? S_SIL : S_SIS; return 1; } if (c0 == 108) { *out = adl ? S_LIL : S_LIS; return 1; } return 0; }
+ if (n == 2) { if (c0 != 105) return 0; if (c1 == 115) { *out = adl ? S_LIS : S_SIS; return 1; } if (c1 == 108) { *out = adl ? S_LIL : S_SIL; return 1; } return 0; }
+ if (n == 3 && c1 == 105) { if (c0 == 115 && c2 == 115) { *out = S_SIS; return 1; } if (c0 == 115 && c2 == 108) { *out = S_SIL; return 1; } if (c0 == 108 && c2 == 115) { *out = S_LIS; return 1; } if (c0 == 108 && c2 == 108) { *out = S_LIL; return 1; } }
+ return 0; }
+const char *f(const char *s, int n, unsigned char *suffix) { int i = 1; while (i < n && s[i] != 46) i++; if (i == n) return 0; if (!suffix_bit(&s[i + 1], n - i - 1, state.adl, suffix)) return 0; return mnemonic_of(s, i); }'
+inlined "one that makes its caller bigger, called" suffix_bit no "$sfx"
+# The arguments stored to the body's locals as each is made, not left on
+# the stack for the next call to spill: three locals and the answer, and
+# no more, in the frame.
+args='int g(int); static int mix(int a, int b, int c) { if (a > b) return a - c; return b + c; } int f(int k) { return mix(g(k), g(k + 1), g(k + 2)); }'
+OPTACC_INLINE=1 emits "$OPT" "arguments stored as they are made"  ed22f4f9 yes "$args"
+# A body's locals give their room back where it ends: the second body's
+# take the first's, and the frame is 18 bytes, not 30.
+twobodies='void touch(int *, int *); static int a(int k) { int x, y; touch(&x, &y); return x + y + k; } static int b(int k) { int u, v; touch(&u, &v); return u - v + k; } int f(int k) { int s = a(k); int t = b(k); return s + t; }'
+OPTACC_INLINE=1 all "$OPT" "two bodies' locals in the same room"  ed22eef9 yes "$twobodies"
+# A slot one body gave back and another takes as another type is not
+# shared as a VLA's length is: neither reads the other's, and the function
+# is made from its SSA form.
+retyped='int g(int); static int a(int x, int n) { int last; if (n) last = g(x); if (n) return last; return x; } static char *b(char *x, int n) { char *hit; if (n) hit = x + g(n); if (n) return hit; return x; } char *f(char *q, int n) { int s = a(n, n); char *t = b(q, s); return t; }'
+OPTACC_INLINE=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+    OPTACC_LEAF=1 ssa "a slot given back, taken as another type" \
+    "ssa f made, not by the leaf backend" "$retyped"
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

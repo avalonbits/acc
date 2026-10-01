@@ -108,6 +108,14 @@ void substatement(void)
 }
 static void condition(void);
 
+#ifdef OPT_ACC
+/* A body read in place of a call (inline.c): a statement of its own. */
+void inline_statement(void)
+{
+    substatement();
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* break, continue, and the cases of a switch                          */
 
@@ -873,6 +881,9 @@ void block(void)
 {
     int mark = sym_scope_begin(), outer = scope_mark;
     int outer_vla = vla_mark;
+#ifdef OPT_ACC
+    int is_body = body_mark != -1;
+#endif
 
     scope_mark = mark;
     if (body_mark != -1) {              /* equal, not less: see sym_find */
@@ -887,6 +898,10 @@ void block(void)
         else
             statement();
     }
+#ifdef OPT_ACC
+    if (is_body)
+        inline_body_end();
+#endif
     expect(TK_RBRACE, "'}'");
     if (vla_mark != NO_VLA_MARK)
         gen_stack_back(vla_mark);       /* the room those arrays took */
@@ -1011,6 +1026,13 @@ static void statement(void)
         int line = tok_line;
         const char *spot = tok_at;
 
+#ifdef OPT_ACC
+        if (inline_body_returning()) {
+            inline_body_return();
+
+            return;
+        }
+#endif
         if (inline_capture) {
             return_kept(line, spot);
 

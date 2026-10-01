@@ -461,7 +461,7 @@ static int frame(int op)
     switch (op) {
     case GL_gen_local: case GL_gen_local_far: case GL_gen_local_array:
     case GL_gen_local_array_size: case GL_gen_iy_claim:
-    case GL_gen_iy_param: case GL_gen_iy_take:
+    case GL_gen_iy_param: case GL_gen_iy_take: case GL_gen_local_scope:
         return 1;
     }
 
@@ -1022,13 +1022,17 @@ static int local_of(int offset, Type type)
 /* Whether another local shares `local`'s slot: then a read that nothing
  * of its own type reaches is taken to be of the other's value -- a VLA's
  * length is written as an int and read as unsigned -- and the function is
- * left to the first pass. */
+ * left to the first pass. Only a type of the same kind, signed or not: a
+ * slot an inlined call's body gave back is another's of any type, and
+ * neither ever reads the other's. */
 static int local_shared(int local)
 {
     int at;
 
     for (at = 0; at != nlocals; at++)
-        if (at != local && locals[at].offset == locals[local].offset)
+        if (at != local && locals[at].offset == locals[local].offset
+            && (locals[at].type & ~TY_UNSIGNED)
+               == (locals[local].type & ~TY_UNSIGNED))
             return 1;
 
     return 0;
@@ -2316,6 +2320,7 @@ static void call(const Ins *insn)
         break;
     case GL_gen_local:          (void) gen_local(ARG(0, int)); break;
     case GL_gen_local_far:      (void) gen_local_far(ARG(0, int)); break;
+    case GL_gen_local_scope:    gen_local_scope(ARG(0, int)); break;
     case GL_gen_local_array:    (void) gen_local_array(); break;
     case GL_gen_local_array_size:
         gen_local_array_size(ARG(0, int), ARG(1, int));
@@ -2830,6 +2835,7 @@ static void emit(void)
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
+    gen_local_settle();                 /* the values' slots live throughout */
     give_slots();
     inline_slots();
 
@@ -4925,6 +4931,7 @@ static int leaf_ok(void)
             switch (insn->rec->op) {
             case GL_gen_local: case GL_gen_local_array:
             case GL_gen_local_array_size: case GL_gen_local_far:
+            case GL_gen_local_scope:
                 continue;
             case GL_gen_iy_claim:
                 if (!((int) insn->rec->arg[2] & SQ_REGISTER))
@@ -7463,6 +7470,7 @@ static void emit_leaf(void)
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
+    gen_local_settle();                 /* the values' slots live throughout */
     leaf_save_slots();
 
     /* A global's address left on the stack for one use is loaded where it
@@ -7870,6 +7878,7 @@ static void emit_regs(void)
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
+    gen_local_settle();                 /* the values' slots live throughout */
     give_slots();
     inline_slots();
 
@@ -8112,6 +8121,7 @@ int ssa_generate(const char **why)
 
         return made;
     }
+    gen_local_settle();                 /* plan_slots counts from all of it */
     if (fail || !plan_slots()) {
         *why = fail;
         forget();

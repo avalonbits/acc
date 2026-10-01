@@ -102,6 +102,38 @@ static int call_args_open(void)
     return nargs;
 }
 
+#ifdef OPT_ACC
+/* The arguments of a call whose body is read in place, up to the `)`: each
+ * stored into its parameter's slot as it is made, rather than left on the
+ * stack for the next to spill. A call with other than `n` of them is an
+ * error, as it is of any function with a prototype. */
+void call_args_stored(int fn, const int *slots, int n, int line, const char *spot)
+{
+    int first = sym_params_first(fn), nargs = 0;
+    Type outer = narrow_dest;
+
+    narrow_dest = 0;
+    if (tok != TK_RPAREN)
+        for (;;) {
+            expr();
+            if (nargs < n) {
+                vstore_local(slots[nargs], sym_param_type(first, nargs));
+                gen_discard();
+            }
+            nargs++;
+            if (!accept(TK_COMMA))
+                break;
+        }
+    narrow_dest = outer;
+    if (tok != TK_RPAREN)
+        expect(TK_RPAREN, "')'");
+    if (nargs != n)
+        error_before(line, spot, "'%s' takes %d argument%s, and this call "
+                                 "gives it %d", name_text(sym_at(fn)->name),
+                     n, n == 1 ? "" : "s", nargs);
+}
+#endif
+
 /* A call through the pointer to a function on the stack, from just past
  * its `(`, which was at `spot` on `line`: an error about the call points at
  * what is called, the name before it. */
@@ -173,7 +205,17 @@ static void call_rest(NameRef name)
         return;
     }
 
+#ifdef OPT_ACC
+    inline_count_call(fn);
+#endif
     inl = (sym_flags(fn) & SYMF_INLINE) ? inline_usable(fn) : NULL;
+#ifdef OPT_ACC
+    if (inl && inl->body) {
+        if (inline_body_call(inl, fn, line, spot))
+            return;
+        inl = NULL;
+    }
+#endif
     nargs = call_args_open();
     nparams = sym_nparams(fn);
     if (inl && nargs == nparams) {
@@ -546,6 +588,9 @@ static int name_operand(int sym, NameRef name)
 
         return NAME_CONST;
     case SYM_FUNC:
+#ifdef OPT_ACC
+        inline_count_address(sym);
+#endif
         vpush_function(sym);
         vset_ext(function_ext(sym));
         if (!tok_postfix() && tok != TK_LPAREN)

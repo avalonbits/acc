@@ -179,6 +179,10 @@ void  lex_record_from(char *text, char *end);  /* from after this token */
 char *lex_record_take(void);         /* to this `]`: its end, or NULL */
 char *lex_record_take_semi(void);    /* to this `;`: its end, or NULL */
 char *lex_record_take_paren(void);   /* to this `)`: its end, or NULL */
+#ifdef OPT_ACC
+void  lex_body_record_from(void);    /* a function's body, from after the `{` */
+char *lex_body_record_take(void);    /* to this `}`: the text, or NULL */
+#endif
 
 /* The current token, as lex_token_save sets it aside. */
 typedef struct {
