@@ -1172,7 +1172,7 @@ static int cmp_byte_const(int op)
         xor_a_imm(0x80);
         c ^= 0x80;
     }
-    out_byte2(0xfe, c & 0xff);          /* cp c */
+    cp_a_imm(c);
 
     vdrop();
     vdrop();

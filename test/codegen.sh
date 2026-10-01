@@ -192,6 +192,26 @@ emits "if (x & 0x0ff0), two bytes"      "$zero_test" yes \
 emits "if (x & 0x8000) with the value kept" "$zero_test" yes \
     'int f(unsigned x) { int y; if (y = x & 0x8000) return y; return 2; }'
 
+# A constant condition is no test at all: `while (1)` falls into its body,
+# `do ... while (0)` falls out, and `if (0)` jumps over. Each was ld hl, n
+# and the add hl, bc; or a; sbc hl, bc of any other value.
+emits "do ... while (0)"                "2100000009b7ed42" no \
+    'int f(int x) { do x += 2; while (0); return x; }'
+emits "while (1)"                       "2101000009b7ed42" no \
+    'int f(int x) { while (1) { if (x > 9) break; x++; } return x; }'
+emits "if (0)"                          "2100000009b7ed42" no \
+    'int f(int x) { if (0) x++; return x; }'
+
+# A switch on a char compares the byte in A, cp n / jr z, rather than the
+# int it becomes in HL with ld de, n / or a / sbc hl, de / add hl, de, and
+# has no test for a case the char cannot equal.
+emits "switch (char), cp 'a'"           "fe61" yes \
+    'int f(char c) { switch (c) { case 97: return 1; case 300: return 2; } return 0; }'
+emits "switch (char), no ld de, 'a'"    "11610000" no \
+    'int f(char c) { switch (c) { case 97: return 1; case 300: return 2; } return 0; }'
+emits "switch (char), no test of 300"   "fe2c" no \
+    'int f(char c) { switch (c) { case 97: return 1; case 300: return 2; } return 0; }'
+
 # And `!` straight after such an AND, or after a comparison, reads the same
 # flags the other way round, rather than comparing the value with zero with
 # the same add hl, bc; or a; sbc hl, bc.

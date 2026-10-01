@@ -1233,33 +1233,33 @@ static void cmp_from_code(int op)
 {
     switch (op) {
     case TK_LT:
-        out_byte2(0xfe, 0);            /* cp a, 0 */
+        cp_a_imm(0);
         cmp_equal(1);
 
         return;
     case TK_EQ:
-        out_byte2(0xfe, 1);
+        cp_a_imm(1);
         cmp_equal(1);
 
         return;
     case TK_GT:
-        out_byte2(0xfe, 2);
+        cp_a_imm(2);
         cmp_equal(1);
 
         return;
     case TK_NE:
-        out_byte2(0xfe, 1);
+        cp_a_imm(1);
         cmp_equal(0);
 
         return;
     case TK_LE:
-        out_byte2(0xfe, 2);            /* below or equal: 0 or 1 */
+        cp_a_imm(2);                   /* below or equal: 0 or 1 */
         cmp_unsigned(1);
 
         return;
     case TK_GE:
         out_byte(0x3d);                         /* dec a */
-        out_byte2(0xfe, 2);
+        cp_a_imm(2);
         cmp_unsigned(1);
 
         return;

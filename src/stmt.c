@@ -452,13 +452,15 @@ static void default_label(void)
  *   tests: if value == case 1 goto it ... else goto default, or end
  *   end:
  *
- * The value is compared at its promoted type, as C says: a char is compared
- * as the int it becomes, and each case is converted to that type. */
+ * The value is compared at its promoted type, as C says, and each case is
+ * converted to that type. A char is kept as the byte it is and compared in
+ * A: the int it becomes holds nothing more, and a case outside the char's
+ * range, which it can never equal, has no test. */
 __attribute__((noinline))
 static void switch_statement(void)
 {
     Switch saved_switch = in_switch;
-    Type type;
+    Type type, held;
     int line, slot, to_tests, i, mark = sym_scope_begin();     /* see TK_KW_IF */
     int outer = scope_mark;
     const char *spot;
@@ -475,11 +477,12 @@ static void switch_statement(void)
         acc_error_spot(line, spot, "a switch needs an integer, and this is %s",
                        type_pointer(type) ? "a pointer"
                                           : "a floating-point value");
+    held = type_size(type) == 1 ? type : type_promote(type);
     type = type_promote(type);
-    vconvert(type);
-    slot = gen_local(type_scalar_bytes(type));
-    vstore_local(slot, type);
-    vdrop();
+    vconvert(held);
+    slot = gen_local(type_scalar_bytes(held));
+    vstore_local(slot, held);
+    gen_discard();
     to_tests = gen_jump();
 
     in_switch.case_mark = ncases;
@@ -494,9 +497,9 @@ static void switch_statement(void)
     hole_push(&breaks, gen_jump());
     gen_label(to_tests);
     gen_stmt_end();
-    gen_switch_load(slot, type);
+    gen_switch_load(slot, held);
     for (i = in_switch.case_mark; i < ncases; i++)
-        gen_switch_case(case_value[i], case_high[i], type, case_at[i], slot);
+        gen_switch_case(case_value[i], case_high[i], held, case_at[i], slot);
     if (in_switch.default_at >= 0)
         gen_jump_to(in_switch.default_at);
     else

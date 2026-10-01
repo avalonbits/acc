@@ -151,6 +151,7 @@ void fill_hl_with_zero(void);
 int and_a_imm(int v);
 int or_a_imm(int v);
 int xor_a_imm(int v);
+int cp_a_imm(int v);
 void add_hl_hl(void);
 void iy_save(void);
 void iy_restore(void);

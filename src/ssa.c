@@ -745,7 +745,13 @@ static void build_one(const GenRec *rec)
         return;
     }
     if ((val_const(rec->top.kind) || rec->top.kind == VAL_WIDE) && pure(op)) {
+        int operand, values = 0;
+
         insn->op = GL_vdrop;            /* folded: nothing to emit */
+        for (operand = 0; operand != insn->nin; operand++)
+            values += insn->in[operand].val != S_CONST;
+        if (!values)
+            insn->nin = 0;              /* and nothing to drop: `-2` */
         push(result(rec, -1));
         return;
     }
@@ -4214,16 +4220,16 @@ static int leaf_operator(const Ins *insn, int arith)
         return 1;
     case TK_PLUS: case TK_MINUS:
         if (type_pointer(left) && type_pointer(right))
-            step = type_step(left, insn->in[0].attr.ext) == 1 ? 1 : 0;
-                                        /* a difference wider is a divide */
+            step = type_step(left, insn->in[0].attr.ext);
         else if (type_pointer(left))
             step = type_step(left, insn->in[0].attr.ext);
         else if (type_pointer(right))
             step = type_step(right, insn->in[1].attr.ext);
         else
             step = 1;
-        if (step >= 1 && step <= 4)
-            return 1;
+        if (step >= 1)
+            return 1;                   /* past 4, scaled or divided -- see
+                                         * leaf_wide_step */
         return leaf_why = "a pointer's step the code here does not make", 0;
     case TK_SHL: case TK_SHR: case TK_STAR: case TK_SLASH: case TK_PERCENT:
         return 1;                       /* in HL, or by the helper */
@@ -4288,6 +4294,53 @@ static int leaf_narrow_ok(const Ins *insn, int op)
     return 0;
 }
 
+/* Whether a type is a long: four bytes, an integer. */
+static int leaf_long(Type type)
+{
+    return (Type) (type & ~TY_UNSIGNED) == TY_LONG;
+}
+
+/* Whether a long value is one the code here can hold as its low three
+ * bytes: made by a read, and every use of it keeping no more than those --
+ * a conversion or a store to an int or narrower, not to a _Bool, whose
+ * truth is all four -- and no phi taking it. */
+static int leaf_long_ok(int val)
+{
+    int at, operand, phi, pred;
+
+    for (phi = 0; phi != nphis; phi++)
+        for (pred = 0; pred != preds[phis[phi].block].count; pred++)
+            if (phis[phi].in[pred] == val)
+                return 0;
+    for (at = 0; at != ninsns; at++)
+        for (operand = 0; operand != insns[at].nin; operand++) {
+            const Ins *use = &insns[at];
+            Type to;
+
+            if (use->in[operand].val != val)
+                continue;
+            switch (use->op) {
+            case GL_vcast: case GL_vconvert:
+                to = (Type) use->rec->arg[0];
+                break;
+            case I_CONV:
+                to = use->local_type;
+                break;
+            case GL_vstore_local:
+                to = (Type) use->rec->arg[1];
+                break;
+            case GL_vdrop:
+                continue;
+            default:
+                return 0;
+            }
+            if (!leaf_type(to) || to == TY_BOOL)
+                return 0;
+        }
+
+    return 1;
+}
+
 /* Whether a value of `type` is one the code here holds: a scalar no
  * wider than an int, a _Bool, or a struct or an array -- its address. */
 static int leaf_value_type(Type type)
@@ -4328,11 +4381,20 @@ static int leaf_ok(void)
         int op = insn->op, arith;
 
         /* A _Bool is a byte of 0 or 1, made so by leaf_convert; a struct
-         * or an array as a value is its address. */
+         * or an array as a value is its address; a long, only where all
+         * that is ever kept of it is its low three bytes -- see
+         * leaf_long_ok -- or a constant one dropped. */
         for (operand = 0; operand != insn->nin; operand++)
-            if (!leaf_value_type(insn->in[operand].attr.type))
+            if (!leaf_value_type(insn->in[operand].attr.type)
+                && !(leaf_long(insn->in[operand].attr.type)
+                     && (insn->in[operand].val >= 0
+                         ? leaf_long_ok(insn->in[operand].val)
+                         : op == GL_vdrop && insn->in[operand].val == S_CONST)))
                 return leaf_why = "an operand wider than an int", 0;
-        if (insn->res >= 0 && !leaf_value_type(vals[insn->res].type))
+        if (insn->res >= 0 && !leaf_value_type(vals[insn->res].type)
+            && !(leaf_long(vals[insn->res].type) && leaf_long_ok(insn->res)
+                 && (op == GL_vpush_local || op == GL_vderef
+                     || op == GL_vstore_local)))
             return leaf_why = "a value wider than an int", 0;
         switch (op) {
         case I_FRAME:
@@ -4353,6 +4415,17 @@ static int leaf_ok(void)
             continue;
         case GL_vaddr_array: case GL_vaddr_local:
             continue;
+        case GL_gen_switch_load:
+            /* A switch on an int or narrower: its value from its slot into
+             * HL, or a char into A, and each case a comparison and a jump,
+             * as the first pass makes them. */
+            if (type_wide((Type) insn->rec->arg[1]))
+                return leaf_why = "a switch on a long", 0;
+            continue;
+        case GL_gen_switch_case:
+            if (type_wide((Type) insn->rec->arg[2]))
+                return leaf_why = "a switch on a long", 0;
+            continue;
         case GL_vprefix_local: case GL_vpostfix_local:
             /* ++ and -- of a local in memory, in its slot. */
             if (insn->rec->top.bits || !leaf_type((Type) insn->rec->arg[1]))
@@ -4370,10 +4443,14 @@ static int leaf_ok(void)
         }
         case GL_vpush_local: case GL_vstore_local:
             /* A local that stays in memory -- its address taken -- read or
-             * written in its slot. */
+             * written in its slot; a long one read for its low bytes, or
+             * written from an int. */
             if (insn->rec->top.bits
                 || (!leaf_type((Type) insn->rec->arg[1])
-                    && (Type) insn->rec->arg[1] != TY_BOOL))
+                    && (Type) insn->rec->arg[1] != TY_BOOL
+                    && !(leaf_long((Type) insn->rec->arg[1])
+                         && (op == GL_vpush_local
+                             || leaf_type(insn->in[0].attr.type)))))
                 return leaf_why = "a local in memory not a scalar", 0;
             continue;
         case I_STEP:
@@ -4404,12 +4481,15 @@ static int leaf_ok(void)
             if (!type_pointer(insn->in[0].attr.type)
                 || (!leaf_type(type_deref(insn->in[0].attr.type))
                     && type_deref(insn->in[0].attr.type) != TY_BOOL
+                    && !(op == GL_vderef && leaf_long(type_deref(insn->in[0].attr.type)))
                     && !type_is_struct(type_deref(insn->in[0].attr.type))
                     && !(op == GL_vderef
                          && type_is_array(type_deref(insn->in[0].attr.type))))
                 || insn->rec->top.bits || insn->in[0].attr.bits)
                 return leaf_why = "a read or write not of a scalar", 0;
             continue;
+        case GL_gen_data:
+            continue;                   /* a string's bytes, jumped over */
         case GL_vapply:
             arith = (int) insn->rec->arg[0];
             if (insn->rec->arg[1] && !leaf_narrow_ok(insn, arith))
@@ -4444,6 +4524,8 @@ static int  leaf_skip_until = -1;
 
 static int  leaf_byte_to_a(const Ent *ent);
 static int  leaf_byte_ok(const Ent *ent);
+static int  leaf_mul_ok(int by);
+static void leaf_mul(int by);
 
 enum { R_AF_BYTE = 1, R_L_BYTE, R_E_BYTE };     /* where leaf_pop left a byte */
 
@@ -4568,8 +4650,8 @@ static void leaf_load(const Ent *ent, int reg)
     } else if (vals[val].reg == HOME_SLOT && iy_web >= 0
                && vals[val].slot == fixed_slot[iy_web]) {
         lea_rr_iy(reg, 0);
-    } else if (type_size(type) == ACC_INT_SIZE) {
-        ld_rr_ix(reg, vals[val].slot);
+    } else if (type_size(type) >= ACC_INT_SIZE) {
+        ld_rr_ix(reg, vals[val].slot);          /* a long's low three bytes */
     } else {
         load_narrow_into(reg, vals[val].slot, type);
     }
@@ -4662,8 +4744,8 @@ static void leaf_result(int val)
     } else if (iy_web >= 0 && vals[val].slot == fixed_slot[iy_web]) {
         push_rr(R_HL);
         out_byte2(0xfd, 0xe1);          /* pop iy */
-    } else if (type_size(vals[val].type) == ACC_INT_SIZE) {
-        ld_ix_rr(vals[val].slot, R_HL);
+    } else if (type_size(vals[val].type) >= ACC_INT_SIZE) {
+        ld_ix_rr(vals[val].slot, R_HL);         /* a long's low three bytes */
     } else {
         store_narrow(vals[val].slot, vals[val].type);
     }
@@ -5137,6 +5219,51 @@ static int leaf_byte_op(const Ins *insn, int op)
     return 1;
 }
 
+/* HL times `by`, BC kept: by doublings and additions where leaf_mul_ok
+ * says, else by the helper, BC the constant. DE is lost. */
+static void leaf_times(int by)
+{
+    if (leaf_mul_ok(by)) {
+        leaf_mul(by);
+        return;
+    }
+    push_rr(R_BC);
+    ld_rr_imm(R_BC, by);
+    rt_call(RT_MUL);
+    pop_rr(R_BC);
+}
+
+/* A pointer and an int, the pointer's step past 4 -- a struct's size -- the
+ * int scaled by it, the pointer waiting on the stack; `scaled` which side
+ * is the pointer, 1 the left, 0 the right; or, `scaled` -1, two pointers'
+ * difference in bytes divided by it, by the helper. BC kept. */
+static void leaf_wide_step(const Ins *insn, int op, int step, int scaled)
+{
+    (void) leaf_operands_in(insn, 0);   /* left in HL, right in DE */
+    if (scaled < 0) {
+        or_a_a();
+        sbc_hl_rr(R_DE);
+        push_rr(R_BC);
+        ld_rr_imm(R_BC, step);
+        rt_call(RT_DIVS);
+        pop_rr(R_BC);
+    } else {
+        if (scaled == 1)
+            ex_de_hl();                 /* the int into HL, the pointer DE */
+        push_rr(R_DE);
+        leaf_times(step);
+        pop_rr(R_DE);
+        if (scaled == 1 && op == TK_MINUS) {
+            ex_de_hl();                 /* pointer less the scaled int */
+            or_a_a();
+            sbc_hl_rr(R_DE);
+        } else {
+            add_hl_rr(R_DE);
+        }
+    }
+    leaf_result(insn->res);
+}
+
 /* An operator the first pass's helpers make, HL and BC to HL, every other
  * register kept: the left in HL, the right moved to BC through the stack
  * and BC kept around the call, or used where it is if it lives there. */
@@ -5297,7 +5424,7 @@ static int leaf_compare(const Ins *insn, int op)
             if (((want + bias) & 0xff) == 0)
                 or_a_a();               /* cp 0: the same flags */
             else
-                out_byte2(0xfe, (want + bias) & 0xff);     /* cp n */
+                cp_a_imm(want + bias);
 
             return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
                    ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
@@ -5428,7 +5555,7 @@ static void leaf_convert(const Ent *from, Type to)
 
 static void leaf_insn(const Ins *insn, int blk, int at)
 {
-    int op = insn->op, number, cc;
+    int op = insn->op, number, value, cc;
 
     /* Between a comparison and the branch it was made with: nothing. */
     if ((at > fused_from && at < skip_branch) || at <= leaf_skip_until)
@@ -5436,7 +5563,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
 
     /* A step in place, where the value and the new one share BC or IY:
      * HL is not touched. An unsigned char steps its byte alone, and wraps
-     * as its type does. */
+     * as its type does; a pointer in IY steps by up to 127 with lea. */
     if (op == I_STEP && insn->in[0].val >= 0 && insn->kills & 1
         && ((vals[insn->res].reg == R_BC && vals[insn->in[0].val].reg == R_BC)
             || (leaf_in_iy(&insn->in[0])
@@ -5444,22 +5571,28 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         && (insn->local_type == TY_UCHAR
             || (type_size(insn->local_type) == ACC_INT_SIZE
                 && (!type_pointer(insn->local_type)
-                    || type_step(insn->local_type, insn->in[0].attr.ext) == 1)))
+                    || (number = type_step(insn->local_type,
+                                           insn->in[0].attr.ext)) == 1
+                    || (leaf_in_iy(&insn->in[0]) && number > 1
+                        && number <= 127))))
         && !(insn->local_type == TY_UCHAR && leaf_in_iy(&insn->in[0]))) {
         int count = insn->step_op == TK_MINUS ? -1 : 1;
 
         if (insn->local_type == TY_UCHAR)
             out_byte(count < 0 ? 0x0d : 0x0c);          /* dec c, inc c */
+        else if (type_pointer(insn->local_type) && number > 1)
+            out_byte3(0xed, 0x33, count * number & 0xff);   /* lea iy, iy+d */
         else
             step_reg(leaf_in_iy(&insn->in[0]) ? -1 : R_BC, count);
         return;
     }
 
     /* HL made free for what uses it: not a frame call, a statement's end,
-     * a constant made again where read, or a drop of nothing. */
+     * a constant made again where read, a string's bytes, or a drop of
+     * nothing. */
     if (!(op == I_BR && at == skip_branch) && op != I_FRAME
         && op != GL_gen_stmt_end && op != GL_gen_value_end
-        && op != GL_vpush_const && op != GL_vpush_bss
+        && op != GL_vpush_const && op != GL_vpush_bss && op != GL_gen_data
         && !(op == GL_vdrop && insn->nin == 0))
         leaf_free_hl(insn);
     switch (op) {
@@ -5478,6 +5611,18 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         return;
     case GL_vpush_const: case GL_vpush_bss:
         return;                         /* made again where read */
+    case GL_gen_data: {
+        /* A string's bytes, jumped over, as the first pass wrote them; its
+         * address, a constant, read through moved_at from here on. */
+        int bytes = (int) insn->rec->arg[1], put = gen_data(gl_kept(insn->rec->arg[0]), bytes);
+
+        GROW(moved, nmoved, moved_cap);
+        moved[nmoved].old_at = (int) insn->rec->ret;
+        moved[nmoved].len = bytes;
+        moved[nmoved].new_at = put;
+        nmoved++;
+        return;
+    }
     case GL_vpush_global_addr:
         if (insn->res >= 0 && vals[insn->res].reg == HOME_GLOBAL)
             return;                     /* loaded where it is read */
@@ -5587,6 +5732,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             leaf_result_a(insn->res, read);
             return;
         }
+        if (leaf_long(read))
+            read = TY_UINT;                     /* its low three bytes */
         if (leaf_in_iy(&insn->in[0]) && leaf_iy_read(insn->res, 0, insn->kills & 1))
             return;
         if (leaf_in_iy(&insn->in[0])) {
@@ -5610,6 +5757,38 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         lea_rr_ix(R_HL, inline_moved((int) insn->rec->arg[0]));
         leaf_result(insn->res);
         return;
+    case GL_gen_switch_load:
+        if (type_size((Type) insn->rec->arg[1]) == 1)
+            ld_a_ix(inline_moved((int) insn->rec->arg[0]));
+        else
+            ld_rr_ix(R_HL, inline_moved((int) insn->rec->arg[0]));
+        return;
+    case GL_gen_switch_case: {
+        long value = insn->rec->arg[0];
+        Type type = (Type) insn->rec->arg[2];
+
+        /* ld de, value; or a; sbc hl, de; add hl, de: HL as it was for the
+         * next, Z where it was the value. A char is cp n, and has no test
+         * for a value it cannot have. No edge of a case has copies to
+         * make: the SSA form refuses a phi a case jumps to. */
+        if (type_size(type) == 1) {
+            int byte = (int) value;
+
+            if ((((unsigned) byte + (type_unsigned(type) ? 0 : 128)) & 0xffffff) > 255)
+                return;
+            cp_a_imm(byte);
+        } else {
+            ld_rr_imm(R_DE, (int) (value & 0xffffff));
+            or_a_a();
+            sbc_hl_rr(R_DE);
+            add_hl_rr(R_DE);
+        }
+        if (block_now[insn->target] >= 0)
+            gen_jump_cc_to(JP_Z, block_now[insn->target]);
+        else
+            jump_forward(jump_op(JP_Z), insn->target);
+        return;
+    }
     case GL_vpush_local: {
         Type type = (Type) insn->rec->arg[1];
         int disp = inline_moved((int) insn->rec->arg[0]);
@@ -5619,14 +5798,35 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             leaf_result_a(insn->res, type);
             return;
         }
-        ld_rr_ix(R_HL, disp);
-        leaf_hl_type = type;
+        ld_rr_ix(R_HL, disp);                   /* a long's low three bytes */
+        leaf_hl_type = leaf_long(type) ? TY_VOID : type;
         leaf_result(insn->res);
         return;
     }
     case GL_vstore_local: {
         Type type = (Type) insn->rec->arg[1];
         int disp = inline_moved((int) insn->rec->arg[0]);
+
+        /* An int into a long: its three bytes, and a fourth from its sign
+         * -- 0 for a value that cannot be negative. */
+        if (leaf_long(type)) {
+            int number;
+
+            leaf_operand_hl(insn, 0);
+            ld_ix_rr(disp, R_HL);
+            if (leaf_const(&insn->in[0], &number))
+                ld_a_imm(number < 0 ? 0xff : 0);
+            else if (type_unsigned(insn->in[0].attr.type))
+                out_byte(0xaf);                 /* xor a */
+            else {
+                ld_a_ix(disp + 2);
+                out_byte(0x17);                 /* rla: bit 23 into carry */
+                out_byte(0x9f);                 /* sbc a, a */
+            }
+            ld_ix_a(disp + 3);
+            leaf_result(insn->res);
+            return;
+        }
 
         leaf_operand_hl(insn, 0);
         leaf_convert(&insn->in[0], type);
@@ -5745,6 +5945,8 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 && vals[insn->res].fwd) {
                 Type read = type_deref(insns[next].in[0].attr.type);
 
+                if (leaf_long(read))
+                    read = TY_UINT;                     /* its low three bytes */
                 if (type_is_struct(read) || type_is_array(read)) {
                     lea_rr_iy(R_HL, number);            /* its address */
                     leaf_result(insns[next].res);
@@ -5757,6 +5959,34 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 }
                 leaf_skip_until = next;
                 return;
+            }
+            /* A constant written there straight away: ld (iy+d), n, or
+             * ld hl, n / ld (iy+d), hl -- the address never made. */
+            if (next < ninsns && insns[next].op == GL_vstore_indirect
+                && insns[next].in[0].val == insn->res && insn->res >= 0
+                && vals[insn->res].fwd
+                && leaf_const(&insns[next].in[1], &value)) {
+                Type to = type_deref(insns[next].in[0].attr.type);
+
+                if (to == TY_BOOL)
+                    value = value != 0;
+                if (type_size(to) == 1) {
+                    out_iy_d(0x36, number);             /* ld (iy+d), n */
+                    out_byte(value & 0xff);
+                    if (insns[next].res >= 0 && vals[insns[next].res].used) {
+                        ld_rr_imm(R_HL, value);
+                        leaf_result(insns[next].res);
+                    }
+                    leaf_skip_until = next;
+                    return;
+                }
+                if (type_size(to) == ACC_INT_SIZE && !type_is_struct(to)) {
+                    ld_rr_imm(R_HL, value);
+                    out_iy_d(0x2f, number);             /* ld (iy+d), hl */
+                    leaf_result(insns[next].res);
+                    leaf_skip_until = next;
+                    return;
+                }
             }
             lea_rr_iy(R_HL, number);
         } else {
@@ -5907,15 +6137,22 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             int step = 1, scaled = -1, right;
 
             if (type_pointer(ltype) && type_pointer(rtype)) {
-                if (type_step(ltype, insn->in[0].attr.ext) != 1)
-                    fail = "a difference of pointers to wider things";
+                step = type_step(ltype, insn->in[0].attr.ext);
+                if (step != 1) {
+                    leaf_wide_step(insn, number, step, -1);
+                    return;
+                }
             } else if (type_pointer(ltype)) {
                 step = type_step(ltype, insn->in[0].attr.ext), scaled = 1;
             } else if (type_pointer(rtype)) {
                 step = type_step(rtype, insn->in[1].attr.ext), scaled = 0;
             }
-            if (step < 1 || step > 4) {
+            if (step < 1) {
                 fail = "a step the code here does not make";
+                return;
+            }
+            if (step > 4) {
+                leaf_wide_step(insn, number, step, scaled);
                 return;
             }
 
@@ -6196,6 +6433,18 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         if (insn->target < 0) {
             if (insn->nin)
                 leaf_operand_hl(insn, 0);
+            return;
+        }
+        /* On a constant: never taken, nothing -- a macro's do ... while
+         * (0) -- or always, a jump with the edge's copies. */
+        if (leaf_const(&insn->in[0], &number)) {
+            if ((number != 0) != insn->sense)
+                return;
+            leaf_edge(blk, insn->target);
+            if (block_now[insn->target] >= 0)
+                gen_jump_to(block_now[insn->target]);
+            else
+                jump_forward(gen_jump(), insn->target);
             return;
         }
         if (leaf_known_width(&insn->in[0]) == 1 && leaf_byte_ok(&insn->in[0])) {
