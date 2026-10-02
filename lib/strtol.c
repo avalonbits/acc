@@ -147,3 +147,37 @@ unsigned long long strtoull(const char *s, char **end, int base)
 
     return negative ? -v : v;
 }
+
+/* OpenBSD's strtonum: see <stdlib.h>. strtoll reads the number, and says
+ * with ERANGE where it is past even a long long's range. */
+long long strtonum(const char *nptr, long long minval, long long maxval,
+                   const char **errstr)
+{
+    const char *error = NULL;
+    int was = errno, why = 0;
+    long long value = 0;
+    char *end;
+
+    if (minval > maxval) {
+        error = "invalid";
+        why = EINVAL;
+    } else {
+        errno = 0;
+        value = strtoll(nptr, &end, 10);
+        if (end == nptr || *end) {
+            error = "invalid";
+            why = EINVAL;
+        } else if ((errno == ERANGE && value < 0) || value < minval) {
+            error = "too small";
+            why = ERANGE;
+        } else if (errno == ERANGE || value > maxval) {
+            error = "too large";
+            why = ERANGE;
+        }
+    }
+    errno = error ? why : was;
+    if (errstr)
+        *errstr = error;
+
+    return error ? 0 : value;
+}

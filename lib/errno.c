@@ -27,6 +27,7 @@ char *strerror(int n)
     case EDOM:   return "Numerical argument out of domain";
     case ERANGE: return "Numerical result out of range";
     case EILSEQ: return "Invalid or incomplete multibyte or wide character";
+    case EINVAL: return "Invalid argument";
     }
 
     /* The number written backwards from the end of the buffer, and the

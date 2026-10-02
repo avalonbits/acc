@@ -54,7 +54,8 @@ LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 # is (below): <string.h>, whose functions the block instructions do in a
 # fifth of the time C takes, but for strtok, strcoll and strxfrm.
 LIBASM    = lib/strlen.s lib/strcmp.s lib/strchr.s lib/strcpy.s lib/strncpy.s \
-            lib/strncat.s lib/strstr.s lib/strspn.s lib/strncasecmp.s lib/mem.s
+            lib/strncat.s lib/strstr.s lib/strspn.s lib/strncasecmp.s lib/mem.s \
+            lib/itoa.s
 LIBASMOBJ = $(LIBASM:lib/%.s=$(BIN)/lib/%.o)
 
 .PHONY: all clean test unit agon
