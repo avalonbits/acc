@@ -163,6 +163,100 @@ int main(void)
     };
     static const unsigned char a_by_carry[] = { 0x00, 0x3e, 0x05, 0x9f, 0xc9 };
     static const unsigned char a_zero[] = { 0x00, 0x3e, 0x05, 0xaf, 0xc9 };
+    /* nop; push af; ld a, (iy+8); and a, (ix-34); pop de; or a, d;
+     * ld de, 0; ret -- A kept in D while the other byte is made */
+    static const unsigned char park_a[] = {
+        0x00, 0xf5, 0xfd, 0x7e, 0x08, 0xdd, 0xa6, 0xde, 0xd1, 0xb2,
+        0x11, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* the same, but what is between reads D: A kept in E, then moved */
+    static const unsigned char park_a_d_read[] = {
+        0x00, 0xf5, 0x7a, 0xd1, 0xb2, 0x11, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* and with every byte register read between -- add a, d ... add a, l
+     * -- no room */
+    static const unsigned char park_a_no_room[] = {
+        0x00, 0xf5, 0x82, 0x83, 0x80, 0x81, 0x84, 0x85, 0xd1, 0xb2,
+        0x11, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* nop; push af; ld b, 1; add a, c; add a, d; add a, e; add a, l;
+     * add a, h; pop hl; or a, h; ld hl, 0; ret -- B written between, and
+     * read after: not a place to keep A */
+    static const unsigned char park_a_b_written[] = {
+        0x00, 0xf5, 0x06, 0x01, 0x81, 0x82, 0x83, 0x85, 0x84, 0xe1, 0xb4,
+        0x21, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* nop; push hl; ld hl, (ix+6); ld e, (hl); ld (hl), e; pop hl;
+     * ld (hl), a; ld de, 0; ret -- E written between: DE is not free */
+    static const unsigned char saved_de_written[] = {
+        0x00, 0xe5, 0xdd, 0x27, 0x06, 0x5e, 0x73, 0xe1, 0x77,
+        0x11, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* nop; push hl; <a load of HL>; ex de, hl; pop hl; ld (hl), e; ret --
+     * the value wanted in DE, HL kept: the load made into DE */
+    static const unsigned char de_nn_ind[] = {
+        0x00, 0xe5, 0x2a, 0x34, 0x12, 0x00, 0xeb, 0xe1, 0x73, 0xc9
+    };
+    static const unsigned char de_nn[] = {
+        0x00, 0xe5, 0x21, 0x34, 0x12, 0x00, 0xeb, 0xe1, 0x73, 0xc9
+    };
+    static const unsigned char de_ix[] = {
+        0x00, 0xe5, 0xdd, 0x27, 0xfa, 0xeb, 0xe1, 0x73, 0xc9
+    };
+    static const unsigned char de_lea[] = {
+        0x00, 0xe5, 0xed, 0x23, 0x05, 0xeb, 0xe1, 0x73, 0xc9
+    };
+    /* nop; ld hl, 7; push hl; ld hl, 6; ex de, hl; pop hl; add hl, de;
+     * ld de, 29; add hl, de; ret -- case 020's: the ld de, 6 made is read */
+    static const unsigned char de_read_after[] = {
+        0x00, 0x21, 0x07, 0x00, 0x00, 0xe5, 0x21, 0x06, 0x00, 0x00, 0xeb,
+        0xe1, 0x19, 0x11, 0x1d, 0x00, 0x00, 0x19, 0xc9
+    };
+    /* the same, but the pop is to BC: HL is not what comes back */
+    static const unsigned char de_pop_bc[] = {
+        0x00, 0xe5, 0x21, 0x34, 0x12, 0x00, 0xeb, 0xc1, 0x73, 0xc9
+    };
+    /* the same, but no ex de, hl: the value stays in HL */
+    static const unsigned char de_no_ex[] = {
+        0x00, 0xe5, 0x21, 0x34, 0x12, 0x00, 0x7d, 0xe1, 0x73, 0xc9
+    };
+    /* nop; push bc; ld a, b; pop bc; ret -- BC not written between */
+    static const unsigned char saved_unwritten[] = {
+        0x00, 0xc5, 0x78, 0xc1, 0xc9
+    };
+    /* nop; push hl; ld hl, (ix+6); ld (hl), a; pop hl; ld (hl), a;
+     * ld de, 0; ret -- HL kept in DE across the code that uses HL */
+    static const unsigned char saved_in_de[] = {
+        0x00, 0xe5, 0xdd, 0x27, 0x06, 0x77, 0xe1, 0x77,
+        0x11, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* the same, but HL read between before it is written */
+    static const unsigned char saved_read[] = {
+        0x00, 0xe5, 0x23, 0x77, 0xe1, 0x77, 0x11, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* the same, but DE read after: nop; push hl; ld hl, (ix+6);
+     * ld (hl), a; pop hl; ld a, e; ret */
+    static const unsigned char saved_de_read[] = {
+        0x00, 0xe5, 0xdd, 0x27, 0x06, 0x77, 0xe1, 0x7b, 0xc9
+    };
+    /* nop; push hl; ld hl, (ix+6); pop de; add hl, de; ld de, 0; ret --
+     * HL kept in DE by ex de, hl */
+    static const unsigned char park_hl[] = {
+        0x00, 0xe5, 0xdd, 0x27, 0x06, 0xd1, 0x19, 0x11, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* the same, but what is between reads HL first: inc hl */
+    static const unsigned char park_hl_read[] = {
+        0x00, 0xe5, 0x23, 0xd1, 0x19, 0x11, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* nop; push af; ld a, 5; pop de; ld a, e; ret -- E, the flags, read */
+    static const unsigned char park_a_e_read[] = {
+        0x00, 0xf5, 0x3e, 0x05, 0xd1, 0x7b, 0xc9
+    };
+    /* nop; push hl; ld l, 5; pop de; add hl, de; ld de, 0; ret -- only L
+     * written between, and H read after */
+    static const unsigned char park_hl_part[] = {
+        0x00, 0xe5, 0x2e, 0x05, 0xd1, 0x19, 0x11, 0x00, 0x00, 0x00, 0xc9
+    };
     /* nop; reti */
     static const unsigned char unknown[] = { 0x00, 0xed, 0x4d };
 
@@ -225,6 +319,58 @@ int main(void)
     is("loaded after a store through HL: kept", gone(5), 0);
 
     is("data jumped over: read, not taken for code", run(data, sizeof data), 1);
+
+    run(park_a, sizeof park_a);
+    is("push af ... pop de: made ld d, a", code[1], 0x57);
+    is("push af ... pop de: pop gone", gone(8), 1);
+    run(park_a_d_read, sizeof park_a_d_read);
+    is("push af ... pop de, D read between: ld e, a", code[1], 0x5f);
+    is("push af ... pop de, D read between: ld d, e", code[3], 0x53);
+    run(park_a_no_room, sizeof park_a_no_room);
+    is("push af ... pop de, every byte read between: kept", code[1], 0xf5);
+    run(park_a_b_written, sizeof park_a_b_written);
+    is("push af ... pop hl, B written between: kept", code[1], 0xf5);
+    run(saved_de_written, sizeof saved_de_written);
+    is("push hl ... pop hl, E written between: kept", code[1], 0xe5);
+    run(de_nn_ind, sizeof de_nn_ind);
+    is("ld hl, (nn) into DE: ld de, (nn) over the push",
+       code[1] << 8 | code[2], 0xed5b);
+    is("ld hl, (nn) into DE: nn where it was", code[3] | code[4] << 8, 0x1234);
+    is("ld hl, (nn) into DE: ex gone", gone(6), 1);
+    is("ld hl, (nn) into DE: pop gone", gone(7), 1);
+    run(de_nn, sizeof de_nn);
+    is("ld hl, nn into DE: ld de, nn", code[2], 0x11);
+    is("ld hl, nn into DE: push gone", gone(1), 1);
+    run(de_ix, sizeof de_ix);
+    is("ld hl, (ix+d) into DE: ld de, (ix+d)", code[3], 0x17);
+    run(de_lea, sizeof de_lea);
+    is("lea hl, iy+d into DE: lea de, iy+d", code[3], 0x13);
+    run(de_read_after, sizeof de_read_after);
+    is("ld hl, nn into DE, then read: ld de, nn", code[6], 0x11);
+    is("ld hl, nn into DE, then read: kept", gone(6), 0);
+    run(de_pop_bc, sizeof de_pop_bc);
+    is("the same popped into BC: kept", code[2], 0x21);
+    run(de_no_ex, sizeof de_no_ex);
+    is("the same with no ex de, hl: kept", code[2], 0x21);
+    run(saved_unwritten, sizeof saved_unwritten);
+    is("push bc ... pop bc, BC not written: push gone", gone(1), 1);
+    is("push bc ... pop bc, BC not written: pop gone", gone(3), 1);
+    run(saved_in_de, sizeof saved_in_de);
+    is("push hl ... pop hl, DE free: ex de, hl", code[1], 0xeb);
+    is("push hl ... pop hl, DE free: ex de, hl back", code[6], 0xeb);
+    run(saved_read, sizeof saved_read);
+    is("push hl ... pop hl, HL read first: kept", code[1], 0xe5);
+    run(saved_de_read, sizeof saved_de_read);
+    is("push hl ... pop hl, DE read after: kept", code[1], 0xe5);
+    run(park_a_e_read, sizeof park_a_e_read);
+    is("push af ... pop de, E read after: kept", code[1], 0xf5);
+    run(park_hl_part, sizeof park_hl_part);
+    is("push hl ... pop de, HL partly written: kept", code[1], 0xe5);
+    run(park_hl, sizeof park_hl);
+    is("push hl ... pop de: made ex de, hl", code[1], 0xeb);
+    is("push hl ... pop de: pop gone", gone(5), 1);
+    run(park_hl_read, sizeof park_hl_read);
+    is("push hl ... pop de, HL read between: kept", code[1], 0xe5);
 
     run(lea, sizeof lea);
     is("lea hl, iy+0 with HL holding IY: gone", gone(7), 1);
