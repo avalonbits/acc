@@ -55,7 +55,8 @@ LIBOBJ = $(LIBSRC:lib/%.c=$(BIN)/lib/%.o)
 # fifth of the time C takes, but for strtok, strcoll and strxfrm.
 LIBASM    = lib/strlen.s lib/strcmp.s lib/strchr.s lib/strcpy.s lib/strncpy.s \
             lib/strncat.s lib/strstr.s lib/strspn.s lib/strncasecmp.s lib/mem.s \
-            lib/itoa.s
+            lib/strnlen.s lib/stpcpy.s lib/stpncpy.s lib/strcasecmp.s \
+            lib/itoa.s lib/ltoa.s lib/ultoa.s lib/toa.s
 LIBASMOBJ = $(LIBASM:lib/%.s=$(BIN)/lib/%.o)
 
 .PHONY: all clean test unit agon
