@@ -507,12 +507,17 @@ static void gl_function_end(void)
          * locals cached, without, and the hybrid path's -- a function the
          * leaf backend could take was one the hybrid path had won, which
          * lost zap 131 bytes in br_byte alone, and caching made
-         * macro_expand's leaf code lose where it had won. Of those no
+         * macro_expand's leaf code lose where it had won. And the leaf
+         * backend's caching only the locals a loop reads or writes: zap's
+         * assemble_line, which takes p's address for the calls it makes,
+         * keeps p in a register in its scan loops that way, 1.6% of zap's
+         * time, where the pick had kept it in memory. Of those no
          * costlier and no bigger than the first pass's, the smallest, and
          * of two the same size the cheaper, is made again. */
         if (made > 0 && picking) {
             static const struct { int leaf_off, cache_off; } ways[] = {
-                { 0, 0 }, { 0, 1 }, { 1, 1 },
+                { 0, CACHE_ALL }, { 0, CACHE_NONE }, { 1, CACHE_NONE },
+                { 0, CACHE_LOOPS },
             };
             const char *lost = NULL;
             int way, best = -1, best_size = 0, made_way = first_refused ? 2 : 0;
@@ -524,7 +529,7 @@ static void gl_function_end(void)
                 const char *way_why = NULL;
                 int way_made = 1;
 
-                if (way == 1 && !(first_leaf && first_cached))
+                if ((way == 1 || way == 3) && !(first_leaf && first_cached))
                     continue;           /* the same as the first */
                 if (way == 2 && way != made_way && !first_leaf)
                     continue;           /* the first was the hybrid path's */
