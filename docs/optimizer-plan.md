@@ -354,7 +354,15 @@ compilers, and the whole test suite through opt-acc.
      2. Calls, with every register saved by the caller.
      3. Struct members through a pointer in IY, (iy+d).
      4. Byte arithmetic in A.
-     5. long and float, through the runtime's helpers.
+     5. long and float, through the runtime's helpers. Longs are made
+        here now: each in a four-byte slot of its own, its operator
+        applied there by the helper or, for + and - and & | ^ and shifts
+        by a constant, in line; one whose top byte nothing reads worked
+        out as an int; longs where paths join and across calls. Five of
+        the perf programs had been wholly outside the leaf backend for a
+        long: the code mean went 1.29 -> 1.26 of agondev -Oz, matmul 1.34
+        -> 1.17, and the speed mean 0.944 -> 0.930. Floats and long long
+        are still the first pass's code inside the leaf backend's.
    - And what is learned on the way that fits the classic backend -- a
      one-pass compiler under acc's compile-speed and heap budgets -- goes
      back into acc, so the Agon gets it too. So far: a parameter loaded

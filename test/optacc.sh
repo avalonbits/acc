@@ -269,9 +269,8 @@ frame='int f(int a) { int x = a + 1, y = x * 2, z = y - 3; return z; }'
 all "$OPT" "the frame without the locals made values"  ed22fdf9 yes "$frame"
 emits "$OPT" "which the first pass's has"              ed22f7f9 yes "$frame"
 
-# With OPTACC_LEAF, a function that calls nothing and holds nothing wider
-# than an int is made by a backend of opt-acc's own, every instruction
-# selected in ssa.c. OPTACC_SSA_STATS says which: `leaf f`.
+# With OPTACC_LEAF, a function is made by a backend of opt-acc's own, every
+# instruction selected in ssa.c. OPTACC_SSA_STATS says which: `leaf f`.
 # leafs <name> <yes|no> <source>
 leafs() {
     local what=$1 want=$2 got=no
@@ -295,7 +294,7 @@ leafs "one that calls memcpy, not"                 no \
     'void *memcpy(void *, const void *, unsigned); void f(char *a, char *b) { memcpy(a, b, 4); }'
 OPTACC_LEAF=1 all "$OPT" "a char in BC compared in A"   79ee80fec1 yes \
     'int f(char c) { return c >= 0x41 && c <= 0x5a; }'
-leafs "one that holds a long, not"                no \
+leafs "one that holds a long, made here too"      yes \
     'long f(long a) { return a + 1; }'
 OPTACC_LEAF=1 all "$OPT" "and its counter stepped as a byte, p after it"   0dfd2318 yes "$byte"
 # A byte tested through a table, as zap's character classes are: the AND
@@ -345,6 +344,14 @@ OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
     ssa "the leaf backend's lost, the hybrid path's made" \
     "ssa f made, not by the leaf backend" \
     'extern const unsigned char tab[256]; _Bool f(char c) { return (tab[(unsigned char) c] & 4) != 0; }'
+# The smallest way loses to one a tenth cheaper to run: sieve's loops, the
+# leaf backend's code 13 bytes smaller and a quarter slower than the hybrid
+# path's, once the leaf backend could hold the long the program checks.
+sieve='static char composite[16000]; extern volatile unsigned long seed; void check(unsigned long);
+void f(void) { unsigned limit = 16000 - (unsigned) (seed & 1); unsigned long sum = 0; for (int pass = 0; pass < 3; pass++) { unsigned count = 0; for (unsigned i = 0; i < limit; i++) composite[i] = 0; for (unsigned i = 2; i < limit; i++) { if (composite[i]) continue; count++; for (unsigned j = i + i; j < limit; j += i) composite[j] = 1; } sum = sum * 3 + count; } check(sum); }'
+OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+    ssa "a smaller way a tenth costlier, not kept" \
+    "ssa f made, not by the leaf backend" "$sieve"
 # A list walked with its node in IY across a call: IY kept around the call
 # it lives across, and not around the one before it is made -- push iy
 # once, under the arguments; p = p->next as ld iy, (iy+0); the _Bool answer
@@ -553,11 +560,11 @@ static int suffix_bit(const char *t, int n, int adl, unsigned char *out) { const
 const char *f(const char *s, int n, unsigned char *suffix) { int i = 1; while (i < n && s[i] != 46) i++; if (i == n) return 0; if (!suffix_bit(&s[i + 1], n - i - 1, state.adl, suffix)) return 0; return mnemonic_of(s, i); }'
 inlined "one that makes its caller bigger, called" suffix_bit no "$sfx"
 # lists' insert_sorted: its loop made from its SSA form, and called from a
-# function the first pass makes -- smaller merged, and slower, the loop in
-# the first pass's code. So it is called.
+# function the first pass makes, one holding long longs -- smaller merged,
+# and slower, the loop in the first pass's code. So it is called.
 sorted_in='struct node { int key; struct node *next; }; struct node pool[8]; unsigned long seed;
 static void insert_sorted(struct node **head, struct node *n) { while (*head && (*head)->key < n->key) head = &(*head)->next; n->next = *head; *head = n; }
-unsigned long f(void) { unsigned long state = seed, check = 0; struct node *head = 0; for (int i = 0; i < 8; i++) { state = state * 1103515245UL + 12345UL; pool[i].key = (int) (state >> 12 & 0x3fff); } for (int i = 0; i < 8; i++) insert_sorted(&head, &pool[i]); for (const struct node *n = head; n; n = n->next) check = check * 3 + (unsigned long) n->key; return check; }'
+unsigned long long f(void) { unsigned long long state = seed, check = 0; struct node *head = 0; for (int i = 0; i < 8; i++) { state = state * 1103515245UL + 12345UL; pool[i].key = (int) (state >> 12 & 0x3fff); } for (int i = 0; i < 8; i++) insert_sorted(&head, &pool[i]); for (const struct node *n = head; n; n = n->next) check = check * 3 + (unsigned long long) n->key; return check; }'
 inlined "one into a caller a worse backend makes, called" insert_sorted no "$sorted_in"
 # The arguments stored to the body's locals as each is made, not left on
 # the stack for the next call to spill: three locals and the answer, and

@@ -224,6 +224,10 @@ Type common_wide(Type left, Type right);
 
 /* wide.c */
 void lea_rr_ix(int reg, int disp);
+#ifdef OPT_ACC
+int  pool_room(uint64_t v, int n);
+void pool_address(int reg, uint64_t v, int n);
+#endif
 void convert_int_to_float(void);
 void convert_float_to_int(Type to);
 void no_float_address(const Value *from);

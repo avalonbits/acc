@@ -87,6 +87,8 @@ typedef struct {
                                  * bit each (find_clashes) */
     unsigned char delegated;    /* leaf backend: made by the first pass's
                                  * code, for a wide value (leaf_delegate) */
+    unsigned char wide;         /* leaf backend: a long's, made here in its
+                                 * slots (leaf_wide) */
     unsigned char mem_store;    /* I_STEP: of a cached local, whose new
                                  * value is written to its memory too */
 } Ins;
@@ -1810,8 +1812,8 @@ static void to_values(void)
 
         if (!phi->live)
             continue;
-        if (type_wide(vals[phi->val].type))
-            fail = wide_phi;
+        if (type_wide(vals[phi->val].type) && !(leaf_on() && regs_on()))
+            fail = wide_phi;            /* the leaf backend copies them */
         for (pred = 0; pred != preds[phi->block].count && !fail; pred++) {
             int from = preds[phi->block].at[pred];
 
@@ -4607,16 +4609,19 @@ static int native_step(const Ins *insn, int at)
 /* ------------------------------------------------------------------ */
 /* a backend of opt-acc's own: leaf functions                          */
 
-/* With OPTACC_LEAF, a function that calls nothing and holds nothing wider
- * than an int -- milestone 3's first slice of a backend of its own -- is
- * made here from its SSA form, every instruction selected here and none
- * through gen.h. HL is the accumulator, and holds the value on top of the
- * stack the log's calls kept; the values under it wait on the machine
- * stack, pushed. DE is the other side of a binary operator and A the byte
- * of a narrow one. Values that live longer are in BC or IY, or in a frame
- * slot -- homes as plan_homes gives them, BC alone of the pairs, since DE
- * and HL are this code's. Anything it does not make declines the whole
- * function, which goes to the code before. */
+/* With OPTACC_LEAF, a function -- milestone 3's first slice of a backend
+ * of its own, since grown to take calls and longs -- is made here from its
+ * SSA form, every instruction selected here and none through gen.h. HL is
+ * the accumulator, and holds the value on top of the stack the log's calls
+ * kept; the values under it wait on the machine stack, pushed. DE is the
+ * other side of a binary operator and A the byte of a narrow one. Values
+ * that live longer are in BC or IY, or in a frame slot -- homes as
+ * plan_homes gives them, BC alone of the pairs, since DE and HL are this
+ * code's. A long is in a four-byte slot of its own, its operators applied
+ * there (leaf_wide), or held as its low three bytes where nothing reads
+ * more (leaf_long_ok); a float, by the first pass's code (leaf_delegate).
+ * Anything it does not make declines the whole function, which goes to
+ * the code before. */
 
 /* ssa_leaf_off: the hybrid path's code wanted instead, because the leaf
  * backend's lost the pick -- see genlog.c. ssa_made_leaf: whether the code
@@ -4751,14 +4756,29 @@ static int leaf_call_ok(const Ins *insn)
         if (!strcmp(name_text(callee->name), builtins[at]))
             return leaf_why = "a call gen_call makes in place", 0;
     if (callee->type != TY_VOID && callee->type != TY_BOOL
-        && !leaf_type(callee->type))
+        && !leaf_type(callee->type) && !leaf_long(callee->type))
         return leaf_why = "a call answering wider than an int", 0;
-    for (at = 0; at != nparams; at++)
-        if (!leaf_type(sym_param_type(first, at))
-            && sym_param_type(first, at) != TY_BOOL)
+    for (at = 0; at != nparams; at++) {
+        Type param = sym_param_type(first, at);
+
+        if (!leaf_type(param) && param != TY_BOOL && !leaf_long(param))
             return leaf_why = "a call taking wider than an int", 0;
+        if (leaf_long(param) && at < insn->nin
+            && !leaf_long(insn->in[at].attr.type))
+            return leaf_why = "a call taking a long from an int", 0;
+    }
 
     return 1;
+}
+
+/* Whether a call's argument goes as a long, in two slots: one to a long
+ * parameter, or one past the parameters that is a long. */
+static int leaf_long_arg(const Ins *insn, int arg)
+{
+    int first = (int) insn->rec->arg[2], nparams = (int) insn->rec->arg[3];
+
+    return arg < nparams ? leaf_long(sym_param_type(first, arg))
+                         : leaf_long(insn->in[arg].attr.type);
 }
 
 /* A byte's operator -- the parser having seen that only the answer's byte
@@ -4794,14 +4814,43 @@ static int leaf_long(Type type)
     return (Type) (type & ~TY_UNSIGNED) == TY_LONG;
 }
 
+/* Whether a long operator's answer has low three bytes that only its
+ * operands' low three bytes make: +, -, *, &, | and ^, and a shift left
+ * by a constant -- worked out as an int, then, where only those bytes of
+ * its answer are kept. */
+static int leaf_low_op(const Ins *insn)
+{
+    int count;
+
+    if (insn->op != GL_vapply || insn->rec->arg[1] || insn->nin != 2)
+        return 0;
+    switch ((int) insn->rec->arg[0]) {
+    case TK_PLUS: case TK_MINUS: case TK_STAR:
+    case TK_AMP: case TK_PIPE: case TK_CARET:
+        return 1;
+    case TK_SHL:
+        return leaf_const(&insn->in[1], &count) && count >= 0 && count < 24;
+    }
+
+    return 0;
+}
+
+/* By value, whether leaf_long_ok has said: -1 not yet asked. */
+static signed char *leaf_low_said;
+
 /* Whether a long value is one the code here can hold as its low three
- * bytes: made by a read, and every use of it keeping no more than those --
- * a conversion or a store to an int or narrower, not to a _Bool, whose
- * truth is all four -- and no phi taking it. */
+ * bytes: every use of it keeping no more than those -- a conversion or a
+ * store to an int or narrower, not to a _Bool, whose truth is all four;
+ * a pointer stepped by it; an operator of leaf_low_op whose own answer is
+ * held so -- and no phi taking it. */
 static int leaf_long_ok(int val)
 {
     int at, operand, phi, pred;
 
+    if (leaf_low_said && leaf_low_said[val] >= 0)
+        return leaf_low_said[val];
+    if (leaf_low_said)
+        leaf_low_said[val] = 0;
     for (phi = 0; phi != nphis; phi++)
         for (pred = 0; pred != preds[phis[phi].block].count; pred++)
             if (phis[phi].in[pred] == val)
@@ -4825,12 +4874,28 @@ static int leaf_long_ok(int val)
                 break;
             case GL_vdrop:
                 continue;
+            case GL_vapply:
+                if (use->res < 0 || use->rec->arg[1])
+                    return 0;
+                if (type_pointer(vals[use->res].type)
+                    && ((int) use->rec->arg[0] == TK_PLUS
+                        || (int) use->rec->arg[0] == TK_MINUS))
+                    continue;                   /* a pointer's step */
+                if (leaf_low_op(use) && leaf_long(vals[use->res].type)
+                    && leaf_long_ok(use->res))
+                    continue;
+                return 0;
             default:
                 return 0;
             }
+            if (leaf_long(to) && use->op != GL_vstore_local && use->res >= 0
+                && leaf_long_ok(use->res))
+                continue;                       /* a long again, held so */
             if (!leaf_type(to) || to == TY_BOOL)
                 return 0;
         }
+    if (leaf_low_said)
+        leaf_low_said[val] = 1;
 
     return 1;
 }
@@ -4874,7 +4939,7 @@ static int leaf_delegable(const Ins *insn)
     case GL_vneg: case GL_vnot: case GL_vpush_local: case GL_vstore_local:
     case GL_vderef: case GL_vstore_indirect: case I_CONV: case I_STEP:
     case GL_vprefix_indirect: case GL_vpostfix_indirect:
-    case GL_vprefix_local: case GL_vpostfix_local:
+    case GL_vprefix_local: case GL_vpostfix_local: case GL_gen_return:
         break;
     case GL_vdrop:
         return 1;                       /* a value in a slot: nothing */
@@ -4890,13 +4955,133 @@ static int leaf_delegable(const Ins *insn)
     return 1;
 }
 
+/* ------------------------------------------------------------------ */
+/* Longs made here: each value in its four-byte slot, never on the stack
+ * nor in a register, and an operator the runtime's routine applied where
+ * the answer is to be -- the left operand copied there, unless it is there
+ * already, and the right read where it lies or from the pool. */
+
+/* Whether a value is a long the code here holds whole, in its slot: not
+ * one held as its low three bytes (leaf_long_ok). */
+static int leaf_wide_val(int val)
+{
+    return val >= 0 && !vals[val].fwd && vals[val].reg == HOME_SLOT
+           && leaf_long(vals[val].type) && !leaf_long_ok(val);
+}
+
+/* A long operand: a value whole in its slot, or a constant. */
+static int leaf_wide_operand(const Ent *ent)
+{
+    if (ent->val == S_CONST)
+        return ent->attr.kind == VAL_WIDE || ent->attr.kind == VAL_CONST;
+
+    return leaf_wide_val(ent->val);
+}
+
+/* A constant's four bytes as a long: a narrow one widened by its own type
+ * -- an unsigned int's 0xffffff is held as -1, and is not 0xffffffff. */
+static uint32_t leaf_wide_bits(const Ent *ent)
+{
+    return ent->attr.kind == VAL_WIDE ? (uint32_t) ent->wide
+                                      : (uint32_t) const_as(&ent->attr, TY_LONG);
+}
+
+/* The routine for a long operator, or -1 for one not made here. */
+static int leaf_wide_helper(int arith, Type type)
+{
+    switch (arith) {
+    case TK_SLASH:   return type_unsigned(type) ? RT_LDIVU : RT_LDIVS;
+    case TK_PERCENT: return type_unsigned(type) ? RT_LREMU : RT_LREMS;
+    case TK_PLUS:  return RT_LADD;
+    case TK_MINUS: return RT_LSUB;
+    case TK_AMP:   return RT_LAND;
+    case TK_PIPE:  return RT_LOR;
+    case TK_CARET: return RT_LXOR;
+    case TK_STAR:  return RT_LMUL;
+    case TK_SHL:   return RT_LSHL;
+    case TK_SHR:   return type_unsigned(type) ? RT_LSHRU : RT_LSHRS;
+    }
+
+    return -1;
+}
+
+/* Whether an instruction is one with a long in it that the code here
+ * makes itself, rather than leaving to the first pass's (leaf_delegate). */
+static int leaf_wide_ok(const Ins *insn)
+{
+    Type from, to;
+
+    if (insn->rec && insn->rec->top.bits)
+        return 0;
+    switch (insn->op) {
+    case GL_vapply:
+        return !insn->rec->arg[1] && insn->nin == 2 && insn->res >= 0
+               && leaf_wide_val(insn->res)
+               && leaf_wide_helper((int) insn->rec->arg[0], vals[insn->res].type) >= 0
+               && leaf_wide_operand(&insn->in[0])
+               && leaf_wide_operand(&insn->in[1]);
+    case I_CONV: case GL_vconvert: case GL_vcast:
+        if (insn->res < 0 || insn->nin != 1 || insn->in[0].attr.bits)
+            return 0;
+        from = insn->in[0].attr.type;
+        to = insn->op == I_CONV ? insn->local_type : (Type) insn->rec->arg[0];
+        if (leaf_long(to) && leaf_wide_val(insn->res))
+            return leaf_long(from) ? leaf_wide_operand(&insn->in[0])
+                                   : leaf_type(from);
+        return leaf_long(from) && leaf_type(to) && to != TY_BOOL
+               && leaf_wide_operand(&insn->in[0]);
+    case GL_vderef:
+        return insn->res >= 0 && leaf_wide_val(insn->res) && !insn->in[0].attr.bits
+               && type_pointer(insn->in[0].attr.type)
+               && leaf_long(type_deref(insn->in[0].attr.type))
+               && (insn->in[0].val < 0 || leaf_type(vals[insn->in[0].val].type));
+    case I_BR:
+        return insn->nin == 1 && insn->target >= 0 && insn->in[0].val >= 0
+               && leaf_wide_val(insn->in[0].val);
+    case I_SET:
+        return insn->nin == 1 && leaf_wide_val(insn->target)
+               && leaf_wide_operand(&insn->in[0]);
+    }
+
+    return 0;
+}
+
+/* Whether an instruction makes a long held as its low three bytes from
+ * operands read for theirs: an operator of leaf_low_op, or a conversion
+ * from an int or narrower or from another long -- nothing made, then. */
+static int leaf_low_held(const Ins *insn)
+{
+    Type from;
+
+    if (insn->res < 0 || !leaf_long(vals[insn->res].type)
+        || !leaf_long_ok(insn->res))
+        return 0;
+    if (insn->op == GL_vapply)
+        return leaf_low_op(insn);
+    if (insn->op != I_CONV && insn->op != GL_vconvert && insn->op != GL_vcast)
+        return 0;
+    from = insn->in[0].attr.type;
+
+    return !insn->in[0].attr.bits
+           && ((leaf_type(from) && from != TY_BOOL) || leaf_long(from));
+}
+
 static int leaf_ok(void)
 {
+    static signed char *said;
     int at, operand;
     Type returns = sym_at(gl_fn)->type;
 
-    /* A _Bool answer is fine: gen_return makes the 0 or 1 of it. */
-    if (returns != TY_VOID && returns != TY_BOOL && !leaf_type(returns))
+    said = realloc(said, (size_t) nvals + 1);
+    if (!said)
+        acc_error("out of memory for the SSA form");
+    memset(said, -1, (size_t) nvals + 1);
+    leaf_low_said = said;
+
+    /* A _Bool answer is fine: gen_return makes the 0 or 1 of it; a long
+     * or a float is returned by the first pass's code, from its slot. */
+    if (returns != TY_VOID && returns != TY_BOOL && !leaf_type(returns)
+        && !type_wide(returns) && !type_float(returns))
         return leaf_why = "an answer wider than an int", 0;
 
     for (at = 1; at != ninsns; at++) {
@@ -4908,13 +5093,19 @@ static int leaf_ok(void)
          * that is ever kept of it is its low three bytes -- see
          * leaf_long_ok -- or a constant one dropped. */
         insns[at].delegated = 0;
+        insns[at].wide = (unsigned char) leaf_wide_ok(insn);
+        if (insn->wide)
+            continue;
         for (operand = 0; operand != insn->nin; operand++)
             if (!leaf_value_type(insn->in[operand].attr.type)
                 && !(leaf_long(insn->in[operand].attr.type)
                      && (insn->in[operand].val >= 0
                          ? leaf_long_ok(insn->in[operand].val)
+                           || ((leaf_low_held(insn) || op == GL_gen_call)
+                               && leaf_wide_val(insn->in[operand].val))
                          : insn->in[operand].val == S_CONST
-                           && (op == GL_vdrop
+                           && (op == GL_vdrop || leaf_low_held(insn)
+                               || op == GL_gen_call
                                || (op == GL_vstore_indirect && operand == 1))))) {
                 if (!leaf_delegable(insn))
                     return leaf_why = "an operand wider than an int", 0;
@@ -4923,7 +5114,9 @@ static int leaf_ok(void)
         if (insn->res >= 0 && !leaf_value_type(vals[insn->res].type)
             && !(leaf_long(vals[insn->res].type) && leaf_long_ok(insn->res)
                  && (op == GL_vpush_local || op == GL_vderef
-                     || op == GL_vstore_local || op == GL_vstore_indirect))) {
+                     || op == GL_vstore_local || op == GL_vstore_indirect
+                     || leaf_low_held(insn)))
+            && !(op == GL_gen_call && leaf_long(vals[insn->res].type))) {
             if (!leaf_delegable(insn))
                 return leaf_why = "a value wider than an int", 0;
             insns[at].delegated = 1;
@@ -6353,6 +6546,406 @@ static void leaf_delegate(const Ins *insn, int at)
         leaf_result(res);
 }
 
+/* A long operand's address into HL or DE: its slot's, or the pool's. */
+static void leaf_wide_addr(const Ent *ent, int reg)
+{
+    if (ent->val == S_CONST)
+        pool_address(reg, leaf_wide_bits(ent), 4);
+    else
+        lea_rr_ix(reg, vals[ent->val].slot);
+}
+
+/* A long operand's four bytes into the slot at `to`, where they are not
+ * there already. */
+static void leaf_wide_copy(const Ent *ent, int to)
+{
+    if (ent->val == S_CONST) {
+        uint32_t bits = leaf_wide_bits(ent);
+
+        ld_rr_imm(R_HL, (int) (bits & 0xffffff));
+        ld_ix_rr(to, R_HL);
+        frame_byte(0x36, to + 3);               /* ld (ix+d), n */
+        out_byte((int) (bits >> 24));
+        return;
+    }
+    if (vals[ent->val].slot == to)
+        return;
+    ld_rr_ix(R_HL, vals[ent->val].slot);
+    ld_ix_rr(to, R_HL);
+    ld_a_ix(vals[ent->val].slot + 3);
+    ld_ix_a(to + 3);
+}
+
+/* A long operator made in line rather than by the runtime's routine: add
+ * and subtract through HL and A; &, | and ^ with a constant, a byte at a
+ * time, a byte of 0 or 0xff costing less or nothing; a shift by a
+ * constant, whole bytes moved and the bits left over through HL and A
+ * (left) or in the slot (right). Counted first -- wb_emit clear -- so
+ * that it is made only where it is no bigger than the call, or a little
+ * bigger in a loop, where it is several times as fast. */
+static int wb_emit, wb_n;
+
+static void wb(int byte)
+{
+    if (wb_emit)
+        out_byte(byte);
+    wb_n++;
+}
+
+static void wb_ix(int op, int disp)             /* dd op d */
+{
+    wb(0xdd);
+    wb(op);
+    wb(disp & 0xff);
+}
+
+static void wb_ix_n(int disp, int n)            /* ld (ix+d), n */
+{
+    wb_ix(0x36, disp);
+    wb(n & 0xff);
+}
+
+static void wb_cb_ix(int op, int disp)          /* dd cb d op */
+{
+    wb(0xdd);
+    wb(0xcb);
+    wb(disp & 0xff);
+    wb(op);
+}
+
+static void wb_imm(int op, int value)           /* op nn, three bytes */
+{
+    wb(op);
+    wb(value & 0xff);
+    wb((value >> 8) & 0xff);
+    wb((value >> 16) & 0xff);
+}
+
+/* How much bigger the line may be than the call, in a loop. */
+#define WIDE_LOOP_SLACK 12
+
+static int leaf_wide_line(const Ent *left, const Ent *right, int to, int arith,
+                          Type type)
+{
+    int lslot = left->val >= 0 ? vals[left->val].slot : 0;
+    int rslot = right->val >= 0 ? vals[right->val].slot : 0;
+    int lconst = left->val == S_CONST, rconst = right->val == S_CONST;
+    uint32_t lbits = lconst ? leaf_wide_bits(left) : 0;
+    uint32_t rbits = rconst ? leaf_wide_bits(right) : 0;
+    int i, n, k, r, sign = !type_unsigned(type);
+
+    switch (arith) {
+    case TK_PLUS: case TK_MINUS:
+        if (lconst)
+            wb_imm(0x21, (int) (lbits & 0xffffff));     /* ld hl, nn */
+        else
+            wb_ix(0x27, lslot);                         /* ld hl, (ix+d) */
+        if (rconst)
+            wb_imm(0x11, (int) (rbits & 0xffffff));     /* ld de, nn */
+        else
+            wb_ix(0x17, rslot);                         /* ld de, (ix+d) */
+        if (arith == TK_PLUS) {
+            wb(0x19);                                   /* add hl, de */
+        } else {
+            wb(0xb7);                                   /* or a, a */
+            wb(0xed);
+            wb(0x52);                                   /* sbc hl, de */
+        }
+        wb_ix(0x2f, to);                                /* ld (ix+d), hl */
+        if (lconst) {
+            wb(0x3e);                                   /* ld a, n */
+            wb((int) (lbits >> 24));
+        } else {
+            wb_ix(0x7e, lslot + 3);                     /* ld a, (ix+d) */
+        }
+        if (rconst) {
+            wb(arith == TK_PLUS ? 0xce : 0xde);         /* adc/sbc a, n */
+            wb((int) (rbits >> 24));
+        } else {
+            wb_ix(arith == TK_PLUS ? 0x8e : 0x9e, rslot + 3);
+        }
+        wb_ix(0x77, to + 3);                            /* ld (ix+d), a */
+        return 1;
+    case TK_AMP: case TK_PIPE: case TK_CARET:
+        if (!rconst || lconst)
+            return 0;
+        for (i = 0; i != 4; i++) {
+            int b = (int) (rbits >> (8 * i)) & 0xff;
+            int keep = arith == TK_AMP ? b == 0xff : b == 0;
+            int fill = arith == TK_AMP ? b == 0 : arith == TK_PIPE && b == 0xff;
+
+            if (keep && lslot == to)
+                continue;
+            if (fill) {
+                wb_ix_n(to + i, arith == TK_AMP ? 0 : 0xff);
+                continue;
+            }
+            wb_ix(0x7e, lslot + i);                     /* ld a, (ix+d) */
+            if (arith == TK_CARET && b == 0xff) {
+                wb(0x2f);                               /* cpl */
+            } else if (!keep) {
+                wb(arith == TK_AMP ? 0xe6 : arith == TK_PIPE ? 0xf6 : 0xee);
+                wb(b);
+            }
+            wb_ix(0x77, to + i);                        /* ld (ix+d), a */
+        }
+        return 1;
+    case TK_SHL: case TK_SHR:
+        if (!rconst || lconst)
+            return 0;
+        n = (int) (rbits & 31);
+        k = n / 8;
+        r = n % 8;
+        if (arith == TK_SHL) {
+            if (k == 0) {                               /* the bits, in HL and A */
+                wb_ix(0x27, lslot);
+                wb_ix(0x7e, lslot + 3);
+            } else {
+                if (k == 1) {
+                    wb_ix(0x27, lslot);                 /* L0..L2 to t1..t3 */
+                    wb_ix(0x2f, to + 1);
+                } else if (k == 2) {
+                    wb_ix(0x27, lslot - 1);             /* L0, L1 to t2, t3 */
+                    wb_ix(0x2f, to + 1);
+                    wb_ix_n(to + 1, 0);
+                } else {
+                    wb_ix(0x7e, lslot);                 /* L0 to t3 */
+                    wb_ix(0x77, to + 3);
+                    wb_imm(0x21, 0);
+                    wb_ix(0x2f, to);
+                }
+                if (k != 3)
+                    wb_ix_n(to, 0);
+                if (!r)
+                    return 1;
+                wb_ix(0x27, to);
+                wb_ix(0x7e, to + 3);
+            }
+            for (i = 0; i != r; i++) {
+                wb(0x29);                               /* add hl, hl */
+                wb(0x17);                               /* rla */
+            }
+            wb_ix(0x2f, to);
+            wb_ix(0x77, to + 3);
+            return 1;
+        }
+        if (k == 0) {
+            if (lslot != to) {
+                wb_ix(0x27, lslot);
+                wb_ix(0x2f, to);
+                wb_ix(0x7e, lslot + 3);
+                wb_ix(0x77, to + 3);
+            }
+        } else if (k == 1) {
+            wb_ix(0x27, lslot + 1);                     /* L1..L3 to t0..t2 */
+            wb_ix(0x2f, to);
+            if (sign) {
+                wb_ix(0x7e, lslot + 3);
+                wb(0x17);                               /* rla */
+                wb(0x9f);                               /* sbc a, a */
+                wb_ix(0x77, to + 3);
+            } else {
+                wb_ix_n(to + 3, 0);
+            }
+        } else if (k == 2) {
+            wb_ix(0x27, lslot + 2);                     /* L2, L3 to t0, t1 */
+            wb_ix(0x2f, to);
+            if (sign) {
+                wb_ix(0x7e, to + 1);
+                wb(0x17);
+                wb(0x9f);
+                wb_ix(0x77, to + 2);
+                wb_ix(0x77, to + 3);
+            } else {
+                wb_ix_n(to + 2, 0);
+                wb_ix_n(to + 3, 0);
+            }
+        } else {
+            wb_ix(0x7e, lslot + 3);                     /* L3 to t0 */
+            wb_ix(0x77, to);
+            if (sign) {
+                wb(0x17);
+                wb(0x9f);
+                wb_ix(0x77, to + 1);
+                wb_ix(0x77, to + 2);
+                wb_ix(0x77, to + 3);
+            } else {
+                wb_imm(0x21, 0);
+                wb_ix(0x2f, to + 1);
+            }
+        }
+        for (i = 0; i != r; i++) {
+            wb_cb_ix(sign ? 0x2e : 0x3e, to + 3);       /* sra / srl */
+            wb_cb_ix(0x1e, to + 2);                     /* rr */
+            wb_cb_ix(0x1e, to + 1);
+            wb_cb_ix(0x1e, to);
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
+/* Whether a long operator was made in line: counted, weighed against the
+ * call's bytes -- the left copied to the answer, its address and the
+ * right's, the call -- and made if it wins. */
+static int leaf_wide_inline(const Ent *left, const Ent *right, int to, int arith,
+                            Type type, int blk)
+{
+    int lslot = left->val >= 0 ? vals[left->val].slot : 0;
+    int rslot = right->val >= 0 ? vals[right->val].slot : 0;
+    int call_bytes;
+
+    if (!disp_fits(to - 1) || !disp_fits(to + 3)
+        || (left->val >= 0 && (!disp_fits(lslot - 1) || !disp_fits(lslot + 3)))
+        || (right->val >= 0 && (!disp_fits(rslot) || !disp_fits(rslot + 3))))
+        return 0;
+    call_bytes = (left->val >= 0 && lslot == to ? 0 : left->val == S_CONST ? 11 : 12)
+                 + 3 + (right->val == S_CONST ? 4 : 3) + 4;
+    wb_emit = 0;
+    wb_n = 0;
+    if (!leaf_wide_line(left, right, to, arith, type))
+        return 0;
+    if (wb_n > call_bytes + (loop_depth[blk] ? WIDE_LOOP_SLACK : 0))
+        return 0;
+    wb_emit = 1;
+    (void) leaf_wide_line(left, right, to, arith, type);
+
+    return 1;
+}
+
+/* An instruction with a long in it, made here (leaf_wide_ok). */
+static void leaf_wide(const Ins *insn, int blk)
+{
+    int to = insn->res >= 0 ? vals[insn->res].slot : 0, at;
+    Type from, type;
+
+    switch (insn->op) {
+    case GL_vapply: {
+        int arith = (int) insn->rec->arg[0], stacked;
+        int which = leaf_wide_helper(arith, vals[insn->res].type);
+        const Ent *left = &insn->in[0], *right = &insn->in[1];
+
+        if (!vals[insn->res].used)
+            return;
+        /* The right where the answer goes: swapped where the order does
+         * not matter, as copying the left there would lose it. */
+        if (right->val >= 0 && vals[right->val].slot == to
+            && !(left->val >= 0 && vals[left->val].slot == to)
+            && (arith == TK_PLUS || arith == TK_AMP || arith == TK_PIPE
+                || arith == TK_CARET || arith == TK_STAR)) {
+            left = &insn->in[1];
+            right = &insn->in[0];
+        }
+        /* A constant on the left, where the order does not matter: to the
+         * right, where the line and the pool can have it. */
+        if (left->val == S_CONST && right->val != S_CONST
+            && (arith == TK_PLUS || arith == TK_AMP || arith == TK_PIPE
+                || arith == TK_CARET || arith == TK_STAR)) {
+            const Ent *swap = left;
+
+            left = right;
+            right = swap;
+        }
+        if (leaf_wide_inline(left, right, to, arith, vals[insn->res].type, blk))
+            return;
+
+        /* The right read where it lies, or from the pool -- or, where it
+         * is in the answer's slot still, the pool is full, or the routine
+         * writes it (division, the remainder), from a copy pushed. */
+        stacked = which == RT_LDIVU || which == RT_LDIVS || which == RT_LREMU
+                  || which == RT_LREMS
+                  || (right->val >= 0 && vals[right->val].slot == to
+                      && !(left->val >= 0 && vals[left->val].slot == to))
+                  || (right->val == S_CONST && !pool_room(leaf_wide_bits(right), 4));
+        if (stacked) {
+            if (right->val == S_CONST) {
+                ld_rr_imm(R_HL, (int) (leaf_wide_bits(right) >> 24));
+                push_rr(R_HL);
+                ld_rr_imm(R_HL, (int) (leaf_wide_bits(right) & 0xffffff));
+            } else {
+                ld_rr_ix(R_HL, vals[right->val].slot + 3);
+                push_rr(R_HL);
+                ld_rr_ix(R_HL, vals[right->val].slot);
+            }
+            push_rr(R_HL);
+        }
+        leaf_wide_copy(left, to);
+        if (stacked) {
+            ld_rr_imm(R_HL, 0);
+            out_byte(0x39);                     /* add hl, sp */
+            ex_de_hl();
+        } else {
+            leaf_wide_addr(right, R_DE);
+        }
+        lea_rr_ix(R_HL, to);
+        rt_call(which);
+        if (stacked) {
+            pop_rr(R_DE);
+            pop_rr(R_DE);
+        }
+        return;
+    }
+    case I_CONV: case GL_vconvert: case GL_vcast:
+        from = insn->in[0].attr.type;
+        type = insn->op == I_CONV ? insn->local_type : (Type) insn->rec->arg[0];
+        if (leaf_long(type) && leaf_long(from)) {
+            if (vals[insn->res].used)
+                leaf_wide_copy(&insn->in[0], to);
+            return;
+        }
+        if (leaf_long(type)) {                  /* an int or narrower, widened */
+            leaf_operand_hl(insn, 0);
+            if (!vals[insn->res].used)
+                return;
+            ld_ix_rr(to, R_HL);
+            if (type_unsigned(from) || type_pointer(from)) {
+                frame_byte(0x36, to + 3);       /* ld (ix+d), 0 */
+                out_byte(0);
+            } else {
+                add_hl_rr(R_HL);                /* the sign into carry */
+                out_byte(0x9f);                 /* sbc a, a */
+                ld_ix_a(to + 3);
+            }
+            return;
+        }
+        /* A long narrowed: its low bytes. */
+        if (insn->in[0].val == S_CONST)
+            ld_rr_imm(R_HL, (int) (leaf_wide_bits(&insn->in[0]) & 0xffffff));
+        else
+            ld_rr_ix(R_HL, vals[insn->in[0].val].slot);
+        if (type_size(type) < ACC_INT_SIZE)
+            leaf_narrow(type);
+        leaf_hl_type = type;
+        leaf_result(insn->res);
+        return;
+    case GL_vderef:
+        leaf_operand_hl(insn, 0);
+        if (!vals[insn->res].used)
+            return;
+        out_byte2(0xed, 0x17);                  /* ld de, (hl) */
+        ld_ix_rr(to, R_DE);
+        out_byte(0x23);                         /* inc hl */
+        out_byte(0x23);
+        out_byte(0x23);
+        ld_a_hl();
+        ld_ix_a(to + 3);
+        return;
+    case I_SET:
+        leaf_wide_copy(&insn->in[0], vals[insn->target].slot);
+        return;
+    case I_BR:
+        at = vals[insn->in[0].val].slot;
+        ld_a_ix(at);                            /* Z when all four are 0 */
+        frame_byte(0xb6, at + 1);               /* or a, (ix+d) */
+        frame_byte(0xb6, at + 2);
+        frame_byte(0xb6, at + 3);
+        branch_to(JP_NZ, insn, blk);
+        return;
+    }
+    fail = "internal: a long's instruction leaf_wide_ok let through";
+}
+
 static void leaf_insn(const Ins *insn, int blk, int at)
 {
     int op = insn->op, number, value, cc;
@@ -6396,6 +6989,12 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         && op != GL_vpush_const && op != GL_vpush_bss && op != GL_gen_data
         && !(op == GL_vdrop && insn->nin == 0))
         leaf_free_hl(insn);
+    if (insn->wide) {
+        if (op == I_BR && at == skip_branch)
+            return;
+        leaf_wide(insn, blk);
+        return;
+    }
     if (insn->delegated && op != GL_vdrop) {
         leaf_delegate(insn, at);
         return;
@@ -6752,9 +7351,22 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 next++;
             if (next < ninsns && insns[next].op == GL_vderef
                 && insns[next].in[0].val == insn->res && insn->res >= 0
-                && vals[insn->res].fwd && !insns[next].delegated) {
+                && vals[insn->res].fwd && !insns[next].delegated
+                && !(insns[next].wide && !disp_fits(number + 3))) {
                 Type read = type_deref(insns[next].in[0].attr.type);
 
+                if (insns[next].wide && disp_fits(number + 3)) {
+                    int to = vals[insns[next].res].slot;   /* all four bytes */
+
+                    if (vals[insns[next].res].used) {
+                        out_byte3(0xfd, 0x27, number);  /* ld hl, (iy+d) */
+                        ld_ix_rr(to, R_HL);
+                        out_byte3(0xfd, 0x7e, number + 3);  /* ld a, (iy+d) */
+                        ld_ix_a(to + 3);
+                    }
+                    leaf_skip_until = next;
+                    return;
+                }
                 if (leaf_long(read))
                     read = TY_UINT;                     /* its low three bytes */
                 if (type_is_struct(read) || type_is_array(read)) {
@@ -6799,6 +7411,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 }
                 /* A long: its low three bytes from HL, its top one after. */
                 if (leaf_long(to) && disp_fits(number + 3)) {
+                    value = (int) leaf_wide_bits(&insns[next].in[1]);
                     ld_rr_imm(R_HL, value);
                     out_iy_d(0x2f, number);             /* ld (iy+d), hl */
                     out_iy_d(0x36, number + 3);         /* ld (iy+d+3), n */
@@ -6848,6 +7461,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
          * three bytes, ld (hl), de, and the top one. HL is the address
          * three on; the answer, if it is read, its low three bytes. */
         if (leaf_long(to) && leaf_const(&insn->in[1], &number)) {
+            number = (int) leaf_wide_bits(&insn->in[1]);
             leaf_operand_hl(insn, 0);
             ld_rr_imm(R_DE, number);
             out_byte2(0xed, 0x1f);              /* ld (hl), de */
@@ -7228,6 +7842,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         const Sym *callee = sym_at((int) insn->rec->arg[0]);
         int fn = (int) insn->rec->arg[0], first = (int) insn->rec->arg[2];
         int nparams = (int) insn->rec->arg[3], arg, homes, waiting = 0;
+        int nslots = 0, wide_answer = leaf_long(callee->type);
 
         /* The arguments pushed last first, each as its parameter's type,
          * so the first is at the lowest address -- as agondev passes them.
@@ -7257,6 +7872,27 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             for (before = 0; before != arg; before++)
                 if (insn->in[before].val >= 0 && vals[insn->in[before].val].fwd)
                     waiting = 1;
+            if (leaf_long_arg(insn, arg)) {
+                /* Two slots: the high byte's pushed first, then the low
+                 * three -- through DE where one waits in HL. */
+                int reg = waiting ? R_DE : R_HL;
+
+                if (waiting)
+                    leaf_top_to_hl();
+                if (ent->val == S_CONST) {
+                    ld_rr_imm(reg, (int) (leaf_wide_bits(ent) >> 24));
+                    push_rr(reg);
+                    ld_rr_imm(reg, (int) (leaf_wide_bits(ent) & 0xffffff));
+                } else {
+                    ld_rr_ix(reg, vals[ent->val].slot + 3);
+                    push_rr(reg);
+                    ld_rr_ix(reg, vals[ent->val].slot);
+                }
+                push_rr(reg);
+                nslots += 2;
+                continue;
+            }
+            nslots++;
             if (ent->val >= 0 && vals[ent->val].fwd) {
                 leaf_top_to_hl();
                 leaf_depth--;
@@ -7287,7 +7923,9 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             out_opcode24(0xcd, 0);
             fixup_add(fn, out_here() - ACC_INT_SIZE);
         }
-        for (arg = 0; arg != insn->nin; arg++)
+        if (wide_answer && nslots)
+            out_byte(0x7b);                     /* ld a, e: the high byte */
+        for (arg = 0; arg != nslots; arg++)
             pop_rr(R_DE);
         if (waiting < 0) {
             leaf_keep_homes(homes, 1);
@@ -7298,6 +7936,23 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 out_byte2(0xfd, 0xe1);  /* pop iy */
         }
 
+        /* A long's answer is in E:HL -- its high byte in A by now, where
+         * arguments were taken off through DE -- and goes to its slot. */
+        if (wide_answer) {
+            if (insn->res < 0 || !vals[insn->res].used)
+                return;
+            if (!leaf_wide_val(insn->res)) {    /* held as its low bytes */
+                leaf_hl_type = TY_ULONG;
+                leaf_result(insn->res);
+                return;
+            }
+            ld_ix_rr(vals[insn->res].slot, R_HL);
+            if (nslots)
+                ld_ix_a(vals[insn->res].slot + 3);
+            else
+                frame_byte(0x73, vals[insn->res].slot + 3);    /* ld (ix+d), e */
+            return;
+        }
         /* A byte's answer is in A, and stays there; the rest in HL. */
         if (callee->type != TY_VOID && type_size(callee->type) == 1) {
             leaf_result_a(insn->res, callee->type == TY_BOOL ? TY_UCHAR : callee->type);
@@ -7413,6 +8068,19 @@ static void leaf_edge(int from, int to)
 
     /* One copy is made straight, through HL; more go through the stack,
      * all read before any is written, since one may be another's source. */
+    for (phi = 0; phi != nmoves; phi++)
+        if (leaf_wide_val(dests[phi]) && !leaf_wide_val(sources[phi])) {
+            fail = "internal: a long's phi from what is not one";
+            return;
+        }
+    if (nmoves == 1 && leaf_wide_val(dests[0])) {
+        Ent ent;
+
+        memset(&ent, 0, sizeof ent);
+        ent.val = sources[0];
+        leaf_wide_copy(&ent, vals[dests[0]].slot);
+        return;
+    }
     if (nmoves == 1) {
         Ent ent;
 
@@ -7436,7 +8104,12 @@ static void leaf_edge(int from, int to)
         memset(&ent, 0, sizeof ent);
         ent.val = sources[phi];
         ent.attr.type = vals[sources[phi]].type;
-        if (vals[sources[phi]].reg == R_BC) {
+        if (leaf_wide_val(dests[phi])) {      /* all four bytes */
+            ld_rr_ix(R_HL, vals[sources[phi]].slot);
+            push_rr(R_HL);
+            ld_a_ix(vals[sources[phi]].slot + 3);
+            out_byte(0xf5);                     /* push af */
+        } else if (vals[sources[phi]].reg == R_BC) {
             push_rr(R_BC);
         } else {
             leaf_load(&ent, R_HL);
@@ -7446,7 +8119,12 @@ static void leaf_edge(int from, int to)
     while (nmoves--) {
         int dest = dests[nmoves];
 
-        if (vals[dest].reg == R_BC) {
+        if (leaf_wide_val(dest)) {
+            out_byte(0xf1);                     /* pop af */
+            ld_ix_a(vals[dest].slot + 3);
+            pop_rr(R_HL);
+            ld_ix_rr(vals[dest].slot, R_HL);
+        } else if (vals[dest].reg == R_BC) {
             pop_rr(R_BC);
         } else {
             pop_rr(R_HL);
@@ -8076,6 +8754,7 @@ int ssa_generate(const char **why)
     fail = NULL;
     ssa_cost_made = ssa_cost_first = 0;
     leaf_mode = ssa_made_leaf = ssa_cached_refused = ssa_cached_used = 0;
+    leaf_low_said = NULL;               /* the last function's */
     keep_records(gl_log, gl_n, keep);
 
     new_block(-1);
@@ -8103,6 +8782,13 @@ int ssa_generate(const char **why)
         leaf_why = NULL;
         leaf_mode = leaf_on() && leaf_ok();
         ssa_made_leaf = leaf_mode;
+        if (!leaf_mode) {               /* a wide phi only it copies */
+            int phi;
+
+            for (phi = 0; phi != nphis && !fail; phi++)
+                if (phis[phi].live && type_wide(vals[phis[phi].val].type))
+                    fail = wide_phi;
+        }
         ssa_cached_used = cached_any;
         if (cached_any && !leaf_mode) {
             ssa_cached_refused = 1;
