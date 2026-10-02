@@ -1365,17 +1365,35 @@ static int cache_event(const Ins *insn, int local, int *known)
     return 1;
 }
 
+/* Whether a loop reads or writes `local` by name. */
+static int in_a_loop(int local)
+{
+    int at, known;
+
+    for (at = 0; at != ninsns; at++)
+        if (loop_depth[insns[at].block] && cache_event(&insns[at], local, &known))
+            return 1;
+
+    return 0;
+}
+
 /* Which locals are cached, each with a value standing for its memory. */
 static void choose_cached(void)
 {
-    int local;
+    int local, mode = ssa_cache_off;
 
+    /* OPTACC_CACHE_LOOPS: the first way caches only a loop's locals, as
+     * OPTACC_PICK=0 keeps the first way -- for test/optacc.sh. */
+    if (mode == CACHE_ALL && getenv("OPTACC_CACHE_LOOPS"))
+        mode = CACHE_LOOPS;
     cached_any = ncached = 0;
+    if (mode == CACHE_LOOPS)
+        find_loops();               /* which blocks are in one: in_a_loop */
     for (local = 0; local != nlocals; local++) {
         Local *one = &locals[local];
         int pin;
 
-        one->cached = leaf_on() && regs_on() && !ssa_cache_off
+        one->cached = leaf_on() && regs_on() && mode != CACHE_NONE
                       && !one->ok && one->type != TY_VOID
                       && !type_is_struct(one->type)
                       && type_size(one->type) == ACC_INT_SIZE
@@ -1383,6 +1401,8 @@ static void choose_cached(void)
         for (pin = 0; pin != npinned; pin++)
             if (pinned[pin] == one->offset)
                 one->cached = 0;
+        if (one->cached && mode == CACHE_LOOPS && !in_a_loop(local))
+            one->cached = 0;
         if (one->cached) {
             one->mem_val = new_val(one->type, -1);
             vals[one->mem_val].mem = one->offset;
@@ -4607,8 +4627,9 @@ int ssa_leaf_off, ssa_made_leaf;
  * backend's, which alone makes them: made again with ssa_leaf_off. */
 int ssa_cached_refused;
 
-/* ssa_cache_off: no local cached, for the pick to weigh the leaf backend's
- * code without them; ssa_cached_used: the form just made had one. */
+/* ssa_cache_off: which locals are cached -- CACHE_NONE for the pick to
+ * weigh the leaf backend's code without them, CACHE_LOOPS only those a
+ * loop reads or writes; ssa_cached_used: the form just made had one. */
 int ssa_cache_off, ssa_cached_used;
 
 static int leaf_on(void)

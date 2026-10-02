@@ -576,5 +576,14 @@ OPTACC_INLINE=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
     OPTACC_LEAF=1 ssa "a slot given back, taken as another type" \
     "ssa f made, not by the leaf backend" "$retyped"
 
+# Caching only the locals a loop reads or writes, as one of the ways the
+# pick weighs (OPTACC_CACHE_LOOPS makes it the first): p, whose address the
+# calls take and which the loop steps, is in BC there; x, read only after
+# the loop, is not cached -- caching all of them puts it in IY.
+loopcache='void h(int *); void g(const char **); int f(const char *p, const char *e, int k) { int x = k; h(&x); g(&p); while (p < e && *p == 32) p++; return x * 3 + (x ^ k) + *p; }'
+OPTACC_LEAF=1 OPTACC_CACHE_LOOPS=1 all "$OPT" "a loop's local cached: p into BC"  dd0706 yes "$loopcache"
+OPTACC_LEAF=1 OPTACC_CACHE_LOOPS=1 all "$OPT" "and one outside loops, not"  dd31fd no  "$loopcache"
+OPTACC_LEAF=1 all "$OPT" "which caching all of them puts in IY"  dd31fd yes "$loopcache"
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
