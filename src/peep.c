@@ -78,6 +78,7 @@ typedef struct {
     unsigned char slot;         /* an operand the link fills in */
     unsigned char runtime;      /* a call into the runtime, by registers */
     unsigned char linked;       /* an operand the link fills in: no constant */
+    unsigned char absorbed;     /* its bytes now another's: gone, not cut */
     Regs          live_out;
 } MInsn;
 
@@ -1361,6 +1362,191 @@ static int values(void)
     return any;
 }
 
+/* Instruction `i` made another of the same length, `op` its one byte. */
+static void rewrite(int i, unsigned char op)
+{
+    MInsn keep = ins[i];
+
+    out_img[keep.at - out_base] = op;
+    decode(keep.at, &ins[i]);
+    ins[i].labelled = keep.labelled;
+    ins[i].slot = keep.slot;
+    ins[i].linked = keep.linked;
+    ins[i].runtime = keep.runtime;
+    ins[i].next = keep.next;
+    ins[i].to = keep.to;
+    ins[i].live_out = keep.live_out;
+}
+
+/* The code for ld r, r': registers as an operand names them. */
+static unsigned char ld_rr(int to, int from)
+{
+    return (unsigned char) (0x40 | to << 3 | from);
+}
+
+/* A register's number as an operand names it: B C D E H L - A. */
+static int operand_of(Regs r)
+{
+    return r == BIT(RB) ? 0 : r == BIT(RC) ? 1 : r == BIT(RD) ? 2
+         : r == BIT(RE) ? 3 : r == BIT(RH) ? 4 : r == BIT(RL) ? 5 : 7;
+}
+
+/* A value pushed to wait while the code after it runs, and popped where it
+ * is wanted: kept in a register that code leaves alone instead. Nothing
+ * between may move SP, call, jump or be jumped to.
+ *   push rr / ... / pop rr, nothing between writing rr: both go.
+ *   push hl / ... / pop hl, nothing between touching DE, HL written there
+ *     before it is read, and DE not read after: ex de, hl at both ends --
+ *     the same of DE, with HL.
+ *   push af / ... / pop rr, the byte wanted in rr's high byte, its low and
+ *     U bytes not read after (the pop leaves them the flags and junk): ld
+ *     h, a and no pop, where nothing between touches H; or, where something
+ *     does, ld r, a and ld h, r, r a byte nothing between touches and that
+ *     is read by nothing after the push.
+ *   push hl / ... / pop de: ex de, hl, and no pop, where nothing between
+ *     touches DE, and no byte of HL is live past the push -- read between
+ *     before it is written, or kept to be read after the pop; push de /
+ *     ... / pop hl the same way round. */
+static int park(int i)
+{
+    const MInsn *m = &ins[i], *pop;
+    Regs touched = 0, wrote = 0, read_first = 0;
+    int n = after(i);
+
+    for (; n >= 0; n = after(n)) {
+        const MInsn *x = &ins[n];
+
+        if (x->labelled)
+            return 0;
+        if (x->kind == K_POP)
+            break;
+        if (x->kind != K_PLAIN || (x->effects & E_STACK)
+            || ((x->use | x->def) & M_SP))
+            return 0;
+        touched |= x->use | x->def;
+        read_first |= x->use & ~wrote;
+        wrote |= x->def;
+    }
+    if (n < 0 || ins[n].slot)
+        return 0;
+    pop = &ins[n];
+
+    if (m->pair == pop->pair && pair_index(m->pair) >= 0) {
+        Regs other = m->pair == M_HL ? M_DE : m->pair == M_DE ? M_HL : 0;
+
+        if (!(wrote & m->pair)) {
+            take(i);
+            take(n);
+
+            return 1;
+        }
+        if (other && !(touched & other) && !(read_first & m->pair)
+            && !(pop->live_out & other)) {
+            rewrite(i, 0xeb);
+            rewrite(n, 0xeb);
+
+            return 1;
+        }
+
+        return 0;
+    }
+    if (m->pair == (M_A | M_F)) {
+        Regs high = pop->pair == M_DE ? BIT(RD) : pop->pair == M_HL ? BIT(RH)
+                  : pop->pair == M_BC ? BIT(RB) : 0;
+        static const unsigned char spare[] = { RB, RC, RD, RE, RH, RL };
+        unsigned k;
+
+        if (!high || (pop->live_out & pop->pair & ~high))
+            return 0;
+        if (!(touched & high)) {
+            rewrite(i, ld_rr(operand_of(high), 7));
+            take(n);
+
+            return 1;
+        }
+        for (k = 0; k != sizeof spare; k++) {
+            Regs r = BIT(spare[k]);
+
+            if (r == high || (touched & r) || (m->live_out & r))
+                continue;
+            rewrite(i, ld_rr(operand_of(r), 7));
+            rewrite(n, ld_rr(operand_of(high), operand_of(r)));
+
+            return 1;
+        }
+
+        return 0;
+    }
+    if ((m->pair == M_HL && pop->pair == M_DE)
+        || (m->pair == M_DE && pop->pair == M_HL)) {
+        if ((touched & pop->pair) || (m->live_out & m->pair))
+            return 0;
+        rewrite(i, 0xeb);
+        take(n);
+
+        return 1;
+    }
+
+    return 0;
+}
+
+/* push hl / a load of HL / ex de, hl / pop hl: the value loaded into DE,
+ * HL left as it was -- the same load, made into DE. ld hl, (nn) has no
+ * DE form one byte long: ld de, (nn) is ED 5B nn, written over the push
+ * and the load's opcode, so that nn stays where the link wants it. */
+static int load_to_de(int i)
+{
+    int load = after(i), ex, pop;
+    unsigned char *p;
+
+    if (load < 0 || ins[load].labelled || (ex = after(load)) < 0
+        || ins[ex].labelled || img(ins[ex].at)[0] != 0xeb || ins[ex].len != 1
+        || (pop = after(ex)) < 0 || ins[pop].labelled
+        || ins[pop].kind != K_POP || ins[pop].pair != M_HL
+        || load != ins[i].next || ex != ins[load].next || pop != ins[ex].next)
+        return 0;
+    p = out_img + (ins[load].at - out_base);
+    if (p[0] == 0x21) {
+        p[0] = 0x11;                            /* ld de, nn */
+    } else if ((p[0] == 0xdd || p[0] == 0xfd) && p[1] == 0x27) {
+        p[1] = 0x17;                            /* ld de, (ix+d) */
+    } else if (p[0] == 0xed && (p[1] == 0x22 || p[1] == 0x23)) {
+        p[1] = (unsigned char) (p[1] - 0x10);   /* lea de, ix+d */
+    } else if (p[0] == 0x2a && !ins[i].labelled) {
+        MInsn keep = ins[i];
+
+        out_img[keep.at - out_base] = 0xed;     /* ld de, (nn) */
+        p[0] = 0x5b;
+        decode(keep.at, &ins[i]);
+        ins[i].labelled = keep.labelled;
+        ins[i].next = ins[load].next;
+        ins[i].slot = ins[load].slot;
+        ins[i].linked = ins[load].linked;
+        ins[load].gone = ins[load].absorbed = 1;
+        take(ex);
+        take(pop);
+        npeep_bytes -= 1;                       /* one byte longer than it was */
+
+        return 1;
+    } else {
+        return 0;
+    }
+    {
+        MInsn keep = ins[load];
+
+        decode(keep.at, &ins[load]);
+        ins[load].labelled = keep.labelled;
+        ins[load].slot = keep.slot;
+        ins[load].linked = keep.linked;
+        ins[load].next = keep.next;
+    }
+    take(i);
+    take(ex);
+    take(pop);
+
+    return 1;
+}
+
 /* One pass of the rules over the function: whether anything went. */
 static int rules(void)
 {
@@ -1405,6 +1591,14 @@ static int rules(void)
             continue;
         }
 
+        /* These two make instructions other ones: what is live where is
+         * then not what liveness said, and the pass ends here. Taking an
+         * instruction out only makes less live, which the rules above may
+         * go on from. */
+        if (m->kind == K_PUSH && m->pair == M_HL && load_to_de(i))
+            return 1;
+        if (m->kind == K_PUSH && park(i))
+            return 1;
     }
 
     return any;
@@ -1419,7 +1613,7 @@ static void cut_gone(const Mark *from)
     int ncuts = 0, i;
 
     for (i = 0; i != nins; i++)
-        if (ins[i].gone)
+        if (ins[i].gone && !ins[i].absorbed)
             ncuts++;
     if (!ncuts)
         return;
@@ -1428,7 +1622,7 @@ static void cut_gone(const Mark *from)
         acc_error("out of memory for the machine code");
     ncuts = 0;
     for (i = 0; i != nins; i++)
-        if (ins[i].gone) {
+        if (ins[i].gone && !ins[i].absorbed) {
             if (ncuts && cuts[ncuts - 1].at + cuts[ncuts - 1].len == ins[i].at)
                 cuts[ncuts - 1].len += ins[i].len;
             else {
