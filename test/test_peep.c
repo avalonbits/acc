@@ -220,6 +220,32 @@ int main(void)
     static const unsigned char de_no_ex[] = {
         0x00, 0xe5, 0x21, 0x34, 0x12, 0x00, 0x7d, 0xe1, 0x73, 0xc9
     };
+    /* nop; push bc; pop hl; ld a, (hl); ld hl, 0; ret -- HL only the
+     * address: ld a, (bc) */
+    static const unsigned char via_bc[] = {
+        0x00, 0xc5, 0xe1, 0x7e, 0x21, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* the same, HL read after (by the ret) */
+    static const unsigned char via_bc_hl_read[] = {
+        0x00, 0xc5, 0xe1, 0x7e, 0xc9
+    };
+    /* nop; push de; pop hl; ld (hl), a; ld hl, 0; ret: ld (de), a */
+    static const unsigned char via_de_store[] = {
+        0x00, 0xd5, 0xe1, 0x77, 0x21, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* nop; lea hl, iy+5; ld a, (hl); ld hl, 0; ret: ld a, (iy+5) */
+    static const unsigned char via_iy[] = {
+        0x00, 0xed, 0x23, 0x05, 0x7e, 0x21, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* nop; lea hl, ix-3; ld (hl), e; ld hl, 0; ret: ld (ix-3), e */
+    static const unsigned char via_ix_store[] = {
+        0x00, 0xed, 0x22, 0xfd, 0x73, 0x21, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* nop; lea hl, iy+0; ld (hl), l; ld hl, 0; ret -- L, the address's own
+     * byte: kept */
+    static const unsigned char via_iy_l[] = {
+        0x00, 0xed, 0x23, 0x00, 0x75, 0x21, 0x00, 0x00, 0x00, 0xc9
+    };
     /* nop; push bc; ld a, b; pop bc; ret -- BC not written between */
     static const unsigned char saved_unwritten[] = {
         0x00, 0xc5, 0x78, 0xc1, 0xc9
@@ -352,6 +378,23 @@ int main(void)
     is("the same popped into BC: kept", code[2], 0x21);
     run(de_no_ex, sizeof de_no_ex);
     is("the same with no ex de, hl: kept", code[2], 0x21);
+    run(via_bc, sizeof via_bc);
+    is("push bc; pop hl; ld a, (hl): ld a, (bc)", code[3], 0x0a);
+    is("push bc; pop hl; ld a, (hl): push gone", gone(1), 1);
+    is("push bc; pop hl; ld a, (hl): pop gone", gone(2), 1);
+    run(via_bc_hl_read, sizeof via_bc_hl_read);
+    is("the same, HL read after: kept", code[3], 0x7e);
+    run(via_de_store, sizeof via_de_store);
+    is("push de; pop hl; ld (hl), a: ld (de), a", code[3], 0x12);
+    run(via_iy, sizeof via_iy);
+    is("lea hl, iy+5; ld a, (hl): ld a, (iy+5)",
+       code[1] << 16 | code[2] << 8 | code[3], 0xfd7e05);
+    is("lea hl, iy+5; ld a, (hl): the load gone", gone(4), 1);
+    run(via_ix_store, sizeof via_ix_store);
+    is("lea hl, ix-3; ld (hl), e: ld (ix-3), e",
+       code[1] << 16 | code[2] << 8 | code[3], 0xdd73fd);
+    run(via_iy_l, sizeof via_iy_l);
+    is("lea hl, iy+0; ld (hl), l: kept", code[1] << 8 | code[2], 0xed23);
     run(saved_unwritten, sizeof saved_unwritten);
     is("push bc ... pop bc, BC not written: push gone", gone(1), 1);
     is("push bc ... pop bc, BC not written: pop gone", gone(3), 1);
