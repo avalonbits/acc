@@ -1547,6 +1547,67 @@ static int load_to_de(int i)
     return 1;
 }
 
+/* A byte read or written through HL, which was made only to be the
+ * address, and is read by nothing after: through the register the address
+ * was in instead.
+ *   push bc / pop hl / ld a, (hl): ld a, (bc), and ld (hl), a ld (bc), a --
+ *     the same of DE;
+ *   lea hl, iy+d / ld r, (hl): ld r, (iy+d), and ld (hl), r ld (iy+d), r
+ *     -- the same of IX; not of H or L, which (iy+d) would not make the
+ *     address's own. */
+static int through(int i)
+{
+    MInsn *m = &ins[i];
+    const unsigned char *b = img(m->at);
+    int n, k;
+
+    if (m->kind == K_PUSH && (m->pair == M_BC || m->pair == M_DE)) {
+        unsigned char op;
+
+        if ((n = after(i)) < 0 || n != m->next || ins[n].kind != K_POP
+            || ins[n].pair != M_HL || ins[n].labelled
+            || (k = after(n)) < 0 || k != ins[n].next || ins[k].labelled
+            || ins[k].live_out & M_HL)
+            return 0;
+        op = img(ins[k].at)[0];
+        if (op != 0x7e && op != 0x77)
+            return 0;
+        if (m->pair == M_BC)
+            rewrite(k, op == 0x7e ? 0x0a : 0x02);
+        else
+            rewrite(k, op == 0x7e ? 0x1a : 0x12);
+        take(i);
+        take(n);
+
+        return 1;
+    }
+    if (m->len == 3 && b[0] == 0xed && (b[1] == 0x22 || b[1] == 0x23)) {
+        unsigned char op, *w;
+        MInsn keep;
+
+        if ((k = after(i)) < 0 || k != m->next || ins[k].labelled
+            || ins[k].len != 1 || ins[k].live_out & M_HL)
+            return 0;
+        op = img(ins[k].at)[0];
+        if (!((op & 0xc7) == 0x46 && op != 0x76 && op != 0x66 && op != 0x6e)
+            && !(op >= 0x70 && op <= 0x77 && op != 0x74 && op != 0x75
+                 && op != 0x76))
+            return 0;
+        keep = *m;
+        w = out_img + (m->at - out_base);
+        w[0] = b[1] == 0x22 ? 0xdd : 0xfd;   /* d, the third byte, stays */
+        w[1] = op;
+        decode(keep.at, m);
+        m->labelled = keep.labelled;
+        m->next = keep.next;
+        take(k);
+
+        return 1;
+    }
+
+    return 0;
+}
+
 /* One pass of the rules over the function: whether anything went. */
 static int rules(void)
 {
@@ -1598,6 +1659,8 @@ static int rules(void)
         if (m->kind == K_PUSH && m->pair == M_HL && load_to_de(i))
             return 1;
         if (m->kind == K_PUSH && park(i))
+            return 1;
+        if (through(i))
             return 1;
     }
 
