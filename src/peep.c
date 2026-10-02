@@ -78,14 +78,22 @@ typedef struct {
     unsigned char slot;         /* an operand the link fills in */
     unsigned char runtime;      /* a call into the runtime, by registers */
     unsigned char linked;       /* an operand the link fills in: no constant */
+    int           link;         /* and what it is: see same_insn */
     unsigned char absorbed;     /* its bytes now another's: gone, not cut */
     unsigned char trim;         /* its last bytes, cut: it was made shorter */
+    unsigned char lead;         /* bytes before it, cut: see tail_merge */
+    unsigned char looped;       /* inside a loop: tail_merge leaves it */
     unsigned char frozen;       /* written over as more than one: no rule's */
     Regs          live_out;
 } MInsn;
 
 static MInsn *ins;
 static int    nins, ins_cap;
+
+/* MInsn.link's ranges: see mark_slots. */
+#define LINK_FIXUP  0x1000000
+#define LINK_RT     0x2000000
+#define LINK_POOL   0x3000000
 static int    fn_from, fn_to;   /* the function's bytes */
 
 /* Which instruction starts at each byte of the function, or -1; -2 for a
@@ -773,8 +781,15 @@ static int read_function(void)
         int at = work[--nwork];
 
         while (at < fn_to) {
-            int known = at_byte[at - fn_from] >= 0, k;
+            int known, k;
             MInsn *m;
+
+            if (at < fn_from) {
+                refused = "a jump out of the function";
+                free(work);
+                return 0;
+            }
+            known = at_byte[at - fn_from] >= 0;
 
             k = add_insn(at);
             if (k < 0) {
@@ -882,13 +897,15 @@ static int mark_slots(const Mark *from)
     for (i = 0; i != npool_sites; i++)
         SLOT(pool_site_at[i]);
 #undef SLOT
-#define LINKED(a) do {                                                   \
+#define LINKED(a, what) do {                                             \
         int k_ = (a) - fn_from;                                          \
         if (k_ > 0 && k_ < fn_to - fn_from) {                            \
             while (k_ > 0 && at_byte[k_] == -2)                          \
                 k_--;                                                    \
-            if (at_byte[k_] >= 0)                                        \
+            if (at_byte[k_] >= 0) {                                      \
                 ins[at_byte[k_]].linked = 1;                             \
+                ins[at_byte[k_]].link = (what);                          \
+            }                                                            \
         }                                                                \
     } while (0)
 
@@ -896,16 +913,19 @@ static int mark_slots(const Mark *from)
      * on a symbol holds what to add to its address, an address in the bss
      * an offset into it, and one in the image changes as the image is
      * placed. */
+    /* What each is, for same_insn: an address in the image or the bss is
+     * its bytes; a symbol not yet placed is its symbol, a runtime routine
+     * which one; a pool's use is none other's. */
     for (r = out_relocs + 1 + from->reloc; r < out_reloc_put; r++)
-        LINKED(out_base + *r);
+        LINKED(out_base + *r, 1);
     for (i = from->fixup; i != nfixups; i++)
-        LINKED(fixup_at(i)->at);
+        LINKED(fixup_at(i)->at, LINK_FIXUP + fixup_at(i)->fn);
     for (i = from->rt; i != nrt_fixups; i++)
-        LINKED(rt_fixups[i].at);
+        LINKED(rt_fixups[i].at, LINK_RT + rt_fixups[i].which);
     for (i = from->bss; i != nbss_fixups; i++)
-        LINKED(*bss_fixup(i));
+        LINKED(*bss_fixup(i), 2);
     for (i = 0; i != npool_sites; i++)
-        LINKED(pool_site_at[i]);
+        LINKED(pool_site_at[i], LINK_POOL + i);
 #undef LINKED
 
     /* A call into the runtime takes its operands in registers; a call to
@@ -984,6 +1004,7 @@ static int after(int i)
 }
 
 static int npeep_gone, npeep_bytes;
+static int rewrite_end;         /* the last instruction a rewrite changed */
 
 static void take(int i)
 {
@@ -1439,6 +1460,7 @@ static int park(int i)
         if (!(wrote & m->pair)) {
             take(i);
             take(n);
+            rewrite_end = n;
 
             return 1;
         }
@@ -1446,6 +1468,7 @@ static int park(int i)
             && !(pop->live_out & other)) {
             rewrite(i, 0xeb);
             rewrite(n, 0xeb);
+            rewrite_end = n;
 
             return 1;
         }
@@ -1463,6 +1486,7 @@ static int park(int i)
         if (!(touched & high)) {
             rewrite(i, ld_rr(operand_of(high), 7));
             take(n);
+            rewrite_end = n;
 
             return 1;
         }
@@ -1473,6 +1497,7 @@ static int park(int i)
                 continue;
             rewrite(i, ld_rr(operand_of(r), 7));
             rewrite(n, ld_rr(operand_of(high), operand_of(r)));
+            rewrite_end = n;
 
             return 1;
         }
@@ -1485,6 +1510,7 @@ static int park(int i)
             return 0;
         rewrite(i, 0xeb);
         take(n);
+        rewrite_end = n;
 
         return 1;
     }
@@ -1528,6 +1554,7 @@ static int load_to_de(int i)
         take(ex);
         take(pop);
         npeep_bytes -= 1;                       /* one byte longer than it was */
+        rewrite_end = pop;
 
         return 1;
     } else {
@@ -1545,6 +1572,7 @@ static int load_to_de(int i)
     take(i);
     take(ex);
     take(pop);
+    rewrite_end = pop;
 
     return 1;
 }
@@ -1580,6 +1608,7 @@ static int through(int i)
             rewrite(k, op == 0x7e ? 0x1a : 0x12);
         take(i);
         take(n);
+        rewrite_end = k;
 
         return 1;
     }
@@ -1603,6 +1632,7 @@ static int through(int i)
         m->labelled = keep.labelled;
         m->next = keep.next;
         take(k);
+        rewrite_end = k;
 
         return 1;
     }
@@ -1641,6 +1671,7 @@ static int zero_load(int i)
         m->trim = 3;
         rewrite(n, 0xe1);                                  /* pop hl */
         npeep_bytes += 3;
+        rewrite_end = n;
 
         return 1;
     }
@@ -1655,8 +1686,251 @@ static int zero_load(int i)
     m->use = 0;
     m->def = M_HL | M_F;
     npeep_bytes += 1;
+    rewrite_end = i;
 
     return 1;
+}
+
+/* Whether two instructions do the same: the same bytes, the link filling
+ * in the same thing -- or, of two relative branches, the same opcode and
+ * the same target, whose bytes differ for where each is. */
+static int same_insn(const MInsn *a, const MInsn *b)
+{
+    if (a->len != b->len || a->linked != b->linked || a->link != b->link
+        || a->trim || b->trim || a->frozen || b->frozen || a->slot || b->slot)
+        return 0;
+    if (a->target >= 0 || b->target >= 0)
+        return a->target == b->target && img(a->at)[0] == img(b->at)[0]
+               && (a->len == 2 || !memcmp(img(a->at), img(b->at), (size_t) a->len));
+
+    return !memcmp(img(a->at), img(b->at), (size_t) a->len);
+}
+
+/* The instruction that falls into `i`, or -1: the one before it that is
+ * still there and goes on to it. */
+static int falls_into(int i)
+{
+    int k = i - 1;
+
+    while (k >= 0 && ins[k].gone)
+        k--;
+    if (k < 0 || after(k) != i || ins[k].kind == K_JUMP || ins[k].kind == K_RET)
+        return -1;
+
+    return k;
+}
+
+/* The instructions that can run again without leaving the function: each in
+ * a cycle of the flow, a strongly connected part of it of more than one, or
+ * one that goes to itself. Tarjan's, kept on stacks of its own: a function
+ * of a thousand returns is too deep to recurse through. */
+static void mark_loops(void)
+{
+    int *index = malloc((size_t) (nins + 1) * sizeof *index);
+    int *low = malloc((size_t) (nins + 1) * sizeof *low);
+    int *stack = malloc((size_t) (nins + 1) * sizeof *stack);
+    int *calls = malloc((size_t) (nins + 1) * sizeof *calls);
+    int *edge = malloc((size_t) (nins + 1) * sizeof *edge);
+    unsigned char *on = calloc((size_t) nins + 1, 1);
+    int next_index = 0, nstack = 0, i;
+
+    if (!index || !low || !stack || !calls || !edge || !on)
+        acc_error("out of memory for the machine code");
+    for (i = 0; i != nins; i++) {
+        index[i] = -1;
+        ins[i].looped = 0;
+    }
+#define SUCC(v, e) ((e) == 0                                               \
+        ? (ins[v].kind == K_JUMP || ins[v].kind == K_RET ? -1 : after(v))  \
+        : (ins[v].to >= 0 && !ins[ins[v].to].gone ? ins[v].to : -1))
+    for (i = 0; i != nins; i++) {
+        int ncalls = 0;
+
+        if (ins[i].gone || index[i] >= 0)
+            continue;
+        calls[ncalls] = i;
+        edge[ncalls++] = 0;
+        index[i] = low[i] = next_index++;
+        stack[nstack++] = i;
+        on[i] = 1;
+        while (ncalls) {
+            int v = calls[ncalls - 1], w;
+
+            if (edge[ncalls - 1] == 2) {
+                /* every successor done: a root closes its part */
+                ncalls--;
+                if (ncalls)
+                    low[calls[ncalls - 1]] = low[calls[ncalls - 1]] < low[v]
+                                             ? low[calls[ncalls - 1]] : low[v];
+                if (low[v] == index[v]) {
+                    int size = 0, top = nstack;
+
+                    do {
+                        w = stack[--nstack];
+                        on[w] = 0;
+                        size++;
+                    } while (w != v);
+                    if (size > 1)
+                        for (w = nstack; w != top; w++)
+                            ins[stack[w]].looped = 1;
+                    else if (SUCC(v, 0) == v || SUCC(v, 1) == v)
+                        ins[v].looped = 1;
+                }
+                continue;
+            }
+            w = SUCC(v, edge[ncalls - 1]);
+            edge[ncalls - 1]++;
+            if (w < 0)
+                continue;
+            if (index[w] < 0) {
+                calls[ncalls] = w;
+                edge[ncalls++] = 0;
+                index[w] = low[w] = next_index++;
+                stack[nstack++] = w;
+                on[w] = 1;
+            } else if (on[w] && index[w] < low[v]) {
+                low[v] = index[w];
+            }
+        }
+    }
+#undef SUCC
+    free(index);
+    free(low);
+    free(stack);
+    free(calls);
+    free(edge);
+    free(on);
+}
+
+/* How far back from a jump tail_merge looks for another to the same place:
+ * the copy kept has to be in a jr's reach of the one cut, so only jumps
+ * near it can be, and looking at every pair made gcc's pr59992, a function
+ * of a thousand returns, take an hour and a half to compile. */
+#define TAIL_WINDOW 512
+
+/* The run of `len` instructions ending at the jump `go_end` made a jr to the
+ * run starting at `keep`: the jr over the first two bytes of its run, the
+ * rest cut. */
+static void merge_tail(int keep, int go_end, int len)
+{
+    int go = go_end, k, n, left = 2;
+    unsigned char *w;
+
+    for (n = 1; n != len; n++)
+        go = falls_into(go);
+    k = go;
+    for (n = 1; n != len; n++) {
+        k = after(k);
+        take(k);
+    }
+    k = go;
+    w = out_img + (ins[k].at - out_base);
+    if (ins[k].linked) {
+        /* The link writes its operand: a jr over its first bytes would
+         * be written over. The jr in its last two, then, and its head
+         * cut -- the operand's slot with it, which the cut drops. Not
+         * jumped to: a cut instruction is nowhere. */
+        int head = ins[k].len - 2;
+
+        w += head;
+        ins[k].at += head;
+        ins[k].lead = (unsigned char) head;
+        ins[k].len = 2;
+        npeep_bytes += head;
+    }
+    w[0] = 0x18;
+    w[1] = 0;                       /* cut_gone writes the distance */
+    left -= ins[k].len;
+    if (ins[k].len > 2)
+        ins[k].trim = (unsigned char) (ins[k].len - 2);
+    /* a first instruction of one byte: the jr's second from the next */
+    if (left > 0) {
+        int next = ins[go].next;    /* taken out already: not after() */
+
+        ins[next].at += left;
+        ins[next].len = (unsigned char) (ins[next].len - left);
+        npeep_bytes -= left;
+        if (!ins[next].len)
+            ins[next].absorbed = 1;
+    }
+    ins[go].len = 2;
+    ins[go].kind = K_JUMP;
+    ins[go].target = ins[keep].at;
+    ins[go].to = keep;
+    ins[go].use = ins[go].def = 0;
+    ins[go].effects = 0;
+    ins[go].linked = 0;
+    ins[go].link = 0;
+    ins[go].frozen = 1;
+    ins[keep].labelled = 1;
+    npeep_bytes += ins[go].trim;
+}
+
+/* Two runs of code that end in the same jump: the later one's made a jr to
+ * the earlier one's -- BranchFolder's tail merge, which agondev runs. The
+ * run taken out holds nothing jumped to but its first instruction, where
+ * the jr is; the run kept is jumped to from here on. A jr reaches 127
+ * bytes, and cutting only brings the two nearer. Swept over the function,
+ * a merge for each jump that has one, until a sweep finds none: nothing
+ * here asks liveness, so it need not be worked out again between them. */
+static int tail_merge(void)
+{
+    int two, any = 0, merged;
+
+    /* Not in a loop: the jr is a jump more on every trip, and interp ran
+     * 0.7% slower for the bytes. */
+    mark_loops();
+    do {
+        merged = 0;
+        for (two = 0; two != nins; two++) {
+            int one, best_save = 0, best_keep = -1, best_len = 0;
+
+            if (ins[two].gone || ins[two].kind != K_JUMP || ins[two].frozen
+                || ins[two].looped)
+                continue;
+            for (one = two - 1; one >= 0 && ins[one].at >= ins[two].at - TAIL_WINDOW;
+                 one--) {
+                int a = one, b = two, len = 0, bytes = 0, start, go, k, d;
+
+                if (ins[one].gone || ins[one].kind != K_JUMP
+                    || ins[one].target != ins[two].target)
+                    continue;
+                /* back from the two jumps while the code is the same */
+                while (a >= 0 && b >= 0 && a != b && same_insn(&ins[a], &ins[b])) {
+                    if (ins[b].labelled && ins[b].linked)
+                        break;          /* no jr where the link writes */
+                    len++;
+                    bytes += ins[b].len;
+                    if (ins[b].labelled)
+                        break;          /* the run taken out starts here */
+                    a = falls_into(a);
+                    b = falls_into(b);
+                }
+                if (len < 2 || bytes - 2 <= best_save)
+                    continue;           /* a jump to a jump saves nothing */
+                start = one;
+                go = two;
+                for (k = 1; k != len; k++) {
+                    start = falls_into(start);
+                    go = falls_into(go);
+                }
+                if (start < 0 || go < 0 || ins[go].looped)
+                    continue;
+                d = ins[start].at - (ins[go].at + 2);
+                if (d < -128 || d > 127)
+                    continue;
+                best_save = bytes - 2;
+                best_keep = start;
+                best_len = len;
+            }
+            if (best_keep >= 0) {
+                merge_tail(best_keep, two, best_len);
+                merged = any = 1;
+            }
+        }
+    } while (merged);
+
+    return any;
 }
 
 /* One pass of the rules over the function: whether anything went. */
@@ -1703,19 +1977,23 @@ static int rules(void)
             continue;
         }
 
-        /* These two make instructions other ones: what is live where is
-         * then not what liveness said, and the pass ends here. Taking an
-         * instruction out only makes less live, which the rules above may
-         * go on from. */
-        if (m->kind == K_PUSH && m->pair == M_HL && load_to_de(i))
-            return 1;
-        if (m->kind == K_PUSH && park(i))
-            return 1;
-        if (through(i))
-            return 1;
-        if (zero_load(i))
-            return 1;
+        /* These make instructions other ones: what is live inside what they
+         * changed is not what liveness said, so the pass goes on past it --
+         * to rewrite_end -- and not into it. Outside it the code does what
+         * it did, so what is live there is as it was. Ending the pass at
+         * each instead made a function of a thousand returns (gcc's
+         * pr59992) take twenty minutes, liveness worked out again for
+         * every one. Taking an instruction out only makes less live, which
+         * the rules above may go on from. */
+        if ((m->kind == K_PUSH && m->pair == M_HL && load_to_de(i))
+            || (m->kind == K_PUSH && park(i)) || through(i) || zero_load(i)) {
+            any = 1;
+            i = rewrite_end;
+            continue;
+        }
     }
+    if (!any && tail_merge())
+        return 1;
 
     return any;
 }
@@ -1729,8 +2007,8 @@ static void cut_gone(const Mark *from)
     int ncuts = 0, i;
 
     for (i = 0; i != nins; i++)
-        if ((ins[i].gone && !ins[i].absorbed) || ins[i].trim)
-            ncuts++;
+        ncuts += ((ins[i].gone && !ins[i].absorbed) || ins[i].trim)
+                 + (ins[i].lead != 0);
     if (!ncuts)
         return;
     cuts = malloc((size_t) ncuts * sizeof *cuts);
@@ -1740,6 +2018,17 @@ static void cut_gone(const Mark *from)
     for (i = 0; i != nins; i++) {
         int at, len;
 
+        if (ins[i].lead && !ins[i].gone) {
+            at = ins[i].at - ins[i].lead;       /* its head, before it */
+            len = ins[i].lead;
+            if (ncuts && cuts[ncuts - 1].at + cuts[ncuts - 1].len == at)
+                cuts[ncuts - 1].len += len;
+            else {
+                cuts[ncuts].at = at;
+                cuts[ncuts].len = len;
+                ncuts++;
+            }
+        }
         if (ins[i].gone && !ins[i].absorbed) {
             at = ins[i].at;
             len = ins[i].len + ins[i].trim;     /* and what was trimmed */
