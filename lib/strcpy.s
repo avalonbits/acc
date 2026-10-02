@@ -8,6 +8,7 @@
 
 	XDEF	_strcat
 	XDEF	_strcpy
+	XDEF	_stpcpy
 
 	.assume adl=1
 	SEGMENT CODE
@@ -43,3 +44,23 @@ _strcat:
 	dec	hl
 	ex	de, hl
 	jr	.strcpy_from
+
+; char *stpcpy(char *to, const char *from): strcpy, answering where the
+; terminator went -- DE is past it when ldir is done.
+_stpcpy:
+	ld	iy, 0
+	add	iy, sp
+	ld	hl, (iy+6)
+	xor	a, a
+	ld	bc, 0
+	cpir
+	sbc	hl, hl
+	sbc	hl, bc			; n + 1, never 0
+	push	hl
+	pop	bc
+	ld	hl, (iy+6)
+	ld	de, (iy+3)
+	ldir
+	ex	de, hl
+	dec	hl
+	ret

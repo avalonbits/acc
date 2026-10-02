@@ -39,11 +39,20 @@ size_t strxfrm(char *to, const char *from, size_t n);
 char  *strerror(int n);
 
 /* Not C99's, but every C library has them, and so has agondev's, which
- * programs written for the Agon were built with: POSIX's strdup, strndup
- * and strncasecmp, and GNU's strchrnul. C99 7.26.11 keeps names that begin
- * `str` and a lowercase letter for this header to add. */
+ * programs written for the Agon were built with: POSIX's strdup, strndup,
+ * strnlen, stpcpy, stpncpy, strcasecmp and strncasecmp, and GNU's
+ * strchrnul. C99 7.26.11 keeps names that begin `str` and a lowercase
+ * letter for this header to add; stpcpy and stpncpy are POSIX's.
+ *   strnlen: the length, at most maxlen; s[maxlen] and past are not read.
+ *   stpcpy: strcpy, answering where the terminator it wrote is.
+ *   stpncpy: strncpy, answering to + strnlen(from, n).
+ *   strcasecmp: strncasecmp with no limit. */
 char  *strdup(const char *s);
 char  *strndup(const char *s, size_t n);
+size_t strnlen(const char *s, size_t maxlen);
+char  *stpcpy(char *to, const char *from);
+char  *stpncpy(char *to, const char *from, size_t n);
+int    strcasecmp(const char *a, const char *b);
 int    strncasecmp(const char *a, const char *b, size_t n);
 char  *strchrnul(const char *s, int c);
 

@@ -7,6 +7,7 @@
 ;
 
 	XDEF	_strncasecmp
+	XDEF	_strcasecmp
 
 	.assume adl=1
 	SEGMENT CODE
@@ -63,3 +64,24 @@ _strncasecmp:
 	ret	nc
 	add	a, 32
 	ret
+
+; int strcasecmp(const char *a, const char *b): strncasecmp's loop with no
+; count, and its lowering.
+_strcasecmp:
+	ld	iy, 0
+	add	iy, sp
+	ld	de, (iy+3)		; a
+	ld	hl, (iy+6)		; b
+.case_loop:
+	ld	a, (hl)
+	call	.ncase_lower
+	ld	c, a			; b's, lowered
+	ld	a, (de)
+	call	.ncase_lower
+	sub	a, c			; carry when a's is below b's
+	jr	nz, .ncase_diff
+	or	a, c
+	jr	z, .ncase_same		; both ended together
+	inc	de
+	inc	hl
+	jr	.case_loop

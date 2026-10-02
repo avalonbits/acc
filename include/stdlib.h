@@ -81,4 +81,25 @@ unsigned long      strtoul(const char *s, char **end, int base);
 long long          strtoll(const char *s, char **end, int base);
 unsigned long long strtoull(const char *s, char **end, int base);
 
+/* Not C99's, and not agondev's either, but widely used.
+ *
+ * Microsoft's and DOS's itoa, ltoa and ultoa: value's digits in base 2 to
+ * 36 (lowercase past 9) written to str with a terminator, answering str.
+ * A '-' only for a negative value in base 10; in any other base a negative
+ * value is its two's-complement bits read unsigned -- an int's are 24 on
+ * the Agon, so itoa(-1, s, 16) is "ffffff" and ltoa(-1, s, 16)
+ * "ffffffff". A base outside 2..36 writes the empty string. The caller
+ * sizes str: a long in base 2 is 32 digits and the terminator, 33.
+ *
+ * OpenBSD's strtonum: a base 10 number -- spaces before it and a sign
+ * allowed, nothing after it -- between minval and maxval. On success the
+ * value, *errstr NULL and errno as it was; otherwise 0, *errstr
+ * "invalid" (no digits, something after them, or minval > maxval, errno
+ * EINVAL), "too small" or "too large" (errno ERANGE). errstr may be NULL. */
+char     *itoa(int value, char *str, int base);
+char     *ltoa(long value, char *str, int base);
+char     *ultoa(unsigned long value, char *str, int base);
+long long strtonum(const char *nptr, long long minval, long long maxval,
+                   const char **errstr);
+
 #endif

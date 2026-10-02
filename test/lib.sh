@@ -145,6 +145,97 @@ int main(void) {
 }
 '
 
+# POSIX's strnlen, stpcpy, stpncpy and strcasecmp, which agondev has.
+cat > "$tmp/posix_str.c" <<'EOF2'
+#include <string.h>
+
+int main(void) {
+    int r = 0;
+    char b[8], c[8];
+    char raw[3] = { 'x', 'y', 'z' };    /* no terminator in reach */
+    char *end;
+
+    if (strnlen("abc", 10) == 3 && strnlen("abcdef", 3) == 3) r++;
+    if (strnlen(raw, 3) == 3 && strnlen("", 5) == 0 && strnlen("ab", 0) == 0) r++;
+    end = stpcpy(b, "hey");
+    if (end == b + 3 && *end == 0 && strcmp(b, "hey") == 0) r++;
+    end = stpcpy(b, "");
+    if (end == b && b[0] == 0) r++;
+    memset(c, 'q', 8);
+    end = stpncpy(c, "ab", 6);          /* shorter: padded with nulls */
+    if (end == c + 2 && c[0] == 'a' && c[1] == 'b' && c[2] == 0 && c[5] == 0
+        && c[6] == 'q') r++;
+    memset(c, 'q', 8);
+    end = stpncpy(c, "abcdef", 4);      /* longer: no terminator, to + n */
+    if (end == c + 4 && c[3] == 'd' && c[4] == 'q') r++;
+    if (strcasecmp("HeLLo", "hello") == 0 && strcasecmp("", "") == 0) r++;
+    if (strcasecmp("abc", "ABCD") < 0 && strcasecmp("ABCD", "abc") > 0) r++;
+    if (strcasecmp("b", "A") > 0 && strcasecmp("Zebra", "apple") > 0) r++;
+    if (strnlen("abc", 4) == 3 && strnlen("abc", 3) == 3) r++;  /* at the edge */
+    memset(c, 'q', 8);
+    end = stpncpy(c, "ab", 3);          /* one null of padding */
+    if (end == c + 2 && c[2] == 0 && c[3] == 'q') r++;
+    end = stpncpy(c, "ab", 0);          /* nothing written */
+    if (end == c && c[0] == 'a') r++;
+    /* '@' and '[' are next to the letters, and not lowered */
+    if (strcasecmp("@", "`") < 0 && strcasecmp("[", "a") < 0) r++;
+
+    return r + 29;                      /* 13 checks */
+}
+EOF2
+runs_file "POSIX's strnlen, stpcpy, stpncpy, strcasecmp" "$tmp/posix_str.c"
+
+# Microsoft's itoa, ltoa and ultoa, and OpenBSD's strtonum: widely used,
+# though neither C99 nor agondev has them.
+cat > "$tmp/extras.c" <<'EOF2'
+#include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main(void) {
+    int r = 0;
+    char s[40];
+    const char *why = "unset";
+
+    if (strcmp(itoa(-123, s, 10), "-123") == 0 && strcmp(itoa(0, s, 10), "0") == 0) r++;
+    if (strcmp(itoa(-1, s, 16), "ffffff") == 0) r++;                 /* 24 bits */
+    if (strcmp(itoa(INT_MIN, s, 10), "-8388608") == 0) r++;
+    if (strcmp(itoa(255, s, 2), "11111111") == 0 && itoa(5, s, 10) == s) r++;
+    if (strcmp(ltoa(-1L, s, 16), "ffffffff") == 0) r++;
+    if (strcmp(ltoa(LONG_MIN, s, 10), "-2147483648") == 0) r++;
+    if (strcmp(ultoa(4294967295UL, s, 36), "1z141z3") == 0) r++;
+    if (strcmp(ultoa(4294967295UL, s, 2), "11111111111111111111111111111111") == 0) r++;
+    if (strcmp(itoa(7, s, 1), "") == 0 && strcmp(ltoa(7L, s, 37), "") == 0) r++;
+    if (strcmp(ltoa(-10L, s, 8), "37777777766") == 0) r++;          /* bits, not '-' */
+    if (ltoa(-123456789L, s, 10) == s && strcmp(s, "-123456789") == 0
+        && itoa(-5, s, 10) == s) r++;                                 /* the '-' is str's */
+    if (strcmp(itoa(7, s, 65536 + 10), "") == 0) r++;                 /* all of the base */
+    if (strcmp(ultoa(2560UL, s, 10), "2560") == 0) r++;               /* a quotient of 256 */
+
+    errno = 7;
+    if (strtonum("  42", 0, 100, &why) == 42 && why == NULL && errno == 7) r++;
+    if (strtonum("-5", -10, 10, &why) == -5 && why == NULL) r++;
+    if (strtonum("abc", 0, 10, &why) == 0 && why && strcmp(why, "invalid") == 0
+        && errno == EINVAL) r++;
+    if (strtonum("12x", 0, 100, &why) == 0 && strcmp(why, "invalid") == 0) r++;
+    if (strtonum("", 0, 100, &why) == 0 && strcmp(why, "invalid") == 0) r++;
+    if (strtonum("100", 0, 50, &why) == 0 && strcmp(why, "too large") == 0
+        && errno == ERANGE) r++;
+    if (strtonum("-100", 0, 50, &why) == 0 && strcmp(why, "too small") == 0) r++;
+    if (strtonum("5", 10, 0, &why) == 0 && strcmp(why, "invalid") == 0) r++;
+    if (strtonum("99999999999999999999", 0, LLONG_MAX, &why) == 0
+        && strcmp(why, "too large") == 0) r++;
+    if (strtonum("-99999999999999999999", LLONG_MIN, 0, &why) == 0
+        && strcmp(why, "too small") == 0) r++;
+    if (strtonum("9000000000", 0, LLONG_MAX, &why) == 9000000000LL && why == NULL) r++;
+    if (strtonum("8", 0, 9, NULL) == 8) r++;
+
+    return r + 17;                      /* 25 checks */
+}
+EOF2
+runs_file "itoa, ltoa, ultoa and strtonum" "$tmp/extras.c"
+
 runs "what is in <stdio.h>" \
 '#include <stdio.h>
 
