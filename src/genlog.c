@@ -513,7 +513,10 @@ static void gl_function_end(void)
          * keeps p in a register in its scan loops that way, 1.6% of zap's
          * time, where the pick had kept it in memory. Of those no
          * costlier and no bigger than the first pass's, the smallest, and
-         * of two the same size the cheaper, is made again. */
+         * of two the same size the cheaper, is made again -- unless the
+         * cheapest of them costs a tenth less than it: sieve's main, the
+         * leaf backend's 13 bytes smaller and its loops a quarter slower,
+         * once it could hold the long the program checks. */
         if (made > 0 && picking) {
             static const struct { int leaf_off, cache_off; } ways[] = {
                 { 0, CACHE_ALL }, { 0, CACHE_NONE }, { 1, CACHE_NONE },
@@ -521,7 +524,8 @@ static void gl_function_end(void)
             };
             const char *lost = NULL;
             int way, best = -1, best_size = 0, made_way = first_refused ? 2 : 0;
-            long best_cost = 0;
+            int cheap = -1;
+            long best_cost = 0, cheap_cost = 0;
 
             /* The first is made already: way 0, or the hybrid path's where
              * that was refused. */
@@ -547,15 +551,23 @@ static void gl_function_end(void)
                 ssa_leaf_tried |= way == 2 && first_leaf;
                 if (ssa_loses(&way_why)) {
                     lost = way_why;     /* the last way's, the hybrid path's */
-                } else if (best < 0 || ssa_size_made < best_size
-                           || (ssa_size_made == best_size
-                               && ssa_cost_made < best_cost)) {
-                    best = way;
-                    best_size = ssa_size_made;
-                    best_cost = ssa_cost_made;
+                } else {
+                    if (best < 0 || ssa_size_made < best_size
+                        || (ssa_size_made == best_size
+                            && ssa_cost_made < best_cost)) {
+                        best = way;
+                        best_size = ssa_size_made;
+                        best_cost = ssa_cost_made;
+                    }
+                    if (cheap < 0 || ssa_cost_made < cheap_cost) {
+                        cheap = way;
+                        cheap_cost = ssa_cost_made;
+                    }
                 }
                 gl_back();
             }
+            if (best >= 0 && cheap_cost * 10 < best_cost * 9)
+                best = cheap;           /* a tenth cheaper: see above */
             made = 0;
             why = lost ? lost : why;
             if (best >= 0) {

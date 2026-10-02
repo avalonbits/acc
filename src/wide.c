@@ -791,6 +791,26 @@ static void ld_rr_pool(int reg, uint64_t v, int n)
     out_word24(0);
 }
 
+#ifdef OPT_ACC
+/* For opt-acc's leaf backend: whether the pool can give the constant an
+ * address -- it is there, or there is room for it -- and the address. */
+int pool_room(uint64_t v, int n)
+{
+    int e;
+
+    for (e = 0; e != npool; e++)
+        if (pool_val[e] == v && pool_n[e] == n)
+            return 1;
+
+    return npool < POOL_MAX;
+}
+
+void pool_address(int reg, uint64_t v, int n)
+{
+    ld_rr_pool(reg, v, n);
+}
+#endif
+
 /* The pool, after the function's code and its jumps shortened, and each
  * use pointed at its constant. Only the constants still used: a rewind may
  * have taken back every use of one. */
