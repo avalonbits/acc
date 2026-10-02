@@ -18,6 +18,8 @@
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
+#ifdef OPT_ACC                  /* opt-acc's alone; acc compiles it to nothing */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2120,3 +2122,5 @@ void peep_function(const Mark *from, int start)
                 npeep_gone, npeep_bytes, refused ? ": " : "",
                 refused ? refused : "");
 }
+
+#endif
