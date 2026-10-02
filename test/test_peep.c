@@ -63,14 +63,18 @@ int out_cut_moved(int a)
     return a;
 }
 
+/* The runs peep_function cuts, kept for a test to look at. */
+static Cut cut_runs[16];
+static int ncut_runs;
+
 void relax_cut_code(Cut *cuts, int ncuts, const Mark *from, int fn_from,
                     int fn_to)
 {
-    (void) cuts;
-    (void) ncuts;
     (void) from;
     (void) fn_from;
     (void) fn_to;
+    ncut_runs = ncuts < 16 ? ncuts : 16;
+    memcpy(cut_runs, cuts, (size_t) ncut_runs * sizeof *cuts);
 }
 
 void acc_error(const char *fmt, ...)
@@ -101,6 +105,11 @@ static int run(const unsigned char *bytes, int n)
 static int gone(int offset)
 {
     return peep_gone(BASE + offset);
+}
+
+static int trimmed(int offset)
+{
+    return peep_trimmed(BASE + offset);
 }
 
 int main(void)
@@ -245,6 +254,35 @@ int main(void)
      * byte: kept */
     static const unsigned char via_iy_l[] = {
         0x00, 0xed, 0x23, 0x00, 0x75, 0x21, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* nop; ld hl, 0; add hl, bc; ld (hl), a; ret: push bc; pop hl */
+    static const unsigned char zero_add[] = {
+        0x00, 0x21, 0x00, 0x00, 0x00, 0x09, 0x77, 0xc9
+    };
+    /* the same, the flags read after -- jr c past a nop: add hl, bc clears
+     * the carry */
+    static const unsigned char zero_add_flags[] = {
+        0x00, 0x21, 0x00, 0x00, 0x00, 0x09, 0x38, 0x01, 0x00, 0x77, 0xc9
+    };
+    /* nop; ld hl, 0; push hl; call f; ret: or a; sbc hl, hl */
+    static const unsigned char zero_push[] = {
+        0x00, 0x21, 0x00, 0x00, 0x00, 0xe5, 0xcd, 0x00, 0x00, 0x00, 0xc9
+    };
+    /* the same, the flags read after the load: jr z past a nop */
+    static const unsigned char zero_flags[] = {
+        0x00, 0x21, 0x00, 0x00, 0x00, 0x28, 0x01, 0x00, 0xe5, 0xc9
+    };
+    /* nop; ld hl, x the link fills in; push hl; ret: kept */
+    static const unsigned char zero_linked[] = {
+        0x00, 0x21, 0x00, 0x00, 0x00, 0xe5, 0xc9
+    };
+    /* nop; ld hl, 0; push hl; pop de; ld de, 5; ld hl, 7; ret -- the load
+     * made shorter while push hl reads it, then push hl / pop de taken out
+     * (DE loaded again), and the load dead: cut whole, its trimmed byte
+     * with it */
+    static const unsigned char trim_then_dead[] = {
+        0x00, 0x21, 0x00, 0x00, 0x00, 0xe5, 0xd1, 0x11, 0x05, 0x00, 0x00,
+        0x21, 0x07, 0x00, 0x00, 0xc9
     };
     /* nop; push bc; ld a, b; pop bc; ret -- BC not written between */
     static const unsigned char saved_unwritten[] = {
@@ -395,6 +433,33 @@ int main(void)
        code[1] << 16 | code[2] << 8 | code[3], 0xdd73fd);
     run(via_iy_l, sizeof via_iy_l);
     is("lea hl, iy+0; ld (hl), l: kept", code[1] << 8 | code[2], 0xed23);
+    run(zero_add, sizeof zero_add);
+    is("ld hl, 0; add hl, bc: push bc", code[1], 0xc5);
+    is("ld hl, 0; add hl, bc: pop hl", code[5], 0xe1);
+    is("ld hl, 0; add hl, bc: the load's tail trimmed", trimmed(1), 3);
+    run(zero_add_flags, sizeof zero_add_flags);
+    is("the same, the carry read: kept", code[1], 0x21);
+    run(zero_push, sizeof zero_push);
+    is("ld hl, 0 alone: or a; sbc hl, hl",
+       code[1] << 16 | code[2] << 8 | code[3], 0xb7ed62);
+    is("ld hl, 0 alone: one byte trimmed", trimmed(1), 1);
+    run(zero_flags, sizeof zero_flags);
+    is("ld hl, 0, the flags read after: kept", code[1], 0x21);
+    relocs[1] = 2;
+    out_reloc_put = relocs + 2;
+    run(zero_linked, sizeof zero_linked);
+    is("ld hl, nn the link fills in: kept", code[1], 0x21);
+    out_reloc_put = relocs + 1;
+    memcpy(code, trim_then_dead, sizeof trim_then_dead);
+    out_img = code;
+    out_put = code + sizeof trim_then_dead;
+    setenv("OPTACC_PEEP", "1", 1);
+    peep_function(&start, BASE);
+    is("a trimmed load then dead: one run cut", ncut_runs, 1);
+    is("a trimmed load then dead: from it", ncut_runs ? cut_runs[0].at - BASE : -1, 1);
+    is("a trimmed load then dead: six bytes, its trim too",
+       ncut_runs ? cut_runs[0].len : -1, 6);
+    unsetenv("OPTACC_PEEP");
     run(saved_unwritten, sizeof saved_unwritten);
     is("push bc ... pop bc, BC not written: push gone", gone(1), 1);
     is("push bc ... pop bc, BC not written: pop gone", gone(3), 1);

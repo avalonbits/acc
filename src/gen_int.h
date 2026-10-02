@@ -327,6 +327,7 @@ void relax_cut_code(Cut *cuts, int ncuts, const Mark *from, int fn_from,
 void peep_function(const Mark *from, int start);   /* peep.c */
 int  peep_analyse(const Mark *from, int start, int end);
 int  peep_gone(int at);
+int  peep_trimmed(int at);
 #endif
 #ifdef OPT_ACC
 void relax_state(int *nwants_at, int *nstatics_at, int restore);

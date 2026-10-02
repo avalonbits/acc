@@ -79,6 +79,8 @@ typedef struct {
     unsigned char runtime;      /* a call into the runtime, by registers */
     unsigned char linked;       /* an operand the link fills in: no constant */
     unsigned char absorbed;     /* its bytes now another's: gone, not cut */
+    unsigned char trim;         /* its last bytes, cut: it was made shorter */
+    unsigned char frozen;       /* written over as more than one: no rule's */
     Regs          live_out;
 } MInsn;
 
@@ -1608,6 +1610,55 @@ static int through(int i)
     return 0;
 }
 
+/* ld hl, 0 made shorter, where nothing after reads the flags:
+ *   ld hl, 0 / add hl, bc: HL made BC -- push bc / pop hl, two bytes for
+ *     five; the same of DE;
+ *   ld hl, 0 alone: or a / sbc hl, hl, three bytes for four. The two are
+ *     written over the load's first three bytes, and stand as one
+ *     instruction that makes HL and the flags and reads nothing, which no
+ *     rule writes over again. */
+static int zero_load(int i)
+{
+    MInsn *m = &ins[i];
+    const unsigned char *b = img(m->at);
+    unsigned char *w;
+    int n;
+
+    if (m->len != 4 || b[0] != 0x21 || b[1] || b[2] || b[3] || m->linked
+        || m->frozen || m->trim)
+        return 0;
+    w = out_img + (m->at - out_base);
+    n = after(i);
+    if (n >= 0 && n == m->next && !ins[n].labelled && !ins[n].frozen
+        && (img(ins[n].at)[0] == 0x09 || img(ins[n].at)[0] == 0x19)
+        && ins[n].len == 1 && !(ins[n].live_out & M_F)) {
+        MInsn keep = *m;
+
+        w[0] = img(ins[n].at)[0] == 0x09 ? 0xc5 : 0xd5;   /* push bc / de */
+        decode(keep.at, m);
+        m->labelled = keep.labelled;
+        m->next = keep.next;
+        m->trim = 3;
+        rewrite(n, 0xe1);                                  /* pop hl */
+        npeep_bytes += 3;
+
+        return 1;
+    }
+    if (m->live_out & M_F)
+        return 0;
+    w[0] = 0xb7;                                           /* or a, a */
+    w[1] = 0xed;
+    w[2] = 0x62;                                           /* sbc hl, hl */
+    m->len = 3;
+    m->trim = 1;
+    m->frozen = 1;
+    m->use = 0;
+    m->def = M_HL | M_F;
+    npeep_bytes += 1;
+
+    return 1;
+}
+
 /* One pass of the rules over the function: whether anything went. */
 static int rules(void)
 {
@@ -1662,6 +1713,8 @@ static int rules(void)
             return 1;
         if (through(i))
             return 1;
+        if (zero_load(i))
+            return 1;
     }
 
     return any;
@@ -1676,7 +1729,7 @@ static void cut_gone(const Mark *from)
     int ncuts = 0, i;
 
     for (i = 0; i != nins; i++)
-        if (ins[i].gone && !ins[i].absorbed)
+        if ((ins[i].gone && !ins[i].absorbed) || ins[i].trim)
             ncuts++;
     if (!ncuts)
         return;
@@ -1684,16 +1737,26 @@ static void cut_gone(const Mark *from)
     if (!cuts)
         acc_error("out of memory for the machine code");
     ncuts = 0;
-    for (i = 0; i != nins; i++)
+    for (i = 0; i != nins; i++) {
+        int at, len;
+
         if (ins[i].gone && !ins[i].absorbed) {
-            if (ncuts && cuts[ncuts - 1].at + cuts[ncuts - 1].len == ins[i].at)
-                cuts[ncuts - 1].len += ins[i].len;
-            else {
-                cuts[ncuts].at = ins[i].at;
-                cuts[ncuts].len = ins[i].len;
-                ncuts++;
-            }
+            at = ins[i].at;
+            len = ins[i].len + ins[i].trim;     /* and what was trimmed */
+        } else if (ins[i].trim && !ins[i].gone) {
+            at = ins[i].at + ins[i].len;    /* its tail, past what it is now */
+            len = ins[i].trim;
+        } else {
+            continue;
         }
+        if (ncuts && cuts[ncuts - 1].at + cuts[ncuts - 1].len == at)
+            cuts[ncuts - 1].len += len;
+        else {
+            cuts[ncuts].at = at;
+            cuts[ncuts].len = len;
+            ncuts++;
+        }
+    }
     relax_cut_code(cuts, ncuts, from, fn_from, fn_to);
 
     /* The jumps that say where they go as a distance: the targets and the
@@ -1736,6 +1799,15 @@ int peep_analyse(const Mark *from, int start, int end)
         ;
 
     return 1;
+}
+
+/* How many bytes are cut from the end of the instruction at `at`. */
+int peep_trimmed(int at)
+{
+    int k = at - fn_from;
+
+    return k >= 0 && k < fn_to - fn_from && at_byte[k] >= 0
+           ? ins[at_byte[k]].trim : 0;
 }
 
 /* Whether the instruction at `at` was taken out. */
