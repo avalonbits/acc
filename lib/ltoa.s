@@ -9,20 +9,17 @@
 ; with the other two. They share acc_lib_toa, in lib/toa.s.
 ;
 
-	XDEF	_itoa
+	XDEF	_ltoa
 	XREF	acc_lib_toa
 
 	.assume adl=1
 	SEGMENT CODE
 
-; char *itoa(int value, char *str, int base)
-_itoa:
-	ld	iy, -3
+; char *ltoa(long value, char *str, int base)
+_ltoa:
+	ld	iy, 0
 	add	iy, sp
-	ld	hl, (iy+6)
-	ld	a, (iy+8)
-	rla
-	sbc	a, a
-	ld	d, a			; 0xff when it is negative
-	ld	e, 0			; unsigned, it is 24 bits
+	ld	hl, (iy+3)
+	ld	e, (iy+6)
+	ld	d, e			; the sign, in bit 7
 	jp	acc_lib_toa

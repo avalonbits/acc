@@ -7,7 +7,6 @@
 ;
 
 	XDEF	_strlen
-	XDEF	_strnlen
 
 	.assume adl=1
 	SEGMENT CODE
@@ -38,24 +37,4 @@ _strlen:
 	sbc	hl, hl
 	scf
 	sbc	hl, bc			; 0 - BC - 1: n
-	ret
-
-; size_t strnlen(const char *s, size_t maxlen): s's length, but no more than
-; maxlen -- cpir with maxlen as its count, so that s[maxlen] and past are not
-; read. Found: maxlen less what was left, less the terminator; not: maxlen.
-_strnlen:
-	ld	iy, 0
-	add	iy, sp
-	ld	bc, (iy+6)
-	or	a, a
-	sbc	hl, hl
-	adc	hl, bc			; Z when maxlen is 0: HL is 0 then
-	ret	z
-	ld	hl, (iy+3)
-	xor	a, a
-	cpir
-	ld	hl, (iy+6)		; maxlen; the flags are cpir's still
-	ret	nz			; no terminator in reach
-	scf
-	sbc	hl, bc			; maxlen - BC - 1
 	ret

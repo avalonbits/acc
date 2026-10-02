@@ -185,6 +185,66 @@ int main(void) {
 EOF2
 runs_file "POSIX's strnlen, stpcpy, stpncpy, strcasecmp" "$tmp/posix_str.c"
 
+# None of those names is C99's, so a program may have its own of each: the
+# library's must not come along with a C99 function it does use, as they
+# would if they shared its member, and clash with the program's.
+cat > "$tmp/own_names.c" <<'EOF2'
+#include <stdlib.h>
+#include <string.h>
+
+size_t strnlen(const char *s, size_t maxlen) { (void) s; return maxlen + 1; }
+char *stpcpy(char *to, const char *from) { (void) from; return to + 100; }
+char *stpncpy(char *to, const char *from, size_t n)
+{ (void) from; return to + n + 100; }
+int strcasecmp(const char *a, const char *b) { (void) a; (void) b; return 7; }
+char *itoa(int value, char *str, int base)
+{ (void) value; (void) base; str[0] = 'i'; str[1] = 0; return str; }
+long long strtonum(const char *nptr, long long minval, long long maxval,
+                   const char **errstr)
+{ (void) nptr; (void) minval; (void) errstr; return maxval + 1; }
+
+int main(void) {
+    int r = 0;
+    char b[16];
+
+    /* the C99 neighbours, from the library */
+    if (strlen("abc") == 3 && strcpy(b, "hi") == b && strncpy(b, "x", 4) == b
+        && strncasecmp("A", "a", 1) == 0 && strtol("12", 0, 10) == 12) r++;
+    /* and the program's own */
+    if (strnlen("abc", 1) == 2 && stpcpy(b, "q") == b + 100) r++;
+    if (stpncpy(b, "q", 2) == b + 102 && strcasecmp("a", "a") == 7) r++;
+    if (strcmp(itoa(5, b, 10), "i") == 0 && strtonum("1", 0, 9, 0) == 10) r++;
+    /* itoa's own does not take the library's ltoa and ultoa with it */
+    if (strcmp(ltoa(-5L, b, 10), "-5") == 0 && strcmp(ultoa(9UL, b, 2), "1001") == 0) r++;
+
+    return r + 37;                      /* 5 checks */
+}
+EOF2
+runs_file "a program's own strnlen, stpcpy, ... itoa" "$tmp/own_names.c"
+
+# The other way round: the program's ultoa and ltoa, and the library's itoa,
+# which shares their work but not their members.
+cat > "$tmp/own_ultoa.c" <<'EOF2'
+#include <stdlib.h>
+#include <string.h>
+
+char *ultoa(unsigned long value, char *str, int base)
+{ (void) value; (void) base; str[0] = 'u'; str[1] = 0; return str; }
+char *ltoa(long value, char *str, int base)
+{ (void) value; (void) base; str[0] = 'l'; str[1] = 0; return str; }
+
+int main(void) {
+    char b[16];
+
+    if (strcmp(itoa(-42, b, 10), "-42") != 0) return 1;
+    if (strcmp(ultoa(1UL, b, 10), "u") != 0) return 2;
+    if (strcmp(ltoa(1L, b, 10), "l") != 0) return 3;
+
+    return 42;
+}
+EOF2
+runs_file "a program's own ultoa and ltoa" "$tmp/own_ultoa.c"
+
 # Microsoft's itoa, ltoa and ultoa, and OpenBSD's strtonum: widely used,
 # though neither C99 nor agondev has them.
 cat > "$tmp/extras.c" <<'EOF2'
