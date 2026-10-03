@@ -99,12 +99,17 @@ enum {
     M_ADD24,        /* d = a + b: d and a HL, b HL, DE or BC */
     M_SUB24,        /* d = a - b: or a / sbc hl, rr */
     M_STEP24,       /* d = a + imm, -4..4, inc or dec, d and a the same */
+    M_BYTES24,      /* d = a op imm2 (&, | or ^, imm), its low two bytes
+                     * worked on where in place: d and a BC, DE or HL, the
+                     * same; A, `t`, clobbered where a byte goes through it */
     M_NEG24,        /* d = -a, d and a HL, DE clobbered */
     M_NOT24,        /* d = ~a, likewise */
     M_ALU8,         /* d = a op b: d and a A; imm the operator */
     M_ALU8I,        /* d = a op imm2 */
     M_CMP24,        /* flags of a - b, unsigned: a HL, clobbered */
     M_CMP24S,       /* flags of a - b as signed, through a bias: carry less */
+    M_CMP24SI,      /* flags of a - imm2 as signed: carry less; a HL, clobbered,
+                     * and DE, `t`, but against 0, the sign by add hl, hl */
     M_TST24,        /* Z when a is 0: a HL, kept */
     M_CMP8,         /* flags of a - b: a A */
     M_CMP8I,        /* flags of a - imm2 */
@@ -277,7 +282,9 @@ static int mir_operand_ok(const Ent *ent)
 
 /* Whether a call is one made here: of a function named directly, not
  * setjmp -- whose second return finds the registers pushed around it long
- * gone -- answering void or a type held here, its arguments each one held
+ * gone -- nor longjmp, nor one gen_call makes in place of a call, memcpy
+ * and the rest with ldir and exit, which would be the library's slower
+ * C here; answering void or a type held here, its arguments each one held
  * here and, where it has a parameter, of a type held here too; a _Bool's
  * only from a _Bool, since anything else would be tested, not narrowed. */
 static int call_ok(const Ins *insn)
@@ -287,10 +294,17 @@ static int call_ok(const Ins *insn)
     int nparams = (int) insn->rec->arg[3], arg;
     const Sym *callee = sym_at(fn);
 
+    static const char *const in_place[] = {
+        "memcpy", "memmove", "memset", "memchr", "exit", "longjmp", NULL
+    };
+
     if (!setjmp_name)
         setjmp_name = name_intern("setjmp", 6);
     if (callee->name == setjmp_name)
         return mir_why = "a call of setjmp", 0;
+    for (arg = 0; in_place[arg]; arg++)
+        if (!strcmp(name_text(callee->name), in_place[arg]))
+            return mir_why = "a call gen_call makes in place", 0;
     if (callee->type != TY_VOID && !mir_type(callee->type))
         return mir_why = "a call answering a type not held here", 0;
     for (arg = 0; arg != insn->nin; arg++) {
@@ -538,6 +552,175 @@ static int val_width(int val)
  * K_SEXT by its sign, a constant either or the one it fits -- or 0. */
 enum { K_ZEXT = 1, K_SEXT = 2 };
 
+/* ------------------------------------------------------------------ */
+/* known bits                                                          */
+
+/* By value: the bits of it, as an int, known to be zero -- a byte's above
+ * its own where it is widened by zeros, a mask's outside it, a truth's but
+ * the lowest. Worked out once, in the order the instructions are, a phi
+ * knowing what all of what comes into it knows -- nothing of what comes
+ * round a loop, not worked out yet -- so that it takes one pass. */
+static unsigned *known_zero;
+static unsigned char *known_done;
+
+#define ALL24 0xffffffu
+
+static unsigned type_zero(Type type)
+{
+    if (type == TY_BOOL)
+        return ALL24 & ~1u;
+    if (type_size(type) == 1 && type_unsigned(type))
+        return 0xffff00u;
+
+    return 0;
+}
+
+/* What is known of a value as its type widens it: a signed byte is 0
+ * above itself only where its sign is known to be. */
+static unsigned as_type(unsigned kz, Type type)
+{
+    kz |= type_zero(type);
+    if (type_size(type) == 1 && !type_unsigned(type) && type != TY_BOOL)
+        kz = kz & 0x80 ? kz | 0xffff00u : kz & 0xffu;
+
+    return kz;
+}
+
+static unsigned ent_zero(const Ent *ent)
+{
+    if (ent->val == S_CONST)
+        return ~(unsigned) ent->attr.val & ALL24;
+    if (ent->val < 0 || !known_done[ent->val])
+        return as_type(0, ent->attr.type);
+
+    return as_type(known_zero[ent->val], ent->attr.type);
+}
+
+/* The bits above the highest that may be set: all those a value below
+ * 2^24 with `kz` known zero leaves clear from the top. */
+static unsigned top_zero(unsigned kz)
+{
+    unsigned bit, run = 0;
+
+    for (bit = 0x800000; bit && (kz & bit); bit >>= 1)
+        run |= bit;
+
+    return run;
+}
+
+static unsigned insn_zero(const Ins *insn)
+{
+    unsigned l = insn->nin > 0 ? ent_zero(&insn->in[0]) : 0;
+    unsigned r = insn->nin > 1 ? ent_zero(&insn->in[1]) : 0;
+    int k;
+
+    switch (insn->op) {
+    case GL_vpush_const:
+        return ~(unsigned) insn->rec->arg[0] & ALL24;
+    case GL_vconvert: case GL_vcast:
+        return type_zero((Type) insn->rec->arg[0])
+               | (type_size((Type) insn->rec->arg[0]) == ACC_INT_SIZE ? l : 0);
+    case I_CONV:
+        return type_zero(insn->local_type);
+    case GL_vtruth:
+        return ALL24 & ~1u;
+    case GL_vderef:                     /* what is read: as it is in memory */
+        return type_pointer(insn->in[0].attr.type)
+               ? as_type(0, type_deref(insn->in[0].attr.type)) : 0;
+    case GL_vapply:
+        if (insn->rec->arg[1] && type_size((Type) insn->rec->arg[1]) == 1)
+            return type_zero((Type) insn->rec->arg[1]);
+        if (type_pointer(insn->in[0].attr.type) || type_pointer(insn->in[1].attr.type))
+            return 0;                   /* scaled: nothing carries over */
+        switch ((int) insn->rec->arg[0]) {
+        case TK_LT: case TK_GT: case TK_LE: case TK_GE: case TK_EQ: case TK_NE:
+            return ALL24 & ~1u;
+        case TK_AMP:
+            return l | r;
+        case TK_PIPE: case TK_CARET:
+            return l & r;
+        case TK_PLUS:
+            return (top_zero(l) & top_zero(r)) << 1 & ALL24;
+        case TK_SHR:
+            if (insn->in[1].val != S_CONST || !type_unsigned(insn->in[0].attr.type))
+                return 0;
+            k = insn->in[1].attr.val;
+            return k >= 24 ? ALL24 : ((l >> k) | (ALL24 << (24 - k))) & ALL24;
+        case TK_SHL:
+            if (insn->in[1].val != S_CONST)
+                return 0;
+            k = insn->in[1].attr.val;
+            return k >= 24 ? ALL24 : ((l << k) | ((1u << k) - 1)) & ALL24;
+        case TK_PERCENT:
+            if (insn->in[1].val != S_CONST || insn->in[1].attr.val <= 0
+                || !(type_unsigned(insn->in[0].attr.type)
+                     || (l & 0x800000)))
+                return 0;
+            return top_zero(~(unsigned) (insn->in[1].attr.val - 1) & ALL24);
+        }
+        return 0;
+    }
+
+    return 0;
+}
+
+static void known_bits(void)
+{
+    int blk, at, phi, pred;
+    int *head = malloc(((size_t) nblocks + 1) * sizeof *head);
+    int *next = malloc(((size_t) nphis + 1) * sizeof *next);
+
+    known_zero = realloc(known_zero, ((size_t) nvals + 1) * sizeof *known_zero);
+    known_done = realloc(known_done, (size_t) nvals + 1);
+    if (!known_zero || !known_done || !head || !next)
+        acc_error("out of memory for the machine IR");
+    memset(known_done, 0, (size_t) nvals + 1);
+    for (blk = 0; blk != nblocks; blk++)
+        head[blk] = -1;
+    for (phi = nphis - 1; phi >= 0; phi--)
+        if (phis[phi].live) {
+            next[phi] = head[phis[phi].block];
+            head[phis[phi].block] = phi;
+        }
+    for (blk = 0; blk != nblocks; blk++) {
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+
+        for (phi = head[blk]; phi >= 0; phi = next[phi]) {
+            unsigned kz = ALL24;
+
+            for (pred = 0; pred != preds[blk].count; pred++) {
+                int in = phis[phi].in[pred];
+
+                kz &= in >= 0 && known_done[in] ? known_zero[in] : 0;
+            }
+            known_zero[phis[phi].val] = as_type(kz, vals[phis[phi].val].type);
+            known_done[phis[phi].val] = 1;
+        }
+        for (at = blocks[blk].first; at != end; at++) {
+            const Ins *insn = &insns[at];
+
+            if (insn->res < 0 || multi_def[insn->res])
+                continue;
+            known_zero[insn->res] = as_type(insn_zero(insn), vals[insn->res].type);
+            known_done[insn->res] = 1;
+        }
+    }
+    free(head);
+    free(next);
+}
+
+/* Whether an operand is known to be a byte widened by zeros, or known not
+ * to be negative. */
+static int known_byte(const Ent *ent)
+{
+    return (ent_zero(ent) & 0xffff00u) == 0xffff00u;
+}
+
+static int known_nonneg(const Ent *ent)
+{
+    return (ent_zero(ent) & 0x800000u) != 0;
+}
+
 static int byte_kind(const Ent *ent)
 {
     int v;
@@ -555,6 +738,8 @@ static int byte_kind(const Ent *ent)
                ? K_ZEXT : K_SEXT;
     if (vr[v].ext >= 0)
         return vr[v].ext_signed ? K_SEXT : K_ZEXT;
+    if (known_byte(ent))
+        return K_ZEXT;
 
     return 0;
 }
@@ -567,7 +752,8 @@ static int sel_compare(const Ins *insn, int op)
 {
     Type lt = insn->in[0].attr.type, rt = insn->in[1].attr.type;
     int is_signed = !type_unsigned(lt) && !type_unsigned(rt) && !type_pointer(lt)
-                    && !type_pointer(rt) && op != TK_EQ && op != TK_NE;
+                    && !type_pointer(rt) && op != TK_EQ && op != TK_NE
+                    && !(known_nonneg(&insn->in[0]) && known_nonneg(&insn->in[1]));
     int swap = op == TK_GT || op == TK_LE;
     const Ent *left = &insn->in[swap], *right = &insn->in[!swap];
     int a, b;
@@ -646,6 +832,18 @@ static int sel_compare(const Ins *insn, int op)
         return op == TK_EQ ? JP_Z : JP_NZ;
     }
     a = in_class(operand_vr(left, 3), C_HL);
+
+    /* Signed against a constant: the left moved by half the range in HL
+     * and the constant moved already -- or, against 0, the sign itself. */
+    if (is_signed && right->val == S_CONST) {
+        MIns *mi = mi3(M_CMP24SI, -1, a, -1);
+
+        mi->imm2 = right->attr.val & 0xffffff;
+        mi->kills = 1;
+        if (mi->imm2)
+            mi->t = new_vr(3, C_DE);
+        return op == TK_LT ? JP_C : JP_NC;
+    }
     b = in_class(operand_vr(right, 3), is_signed ? C_DE : C_O24);
     if (is_signed) {
         MIns *mi = mi3(M_CMP24S, -1, a, b);
@@ -705,31 +903,42 @@ static void sel_helper(const Ins *insn, int which, int left, int right)
 /* A pointer's step, scaled: the int times `step`, in HL. */
 static int scaled(int v, int step)
 {
-    int t, u;
+    int t, o = -1, adds = 0, bit, top;
 
     if (step == 1)
         return v;
-    t = in_class(v, C_HL);
-    switch (step) {
-    case 2:
-        u = new_vr(3, C_HL);
-        mi3(M_ADD24, u, t, t);
-        return u;
-    case 4:
-        u = new_vr(3, C_HL);
-        mi3(M_ADD24, u, t, t);
-        t = new_vr(3, C_HL);
-        mi3(M_ADD24, t, u, u);
-        return t;
-    }
-    u = new_vr(3, C_HL);
-    {
-        MIns *mi = mi3(M_HELPER, u, t, in_class(const_vr(step, 3), C_BC));
+
+    /* By adds, the constant's bits from the top down: doubled at each,
+     * the int itself added where one is set -- two adds for an int's 3 --
+     * kept in DE or BC for that. The routine where that is more adds
+     * than eight. */
+    for (top = 0; (step >> (top + 1)) > 0; top++)
+        ;
+    for (bit = top - 1; bit >= 0; bit--)
+        adds += 1 + ((step >> bit) & 1);
+    if (step <= 0 || adds > 8) {
+        int u = new_vr(3, C_HL);
+        MIns *mi = mi3(M_HELPER, u, in_class(v, C_HL), in_class(const_vr(step, 3), C_BC));
 
         mi->imm = RT_MUL;
+        return u;
+    }
+    if (step & ((1 << top) - 1))
+        o = in_class(v, C_O24);
+    t = in_class(v, C_HL);
+    for (bit = top - 1; bit >= 0; bit--) {
+        int u = new_vr(3, C_HL);
+
+        mi3(M_ADD24, u, t, t);
+        t = u;
+        if ((step >> bit) & 1) {
+            u = new_vr(3, C_HL);
+            mi3(M_ADD24, u, t, o);
+            t = u;
+        }
     }
 
-    return u;
+    return t;
 }
 
 /* How &, | or ^ of two bytes widened is itself one: & with one widened
@@ -746,6 +955,68 @@ static int bitwise_kind(int op, int left, int right)
         return K_SEXT;
 
     return 0;
+}
+
+/* What a byte of &, | or ^ with `c` costs made in place: nothing where
+ * it changes nothing, two where it is ld r, 0 or ld r, 0xff, four
+ * through A. */
+static int byte_op_cost(int op, int c)
+{
+    if ((op == TK_AMP && c == 0xff) || (op != TK_AMP && c == 0))
+        return 0;
+    if ((op == TK_AMP && c == 0) || (op == TK_PIPE && c == 0xff))
+        return 2;
+
+    return 4;
+}
+
+/* &, | and ^ of an int and a constant, without the routine where the
+ * constant allows: every bit kept, nothing made; a mask of the low byte,
+ * the byte and'ed and widened; the top byte left as it is, the two below
+ * worked on in place -- where that is no dearer than the call, ld bc, n
+ * and call, eight bytes. A byte answered is one to widen by zeros. -1
+ * where none of them is. */
+static int sel_bitwise_const(const Ins *insn, int op)
+{
+    const Ent *x = &insn->in[0], *k = &insn->in[1];
+    int c, cost, d, a;
+    MIns *mi;
+
+    if (x->val == S_CONST) {
+        const Ent *t = x;
+
+        x = k;
+        k = t;
+    }
+    if (k->val != S_CONST || x->val < 0)
+        return -1;
+    c = k->attr.val & 0xffffff;
+    if (op == TK_AMP)
+        c |= ent_zero(x);               /* what is 0 already needs no mask */
+    if ((op == TK_AMP && c == 0xffffff) || (op != TK_AMP && c == 0))
+        return operand_vr(x, 3);
+    if (op == TK_AMP && c <= 0xff) {
+        a = in_class(operand_vr(x, 1), C_A);
+        d = new_vr(1, C_A);
+        mi = mi3(M_ALU8I, d, a, -1);
+        mi->imm = TK_AMP;
+        mi->imm2 = c;
+        return d;                       /* a byte: widened by zeros */
+    }
+    if ((c >> 16) != (op == TK_AMP ? 0xff : 0))
+        return -1;
+    cost = byte_op_cost(op, c & 0xff) + byte_op_cost(op, (c >> 8) & 0xff);
+    if (cost > 8)
+        return -1;
+    a = in_class(operand_vr(x, 3), C_P24);
+    d = new_vr(3, C_P24);
+    mi = mi3(M_BYTES24, d, a, -1);
+    mi->imm = op;
+    mi->imm2 = c;
+    if (byte_op_cost(op, c & 0xff) == 4 || byte_op_cost(op, (c >> 8) & 0xff) == 4)
+        mi->t = new_vr(1, C_A);
+
+    return d;
 }
 
 static void sel_apply(const Ins *insn, int at)
@@ -904,14 +1175,17 @@ static void sel_apply(const Ins *insn, int at)
         sel_helper(insn, is_unsigned ? RT_REMU : RT_REMS,
                    operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
         return;
-    case TK_AMP:
-        sel_helper(insn, RT_AND, operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
-        return;
-    case TK_PIPE:
-        sel_helper(insn, RT_OR, operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
-        return;
-    case TK_CARET:
-        sel_helper(insn, RT_XOR, operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
+    case TK_AMP: case TK_PIPE: case TK_CARET:
+        d = sel_bitwise_const(insn, op);
+        if (d >= 0) {
+            if (vr[d].width == 1) {
+                to_val_as(insn->res, d, TY_UCHAR);
+                return;
+            }
+            break;
+        }
+        sel_helper(insn, op == TK_AMP ? RT_AND : op == TK_PIPE ? RT_OR : RT_XOR,
+                   operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
         return;
     case TK_SHL:
         /* By a small constant: adds. */
@@ -1270,7 +1544,8 @@ static void sel_insn(const Ins *insn, int at)
     case GL_vtruth: {
         int cc = (int) insn->rec->arg[0] == TK_EQ ? JP_Z : JP_NZ, n;
 
-        if (insn->in[0].val >= 0 && val_width(insn->in[0].val) == 1) {
+        if (insn->in[0].val >= 0 && (val_width(insn->in[0].val) == 1
+                                     || known_byte(&insn->in[0]))) {
             a = in_class(operand_vr(&insn->in[0], 1), C_A);
             mi = mi3(M_CMP8I, -1, a, -1);
             mi->imm2 = 0;
@@ -1315,7 +1590,7 @@ static void sel_insn(const Ins *insn, int at)
             }
             return;
         }
-        if (val_width(insn->in[0].val) == 1) {
+        if (val_width(insn->in[0].val) == 1 || known_byte(&insn->in[0])) {
             mi = mi3(M_CMP8I, -1, in_class(operand_vr(&insn->in[0], 1), C_A), -1);
             mi->imm2 = 0;
         } else {
@@ -1744,7 +2019,7 @@ static int pure(int op)
     switch (op) {
     case M_COPY: case M_LDI: case M_LDSYM: case M_LDF: case M_LEAF:
     case M_ZEXT: case M_SEXT: case M_TRUNC: case M_ADD24: case M_SUB24:
-    case M_STEP24: case M_ALU8: case M_ALU8I:
+    case M_STEP24: case M_ALU8: case M_ALU8I: case M_BYTES24:
         return 1;
     }
 
@@ -2093,6 +2368,139 @@ static int same_value(int x, int y)
     return value_of(x) == value_of(y);
 }
 
+/* Each register's interval stretched over every block it is live in: from
+ * each use, back through the blocks before it to its definitions -- a
+ * value made in a loop and read after it, carried round the jump back,
+ * lives through the whole of the loop, which the order the blocks are
+ * made in does not show. Each register's walk is the blocks it is live
+ * in, each looked at once, through marks stamped with the register. */
+static void live_through(void)
+{
+    int *pred_off = calloc((size_t) nmb + 2, sizeof *pred_off), *pred_at, pass;
+    int *use_off = calloc((size_t) nvr + 2, sizeof *use_off), *use_blk = NULL, *use_pos = NULL;
+    int *def_off = calloc((size_t) nvr + 2, sizeof *def_off), *def_blk = NULL, *def_pos = NULL;
+    int *seen = malloc(((size_t) nmb + 1) * sizeof *seen);
+    int *def_stamp = malloc(((size_t) nmb + 1) * sizeof *def_stamp);
+    int *def_first = malloc(((size_t) nmb + 1) * sizeof *def_first);
+    int *work = malloc(((size_t) nmb + 1) * sizeof *work);
+    int k, at, n, v, b, nuses = 0, ndef = 0, pos;
+
+    if (!pred_off || !use_off || !def_off || !seen || !def_stamp || !def_first || !work)
+        acc_error("out of memory for the machine IR");
+
+    /* Predecessors of the blocks laid out, and the uses and definitions
+     * of each register, by block and position, as lists. */
+    for (k = 0; k != nlayout; k++)
+        for (n = 0; n != mb[layout[k]].nsucc; n++)
+            pred_off[mb[layout[k]].succ[n] + 2]++;
+    for (b = 0; b != nmb; b++)
+        pred_off[b + 2] += pred_off[b + 1];
+    pred_at = malloc(((size_t) pred_off[nmb + 1] + 1) * sizeof *pred_at);
+    if (!pred_at)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != nlayout; k++)
+        for (n = 0; n != mb[layout[k]].nsucc; n++)
+            pred_at[pred_off[mb[layout[k]].succ[n] + 1]++] = layout[k];
+    for (pass = 0; pass != 2; pass++) {
+        pos = 0;
+        for (k = 0; k != nlayout; k++) {
+            MBlock *blk = &mb[layout[k]];
+
+            for (at = 0; at != blk->n; at++, pos += 2) {
+                int m;
+
+                opbuf_fit(mi_nops(&blk->ins[at]));
+                m = mi_uses(&blk->ins[at], opbuf);
+                while (m--) {
+                    v = opbuf[m];
+                    if (pass == 0) {
+                        use_off[v + 2]++;
+                        nuses++;
+                    } else {
+                        use_blk[use_off[v + 1]] = layout[k];
+                        use_pos[use_off[v + 1]++] = pos;
+                    }
+                }
+                m = mi_defs(&blk->ins[at], opbuf);
+                while (m--) {
+                    v = opbuf[m];
+                    if (pass == 0) {
+                        def_off[v + 2]++;
+                        ndef++;
+                    } else {
+                        def_blk[def_off[v + 1]] = layout[k];
+                        def_pos[def_off[v + 1]++] = pos;
+                    }
+                }
+            }
+        }
+        if (pass == 0) {
+            for (v = 0; v != nvr; v++) {
+                use_off[v + 2] += use_off[v + 1];
+                def_off[v + 2] += def_off[v + 1];
+            }
+            use_blk = malloc(((size_t) nuses + 1) * sizeof *use_blk);
+            use_pos = malloc(((size_t) nuses + 1) * sizeof *use_pos);
+            def_blk = malloc(((size_t) ndef + 1) * sizeof *def_blk);
+            def_pos = malloc(((size_t) ndef + 1) * sizeof *def_pos);
+            if (!use_blk || !use_pos || !def_blk || !def_pos)
+                acc_error("out of memory for the machine IR");
+        }
+    }
+
+    for (b = 0; b != nmb; b++)
+        seen[b] = def_stamp[b] = -1;
+    for (v = 0; v != nvr; v++) {
+        int nwork = 0, u;
+
+        for (k = def_off[v]; k != def_off[v + 1]; k++)
+            if (def_stamp[def_blk[k]] != v || def_pos[k] < def_first[def_blk[k]]) {
+                def_stamp[def_blk[k]] = v;
+                def_first[def_blk[k]] = def_pos[k];
+            }
+        for (u = use_off[v]; u != use_off[v + 1]; u++) {
+            b = use_blk[u];
+            if (def_stamp[b] == v && def_first[b] < use_pos[u])
+                continue;                       /* made before, in the block */
+            if (blk_pos[b] < iv_s[v])
+                iv_s[v] = blk_pos[b];
+            if (seen[b] != v) {
+                seen[b] = v;
+                work[nwork++] = b;
+            }
+        }
+        while (nwork) {
+            b = work[--nwork];
+            for (k = pred_off[b]; k != pred_off[b + 1]; k++) {
+                int p = pred_at[k];
+
+                if (blk_pos[p] < 0)
+                    continue;
+                if (blk_end[p] + 1 > iv_e[v])
+                    iv_e[v] = blk_end[p] + 1;   /* live out of it */
+                if (def_stamp[p] == v || seen[p] == v)
+                    continue;
+                seen[p] = v;
+                if (blk_pos[p] < iv_s[v])
+                    iv_s[v] = blk_pos[p];
+                work[nwork++] = p;
+            }
+        }
+    }
+    free(pred_off);
+    free(pred_at);
+    free(use_off);
+    free(use_blk);
+    free(use_pos);
+    free(def_off);
+    free(def_blk);
+    free(def_pos);
+    free(seen);
+    free(def_stamp);
+    free(def_first);
+    free(work);
+}
+
 /* The intervals and what goes with them, from the code as it is now. */
 static void intervals(void)
 {
@@ -2162,7 +2570,8 @@ static void intervals(void)
                 clob[pos] |= UB(U_A);
             if (mi->op == M_CALL)
                 clob[pos] |= UB(U_A) | preg_units[P_HL];
-            if (mi->op == M_COPY || mi->op == M_STEP24 || mi->op == M_TRUNC)
+            if (mi->op == M_COPY || mi->op == M_STEP24 || mi->op == M_TRUNC
+                || mi->op == M_BYTES24)
                 partner(mi->d, mi->a);
             if (mi->op == M_PCOPY)
                 for (n = 0; n != pc[mi->imm].n; n++)
@@ -2173,6 +2582,7 @@ static void intervals(void)
             blk_end[layout[k]] = blk_pos[layout[k]];
     }
     npos = pos + 2;
+    live_through();
 
     /* The copies that make one value: each side written once, of a width,
      * and the source no copy itself -- so that copies of one share it. */
@@ -2405,6 +2815,17 @@ static int reg_ok(int v, int p)
 
 static int *spilled;            /* by register: to be spilled, this round */
 
+/* What spilling a register costs, for the scan to spill the cheapest:
+ * its weighted uses -- halved where it is made again or read from its
+ * own slot rather than stored -- for each position it holds a register,
+ * so that a long life used seldom goes first. */
+static long spill_cost(int v)
+{
+    long length = iv_e[v] - iv_s[v] + 1;
+
+    return vr[v].weight * (vr[v].remat || vr[v].param ? 1 : 2) * 4096 / length;
+}
+
 /* One scan: each interval a register, or marked to be spilled. Answers
  * how many were, or -1 where one that no spill helps could have none. */
 static int linear_scan(void)
@@ -2461,14 +2882,14 @@ static int linear_scan(void)
 
                     if (vr[a].short_lived || !(vr[v].cls & PB(vr[a].preg)))
                         continue;
-                    cost = vr[a].weight * (vr[a].remat || vr[a].param ? 1 : 2);
+                    cost = spill_cost(a);
                     if (victim < 0 || cost < best) {
                         victim = a;
                         jv = j;
                         best = cost;
                     }
                 }
-                cost = vr[v].weight * (vr[v].remat || vr[v].param ? 1 : 2);
+                cost = spill_cost(v);
                 if (!vr[v].short_lived && (victim < 0 || cost <= best)) {
                     spilled[v] = 1;
                     p = -1;
@@ -2650,8 +3071,8 @@ static void dump_mir(const char *when)
 {
     static const char *const ops[NMOPS] = {
         "copy", "ldi", "ldsym", "ldf", "stf", "stfi", "leaf", "ldp", "stp",
-        "stpi", "ldg", "stg", "add24", "sub24", "step24", "neg24", "not24",
-        "alu8", "alu8i", "cmp24", "cmp24s", "tst24", "cmp8", "cmp8i", "bool",
+        "stpi", "ldg", "stg", "add24", "sub24", "step24", "bytes24", "neg24", "not24",
+        "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "cmp8", "cmp8i", "bool",
         "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
         "push", "call"
     };
@@ -3074,6 +3495,17 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         out_byte(0xb7);
         out_byte2(0xed, 0x52);                          /* sbc hl, de */
         return;
+    case M_CMP24SI:
+        if (!mi->imm2) {
+            out_byte(0x29);                             /* add hl, hl */
+            return;
+        }
+        ld_pair_imm(P_DE, 0x800000);
+        out_byte(0x19);                                 /* add hl, de */
+        ld_pair_imm(P_DE, (mi->imm2 + 0x800000) & 0xffffff);
+        out_byte(0xb7);
+        out_byte2(0xed, 0x52);                          /* sbc hl, de */
+        return;
     case M_TST24:
         out_byte(0x09);                                 /* add hl, bc */
         out_byte(0xb7);
@@ -3101,6 +3533,29 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
                    : mi->imm == TK_AMP ? 0xa0 : mi->imm == TK_CARET ? 0xa8 : 0xb0;
 
         out_byte(base | code8(b));
+        return;
+    }
+    case M_BYTES24: {
+        static const int high_of[] = { [P_BC] = P_B, [P_DE] = P_D, [P_HL] = P_H };
+        int alu = mi->imm == TK_AMP ? 0xe6 : mi->imm == TK_CARET ? 0xee : 0xf6;
+
+        if (d != a)
+            move24(d, a);
+        for (k = 0; k != 2; k++) {
+            int r = k ? high_of[d] : low_of(d), c = (mi->imm2 >> (8 * k)) & 0xff;
+
+            switch (byte_op_cost(mi->imm, c)) {
+            case 0:
+                break;
+            case 2:
+                out_byte2(0x06 | code8(r) << 3, c);     /* ld r, n */
+                break;
+            default:
+                out_byte(0x78 | code8(r));              /* ld a, r */
+                out_byte2(alu, c);
+                out_byte(0x47 | code8(r) << 3);         /* ld r, a */
+            }
+        }
         return;
     }
     case M_ALU8I: {
@@ -3281,6 +3736,7 @@ int mir_build(void)
     nspills = 0;
     sel_fail = NULL;
     setup();
+    known_bits();
     select_all();
     if (sel_fail) {
         mir_why = sel_fail;
