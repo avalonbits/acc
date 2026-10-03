@@ -1900,6 +1900,11 @@ static int step_may_pass(const Ins *insn, int old)
     return op != GL_vpush_local && writes_no_memory(op);
 }
 
+/* leaf_long_ok's index of each value's uses: see low_index. */
+static int *luse_head, *luse_next, *luse_at, luse_cap;
+static unsigned char *lphi_in;
+static int lindex_ok;
+
 static void sink_steps(void)
 {
     int at;
@@ -1956,6 +1961,7 @@ static void sink_steps(void)
             continue;
         memmove(&insns[at], &insns[at + 1], (size_t) (to - at) * sizeof *insns);
         insns[to] = step;
+        lindex_ok = 0;                  /* leaf_long_ok's uses moved */
         at--;                           /* what moved up into its place, next:
                                          * another step it went past */
     }
@@ -4838,6 +4844,47 @@ static int leaf_low_op(const Ins *insn)
 /* By value, whether leaf_long_ok has said: -1 not yet asked. */
 static signed char *leaf_low_said;
 
+/* By value, for leaf_long_ok: its uses as a list -- each operand that
+ * reads it, as the instruction it is in -- and whether a phi takes it,
+ * made in one pass over the form rather than looked for over the whole of
+ * it for each value. Made again where the instructions have moved since
+ * (sink_steps). */
+
+static void low_index(void)
+{
+    int at, operand, phi, pred, n = 0;
+
+    luse_head = realloc(luse_head, ((size_t) nvals + 1) * sizeof *luse_head);
+    lphi_in = realloc(lphi_in, (size_t) nvals + 1);
+    if (!luse_head || !lphi_in)
+        acc_error("out of memory for the SSA form");
+    memset(lphi_in, 0, (size_t) nvals + 1);
+    for (at = 0; at != nvals; at++)
+        luse_head[at] = -1;
+    for (at = ninsns - 1; at >= 0; at--)
+        for (operand = insns[at].nin - 1; operand >= 0; operand--) {
+            int val = insns[at].in[operand].val;
+
+            if (val < 0)
+                continue;
+            if (n == luse_cap) {
+                luse_cap = luse_cap ? luse_cap * 2 : 256;
+                luse_next = realloc(luse_next, (size_t) luse_cap * sizeof *luse_next);
+                luse_at = realloc(luse_at, (size_t) luse_cap * sizeof *luse_at);
+                if (!luse_next || !luse_at)
+                    acc_error("out of memory for the SSA form");
+            }
+            luse_at[n] = at;
+            luse_next[n] = luse_head[val];
+            luse_head[val] = n++;
+        }
+    for (phi = 0; phi != nphis; phi++)
+        for (pred = 0; pred != preds[phis[phi].block].count; pred++)
+            if (phis[phi].in[pred] >= 0)
+                lphi_in[phis[phi].in[pred]] = 1;
+    lindex_ok = 1;
+}
+
 /* Whether a long value is one the code here can hold as its low three
  * bytes: every use of it keeping no more than those -- a conversion or a
  * store to an int or narrower, not to a _Bool, whose truth is all four;
@@ -4845,55 +4892,52 @@ static signed char *leaf_low_said;
  * held so -- and no phi taking it. */
 static int leaf_long_ok(int val)
 {
-    int at, operand, phi, pred;
+    int e;
 
     if (leaf_low_said && leaf_low_said[val] >= 0)
         return leaf_low_said[val];
     if (leaf_low_said)
         leaf_low_said[val] = 0;
-    for (phi = 0; phi != nphis; phi++)
-        for (pred = 0; pred != preds[phis[phi].block].count; pred++)
-            if (phis[phi].in[pred] == val)
-                return 0;
-    for (at = 0; at != ninsns; at++)
-        for (operand = 0; operand != insns[at].nin; operand++) {
-            const Ins *use = &insns[at];
-            Type to;
+    if (!lindex_ok)
+        low_index();
+    if (lphi_in[val])
+        return 0;
+    for (e = luse_head[val]; e >= 0; e = luse_next[e]) {
+        const Ins *use = &insns[luse_at[e]];
+        Type to;
 
-            if (use->in[operand].val != val)
-                continue;
-            switch (use->op) {
-            case GL_vcast: case GL_vconvert:
-                to = (Type) use->rec->arg[0];
-                break;
-            case I_CONV:
-                to = use->local_type;
-                break;
-            case GL_vstore_local:
-                to = (Type) use->rec->arg[1];
-                break;
-            case GL_vdrop:
-                continue;
-            case GL_vapply:
-                if (use->res < 0 || use->rec->arg[1])
-                    return 0;
-                if (type_pointer(vals[use->res].type)
-                    && ((int) use->rec->arg[0] == TK_PLUS
-                        || (int) use->rec->arg[0] == TK_MINUS))
-                    continue;                   /* a pointer's step */
-                if (leaf_low_op(use) && leaf_long(vals[use->res].type)
-                    && leaf_long_ok(use->res))
-                    continue;
+        switch (use->op) {
+        case GL_vcast: case GL_vconvert:
+            to = (Type) use->rec->arg[0];
+            break;
+        case I_CONV:
+            to = use->local_type;
+            break;
+        case GL_vstore_local:
+            to = (Type) use->rec->arg[1];
+            break;
+        case GL_vdrop:
+            continue;
+        case GL_vapply:
+            if (use->res < 0 || use->rec->arg[1])
                 return 0;
-            default:
-                return 0;
-            }
-            if (leaf_long(to) && use->op != GL_vstore_local && use->res >= 0
+            if (type_pointer(vals[use->res].type)
+                && ((int) use->rec->arg[0] == TK_PLUS
+                    || (int) use->rec->arg[0] == TK_MINUS))
+                continue;                   /* a pointer's step */
+            if (leaf_low_op(use) && leaf_long(vals[use->res].type)
                 && leaf_long_ok(use->res))
-                continue;                       /* a long again, held so */
-            if (!leaf_type(to) || to == TY_BOOL)
-                return 0;
+                continue;
+            return 0;
+        default:
+            return 0;
         }
+        if (leaf_long(to) && use->op != GL_vstore_local && use->res >= 0
+            && leaf_long_ok(use->res))
+            continue;                       /* a long again, held so */
+        if (!leaf_type(to) || to == TY_BOOL)
+            return 0;
+    }
     if (leaf_low_said)
         leaf_low_said[val] = 1;
 
@@ -8755,6 +8799,7 @@ int ssa_generate(const char **why)
     ssa_cost_made = ssa_cost_first = 0;
     leaf_mode = ssa_made_leaf = ssa_cached_refused = ssa_cached_used = 0;
     leaf_low_said = NULL;               /* the last function's */
+    lindex_ok = 0;
     keep_records(gl_log, gl_n, keep);
 
     new_block(-1);
