@@ -23,13 +23,12 @@
  * local would drop it at that function's closing brace and leave the call
  * pointing at nothing.
  *
- * The locals are walked backwards and the file-scope names are looked up
- * directly, which is the split the shape of the problem asks for. A function
- * has a handful of locals and the walk stops at the first match, so a table
- * would cost more than it saved. File scope is the other way round: it only
- * grows, and a walk of it is as long as the program has functions. Each name
- * carries its file-scope symbol with it in the name arena (name_global), so
- * finding one is a load.
+ * Each name carries its symbol with it in the name arena, so finding one
+ * is a load: its file-scope symbol, or while a local has the name, that
+ * local -- and the field's value from before the local is kept beside it
+ * (see name_bind), for the local's scope to put back when it ends. A walk
+ * of the locals was quadratic in a block's size: every name declared or
+ * read in it walked back over the rest.
  *
  * Measured, when file scope was walked too: two inputs identical byte for byte
  * except which of two hundred functions main called -- the last one declared
@@ -57,6 +56,75 @@ Sym           *sym_table;     /* sym_at reads it directly */
  * sym_scope_begin in acc.h. */
 int            sym_nbytes, sym_nglobal_bytes;
 static int     cap;
+
+/* The three bytes in front of a name's text: its file-scope symbol plus
+ * one, 0 for none -- or, NAME_LOCAL and up, the local that has the name
+ * now, as its offset above the file-scope region, which a file-scope push
+ * moving the locals along does not change. What the field held before
+ * that local took it is in `shadow`, at the local's offset: a table as
+ * wide as the locals, only ever as long as the most a function has. */
+#define NAME_LOCAL 0x400000
+
+static unsigned char *shadow;
+static int     shadow_cap;
+
+static unsigned char *name_field(NameRef ref)
+{
+    return (unsigned char *) name_arena + ref - 3;
+}
+
+/* Whether a field holds a local: one at NAME_LOCAL or above, compared
+ * unsigned. Not the top bit, which is the sign of a 24-bit int and makes
+ * any test of it a signed one -- a helper call here. The local's offset is
+ * the field less NAME_LOCAL, where a mask would be `call __iand`. */
+static int field_local(const unsigned char *field)
+{
+    return (unsigned) get24(field) >= NAME_LOCAL;
+}
+
+/* `name` now the local at offset `local` above the file-scope region. */
+__attribute__((noinline))
+static void name_bind(NameRef name, int local)
+{
+    if ((unsigned) local + sizeof(Sym) > (unsigned) shadow_cap) {
+        shadow_cap = shadow_cap ? 2 * shadow_cap : 64 * sizeof(Sym);
+        shadow = realloc(shadow, shadow_cap);
+        if (!shadow)
+            acc_error("out of memory for symbols");
+    }
+    put24(shadow + local, get24(name_field(name)));
+    put24(name_field(name), NAME_LOCAL + local);
+}
+
+/* The field under every local that has the name: the file-scope part. */
+static unsigned char *global_field(NameRef ref)
+{
+    unsigned char *field = name_field(ref);
+
+    while (field_local(field))
+        field = shadow + (get24(field) - NAME_LOCAL);
+
+    return field;
+}
+
+int name_global(NameRef ref)
+{
+    return get24(global_field(ref)) - 1;
+}
+
+/* The locals from `mark` on gone, the newest first: each name's field is
+ * what it was before its local took it. */
+void sym_scope_end(int mark)
+{
+    int local = sym_nbytes - sym_nglobal_bytes;
+
+    while (local != mark) {
+        local -= sizeof(Sym);
+        put24(name_field(sym_at(sym_nglobal_bytes + local)->name),
+              get24(shadow + local));
+    }
+    sym_nbytes = sym_nglobal_bytes + mark;
+}
 
 #ifdef ACC_HASH_STATS
 unsigned long sym_probes;
@@ -112,6 +180,7 @@ int push_local(NameRef name, int kind, int val)
     sym->count = 0;
     sym->flags = 0;
     sym_nbytes += sizeof *sym;
+    name_bind(name, at - sym_nglobal_bytes);
 
     return at;
 }
@@ -122,16 +191,11 @@ int sym_push_local(NameRef name, int kind, int val)
 }
 
 /* A parameter, local from `mark` on as each of its list is, and none of
- * the others' names: SYM_NONE when one before it has its name. The walk
- * is here, where the push is, because a call of its own for every
- * parameter of every prototype cost a compile 0.1%. */
+ * the others' names: SYM_NONE when one before it has its name. */
 int sym_push_param(NameRef name, int val, int mark)
 {
-    Sym *p = sym_at(sym_nglobal_bytes + mark), *end = sym_at(sym_nbytes);
-
-    for (; p != end; p++)
-        if (p->name == name)
-            return SYM_NONE;
+    if (sym_find_in(name, mark) != SYM_NONE)
+        return SYM_NONE;
 
     return push_local(name, SYM_LOCAL, val);
 }
@@ -166,7 +230,7 @@ int sym_push(NameRef name, int kind, int val)
     sym->flags = 0;
     sym_nbytes += sizeof *sym;
     sym_nglobal_bytes += sizeof *sym;
-    name_set_global(name, at);
+    put24(global_field(name), at + 1);
 
     return at;
 }
@@ -182,22 +246,14 @@ int sym_nglobals(void)
 
 int sym_find(NameRef name)
 {
-    /* The locals, innermost first, so one shadows a file-scope name of the
-     * same spelling. There are a handful and the walk stops at the first
-     * match. The counter is unsigned so the loop test is not a signed
-     * compare, which on this target is a helper call to repair the flags. */
-    unsigned i = (unsigned) sym_nbytes;
-
-    while (i > (unsigned) sym_nglobal_bytes) {
-        i -= sizeof(Sym);
-        COUNT_PROBE();
-        if (sym_at(i)->name == name)
-            return (int) i;
-    }
+    const unsigned char *at = name_field(name);
+    int field = get24(at);
 
     COUNT_PROBE();
+    if (field_local(at))
+        return sym_nglobal_bytes + (field - NAME_LOCAL);
 
-    return name_global(name);
+    return field - 1;
 }
 
 
@@ -301,35 +357,16 @@ int sym_param_ext(int first, int index)
  * position in the table, because a file-scope symbol pushed inside the scope
  * -- a call to a function not seen yet -- goes in underneath the locals and
  * moves them all along by one. */
-/* See sym_maybe_local. An entry stamped by a function 255 before this one
- * looks like this one's, and costs sym_find_in a walk that finds nothing,
- * as a name sharing its low byte with one this function has does. */
-unsigned char sym_stamps[256], sym_stamp;
-
-/* A function's body begins: its parameters, from `mark` on, are stamped
- * as its first names. */
-void sym_stamp_params(int mark)
-{
-    Sym *p = sym_at(sym_nglobal_bytes + mark), *end = sym_at(sym_nbytes);
-
-    if (!++sym_stamp)
-        sym_stamp = 1;                  /* 0 is every entry's to start with */
-    for (; p != end; p++)
-        sym_stamp_name(p->name);
-}
-
-/* The local `name` in the scope from `mark` on -- a block's, which is
- * all of it that has to be walked -- or SYM_NONE. */
+/* The local `name` in the scope from `mark` on, or SYM_NONE: the newest
+ * local with the name, where it is in that scope -- none older can be
+ * where the newest is not. */
 int sym_find_in(NameRef name, int mark)
 {
-    unsigned i = (unsigned) sym_nbytes;
-    unsigned stop = (unsigned) (sym_nglobal_bytes + mark);
+    const unsigned char *at = name_field(name);
+    int field = get24(at);
 
-    while (i > stop) {
-        i -= sizeof(Sym);
-        if (sym_at(i)->name == name)
-            return (int) i;
-    }
+    if (field_local(at) && (unsigned) (field - NAME_LOCAL) >= (unsigned) mark)
+        return sym_nglobal_bytes + (field - NAME_LOCAL);
 
     return SYM_NONE;
 }
@@ -843,5 +880,5 @@ int member_offset(int member)
 
 void sym_drop_locals(void)
 {
-    sym_nbytes = sym_nglobal_bytes;
+    sym_scope_end(0);
 }

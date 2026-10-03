@@ -210,6 +210,7 @@ test: all unit agon
 	@ACC=$(BIN)/acc-asan test/accobj.sh
 	@ACC=$(BIN)/acc-asan test/bss.sh
 	@ACC=$(BIN)/acc-asan test/dead.sh
+	@test/scale.sh
 	@ACC=$(BIN)/acc-asan test/branch.sh
 	@ACC=$(BIN)/acc-asan test/codegen.sh
 	@ACC=$(BIN)/acc-asan test/relax.sh

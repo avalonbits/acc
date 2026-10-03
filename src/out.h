@@ -162,26 +162,9 @@ int get24(const unsigned char *at)
 #endif
 }
 
-/* A name's file-scope symbol lives in the three bytes in front of its text in
- * the arena, stored plus one so that the zero a new name starts with means
- * none. Finding a function is then one load, where it used to be a hash
- * table keyed on the NameRef: a mask and a shift to find the slot, and a
- * probe, for every name the program mentions that is not a local. A NameRef
- * is already unique per name, which is what a hash would have been for.
- *
- * A name has at most one file-scope symbol -- every push of one goes through
- * a sym_find that came back empty -- which is what lets one field hold it. */
-static inline __attribute__((always_inline))
-int name_global(NameRef ref)
-{
-    return get24((const unsigned char *) name_arena + ref - 3) - 1;
-}
-
-static inline __attribute__((always_inline))
-void name_set_global(NameRef ref, int sym)
-{
-    put24((unsigned char *) name_arena + ref - 3, sym + 1);
-}
+/* A name's file-scope symbol, or SYM_NONE: see sym.c, which keeps it in
+ * the three bytes in front of the name's text, under its locals. */
+int name_global(NameRef ref);
 
 /* An opcode and the 24-bit operand that follows it, which is the shape of a
  * call, a jump and every load of a constant. Four bytes, one bounds check.

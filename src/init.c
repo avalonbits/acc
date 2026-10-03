@@ -854,8 +854,6 @@ int push_global(NameRef name, int kind, int at)
 
         return redefining;
     }
-    if (static_local)
-        sym_stamp_name(name);           /* see local_not_redeclared */
     sym = static_local ? sym_push_local(name, kind, at)
                        : sym_push(name, kind, at);
     sym_at(sym)->quals = decl_bottom_const;

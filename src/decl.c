@@ -123,7 +123,6 @@ static void block_extern(Type type, int ext, NameRef name, int count,
         global_again(g, type, ext, count, line, spot);
     }
     global = sym_at(g);
-    sym_stamp_name(name);               /* see local_not_redeclared */
     sym = sym_push_local(name, global->kind, global->val);
     global = sym_at(g);
     sym_at(sym)->type = global->type;
@@ -552,7 +551,6 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
     if (unnamed)
         acc_error_spot(line, spot, "a parameter of a function's definition "
                                    "needs a name");
-    sym_stamp_params(mark);     /* see local_not_redeclared */
 
     if (incomplete_line)
         record_complete(incomplete_x, incomplete_line, incomplete_spot);
