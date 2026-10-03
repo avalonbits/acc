@@ -30,6 +30,7 @@
  */
 #ifdef OPT_ACC
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,8 +76,7 @@ const char *fail;        /* why the function is left to the classic */
 
 static int native_on(void);
 static int regs_on(void);
-static int clashes(int one, int two);
-static unsigned char *clash_bits;
+static int *clash_off, *clash_adj;      /* the clashes, a sorted list a value */
 
 /* How deep in loops each block is, and how many calls, weighted so, each
  * value lives across: see find_loops and find_clashes. */
@@ -97,13 +97,124 @@ typedef struct {
 static Hole *holes;
 static int   nholes, holes_cap;
 
-/* A position gen_here returned, and the block that starts there. */
+/* An int to int map, emptied for each function by a new epoch rather than
+ * by clearing it, so that a big function does not cost every later one. */
 typedef struct {
-    int at, block;
-} Here;
+    int *key, *val;
+    unsigned *epoch;
+    unsigned now;
+    int n, mask;
+} IntMap;
 
-static Here *heres;
-static int   nheres, heres_cap;
+static void imap_start(IntMap *map)
+{
+    map->now++;
+    map->n = 0;
+    if (!map->key) {
+        map->mask = 255;
+        map->key = malloc(256 * sizeof *map->key);
+        map->val = malloc(256 * sizeof *map->val);
+        map->epoch = calloc(256, sizeof *map->epoch);
+        if (!map->key || !map->val || !map->epoch)
+            acc_error("out of memory for the SSA form");
+    }
+}
+
+static unsigned imap_hash(int key)
+{
+    return (unsigned) key * 2654435761u;
+}
+
+static int *imap_slot(IntMap *map, int key, int add)
+{
+    unsigned at = imap_hash(key) & (unsigned) map->mask;
+
+    while (map->epoch[at] == map->now) {
+        if (map->key[at] == key)
+            return &map->val[at];
+        at = (at + 1) & (unsigned) map->mask;
+    }
+    if (!add)
+        return NULL;
+    if (2 * (map->n + 1) > map->mask) {
+        IntMap bigger = *map;
+        int old;
+
+        bigger.mask = 2 * map->mask + 1;
+        bigger.n = 0;
+        bigger.key = malloc(((size_t) bigger.mask + 1) * sizeof *bigger.key);
+        bigger.val = malloc(((size_t) bigger.mask + 1) * sizeof *bigger.val);
+        bigger.epoch = calloc((size_t) bigger.mask + 1, sizeof *bigger.epoch);
+        if (!bigger.key || !bigger.val || !bigger.epoch)
+            acc_error("out of memory for the SSA form");
+        for (old = 0; old <= map->mask; old++)
+            if (map->epoch[old] == map->now)
+                *imap_slot(&bigger, map->key[old], 1) = map->val[old];
+        free(map->key);
+        free(map->val);
+        free(map->epoch);
+        *map = bigger;
+
+        return imap_slot(map, key, 1);
+    }
+    map->epoch[at] = map->now;
+    map->key[at] = key;
+    map->n++;
+
+    return &map->val[at];
+}
+
+/* The holes by number: the first not landed yet, each linked to the next
+ * of its number; a ?:'s parked answers by their stub, the latest first;
+ * the block that starts at each position gen_here gave, the latest. */
+static IntMap hole_first, hole_last, stub_latest, here_block;
+static int *hole_link;          /* by hole entry: the next, or -1 */
+static int  hole_link_cap;
+
+static void holes_start(void)
+{
+    imap_start(&hole_first);
+    imap_start(&hole_last);
+    imap_start(&stub_latest);
+    imap_start(&here_block);
+}
+
+/* A new entry in holes, linked into its number's list or stub's stack. */
+static void hole_push(int hole, int insn_at)
+{
+    GROW(holes, nholes, holes_cap);
+    holes[nholes].hole = hole;
+    holes[nholes].insn = insn_at;
+    if (nholes >= hole_link_cap) {
+        hole_link_cap = hole_link_cap ? 2 * hole_link_cap : 256;
+        while (hole_link_cap <= nholes)
+            hole_link_cap *= 2;
+        hole_link = realloc(hole_link, (size_t) hole_link_cap * sizeof *hole_link);
+        if (!hole_link)
+            acc_error("out of memory for the SSA form");
+    }
+    hole_link[nholes] = -1;
+    if (hole < 0) {
+        int *top = imap_slot(&stub_latest, insn_at, 0);
+
+        if (top) {
+            hole_link[nholes] = *top;
+            *top = nholes;
+        } else {
+            *imap_slot(&stub_latest, insn_at, 1) = nholes;
+        }
+    } else {
+        int *first = imap_slot(&hole_first, hole, 0);
+
+        if (first && *first >= 0) {
+            hole_link[*imap_slot(&hole_last, hole, 0)] = nholes;
+        } else {
+            *imap_slot(&hole_first, hole, 1) = nholes;
+        }
+        *imap_slot(&hole_last, hole, 1) = nholes;
+    }
+    nholes++;
+}
 
 
 static Ent *stk;                /* the builder's value stack */
@@ -219,10 +330,7 @@ static void hole_of(int hole, int insn_at)
 {
     if (!hole)
         return;
-    GROW(holes, nholes, holes_cap);
-    holes[nholes].hole = hole;
-    holes[nholes].insn = insn_at;
-    nholes++;
+    hole_push(hole, insn_at);
 }
 
 /* The block a new label begins: the current one, if nothing is in it yet;
@@ -242,26 +350,27 @@ static int label_block(int old_at)
 /* A hole's jump lands in `block`. */
 static void land(int hole, int block)
 {
-    int at;
+    int *first, at;
 
     if (!hole)
         return;
-    for (at = 0; at != nholes; at++)
-        if (holes[at].hole == hole && holes[at].insn >= 0) {
-            insns[holes[at].insn].target = block;
-            holes[at].insn = -1;
-            return;
-        }
+    first = imap_slot(&hole_first, hole, 0);
+    if (first && *first >= 0) {
+        at = *first;
+        *first = hole_link[at];
+        insns[holes[at].insn].target = block;
+        holes[at].insn = -1;
+        return;
+    }
     fail = "a label for a jump the log did not make";
 }
 
 static int block_at(int old_at)
 {
-    int at;
+    int *block = imap_slot(&here_block, old_at, 0);
 
-    for (at = nheres - 1; at >= 0; at--)
-        if (heres[at].at == old_at)
-            return heres[at].block;
+    if (block)
+        return *block;
     fail = "a jump back to a place gen_here did not give";
 
     return 0;
@@ -478,10 +587,7 @@ static void build_cond_middle(const GenRec *rec)
         set->op = GL_vdrop;
     new_insn(I_JMP, rec);
     hole_of((int) rec->ret, ninsns - 1);
-    GROW(holes, nholes, holes_cap);
-    holes[nholes].hole = -1 - answer;
-    holes[nholes].insn = (int) rec->ret;
-    nholes++;
+    hole_push(-1 - answer, (int) rec->ret);
     new_block(-1);
 }
 
@@ -489,15 +595,16 @@ static void build_cond_middle(const GenRec *rec)
  * the join where the answer is read. */
 static void build_cond_end(const GenRec *rec)
 {
-    int to_stub = (int) rec->arg[0], answer = -1, at, join;
+    int to_stub = (int) rec->arg[0], answer = -1, at, join, *top;
     Ins *set;
 
-    for (at = nholes - 1; at >= 0; at--)
-        if (holes[at].hole < 0 && holes[at].insn == to_stub) {
-            answer = -1 - holes[at].hole;
-            holes[at].insn = 0;
-            break;
-        }
+    top = imap_slot(&stub_latest, to_stub, 0);
+    if (top && *top >= 0) {
+        at = *top;
+        *top = hole_link[at];
+        answer = -1 - holes[at].hole;
+        holes[at].insn = 0;
+    }
     set = new_insn(I_SET, rec);
     take(set, 1);
     if (rec->op == GL_gen_cond_end_void || answer < 0) {
@@ -623,10 +730,7 @@ static void build_one(const GenRec *rec)
 
     case GL_gen_here:
         block = label_block((int) rec->ret);
-        GROW(heres, nheres, heres_cap);
-        heres[nheres].at = (int) rec->ret;
-        heres[nheres].block = block;
-        nheres++;
+        *imap_slot(&here_block, (int) rec->ret, 1) = block;
         return;
     case GL_gen_label:
         if (rec->arg[0])
@@ -1413,13 +1517,25 @@ static void place_phis(void)
 
 static int find_val(int val)
 {
-    while (val >= 0 && repl[val] != -1 && repl[val] != val) {
-        if (repl[val] == UNDEF)
-            return UNDEF;               /* read before any write */
-        val = repl[val];
+    int root = val, next;
+
+    while (root >= 0 && repl[root] != -1 && repl[root] != root) {
+        if (repl[root] == UNDEF) {
+            root = UNDEF;               /* read before any write */
+            break;
+        }
+        root = repl[root];
     }
 
-    return val;
+    /* Each on the way pointed at the end: a chain is walked once. */
+    while (val >= 0 && val != root && repl[val] != -1 && repl[val] != val
+           && repl[val] != UNDEF) {
+        next = repl[val];
+        repl[val] = root;
+        val = next;
+    }
+
+    return root;
 }
 
 /* The operand an instruction reads, with what it stood for resolved. */
@@ -1470,39 +1586,88 @@ static void cache_step(Ins *insn, int at, int local, int old)
 /* Each block, in the dominator tree's order: every read of a local turned
  * into the value that reaches it, every write into a new value, and each
  * successor's phis told what this block brings them. */
-static int *cur_def;            /* by local: a stack of values, one a push */
-static int *cur_top;
-static int  cur_cap;
+static int *cur_top;            /* by local: its newest push, or -1 */
 static int *undo;               /* the locals pushed, in the order pushed */
+static int *undo_val;           /* each push's value */
+static int *undo_prev;          /* the push of the same local before it */
 static int  nundo, undo_cap;
 
-static void undo_push(int local)
+/* What a block's successors' phis are told, by edge: the successor and
+ * the edge's index among its predecessors, listed by the edge's source,
+ * and each block's phis, the dead ones too. */
+static int *rn_edge_off, *rn_edge_to, *rn_edge_pred;
+static int *rn_phi_head, *rn_phi_next;
+
+static void def_push(int local, int val)
 {
     if (nundo == undo_cap) {
         undo_cap = undo_cap ? 2 * undo_cap : 256;
         undo = realloc(undo, (size_t) undo_cap * sizeof *undo);
-        if (!undo)
+        undo_val = realloc(undo_val, (size_t) undo_cap * sizeof *undo_val);
+        undo_prev = realloc(undo_prev, (size_t) undo_cap * sizeof *undo_prev);
+        if (!undo || !undo_val || !undo_prev)
             acc_error("out of memory for the SSA form");
     }
-    undo[nundo++] = local;
+    undo[nundo] = local;
+    undo_val[nundo] = val;
+    undo_prev[nundo] = cur_top[local];
+    cur_top[local] = nundo++;
+}
+
+static void rename_lists(void)
+{
+    int blk, pred, phi, n = 0;
+
+    rn_edge_off = calloc((size_t) nblocks + 2, sizeof *rn_edge_off);
+    rn_phi_head = malloc(((size_t) nblocks + 1) * sizeof *rn_phi_head);
+    rn_phi_next = malloc(((size_t) nphis + 1) * sizeof *rn_phi_next);
+    for (blk = 0; blk != nblocks; blk++)
+        n += preds[blk].count;
+    rn_edge_to = malloc(((size_t) n + 1) * sizeof *rn_edge_to);
+    rn_edge_pred = malloc(((size_t) n + 1) * sizeof *rn_edge_pred);
+    if (!rn_edge_off || !rn_phi_head || !rn_phi_next || !rn_edge_to
+        || !rn_edge_pred)
+        acc_error("out of memory for the SSA form");
+    for (blk = 0; blk != nblocks; blk++)
+        for (pred = 0; pred != preds[blk].count; pred++)
+            rn_edge_off[preds[blk].at[pred] + 2]++;
+    for (blk = 0; blk != nblocks; blk++)
+        rn_edge_off[blk + 2] += rn_edge_off[blk + 1];
+    for (blk = 0; blk != nblocks; blk++)
+        for (pred = 0; pred != preds[blk].count; pred++) {
+            int at = rn_edge_off[preds[blk].at[pred] + 1]++;
+
+            rn_edge_to[at] = blk;
+            rn_edge_pred[at] = pred;
+        }
+    for (blk = 0; blk != nblocks; blk++)
+        rn_phi_head[blk] = -1;
+    for (phi = nphis - 1; phi >= 0; phi--) {
+        rn_phi_next[phi] = rn_phi_head[phis[phi].block];
+        rn_phi_head[phis[phi].block] = phi;
+    }
+}
+
+static void rename_lists_free(void)
+{
+    free(rn_edge_off);
+    free(rn_edge_to);
+    free(rn_edge_pred);
+    free(rn_phi_head);
+    free(rn_phi_next);
+    rn_edge_off = rn_edge_to = rn_edge_pred = rn_phi_head = rn_phi_next = NULL;
 }
 
 /* The dominator tree can be thousands deep, so a frame holds no array. */
 static void rename_block(int blk)
 {
-    int mark = nundo, at, end, succ, phi, kid;
+    int mark = nundo, at, end, edge, phi, kid;
 
-#define DEF_PUSH(local, val) do {                                        \
-        cur_def[(local) * cur_cap + cur_top[local]++] = (val);           \
-        undo_push(local);                                                \
-    } while (0)
-#define DEF_TOP(local) (cur_top[local] ? cur_def[(local) * cur_cap          \
-                                                 + cur_top[local] - 1]    \
-                                       : UNDEF)
+#define DEF_PUSH(local, val) def_push(local, val)
+#define DEF_TOP(local) (cur_top[local] >= 0 ? undo_val[cur_top[local]] : UNDEF)
 
-    for (phi = 0; phi != nphis; phi++)
-        if (phis[phi].block == blk)
-            DEF_PUSH(phis[phi].local, phis[phi].val);
+    for (phi = rn_phi_head[blk]; phi >= 0; phi = rn_phi_next[phi])
+        DEF_PUSH(phis[phi].local, phis[phi].val);
     end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
     for (at = blocks[blk].first; at != end; at++) {
         Ins *insn = &insns[at];
@@ -1599,25 +1764,21 @@ static void rename_block(int blk)
             DEF_PUSH(local, stepped);
         }
     }
-    for (succ = 0; succ != succs[blk].count; succ++) {
-        int to = succs[blk].at[succ], pred;
+    for (edge = rn_edge_off[blk]; edge != rn_edge_off[blk + 1]; edge++) {
+        int to = rn_edge_to[edge], pred = rn_edge_pred[edge];
 
-        for (pred = 0; pred != preds[to].count; pred++) {
-            if (preds[to].at[pred] != blk)
-                continue;
-            for (phi = 0; phi != nphis; phi++)
-                if (phis[phi].block == to) {
-                    int local = phis[phi].local, in = DEF_TOP(local);
+        for (phi = rn_phi_head[to]; phi >= 0; phi = rn_phi_next[phi]) {
+            int local = phis[phi].local, in = DEF_TOP(local);
 
-                    phis[phi].in[pred] = in == CACHE_NONE
-                                         ? locals[local].mem_val : in;
-                }
+            phis[phi].in[pred] = in == CACHE_NONE ? locals[local].mem_val : in;
         }
     }
     for (kid = 0; kid != dom_kids[blk].count; kid++)
         rename_block(dom_kids[blk].at[kid]);
-    while (nundo != mark)
-        cur_top[undo[--nundo]]--;
+    while (nundo != mark) {
+        nundo--;
+        cur_top[undo[nundo]] = undo_prev[nundo];
+    }
 #undef DEF_PUSH
 #undef DEF_TOP
 }
@@ -1626,40 +1787,55 @@ static void rename_block(int blk)
  * reads it, or a live phi does. */
 static void live_phis(void)
 {
-    int at, operand, phi, changed;
+    int at, operand, phi, nwork = 0;
     char *used = calloc((size_t) nvals + 1, 1);
+    int *phi_of = malloc(((size_t) nvals + 1) * sizeof *phi_of);
+    int *work = malloc(((size_t) nphis + 1) * sizeof *work);
 
-    if (!used)
+    if (!used || !phi_of || !work)
         acc_error("out of memory for the SSA form");
+    for (at = 0; at != nvals; at++)
+        phi_of[at] = -1;
+    for (phi = 0; phi != nphis; phi++)
+        phi_of[phis[phi].val] = phi;
     for (at = 0; at != ninsns; at++)
         for (operand = 0; operand != insns[at].nin; operand++)
             if (insns[at].in[operand].val >= 0)
                 used[insns[at].in[operand].val] = 1;
-    do {
-        changed = 0;
-        for (phi = 0; phi != nphis; phi++) {
-            int pred;
 
-            if (phis[phi].live || !used[phis[phi].val])
-                continue;
+    /* A phi is live once read: by an instruction, or by a live phi. */
+    for (phi = 0; phi != nphis; phi++)
+        if (!phis[phi].live && used[phis[phi].val]) {
             phis[phi].live = 1;
-            changed = 1;
-            for (pred = 0; pred != preds[phis[phi].block].count; pred++) {
-                int from = find_val(phis[phi].in[pred]);
+            work[nwork++] = phi;
+        }
+    while (nwork) {
+        int pred;
 
-                phis[phi].in[pred] = from;
-                if (from >= 0)
-                    used[from] = 1;
+        phi = work[--nwork];
+        for (pred = 0; pred != preds[phis[phi].block].count; pred++) {
+            int from = find_val(phis[phi].in[pred]);
+
+            phis[phi].in[pred] = from;
+            if (from < 0)
+                continue;
+            used[from] = 1;
+            if (phi_of[from] >= 0 && !phis[phi_of[from]].live) {
+                phis[phi_of[from]].live = 1;
+                work[nwork++] = phi_of[from];
             }
         }
-    } while (changed);
+    }
     free(used);
+    free(phi_of);
+    free(work);
 }
 
 static void to_values(void)
 {
     int local, at;
     Phi *phi;
+    char *case_into;
 
     nphis = 0;
     find_locals();
@@ -1673,19 +1849,22 @@ static void to_values(void)
     place_phis();
 
     repl = malloc(((size_t) nvals + 1) * sizeof *repl);
-    cur_cap = 2 * ninsns + nblocks + nlocals + 8;  /* a barrier is a def too */
-    cur_def = malloc(((size_t) nlocals + 1) * (size_t) cur_cap * sizeof *cur_def);
-    cur_top = calloc((size_t) nlocals + 1, sizeof *cur_top);
-    if (!repl || !cur_def || !cur_top)
+    cur_top = malloc(((size_t) nlocals + 1) * sizeof *cur_top);
+    if (!repl || !cur_top)
         acc_error("out of memory for the SSA form");
     for (at = 0; at != nvals; at++)
         repl[at] = -1;
-    for (local = 0; local != nlocals; local++)
+    nundo = 0;
+    for (local = 0; local != nlocals; local++) {
+        cur_top[local] = -1;
         if (locals[local].ok && locals[local].is_param)
-            cur_def[local * cur_cap + cur_top[local]++] = locals[local].entry_val;
+            def_push(local, locals[local].entry_val);
         else if (locals[local].cached)
-            cur_def[local * cur_cap + cur_top[local]++] = CACHE_NONE;
+            def_push(local, CACHE_NONE);
+    }
+    rename_lists();
     rename_block(0);
+    rename_lists_free();
 
     /* What the blocks the entry does not reach read, resolved as well. */
     for (at = 0; at != ninsns; at++) {
@@ -1708,25 +1887,24 @@ static void to_values(void)
     /* What the copies into phis cannot do yet: a phi wider than an int,
      * which a register cannot hold across them, and one a switch's case
      * jumps to, which leaves no place for its copies. */
+    case_into = calloc((size_t) nblocks + 1, 1);
+    if (!case_into)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != ninsns; at++)
+        if (insns[at].op == GL_gen_switch_case
+            && insns[at].target >= 0 && insns[at].target < nblocks)
+            case_into[insns[at].target] = 1;
     for (phi = phis; phi != phis + nphis && !fail; phi++) {
-        int pred;
-
         if (!phi->live)
             continue;
         if (type_wide(vals[phi->val].type) && !(leaf_on() && regs_on()))
             fail = wide_phi;            /* the leaf backend copies them */
-        for (pred = 0; pred != preds[phi->block].count && !fail; pred++) {
-            int from = preds[phi->block].at[pred];
-
-            for (at = blocks[from].first; at <= block_last[from]; at++)
-                if (insns[at].op == GL_gen_switch_case
-                    && insns[at].target == phi->block)
-                    fail = "a switch's case where paths join";
-        }
+        if (!fail && case_into[phi->block])
+            fail = "a switch's case where paths join";
     }
-    free(cur_def);
+    free(case_into);
     free(cur_top);
-    cur_def = cur_top = NULL;
+    cur_top = NULL;
 }
 
 /* Whether the local gen_local put at `from`, `size` bytes, is values now
@@ -1869,15 +2047,225 @@ static void sink_steps(void)
 }
 
 /* Where each value is live, as the interval its slot is kept for: every
- * position from the first to the last at which it is live, found by the
- * usual dataflow over the blocks -- a value is live into a block that
- * reads it before writing it, and out of one that a successor needs it
- * live into, or whose successor's phi reads it. Layout order is not flow
- * order: a goto into a loop's middle puts a value's reads above where it
- * is made. */
-static unsigned char *live_in, *live_out, *block_gen, *block_kill, *phi_def;
+ * position from the first to the last at which it is live -- a value is
+ * live into a block that reads it before writing it, and out of one that a
+ * successor needs it live into, or whose successor's phi reads it. Layout
+ * order is not flow order: a goto into a loop's middle puts a value's
+ * reads above where it is made.
+ *
+ * Found a value at a time, walking back from each read to where it is
+ * made (live_ranges): the work is the size of the answer -- each block a
+ * value is live in, once -- where a dataflow over every value in every
+ * block was quadratic. The answer is a sorted list of values a block. */
+typedef struct {
+    int *off;                   /* by block: where its list begins; [nblocks]: the end */
+    int *val;
+} BlockSets;
 
-#define LIVE_BIT(set, blk, val) ((set)[(size_t) (blk) * (size_t) nvals + (val)])
+static BlockSets live_in, live_out, live_top;
+
+static int by_int(const void *left, const void *right)
+{
+    int l = *(const int *) left, r = *(const int *) right;
+
+    return l < r ? -1 : l > r;
+}
+
+/* Pairs of a block and a value, gathered in any order, made a set a
+ * block: counted by block, placed, each block's sorted. */
+static void bset_make(BlockSets *set, const int *blk, const int *val, int n)
+{
+    int at;
+
+    free(set->off);
+    free(set->val);
+    set->off = calloc((size_t) nblocks + 2, sizeof *set->off);
+    set->val = malloc((size_t) n * sizeof *set->val + 1);
+    if (!set->off || !set->val)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != n; at++)
+        set->off[blk[at] + 1]++;
+    for (at = 0; at != nblocks; at++)
+        set->off[at + 1] += set->off[at];
+    {
+        int *fill = malloc(((size_t) nblocks + 1) * sizeof *fill);
+
+        if (!fill)
+            acc_error("out of memory for the SSA form");
+        memcpy(fill, set->off, (size_t) nblocks * sizeof *fill);
+        for (at = 0; at != n; at++)
+            set->val[fill[blk[at]]++] = val[at];
+        free(fill);
+    }
+    for (at = 0; at != nblocks; at++)
+        qsort(set->val + set->off[at], (size_t) (set->off[at + 1] - set->off[at]),
+              sizeof *set->val, by_int);
+}
+
+static void bset_free(BlockSets *set)
+{
+    free(set->off);
+    free(set->val);
+    set->off = set->val = NULL;
+}
+
+/* A growing list of block-and-value pairs. */
+typedef struct {
+    int *blk, *val, n, cap;
+} Pairs;
+
+static void pairs_add(Pairs *pairs, int blk, int val)
+{
+    if (pairs->n == pairs->cap) {
+        pairs->cap = pairs->cap ? pairs->cap * 2 : 256;
+        pairs->blk = realloc(pairs->blk, (size_t) pairs->cap * sizeof *pairs->blk);
+        pairs->val = realloc(pairs->val, (size_t) pairs->cap * sizeof *pairs->val);
+        if (!pairs->blk || !pairs->val)
+            acc_error("out of memory for the SSA form");
+    }
+    pairs->blk[pairs->n] = blk;
+    pairs->val[pairs->n++] = val;
+}
+
+/* The phis of each block, in order: a list a block, made once a function
+ * (phis_bucket), where looking through every phi for a block's was
+ * quadratic. */
+static int *phi_head, *phi_next;
+
+/* An edge's index among its target's predecessors -- the first, where a
+ * switch makes an edge twice: a hash of the edges, made with the phis'
+ * lists, for what looks up an edge's phi inputs. */
+static int *edge_key_to, *edge_key_from, *edge_idx, edge_mask;
+
+static void edges_hash(void)
+{
+    int blk, pred, n = 1, k;
+
+    for (blk = 0; blk != nblocks; blk++)
+        n += preds[blk].count;
+    for (k = 16; k < 2 * n; k *= 2)
+        ;
+    edge_mask = k - 1;
+    edge_key_to = realloc(edge_key_to, (size_t) k * sizeof *edge_key_to);
+    edge_key_from = realloc(edge_key_from, (size_t) k * sizeof *edge_key_from);
+    edge_idx = realloc(edge_idx, (size_t) k * sizeof *edge_idx);
+    if (!edge_key_to || !edge_key_from || !edge_idx)
+        acc_error("out of memory for the SSA form");
+    for (n = 0; n != k; n++)
+        edge_key_to[n] = -1;
+    for (blk = 0; blk != nblocks; blk++)
+        for (pred = 0; pred != preds[blk].count; pred++) {
+            int from = preds[blk].at[pred];
+            unsigned h = ((unsigned) blk * 2654435761u ^ (unsigned) from * 40503u) & (unsigned) edge_mask;
+
+            while (edge_key_to[h] >= 0 && !(edge_key_to[h] == blk && edge_key_from[h] == from))
+                h = (h + 1) & (unsigned) edge_mask;
+            if (edge_key_to[h] < 0) {
+                edge_key_to[h] = blk;
+                edge_key_from[h] = from;
+                edge_idx[h] = pred;
+            }
+        }
+}
+
+static int pred_index(int to, int from)
+{
+    unsigned h = ((unsigned) to * 2654435761u ^ (unsigned) from * 40503u) & (unsigned) edge_mask;
+
+    while (edge_key_to[h] >= 0) {
+        if (edge_key_to[h] == to && edge_key_from[h] == from)
+            return edge_idx[h];
+        h = (h + 1) & (unsigned) edge_mask;
+    }
+
+    return -1;
+}
+
+static void phis_bucket(void)
+{
+    int phi, blk;
+
+    edges_hash();
+
+    phi_head = realloc(phi_head, ((size_t) nblocks + 1) * sizeof *phi_head);
+    phi_next = realloc(phi_next, ((size_t) nphis + 1) * sizeof *phi_next);
+    if (!phi_head || !phi_next)
+        acc_error("out of memory for the SSA form");
+    for (blk = 0; blk != nblocks; blk++)
+        phi_head[blk] = -1;
+    for (phi = nphis - 1; phi >= 0; phi--)
+        if (phis[phi].live) {
+            phi_next[phi] = phi_head[phis[phi].block];
+            phi_head[phis[phi].block] = phi;
+        }
+}
+
+/* A set of values, sparse: each added, taken out, and walked over in time
+ * of its own -- the live values as a block is walked back. */
+static int *lset_pos, *lset_mem, lset_n;
+
+static void lset_add(int val)
+{
+    if (lset_pos[val] >= 0)
+        return;
+    lset_pos[val] = lset_n;
+    lset_mem[lset_n++] = val;
+}
+
+static void lset_del(int val)
+{
+    int at = lset_pos[val];
+
+    if (at < 0)
+        return;
+    lset_mem[at] = lset_mem[--lset_n];
+    lset_pos[lset_mem[at]] = at;
+    lset_pos[val] = -1;
+}
+
+static void lset_clear(void)
+{
+    while (lset_n)
+        lset_pos[lset_mem[--lset_n]] = -1;
+}
+
+static void lset_from(const BlockSets *set, int blk)
+{
+    int k;
+
+    lset_clear();
+    for (k = set->off[blk]; k != set->off[blk + 1]; k++)
+        lset_add(set->val[k]);
+}
+
+static void lset_alloc(void)
+{
+    int val;
+
+    lset_pos = realloc(lset_pos, ((size_t) nvals + 1) * sizeof *lset_pos);
+    lset_mem = realloc(lset_mem, ((size_t) nvals + 1) * sizeof *lset_mem);
+    if (!lset_pos || !lset_mem)
+        acc_error("out of memory for the SSA form");
+    for (val = 0; val != nvals; val++)
+        lset_pos[val] = -1;
+    lset_n = 0;
+}
+
+/* A bound on the work of the passes that could be quadratic on a large
+ * function -- the clashes when everything is live at once, a cached
+ * local's values paired: past a constant times the function's size, the
+ * function is left to the classic backend, which is linear. */
+#define SSA_WORK_PER 512
+static long ssa_work, ssa_work_max;
+
+static int work(long amount)
+{
+    ssa_work += amount;
+    if (ssa_work > ssa_work_max && !fail)
+        fail = "a function too big for the SSA form's backends";
+
+    return !fail;
+}
 
 static void widen(int val, int at)
 {
@@ -1889,28 +2277,55 @@ static void widen(int val, int at)
 
 static void live_ranges(void)
 {
-    size_t size = (size_t) nblocks * (size_t) nvals + 1;
-    int blk, at, operand, val, phi_at, changed, local;
+    int blk, at, operand, val, phi_at, local, ndefs = 0, nuses = 0, k;
+    int *def_head, *def_next, *def_blk, *def_pos;
+    int *use_head, *use_next, *use_blk, *use_pos;     /* use_pos -1: a phi's, out */
+    int *in_mark, *out_mark, *def_mark, *def_first, *work_list, nwork;
+    Pairs ins = { 0 }, outs = { 0 };
 
-    live_in = calloc(size, 1);
-    live_out = calloc(size, 1);
-    block_gen = calloc(size, 1);
-    block_kill = calloc(size, 1);
-    phi_def = calloc(size, 1);
-    if (!live_in || !live_out || !block_gen || !block_kill || !phi_def)
+    phis_bucket();
+    def_head = malloc(((size_t) nvals + 1) * sizeof *def_head);
+    use_head = malloc(((size_t) nvals + 1) * sizeof *use_head);
+    in_mark = malloc(((size_t) nblocks + 1) * sizeof *in_mark);
+    out_mark = malloc(((size_t) nblocks + 1) * sizeof *out_mark);
+    def_mark = malloc(((size_t) nblocks + 1) * sizeof *def_mark);
+    def_first = malloc(((size_t) nblocks + 1) * sizeof *def_first);
+    work_list = malloc(((size_t) nblocks + 1) * sizeof *work_list);
+    k = ninsns + nphis + nlocals + 1;
+    def_next = malloc((size_t) k * sizeof *def_next);
+    def_blk = malloc((size_t) k * sizeof *def_blk);
+    def_pos = malloc((size_t) k * sizeof *def_pos);
+    k = ninsns * MAX_OPERANDS + 1;
+    for (phi_at = 0; phi_at != nphis; phi_at++)
+        if (phis[phi_at].live)
+            k += preds[phis[phi_at].block].count;
+    use_next = malloc((size_t) k * sizeof *use_next);
+    use_blk = malloc((size_t) k * sizeof *use_blk);
+    use_pos = malloc((size_t) k * sizeof *use_pos);
+    if (!def_head || !use_head || !in_mark || !out_mark || !def_mark || !def_first
+        || !work_list || !def_next || !def_blk || !def_pos || !use_next
+        || !use_blk || !use_pos)
         acc_error("out of memory for the SSA form");
+    for (val = 0; val != nvals; val++)
+        def_head[val] = use_head[val] = -1;
+    for (blk = 0; blk != nblocks; blk++)
+        in_mark[blk] = out_mark[blk] = def_mark[blk] = -1;
 
-    /* What each block reads before it writes, and what it writes. */
+#define ADD_DEF(v, b, p) do { def_blk[ndefs] = (b); def_pos[ndefs] = (p);     \
+        def_next[ndefs] = def_head[v]; def_head[v] = ndefs++; } while (0)
+#define ADD_USE(v, b, p) do { use_blk[nuses] = (b); use_pos[nuses] = (p);     \
+        use_next[nuses] = use_head[v]; use_head[v] = nuses++; } while (0)
+
+    /* Where each value is made -- a parameter's, a cached local's memory
+     * and a phi's at the top of a block, position -1 -- and read. */
     for (local = 0; local != nlocals; local++)
         if (locals[local].ok && locals[local].is_param)
-            LIVE_BIT(block_kill, 0, locals[local].entry_val) = 1;
+            ADD_DEF(locals[local].entry_val, 0, -1);
         else if (locals[local].cached)
-            LIVE_BIT(block_kill, 0, locals[local].mem_val) = 1;
+            ADD_DEF(locals[local].mem_val, 0, -1);
     for (phi_at = 0; phi_at != nphis; phi_at++)
-        if (phis[phi_at].live) {
-            LIVE_BIT(block_kill, phis[phi_at].block, phis[phi_at].val) = 1;
-            LIVE_BIT(phi_def, phis[phi_at].block, phis[phi_at].val) = 1;
-        }
+        if (phis[phi_at].live)
+            ADD_DEF(phis[phi_at].val, phis[phi_at].block, -1);
     for (blk = 0; blk != nblocks; blk++) {
         int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
 
@@ -1922,13 +2337,12 @@ static void live_ranges(void)
                 if (val < 0)
                     continue;
                 vals[val].used = 1;
-                if (!LIVE_BIT(block_kill, blk, val))
-                    LIVE_BIT(block_gen, blk, val) = 1;
+                ADD_USE(val, blk, at);
             }
             if (insn->res >= 0)
-                LIVE_BIT(block_kill, blk, insn->res) = 1;
+                ADD_DEF(insn->res, blk, at);
             if (insn->op == I_SET && insn->target >= 0)
-                LIVE_BIT(block_kill, blk, insn->target) = 1;
+                ADD_DEF(insn->target, blk, at);
         }
     }
     for (phi_at = 0; phi_at != nphis; phi_at++) {
@@ -1938,53 +2352,75 @@ static void live_ranges(void)
         if (!phi->live)
             continue;
         for (pred = 0; pred != preds[phi->block].count; pred++)
-            if (phi->in[pred] >= 0)
+            if (phi->in[pred] >= 0) {
                 vals[phi->in[pred]].used = 1;
+                ADD_USE(phi->in[pred], preds[phi->block].at[pred], -1);
+            }
     }
 
-    /* Out of a block: what its successors need, and what their phis read
-     * from it; into it: what it reads first, and what goes out that it
-     * does not make. */
-    do {
-        changed = 0;
-        for (blk = nblocks - 1; blk >= 0; blk--) {
-            int succ;
+    /* Each value: live into a block that reads it before it is made
+     * there, out of a block that a successor it is live into follows or
+     * whose successor's phi reads it, and on back through the
+     * predecessors until the blocks that make it. */
+    for (val = 0; val != nvals; val++) {
+        int e;
 
-            for (succ = 0; succ != succs[blk].count; succ++) {
-                int to = succs[blk].at[succ], pred;
-
-                for (val = 0; val != nvals; val++)
-                    if (LIVE_BIT(live_in, to, val) && !LIVE_BIT(live_out, blk, val)
-                        && !LIVE_BIT(phi_def, to, val)) {
-                        LIVE_BIT(live_out, blk, val) = 1;
-                        changed = 1;
-                    }
-                for (pred = 0; pred != preds[to].count; pred++) {
-                    if (preds[to].at[pred] != blk)
-                        continue;
-                    for (phi_at = 0; phi_at != nphis; phi_at++) {
-                        const Phi *phi = &phis[phi_at];
-
-                        if (!phi->live || phi->block != to || phi->in[pred] < 0
-                            || LIVE_BIT(live_out, blk, phi->in[pred]))
-                            continue;
-                        LIVE_BIT(live_out, blk, phi->in[pred]) = 1;
-                        changed = 1;
-                    }
-                }
+        if (use_head[val] < 0)
+            continue;
+        for (e = def_head[val]; e >= 0; e = def_next[e])
+            if (def_mark[def_blk[e]] != val || def_pos[e] < def_first[def_blk[e]]) {
+                if (def_mark[def_blk[e]] != val)
+                    def_first[def_blk[e]] = def_pos[e];
+                def_mark[def_blk[e]] = val;
+                if (def_pos[e] < def_first[def_blk[e]])
+                    def_first[def_blk[e]] = def_pos[e];
             }
-            for (val = 0; val != nvals; val++) {
-                int in = LIVE_BIT(block_gen, blk, val)
-                         || (LIVE_BIT(live_out, blk, val)
-                             && !LIVE_BIT(block_kill, blk, val));
+        nwork = 0;
+        for (e = use_head[val]; e >= 0; e = use_next[e]) {
+            int b = use_blk[e];
 
-                if (in && !LIVE_BIT(live_in, blk, val)) {
-                    LIVE_BIT(live_in, blk, val) = 1;
-                    changed = 1;
+            if (use_pos[e] < 0) {               /* a phi's: out of b */
+                if (out_mark[b] != val) {
+                    out_mark[b] = val;
+                    pairs_add(&outs, b, val);
+                }
+                if (def_mark[b] == val)
+                    continue;
+            } else if (def_mark[b] == val && def_first[b] < use_pos[e]) {
+                continue;                       /* made before it is read */
+            }
+            if (in_mark[b] != val) {
+                in_mark[b] = val;
+                pairs_add(&ins, b, val);
+                work_list[nwork++] = b;
+            }
+        }
+        while (nwork) {
+            int b = work_list[--nwork], pred;
+
+            for (pred = 0; pred != preds[b].count; pred++) {
+                int p = preds[b].at[pred];
+
+                if (out_mark[p] != val) {
+                    out_mark[p] = val;
+                    pairs_add(&outs, p, val);
+                }
+                if (def_mark[p] != val && in_mark[p] != val) {
+                    in_mark[p] = val;
+                    pairs_add(&ins, p, val);
+                    work_list[nwork++] = p;
                 }
             }
         }
-    } while (changed);
+    }
+#undef ADD_DEF
+#undef ADD_USE
+    bset_make(&live_in, ins.blk, ins.val, ins.n);
+    bset_make(&live_out, outs.blk, outs.val, outs.n);
+    free(ins.blk);
+    free(ins.val);
+    free(outs.blk);
+    free(outs.val);
 
     /* The intervals: each value's making, its reads, and every block it is
      * live into or out of, end to end. */
@@ -2001,12 +2437,10 @@ static void live_ranges(void)
 
         if (last < first)
             last = first;
-        for (val = 0; val != nvals; val++) {
-            if (LIVE_BIT(live_in, blk, val))
-                widen(val, first);
-            if (LIVE_BIT(live_out, blk, val))
-                widen(val, last);
-        }
+        for (k = live_in.off[blk]; k != live_in.off[blk + 1]; k++)
+            widen(live_in.val[k], first);
+        for (k = live_out.off[blk]; k != live_out.off[blk + 1]; k++)
+            widen(live_out.val[k], last);
         for (at = first; at != end; at++) {
             const Ins *insn = &insns[at];
 
@@ -2023,10 +2457,19 @@ static void live_ranges(void)
         if (phis[phi_at].live)
             widen(phis[phi_at].val, blocks[phis[phi_at].block].first);
 
-    free(block_gen);
-    free(block_kill);
-    free(phi_def);
-    block_gen = block_kill = phi_def = NULL;
+    free(def_head);
+    free(use_head);
+    free(in_mark);
+    free(out_mark);
+    free(def_mark);
+    free(def_first);
+    free(work_list);
+    free(def_next);
+    free(def_blk);
+    free(def_pos);
+    free(use_next);
+    free(use_blk);
+    free(use_pos);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2279,14 +2722,52 @@ typedef struct {
 
 static Pending *pending;
 static int      npending, pending_cap;
+static int     *pending_next;           /* by entry: the block's next */
+static int     *pending_head, *pending_tail;  /* by block */
+static int      pending_next_cap, pending_blocks_cap;
+
+static int read_counts_made, bc_busy_made;
+
+/* What each emission starts afresh: the pending jumps, and what the leaf
+ * backend works out once an emission when it first asks. */
+static void emit_start(void)
+{
+    int blk;
+
+    read_counts_made = bc_busy_made = 0;
+    npending = 0;
+    if (nblocks > pending_blocks_cap) {
+        pending_blocks_cap = nblocks;
+        pending_head = realloc(pending_head, (size_t) nblocks * sizeof *pending_head);
+        pending_tail = realloc(pending_tail, (size_t) nblocks * sizeof *pending_tail);
+        if (!pending_head || !pending_tail)
+            acc_error("out of memory for the SSA form");
+    }
+    for (blk = 0; blk != nblocks; blk++)
+        pending_head[blk] = -1;
+}
 
 static void jump_forward(int hole, int block)
 {
     if (!hole)
         return;
     GROW(pending, npending, pending_cap);
+    if (npending >= pending_next_cap) {
+        pending_next_cap = pending_next_cap ? 2 * pending_next_cap : 256;
+        while (pending_next_cap <= npending)
+            pending_next_cap *= 2;
+        pending_next = realloc(pending_next, (size_t) pending_next_cap * sizeof *pending_next);
+        if (!pending_next)
+            acc_error("out of memory for the SSA form");
+    }
     pending[npending].hole = hole;
     pending[npending].block = block;
+    pending_next[npending] = -1;
+    if (pending_head[block] < 0)
+        pending_head[block] = npending;
+    else
+        pending_next[pending_tail[block]] = npending;
+    pending_tail[block] = npending;
     npending++;
 }
 
@@ -2294,8 +2775,8 @@ static void emit_block_start(int block)
 {
     int at;
 
-    for (at = 0; at != npending; at++)
-        if (pending[at].block == block && pending[at].hole) {
+    for (at = pending_head[block]; at >= 0; at = pending_next[at])
+        if (pending[at].hole) {
             gen_label(pending[at].hole);
             pending[at].hole = 0;
         }
@@ -2327,40 +2808,113 @@ static int  iy_web = -1;        /* the web in IY, or -1 */
 
 #define IY_SLOT 1
 
-/* With the clashes found (OPTACC_REGS), whether a web may not share slot
- * `slot`: one of its values clashes with one of a web already there. */
-static int slot_clashes(int slot, int root)
+/* Slots of one size, in the order they were made, for plan_slots to find
+ * the first that will do without looking at every slot: with the clashes
+ * (OPTACC_REGS), the first no neighbour of the web holds, those it holds
+ * marked; without, the first free by the web's start, through a tree of
+ * the earliest each run of them is free at. */
+typedef struct {
+    int size;
+    int *slot, n, cap;
+    int *tree, leaves;                  /* min free_at, a leaf a slot */
+} SizeClass;
+
+static SizeClass *size_class;
+static int nsize_classes, size_classes_cap;
+static int *plan_free_at;               /* plan_slots' free_at, by slot */
+
+static int free_at_of_class(const SizeClass *c, int pos)
 {
-    int other, left, right;
+    return plan_free_at[c->slot[pos]];
+}
 
-    for (other = 0; other != nvals; other++) {
-        if (slot_of[other] != slot || web_root(other) != other)
-            continue;
-        for (left = root; left >= 0; left = web_next[left])
-            for (right = other; right >= 0; right = web_next[right])
-                if (clashes(left, right))
-                    return 1;
+static SizeClass *class_of(int size)
+{
+    int at;
+
+    for (at = 0; at != nsize_classes; at++)
+        if (size_class[at].size == size)
+            return &size_class[at];
+    GROW(size_class, nsize_classes, size_classes_cap);
+    memset(&size_class[nsize_classes], 0, sizeof size_class[nsize_classes]);
+    size_class[nsize_classes].size = size;
+
+    return &size_class[nsize_classes++];
+}
+
+static void class_tree_set(SizeClass *c, int pos, int free_at)
+{
+    int at = c->leaves + pos;
+
+    c->tree[at] = free_at;
+    for (at /= 2; at >= 1; at /= 2)
+        c->tree[at] = c->tree[2 * at] < c->tree[2 * at + 1]
+                      ? c->tree[2 * at] : c->tree[2 * at + 1];
+}
+
+static void class_add(SizeClass *c, int slot, int free_at)
+{
+    if (c->n == c->cap) {
+        c->cap = c->cap ? c->cap * 2 : 16;
+        c->slot = realloc(c->slot, (size_t) c->cap * sizeof *c->slot);
+        if (!c->slot)
+            acc_error("out of memory for the SSA form");
     }
+    if (c->n == c->leaves) {            /* the tree grown: made again */
+        int at, old = c->leaves;
 
-    return 0;
+        c->leaves = c->leaves ? c->leaves * 2 : 16;
+        c->tree = realloc(c->tree, (size_t) c->leaves * 2 * sizeof *c->tree);
+        if (!c->tree)
+            acc_error("out of memory for the SSA form");
+        for (at = 0; at != c->leaves; at++)
+            c->tree[c->leaves + at] = INT_MAX;
+        for (at = 0; at != old; at++)
+            c->tree[c->leaves + at] = free_at_of_class(c, at);
+        for (at = c->leaves - 1; at >= 1; at--)
+            c->tree[at] = c->tree[2 * at] < c->tree[2 * at + 1]
+                          ? c->tree[2 * at] : c->tree[2 * at + 1];
+    }
+    c->slot[c->n] = slot;
+    class_tree_set(c, c->n++, free_at);
+}
+
+/* The leftmost of a class's slots free before `first`, or -1. */
+static int class_free_before(const SizeClass *c, int first)
+{
+    int at = 1;
+
+    if (!c->n || c->tree[1] >= first)
+        return -1;
+    while (at < c->leaves)
+        at = c->tree[2 * at] < first ? 2 * at : 2 * at + 1;
+
+    return at - c->leaves;
 }
 
 static int plan_slots(void)
 {
-    int *free_at, val, slot, bytes = 0;
+    int *free_at, *taken, val, slot, bytes = 0, at, chosen;
 
     slot_of = realloc(slot_of, ((size_t) nvals + 1) * sizeof *slot_of);
     slot_size = realloc(slot_size, ((size_t) nvals + 1) * sizeof *slot_size);
     free_at = calloc((size_t) nvals + 1, sizeof *free_at);
-    if (!slot_of || !slot_size || !free_at)
+    taken = malloc(((size_t) nvals + 1) * sizeof *taken);
+    if (!slot_of || !slot_size || !free_at || !taken)
         acc_error("out of memory for the SSA form");
+    plan_free_at = free_at;
     nslots = 0;
-    for (val = 0; val != nvals; val++)
-        slot_of[val] = -1;              /* none yet: slot_clashes reads ahead */
+    for (at = 0; at != nsize_classes; at++)
+        size_class[at].n = size_class[at].leaves = 0;   /* the last function's */
+    for (val = 0; val != nvals; val++) {
+        slot_of[val] = -1;              /* none yet: a clash reads ahead */
+        taken[val] = -1;
+    }
 
     /* A slot a web: each of its values in it, for the web's whole span. */
     for (val = 0; val != nvals; val++) {
         int size = type_bytes(vals[val].type, 0), first, last, member;
+        SizeClass *c;
 
         slot_of[val] = -1;
         if (vals[val].fwd || vals[val].reg != HOME_SLOT || web_root(val) != val
@@ -2378,24 +2932,55 @@ static int plan_slots(void)
         }
         if (size < ACC_INT_SIZE)
             size = ACC_INT_SIZE;
-        for (slot = 0; slot != nslots; slot++)
-            if (slot_size[slot] == size
-                && (clash_bits ? !slot_clashes(slot, val)
-                               : free_at[slot] < first))
-                break;
+        c = class_of(size);
+        slot = nslots;
+        chosen = -1;
+        if (clash_off) {
+            /* The slots of the webs this one's values clash with, marked;
+             * the first of its size not marked. */
+            int k, pos;
+
+            for (member = val; member >= 0; member = web_next[member])
+                for (k = clash_off[member]; k != clash_off[member + 1]; k++) {
+                    int other = web_root(clash_adj[k]);
+
+                    if (slot_of[other] >= 0)
+                        taken[slot_of[other]] = val;
+                }
+            for (pos = 0; pos != c->n; pos++)
+                if (taken[c->slot[pos]] != val)
+                    break;
+            if (pos != c->n) {
+                slot = c->slot[pos];
+                chosen = pos;
+            }
+        } else {
+            int pos = class_free_before(c, first);
+
+            if (pos >= 0) {
+                slot = c->slot[pos];
+                chosen = pos;
+            }
+        }
         if (slot == nslots) {
             slot_size[slot] = size;
             bytes += size;
             nslots++;
+            free_at[slot] = last;
+            class_add(c, slot, last);
+        } else {
+            free_at[slot] = last;
+            class_tree_set(c, chosen, last);
         }
         slot_of[val] = slot;
-        free_at[slot] = last;
     }
     for (val = 0; val != nvals; val++)
         if (!vals[val].fwd && vals[val].reg == HOME_SLOT
             && !(fixed_slot && fixed_slot[web_root(val)]))
             slot_of[val] = slot_of[web_root(val)];
     free(free_at);
+    free(taken);
+    plan_free_at = NULL;
 
     /* The first pass's locals are all taken by now: what is left in reach
      * is what gen_local_fits says. The inlined calls' scratch, moved into
@@ -2446,13 +3031,7 @@ static void give_slots(void)
 /* A block's live phis, which say whether an edge into it needs copies. */
 static int has_phis(int blk)
 {
-    int phi;
-
-    for (phi = 0; phi != nphis; phi++)
-        if (phis[phi].live && phis[phi].block == blk)
-            return 1;
-
-    return 0;
+    return phi_head[blk] >= 0;
 }
 
 /* The copies an edge makes into the phis of the block it goes to: every
@@ -2461,16 +3040,14 @@ static int has_phis(int blk)
  * first, so that a phi read by another's copy is read before it changes. */
 static void edge_copies(int from, int to)
 {
-    int nstored = 0, stored[MAX_LOCALS * 4], phi, pred;
+    int nstored = 0, stored[MAX_LOCALS * 4], phi, pred = pred_index(to, from);
 
-    for (pred = 0; pred != preds[to].count; pred++) {
-        if (preds[to].at[pred] != from)
-            continue;
-        for (phi = 0; phi != nphis; phi++) {
+    if (pred >= 0) {
+        for (phi = phi_head[to]; phi >= 0; phi = phi_next[phi]) {
             const Phi *join = &phis[phi];
             Ent ent;
 
-            if (!join->live || join->block != to || join->in[pred] < 0
+            if (join->in[pred] < 0
                 || join->in[pred] == join->val
                 || nstored == (int) (sizeof stored / sizeof stored[0]))
                 continue;
@@ -2482,7 +3059,6 @@ static void edge_copies(int from, int to)
             (void) force_reg(vsp - 1);  /* held now, not read later */
             stored[nstored++] = join->val;
         }
-        break;                          /* one edge's worth: the first */
     }
     while (nstored--) {
         int val = stored[nstored];
@@ -2531,38 +3107,93 @@ static void leaf_save_slots(void)
 /* Which of IY and BC the call at `at`, in `blk`, has to keep: 1 for IY,
  * 2 for BC, where a value with that home is live after it -- the block's
  * live-out walked back to it, not counting what the call itself makes. */
-static int leaf_live_homes(int at, int blk)
-{
-    int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns, pos, val;
-    int operand, homes = 0;
-    unsigned char *live = malloc((size_t) nvals + 1);
+static int *call_homes;          /* by instruction: what leaf_live_homes said, or -1 */
+static int call_homes_n;
 
-    if (!live)
-        acc_error("out of memory for the SSA form");
-    memcpy(live, &LIVE_BIT(live_out, blk, 0), (size_t) nvals);
-    for (pos = end - 1; pos > at; pos--) {
+/* The homes the values live after each instruction of a block have, all of
+ * them in one walk back from the block's end -- a count of the live values
+ * in BC and of those in IY's web, kept as values come and go -- where a
+ * walk from the end to each call was quadratic in a block of calls. */
+static int home_bits(int val)
+{
+    if (vals[val].fwd)
+        return 0;
+    if (vals[val].reg == R_BC)
+        return 2;
+    if (iy_web >= 0 && fixed_slot[web_root(val)] == fixed_slot[iy_web])
+        return 1;
+
+    return 0;
+}
+
+static void block_homes(int blk)
+{
+    int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns, pos, operand;
+    int nbc = 0, niy = 0, k;
+
+    lset_from(&live_out, blk);
+    for (k = 0; k != lset_n; k++) {
+        int bits = home_bits(lset_mem[k]);
+
+        nbc += bits == 2;
+        niy += bits == 1;
+    }
+    for (pos = end - 1; pos >= blocks[blk].first; pos--) {
         const Ins *insn = &insns[pos];
         int made = insn->res >= 0 ? insn->res
                    : insn->op == I_SET ? insn->target : -1;
+        int bc = nbc, iy = niy;
 
-        if (made >= 0)
-            live[made] = 0;
-        for (operand = 0; operand != insn->nin; operand++)
-            if (insn->in[operand].val >= 0)
-                live[insn->in[operand].val] = 1;
-    }
-    if (insns[at].res >= 0)
-        live[insns[at].res] = 0;
-    for (val = 0; val != nvals; val++)
-        if (live[val] && !vals[val].fwd) {
-            if (vals[val].reg == R_BC)
-                homes |= 2;
-            else if (iy_web >= 0 && fixed_slot[web_root(val)] == fixed_slot[iy_web])
-                homes |= 1;
+        /* What is live after it, less what it makes itself. */
+        if (insn->res >= 0 && lset_pos[insn->res] >= 0) {
+            int bits = home_bits(insn->res);
+
+            bc -= bits == 2;
+            iy -= bits == 1;
         }
-    free(live);
+        call_homes[pos] = (bc ? 2 : 0) | (iy ? 1 : 0);
+        if (made >= 0 && lset_pos[made] >= 0) {
+            int bits = home_bits(made);
 
-    return homes;
+            nbc -= bits == 2;
+            niy -= bits == 1;
+            lset_del(made);
+        }
+        for (operand = 0; operand != insn->nin; operand++) {
+            int val = insn->in[operand].val;
+
+            if (val >= 0 && lset_pos[val] < 0) {
+                int bits = home_bits(val);
+
+                nbc += bits == 2;
+                niy += bits == 1;
+                lset_add(val);
+            }
+        }
+    }
+    lset_clear();
+}
+
+/* Which of IY and BC the call at `at`, in `blk`, has to keep: 1 for IY,
+ * 2 for BC, where a value with that home is live after it -- the block's
+ * live-out walked back to it, not counting what the call itself makes. */
+static int leaf_live_homes(int at, int blk)
+{
+    if (call_homes_n != ninsns) {
+        int k;
+
+        call_homes = realloc(call_homes, ((size_t) ninsns + 1) * sizeof *call_homes);
+        if (!call_homes)
+            acc_error("out of memory for the SSA form");
+        for (k = 0; k != ninsns; k++)
+            call_homes[k] = -1;
+        call_homes_n = ninsns;
+        lset_alloc();
+    }
+    if (call_homes[at] < 0)
+        block_homes(blk);
+
+    return call_homes[at];
 }
 
 /* IY and BC -- those of `homes` -- kept around a call, `back` set to put
@@ -2752,7 +3383,7 @@ static void emit(void)
         acc_error("out of memory for the SSA form");
     for (at = 0; at != nblocks; at++)
         block_now[at] = -1;
-    npending = 0;
+    emit_start();
     nmoved = 0;
     ntrampolines = 0;
 
@@ -2936,7 +3567,7 @@ static void find_forwarded(void)
     int *uses = calloc((size_t) nvals + 1, sizeof *uses);
     int *use_at = calloc((size_t) nvals + 1, sizeof *use_at);
     int *sim = malloc(((size_t) nvals + 1) * sizeof *sim);
-    int val, at, operand, phi, pred, changed;
+    int val, at, operand, phi, pred, blk;
 
     def_at = realloc(def_at, ((size_t) nvals + 1) * sizeof *def_at);
     if (!uses || !use_at || !sim || !def_at)
@@ -2971,48 +3602,61 @@ static void find_forwarded(void)
                              && !(leaf_long(vals[val].type) && leaf_long_ok(val)
                                   && !insns[def_at[val]].delegated));
 
-    do {
-        int blk;
+    /* One walk a block. A value taken out is left where it is on the
+     * stack and skipped: every value made after it is above it, so taking
+     * it out moves none of what the instructions between read -- the walk
+     * made again would find what this one goes on to find. */
+    for (blk = 0; blk != nblocks; blk++) {
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+        int nsim = 0;
 
-        changed = 0;
-        for (blk = 0; blk != nblocks && !changed; blk++) {
-            int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
-            int nsim = 0;
+        for (at = blocks[blk].first; at != end; at++) {
+            const Ins *insn = &insns[at];
+            int want = 0, rank, top, kept, ok = 1;
 
-            for (at = blocks[blk].first; at != end && !changed; at++) {
-                const Ins *insn = &insns[at];
-                int want = 0, rank = 0;
+            for (operand = 0; operand != insn->nin; operand++) {
+                val = insn->in[operand].val;
+                if (val >= 0 && vals[val].fwd)
+                    want++;
+            }
 
-                for (operand = 0; operand != insn->nin; operand++) {
-                    val = insn->in[operand].val;
-                    if (val >= 0 && vals[val].fwd)
-                        want++;
-                }
+            /* The `want` topmost still forwarded, the out-taken among them
+             * dropped: each is walked over once. */
+            top = nsim;
+            kept = 0;
+            while (top && kept != want) {
+                top--;
+                if (vals[sim[top]].fwd)
+                    sim[nsim - ++kept] = sim[top];
+            }
+            if (kept != want) {
+                ok = 0;
+            } else {
+                rank = 0;
                 for (operand = 0; operand != insn->nin; operand++) {
                     val = insn->in[operand].val;
                     if (val < 0 || !vals[val].fwd)
                         continue;
-                    if (want > nsim || sim[nsim - want + rank] != val)
-                        changed = 1;
+                    if (sim[nsim - want + rank] != val)
+                        ok = 0;
                     rank++;
                 }
-                if (changed) {
-                    for (operand = 0; operand != insn->nin; operand++)
-                        if (insn->in[operand].val >= 0)
-                            vals[insn->in[operand].val].fwd = 0;
-                    break;
-                }
+            }
+            memmove(&sim[top], &sim[nsim - kept], (size_t) kept * sizeof *sim);
+            nsim = top + kept;
+            if (!ok) {
+                for (operand = 0; operand != insn->nin; operand++)
+                    if (insn->in[operand].val >= 0)
+                        vals[insn->in[operand].val].fwd = 0;
+            } else {
                 nsim -= want;
-                if (insn->res >= 0 && vals[insn->res].fwd)
-                    sim[nsim++] = insn->res;
             }
-            if (!changed && nsim) {
-                while (nsim)
-                    vals[sim[--nsim]].fwd = 0;
-                changed = 1;
-            }
+            if (insn->res >= 0 && vals[insn->res].fwd)
+                sim[nsim++] = insn->res;
         }
-    } while (changed);
+        while (nsim)
+            vals[sim[--nsim]].fwd = 0;
+    }
     free(uses);
     free(use_at);
     free(sim);
@@ -3055,52 +3699,95 @@ static int homes_wanted(void)
  * -- after, so that one read last there can give its home to the result --
  * and the phis and parameters, made at the top of a block, with every value
  * live there. Found walking each block back from what is live out of it,
- * which also finds each operand that is the last read of its value. */
-static unsigned char *live_top;
-static size_t clash_stride;
-
-static int clashes(int one, int two)
-{
-    return clash_bits[(size_t) one * clash_stride + (size_t) two / 8]
-           & (1 << (two % 8));
-}
+ * which also finds each operand that is the last read of its value.
+ *
+ * The live values as a sparse set -- added, taken out and walked each in
+ * time of its own -- and the clashes as a sorted list a value: the work is
+ * the clashes found, which the work bound keeps linear. */
+static Pairs clash_pairs;               /* blk: one value, val: the other */
 
 static void clash(int one, int two)
 {
     if (one == two)
         return;
-    clash_bits[(size_t) one * clash_stride + (size_t) two / 8]
-        |= (unsigned char) (1 << (two % 8));
-    clash_bits[(size_t) two * clash_stride + (size_t) one / 8]
-        |= (unsigned char) (1 << (one % 8));
+    pairs_add(&clash_pairs, one, two);
 }
 
 /* Each value made at the top of `blk` clashes with what is live there and
  * with the others made there. */
-static void clash_at_top(int blk, const unsigned char *live)
+static void clash_at_top(int blk)
 {
     int made[MAX_LOCALS * 4], nmade = 0, phi, local, val, at;
 
-    for (phi = 0; phi != nphis; phi++)
-        if (phis[phi].live && phis[phi].block == blk
-            && nmade != (int) (sizeof made / sizeof made[0]))
+    for (phi = phi_head[blk]; phi >= 0; phi = phi_next[phi])
+        if (nmade != (int) (sizeof made / sizeof made[0]))
             made[nmade++] = phis[phi].val;
     for (local = 0; blk == 0 && local != nlocals; local++)
         if (locals[local].ok && locals[local].is_param
             && nmade != (int) (sizeof made / sizeof made[0]))
             made[nmade++] = locals[local].entry_val;
     for (at = 0; at != nmade; at++) {
-        for (val = 0; val != nvals; val++)
-            if (live[val])
-                clash(made[at], val);
+        work(lset_n + at);
+        for (val = 0; val != lset_n; val++)
+            clash(made[at], lset_mem[val]);
         for (val = 0; val != at; val++)
             clash(made[at], made[val]);
     }
 }
 
+/* The pairs found made the clash lists: both ways round, each sorted,
+ * each pair once. */
+static void clashes_make(void)
+{
+    int k, val, *fill;
+
+    free(clash_off);
+    free(clash_adj);
+    clash_off = calloc((size_t) nvals + 2, sizeof *clash_off);
+    clash_adj = malloc(((size_t) clash_pairs.n * 2 + 1) * sizeof *clash_adj);
+    fill = malloc(((size_t) nvals + 1) * sizeof *fill);
+    if (!clash_off || !clash_adj || !fill)
+        acc_error("out of memory for the SSA form");
+    for (k = 0; k != clash_pairs.n; k++) {
+        clash_off[clash_pairs.blk[k] + 1]++;
+        clash_off[clash_pairs.val[k] + 1]++;
+    }
+    for (val = 0; val != nvals; val++)
+        clash_off[val + 1] += clash_off[val];
+    memcpy(fill, clash_off, (size_t) nvals * sizeof *fill);
+    for (k = 0; k != clash_pairs.n; k++) {
+        clash_adj[fill[clash_pairs.blk[k]]++] = clash_pairs.val[k];
+        clash_adj[fill[clash_pairs.val[k]]++] = clash_pairs.blk[k];
+    }
+    /* Sorted, and each value's run of the same one made one. */
+    for (val = 0; val != nvals; val++) {
+        int from = clash_off[val], to = clash_off[val + 1], put = from;
+
+        qsort(clash_adj + from, (size_t) (to - from), sizeof *clash_adj, by_int);
+        for (k = from; k != to; k++)
+            if (k == from || clash_adj[k] != clash_adj[k - 1])
+                clash_adj[put++] = clash_adj[k];
+        fill[val] = put;
+    }
+    /* Squeezed up, the runs being shorter now. */
+    {
+        int put = 0, start;
+
+        for (val = 0; val != nvals; val++) {
+            start = clash_off[val];
+            clash_off[val] = put;
+            for (k = start; k != fill[val]; k++)
+                clash_adj[put++] = clash_adj[k];
+        }
+        clash_off[nvals] = put;
+    }
+    free(fill);
+    clash_pairs.n = 0;
+}
+
 static void find_clashes(void)
 {
-    unsigned char *live = malloc((size_t) nvals + 1);
+    Pairs tops = { 0 };
     int blk;
 
     find_loops();
@@ -3108,15 +3795,12 @@ static void find_clashes(void)
     if (!across_calls)
         acc_error("out of memory for the SSA form");
     memset(across_calls, 0, ((size_t) nvals + 1) * sizeof *across_calls);
-    clash_stride = ((size_t) nvals + 7) / 8 + 1;
-    clash_bits = calloc((size_t) nvals * clash_stride + 1, 1);
-    live_top = calloc((size_t) nblocks * (size_t) nvals + 1, 1);
-    if (!live || !clash_bits || !live_top)
-        acc_error("out of memory for the SSA form");
-    for (blk = 0; blk != nblocks; blk++) {
-        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns, at;
+    lset_alloc();
+    clash_pairs.n = 0;
+    for (blk = 0; blk != nblocks && !fail; blk++) {
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns, at, k;
 
-        memcpy(live, &LIVE_BIT(live_out, blk, 0), (size_t) nvals);
+        lset_from(&live_out, blk);
         for (at = end - 1; at >= blocks[blk].first; at--) {
             Ins *insn = &insns[at];
             int made = insn->res >= 0 ? insn->res
@@ -3124,32 +3808,39 @@ static void find_clashes(void)
 
             insn->kills = 0;
             if (made >= 0) {
-                live[made] = 0;
-                for (val = 0; val != nvals; val++)
-                    if (live[val])
-                        clash(made, val);
+                lset_del(made);
+                if (!work(lset_n))
+                    break;
+                for (val = 0; val != lset_n; val++)
+                    clash(made, lset_mem[val]);
             }
 
             /* What a call leaves live after it had to be kept across it. */
             if (insn->op == GL_gen_call || insn->op == GL_gen_call_indirect) {
                 int depth = loop_depth[blk];
 
-                for (val = 0; val != nvals; val++)
-                    if (live[val])
-                        across_calls[val] += 1L << (3 * (depth > 5 ? 5 : depth));
+                if (!work(lset_n))
+                    break;
+                for (val = 0; val != lset_n; val++)
+                    across_calls[lset_mem[val]] += 1L << (3 * (depth > 5 ? 5 : depth));
             }
             for (operand = insn->nin - 1; operand >= 0; operand--) {
                 val = insn->in[operand].val;
-                if (val < 0 || live[val])
+                if (val < 0 || lset_pos[val] >= 0)
                     continue;
                 insn->kills |= (unsigned char) (1 << operand);
-                live[val] = 1;
+                lset_add(val);
             }
         }
-        clash_at_top(blk, live);
-        memcpy(&LIVE_BIT(live_top, blk, 0), live, (size_t) nvals);
+        clash_at_top(blk);
+        for (k = 0; k != lset_n; k++)
+            pairs_add(&tops, blk, lset_mem[k]);
     }
-    free(live);
+    lset_clear();
+    bset_make(&live_top, tops.blk, tops.val, tops.n);
+    free(tops.blk);
+    free(tops.val);
+    clashes_make();
 }
 
 /* Webs: a phi and the values that come into it joined, where their
@@ -3158,6 +3849,7 @@ static void find_clashes(void)
  * root through web_next. */
 static int *web_parent, *web_tail;
 static long *web_weight, *web_gain;
+static long *web_clashes;               /* by root: its values' clash lists */
 
 static int web_root(int val)
 {
@@ -3167,71 +3859,129 @@ static int web_root(int val)
     return val;
 }
 
+/* Whether two webs, by their roots, clash: a value of one clashing with a
+ * value of the other -- found through the clash lists of the one with the
+ * shorter, the time those take, not through every pair. */
 static int webs_clash(int one, int two)
 {
-    int left, right;
+    int left, k, root;
 
+    if (web_clashes[one] > web_clashes[two]) {
+        left = one;
+        one = two;
+        two = left;
+    }
+    if (!work(web_clashes[one]))
+        return 1;
+    root = web_root(two);
     for (left = one; left >= 0; left = web_next[left])
-        for (right = two; right >= 0; right = web_next[right])
-            if (clashes(left, right))
+        for (k = clash_off[left]; k != clash_off[left + 1]; k++)
+            if (web_root(clash_adj[k]) == root)
                 return 1;
 
     return 0;
 }
 
+/* `from`'s web, by its root, made part of `into`'s. */
+static void webs_join(int into, int from)
+{
+    web_parent[from] = into;
+    web_next[web_tail[into]] = from;
+    web_tail[into] = web_tail[from];
+    web_clashes[into] += web_clashes[from];
+}
+
 /* How deep in loops each block is: a jump to a block that dominates the
  * one it is made from closes a loop, whose body is what reaches the jump
- * without going through the block it goes to. */
+ * without going through the block it goes to. Whether one block dominates
+ * another is asked of the dominator tree numbered in a walk, the one's
+ * span holding the other's number; and each body's blocks are listed, to
+ * be counted and cleared without looking at the rest. */
+static int *dom_pre, *dom_post;
+
+static void dom_number(void)
+{
+    int *stack = malloc(((size_t) nblocks + 1) * sizeof *stack);
+    int *next_kid = calloc((size_t) nblocks + 1, sizeof *next_kid);
+    int depth = 0, clock = 0;
+
+    dom_pre = realloc(dom_pre, ((size_t) nblocks + 1) * sizeof *dom_pre);
+    dom_post = realloc(dom_post, ((size_t) nblocks + 1) * sizeof *dom_post);
+    if (!stack || !next_kid || !dom_pre || !dom_post)
+        acc_error("out of memory for the SSA form");
+    stack[depth++] = 0;
+    dom_pre[0] = clock++;
+    while (depth) {
+        int blk = stack[depth - 1];
+
+        if (next_kid[blk] == dom_kids[blk].count) {
+            dom_post[blk] = clock++;
+            depth--;
+            continue;
+        }
+        blk = dom_kids[blk].at[next_kid[blk]++];
+        dom_pre[blk] = clock++;
+        stack[depth++] = blk;
+    }
+    free(stack);
+    free(next_kid);
+}
+
 static int dominates(int over, int blk)
 {
-    while (blk != over && idom[blk] >= 0 && idom[blk] != blk)
-        blk = idom[blk];
-
-    return blk == over;
+    return dom_pre[over] <= dom_pre[blk] && dom_post[blk] <= dom_post[over];
 }
 
 void find_loops(void)
 {
-    int *work = malloc(((size_t) nblocks + 1) * sizeof *work);
-    unsigned char *in_loop = malloc((size_t) nblocks + 1);
+    int *work_list = malloc(((size_t) nblocks + 1) * sizeof *work_list);
+    int *body_list = malloc(((size_t) nblocks + 1) * sizeof *body_list);
+    unsigned char *in_loop = calloc((size_t) nblocks + 1, 1);
     int blk, succ;
 
     loop_depth = realloc(loop_depth, ((size_t) nblocks + 1) * sizeof *loop_depth);
-    if (!work || !in_loop || !loop_depth)
+    if (!work_list || !body_list || !in_loop || !loop_depth)
         acc_error("out of memory for the SSA form");
+    dom_number();
     for (blk = 0; blk != nblocks; blk++)
         loop_depth[blk] = 0;
     for (blk = 0; blk != nblocks; blk++) {
         if (rpo_num[blk] < 0)
             continue;
         for (succ = 0; succ != succs[blk].count; succ++) {
-            int head = succs[blk].at[succ], nwork = 0, at;
+            int head = succs[blk].at[succ], nwork = 0, nbody = 0, at;
 
             if (rpo_num[head] < 0 || !dominates(head, blk))
                 continue;
-            memset(in_loop, 0, (size_t) nblocks);
             in_loop[head] = 1;
+            body_list[nbody++] = head;
             if (!in_loop[blk]) {
                 in_loop[blk] = 1;
-                work[nwork++] = blk;
+                body_list[nbody++] = blk;
+                work_list[nwork++] = blk;
             }
             while (nwork) {
-                int body = work[--nwork], pred;
+                int body = work_list[--nwork], pred;
 
                 for (pred = 0; pred != preds[body].count; pred++) {
                     int from = preds[body].at[pred];
 
                     if (!in_loop[from] && rpo_num[from] >= 0) {
                         in_loop[from] = 1;
-                        work[nwork++] = from;
+                        body_list[nbody++] = from;
+                        work_list[nwork++] = from;
                     }
                 }
             }
-            for (at = 0; at != nblocks; at++)
-                loop_depth[at] += in_loop[at];
+            work(nbody);
+            for (at = 0; at != nbody; at++) {
+                loop_depth[body_list[at]]++;
+                in_loop[body_list[at]] = 0;
+            }
         }
     }
-    free(work);
+    free(work_list);
+    free(body_list);
     free(in_loop);
 }
 
@@ -3250,6 +4000,57 @@ static int selected_here(const Ins *insn)
            || op == TK_LE || op == TK_GE || op == TK_EQ || op == TK_NE;
 }
 
+/* Each value tried against every later one of its local, in order. A web
+ * tried against them all once needs no trying again, from any of its
+ * values: each later one joined it or clashed with it, and a web that
+ * grows clashes with whatever it clashed with before. So each value is
+ * tried only from a web not tried yet. */
+static void coalesce_cached(void)
+{
+    int *count = calloc((size_t) nlocals + 2, sizeof *count);
+    int *of_local = malloc(((size_t) nvals + 1) * sizeof *of_local);
+    char *tried = calloc((size_t) nvals + 1, 1);
+    int val, local, at, other;
+
+    if (!count || !of_local || !tried)
+        acc_error("out of memory for the SSA form");
+    for (val = 0; val != nvals; val++)
+        if (vals[val].of_cached && !vals[val].fwd && vals[val].used)
+            count[vals[val].of_cached + 1]++;
+    for (local = 1; local <= nlocals; local++)
+        count[local + 1] += count[local];
+    for (val = 0; val != nvals; val++)
+        if (vals[val].of_cached && !vals[val].fwd && vals[val].used)
+            of_local[count[vals[val].of_cached]++] = val;
+
+    /* count[local] is now where local + 1's values begin. */
+    for (local = 1; local <= nlocals && !fail; local++) {
+        int begin = count[local - 1], end = count[local];
+
+        for (at = begin; at != end && !fail; at++) {
+            int into = web_root(of_local[at]);
+
+            if (tried[into])
+                continue;
+            work(end - at);
+            for (other = at + 1; other != end; other++) {
+                int from = web_root(of_local[other]);
+
+                if (vals[of_local[other]].type != vals[of_local[at]].type
+                    || into == from || webs_clash(into, from))
+                    continue;
+                webs_join(into, from);
+            }
+            tried[into] = 1;
+        }
+        for (at = begin; at != end; at++)
+            tried[web_root(of_local[at])] = 0;
+    }
+    free(count);
+    free(of_local);
+    free(tried);
+}
+
 static void coalesce(void)
 {
     size_t size = ((size_t) nvals + 1) * sizeof *web_parent;
@@ -3260,7 +4061,9 @@ static void coalesce(void)
     web_tail = realloc(web_tail, size);
     web_weight = realloc(web_weight, ((size_t) nvals + 1) * sizeof *web_weight);
     web_gain = realloc(web_gain, ((size_t) nvals + 1) * sizeof *web_gain);
-    if (!web_parent || !web_next || !web_tail || !web_weight || !web_gain)
+    web_clashes = realloc(web_clashes, ((size_t) nvals + 1) * sizeof *web_clashes);
+    if (!web_parent || !web_next || !web_tail || !web_weight || !web_gain
+        || !web_clashes)
         acc_error("out of memory for the SSA form");
     for (val = 0; val != nvals; val++) {
         web_parent[val] = val;
@@ -3268,6 +4071,7 @@ static void coalesce(void)
         web_tail[val] = val;
         web_weight[val] = 0;
         web_gain[val] = 0;
+        web_clashes[val] = clash_off ? clash_off[val + 1] - clash_off[val] : 0;
     }
     if (!regs_on())
         return;
@@ -3287,33 +4091,14 @@ static void coalesce(void)
             from = web_root(source);
             if (into == from || webs_clash(into, from))
                 continue;
-            web_parent[from] = into;
-            web_next[web_tail[into]] = from;
-            web_tail[into] = web_tail[from];
+            webs_join(into, from);
         }
     }
 
     /* A cached local's values, all of them its own value at some point,
      * in one home where none clashes: the reload after a call then lands
      * where the value was before it. */
-    for (val = 0; val != nvals; val++) {
-        int other;
-
-        if (!vals[val].of_cached || vals[val].fwd || !vals[val].used)
-            continue;
-        for (other = val + 1; other != nvals; other++) {
-            int into = web_root(val), from = web_root(other);
-
-            if (vals[other].of_cached != vals[val].of_cached || vals[other].fwd
-                || !vals[other].used
-                || vals[other].type != vals[val].type || into == from
-                || webs_clash(into, from))
-                continue;
-            web_parent[from] = into;
-            web_next[web_tail[into]] = from;
-            web_tail[into] = web_tail[from];
-        }
-    }
+    coalesce_cached();
 
     /* Each read, and each making, eight times over for each loop around
      * it: what a register saves is paid where the value is used. The
@@ -3364,21 +4149,34 @@ static int by_gain(const void *left, const void *right)
 }
 
 static int iy_taken_already(void);
+static int *switch_cases;       /* by instruction: the switch cases before it */
 
 /* Webs whose slots are decided before the rest: the heaviest web left in
  * the frame that IY can hold goes in IY, if the first pass left IY free;
  * and a web holding a parameter's first value keeps to the parameter's
  * own slot, which nothing else reads now. */
+static int *iy_roots, niy_roots, iy_roots_cap;     /* the webs in IY, in order */
+
 static void plan_fixed(const int *order, int nroots)
 {
-    int at, local;
+    int at, local, taken;
+    char *in_iy = calloc((size_t) nvals + 1, 1);
+    char *far_param = calloc((size_t) nvals + 1, 1);
 
     fixed_slot = realloc(fixed_slot, ((size_t) nvals + 1) * sizeof *fixed_slot);
-    if (!fixed_slot)
+    if (!fixed_slot || !in_iy || !far_param)
         acc_error("out of memory for the SSA form");
     memset(fixed_slot, 0, ((size_t) nvals + 1) * sizeof *fixed_slot);
+
+    /* The webs holding a parameter out of (ix+d)'s reach, by root. */
+    for (local = 0; local != nlocals; local++)
+        if (locals[local].ok && locals[local].is_param
+            && !disp_fits(locals[local].offset))
+            far_param[web_root(locals[local].entry_val)] = 1;
     iy_web = -1;
-    for (at = 0; at != nroots && !iy_taken_already() && getenv("OPTACC_IY"); at++) {
+    niy_roots = 0;
+    taken = iy_taken_already();         /* once: it looks at every frame call */
+    for (at = 0; at != nroots && !taken && getenv("OPTACC_IY"); at++) {
         int root = order[at], member, fits = 1;
 
         long across = 0;
@@ -3399,11 +4197,8 @@ static void plan_fixed(const int *order, int nroots)
 
         /* Nor a parameter out of (ix+d)'s reach: the classic backend
          * reaches one through IY, which it cannot then load into IY. */
-        for (local = 0; local != nlocals; local++)
-            if (locals[local].ok && locals[local].is_param
-                && web_root(locals[local].entry_val) == root
-                && !disp_fits(locals[local].offset))
-                fits = 0;
+        if (far_param[root])
+            fits = 0;
         if (!fits)
             continue;
 
@@ -3411,19 +4206,24 @@ static void plan_fixed(const int *order, int nroots)
          * that fits and is live nowhere another in IY is -- the first, the
          * heaviest, named iy_web. */
         if (iy_web >= 0) {
-            int other, clash = 0;
+            int left, k, clash = 0;
 
             if (!leaf_mode)
                 break;
-            for (other = 0; other != nvals && !clash; other++)
-                if (web_root(other) == other && fixed_slot[other] == IY_SLOT)
-                    clash = webs_clash(other, root);
+            work(web_clashes[root]);
+            for (left = root; left >= 0 && !clash; left = web_next[left])
+                for (k = clash_off[left]; k != clash_off[left + 1]; k++)
+                    if (in_iy[web_root(clash_adj[k])])
+                        clash = 1;
             if (clash)
                 continue;
         } else {
             iy_web = root;
         }
+        in_iy[root] = 1;
         fixed_slot[root] = IY_SLOT;     /* made in give_slots */
+        GROW(iy_roots, niy_roots, iy_roots_cap);
+        iy_roots[niy_roots++] = root;
     }
     for (local = 0; local != nlocals; local++) {
         int root;
@@ -3439,6 +4239,8 @@ static void plan_fixed(const int *order, int nroots)
     for (local = 0; local != nlocals; local++)
         if (locals[local].cached)
             fixed_slot[web_root(locals[local].mem_val)] = locals[local].offset;
+    free(in_iy);
+    free(far_param);
 }
 
 /* The webs, heaviest first, each given a register when every value in it
@@ -3472,6 +4274,14 @@ static void plan_homes(void)
             order[nroots++] = at;
     qsort(order, (size_t) nroots, sizeof *order, by_gain);
 
+    /* How many switch cases come before each instruction. */
+    switch_cases = realloc(switch_cases, ((size_t) ninsns + 2) * sizeof *switch_cases);
+    if (!switch_cases)
+        acc_error("out of memory for the SSA form");
+    switch_cases[0] = 0;
+    for (at = 0; at != ninsns; at++)
+        switch_cases[at + 1] = switch_cases[at] + (insns[at].op == GL_gen_switch_case);
+
     for (at = 0; at != nroots; at++) {
         int root = order[at], homes = homes_wanted(), member, fits = 1;
 
@@ -3481,24 +4291,22 @@ static void plan_homes(void)
                                          * anyway, for the tests */
 
         for (member = root; member >= 0 && fits; member = web_next[member]) {
-            int insn_at;
-
             if (vals[member].reg == -2 || !reg_eligible(member))
                 fits = 0;
 
-
-            /* A switch's tests load DE: a value across them is in BC. */
-            for (insn_at = vals[member].def;
-                 fits && insn_at <= vals[member].last; insn_at++)
-                if (insns[insn_at].op == GL_gen_switch_case)
-                    homes = 1;
+            /* A switch's tests load DE: a value across them is in BC --
+             * counted from a running count of them, not looked for. */
+            if (fits && switch_cases[vals[member].last + 1] - switch_cases[vals[member].def])
+                homes = 1;
         }
         for (reg = 0; reg != homes && fits; reg++) {
-            int clash = 0, other;
+            int clash = 0, k;
 
+            /* A clash with a value given the register already: one in a
+             * member's clash list that has it. */
             for (member = root; member >= 0 && !clash; member = web_next[member])
-                for (other = 0; other != ngiven[reg] && !clash; other++)
-                    clash = clashes(member, given[reg][other]);
+                for (k = clash_off[member]; k != clash_off[member + 1] && !clash; k++)
+                    clash = vals[clash_adj[k]].reg == home_regs[reg];
             if (clash)
                 continue;
             for (member = root; member >= 0; member = web_next[member]) {
@@ -3648,11 +4456,13 @@ static void pins_check(void)
  * there, pinned in it -- each edge into the block left it there. */
 static void pins_block_start(int blk)
 {
-    int val;
+    int val, k;
 
-    for (val = 0; val != nvals && !fail; val++)
-        if (vals[val].reg != HOME_SLOT && LIVE_BIT(live_top, blk, val))
+    for (k = live_top.off[blk]; k != live_top.off[blk + 1] && !fail; k++) {
+        val = live_top.val[k];
+        if (vals[val].reg != HOME_SLOT)
             pin_add(val);
+    }
 }
 
 /* After an instruction: the pins of the values it read last let go of,
@@ -3814,41 +4624,35 @@ static void settle_as(int val, int converted)
 static void edge_moves(int from, int to)
 {
     int sources[MAX_LOCALS * 4], dests[MAX_LOCALS * 4], nmoves = 0;
-    int pred, phi, val, move;
+    int pred, phi, val, move, k;
 
-    for (val = 0; val != nvals && !fail; val++)
-        if (vals[val].reg != HOME_SLOT && LIVE_BIT(live_in, to, val))
+    for (k = live_in.off[to]; k != live_in.off[to + 1] && !fail; k++) {
+        val = live_in.val[k];
+        if (vals[val].reg != HOME_SLOT)
             pin_add(val);
+    }
 
     /* And a phi's value already in the phi's register, which needs no
      * copy but must not be taken for scratch by the others. */
-    for (pred = 0; pred != preds[to].count; pred++) {
-        if (preds[to].at[pred] != from)
-            continue;
-        for (phi = 0; phi != nphis && !fail; phi++) {
+    pred = pred_index(to, from);
+    if (pred >= 0) {
+        for (phi = phi_head[to]; phi >= 0 && !fail; phi = phi_next[phi]) {
             const Phi *join = &phis[phi];
             int source;
 
-            if (!join->live || join->block != to)
-                continue;
             source = join->in[pred];
             if (source >= 0 && vals[source].reg != HOME_SLOT
                 && vals[source].reg == vals[join->val].reg
                 && pin_index(source) < 0)
                 pin_add(source);
         }
-        break;
     }
 
-    for (pred = 0; pred != preds[to].count; pred++) {
-        if (preds[to].at[pred] != from)
-            continue;
-        for (phi = 0; phi != nphis && !fail; phi++) {
+    if (pred >= 0) {
+        for (phi = phi_head[to]; phi >= 0 && !fail; phi = phi_next[phi]) {
             const Phi *join = &phis[phi];
             int source, again = 0;
 
-            if (!join->live || join->block != to)
-                continue;
             source = join->in[pred];
             if (source < 0 || source == join->val
                 || (vals[source].reg == vals[join->val].reg
@@ -3886,7 +4690,6 @@ static void edge_moves(int from, int to)
             sources[nmoves] = source;
             dests[nmoves++] = join->val;
         }
-        break;                          /* one edge's worth: the first */
     }
 
     /* The last first: each is on top when its turn comes. */
@@ -3936,17 +4739,13 @@ static void pins_unhide(void)
  * value comes from somewhere other than its own home. */
 static int edge_copies_any(int from, int to)
 {
-    int pred, phi;
+    int pred = pred_index(to, from), phi;
 
-    for (pred = 0; pred != preds[to].count; pred++) {
-        if (preds[to].at[pred] != from)
-            continue;
-        for (phi = 0; phi != nphis; phi++) {
+    if (pred >= 0) {
+        for (phi = phi_head[to]; phi >= 0; phi = phi_next[phi]) {
             const Phi *join = &phis[phi];
             int source;
 
-            if (!join->live || join->block != to)
-                continue;
             source = join->in[pred];
             if (source < 0 || source == join->val)
                 continue;
@@ -6104,20 +6903,30 @@ static int leaf_bitwise(const Ins *insn, int op, int byte_op)
  * or in HL. Answers whether it could. */
 /* Whether `val` is read by one instruction alone, and by no phi: then the
  * slot it was stored to just now is read by nothing else. */
+static int *read_counts;         /* by value: its reads, -1 by a phi */
+
 static int leaf_read_once(int val)
 {
-    int at, operand, phi, pred, reads = 0;
+    int at, operand, phi, pred;
 
-    for (phi = 0; phi != nphis; phi++)
-        for (pred = 0; phis[phi].live && pred != preds[phis[phi].block].count;
-             pred++)
-            if (phis[phi].in[pred] == val)
-                return 0;
-    for (at = 0; at != ninsns; at++)
-        for (operand = 0; operand != insns[at].nin; operand++)
-            reads += insns[at].in[operand].val == val;
+    if (!read_counts_made) {
+        read_counts = realloc(read_counts, ((size_t) nvals + 1) * sizeof *read_counts);
+        if (!read_counts)
+            acc_error("out of memory for the SSA form");
+        memset(read_counts, 0, ((size_t) nvals + 1) * sizeof *read_counts);
+        for (at = 0; at != ninsns; at++)
+            for (operand = 0; operand != insns[at].nin; operand++)
+                if (insns[at].in[operand].val >= 0)
+                    read_counts[insns[at].in[operand].val]++;
+        for (phi = 0; phi != nphis; phi++)
+            for (pred = 0; phis[phi].live && pred != preds[phis[phi].block].count;
+                 pred++)
+                if (phis[phi].in[pred] >= 0)
+                    read_counts[phis[phi].in[pred]] = -1;
+        read_counts_made = 1;
+    }
 
-    return reads == 1;
+    return val >= 0 && val < nvals && read_counts[val] == 1;
 }
 
 static int leaf_byte_to_a(const Ent *ent)
@@ -6157,16 +6966,39 @@ static int leaf_byte_to_a(const Ent *ent)
 
 /* Whether BC holds a value at instruction `at`: one that lives there and
  * is made by then and read after -- its interval, end to end. */
+static int *bc_busy;             /* by instruction: the values in BC */
+
 static int leaf_bc_busy(int at)
 {
-    int val;
+    int val, pos, run;
 
-    for (val = 0; val != nvals; val++)
-        if (vals[val].reg == R_BC && vals[val].used && !vals[val].fwd
-            && vals[val].def <= at && at <= vals[val].last)
-            return 1;
+    /* Each interval added once, as +1 at its start and -1 past its end,
+     * and the sums run along. */
+    if (!bc_busy_made) {
+        bc_busy = realloc(bc_busy, ((size_t) ninsns + 2) * sizeof *bc_busy);
+        if (!bc_busy)
+            acc_error("out of memory for the SSA form");
+        memset(bc_busy, 0, ((size_t) ninsns + 2) * sizeof *bc_busy);
+        for (val = 0; val != nvals; val++) {
+            int from = vals[val].def, to = vals[val].last;
 
-    return 0;
+            if (vals[val].reg != R_BC || !vals[val].used || vals[val].fwd)
+                continue;
+            from = from < 0 ? 0 : from;
+            to = to >= ninsns ? ninsns - 1 : to;
+            if (from > to)
+                continue;
+            bc_busy[from]++;
+            bc_busy[to + 1]--;
+        }
+        for (pos = 0, run = 0; pos != ninsns; pos++) {
+            run += bc_busy[pos];
+            bc_busy[pos] = run;
+        }
+        bc_busy_made = 1;
+    }
+
+    return at >= 0 && at < ninsns && bc_busy[at] > 0;
 }
 
 static int leaf_compare(const Ins *insn, int op)
@@ -7988,15 +8820,12 @@ static void leaf_edge(int from, int to)
 {
     int dests[MAX_LOCALS * 4], sources[MAX_LOCALS * 4], nmoves = 0, pred, phi;
 
-    for (pred = 0; pred != preds[to].count; pred++) {
-        if (preds[to].at[pred] != from)
-            continue;
-        for (phi = 0; phi != nphis; phi++) {
+    pred = pred_index(to, from);
+    if (pred >= 0) {
+        for (phi = phi_head[to]; phi >= 0; phi = phi_next[phi]) {
             const Phi *join = &phis[phi];
             int source;
 
-            if (!join->live || join->block != to)
-                continue;
             source = join->in[pred];
             if (source < 0 || source == join->val || !vals[join->val].used
                 || (vals[source].reg == vals[join->val].reg
@@ -8007,7 +8836,6 @@ static void leaf_edge(int from, int to)
             sources[nmoves] = source;
             dests[nmoves++] = join->val;
         }
-        break;
     }
 
     /* One copy is made straight, through HL; more go through the stack,
@@ -8088,7 +8916,7 @@ static void emit_leaf(void)
         acc_error("out of memory for the SSA form");
     for (at = 0; at != nblocks; at++)
         block_now[at] = block_start[at] = -1;
-    npending = 0;
+    emit_start();
     nmoved = 0;
     ntrampolines = 0;
     skip_branch = fused_from = leaf_skip_until = -1;
@@ -8504,7 +9332,7 @@ static void emit_regs(void)
         acc_error("out of memory for the SSA form");
     for (at = 0; at != nblocks; at++)
         block_now[at] = -1;
-    npending = 0;
+    emit_start();
     nmoved = 0;
     ntrampolines = 0;
     npins = 0;
@@ -8678,11 +9506,13 @@ static void forget(void)
     free(rpo_num);
     free(idom);
     free(repl);
-    free(live_in);
-    free(live_out);
-    free(live_top);
-    free(clash_bits);
-    live_in = live_out = live_top = clash_bits = NULL;
+    bset_free(&live_in);
+    bset_free(&live_out);
+    bset_free(&live_top);
+    free(clash_off);
+    free(clash_adj);
+    clash_off = clash_adj = NULL;
+    call_homes_n = -1;
     succs = preds = dom_kids = NULL;
     block_last = rpo = rpo_num = idom = repl = NULL;
 }
@@ -8693,7 +9523,8 @@ int ssa_generate(const char **why)
 
     if (!keep)
         acc_error("out of memory for the SSA form");
-    ninsns = nvals = nblocks = nholes = nheres = nstk = ninlined = nmerged = 0;
+    ninsns = nvals = nblocks = nholes = nstk = ninlined = nmerged = 0;
+    holes_start();
     nraws = nsettles = 0;
     fail = NULL;
     ssa_cost_made = ssa_cost_first = 0;
@@ -8721,8 +9552,11 @@ int ssa_generate(const char **why)
         return 0;
     }
     thread_answers();
+    ssa_work = 0;
+    ssa_work_max = SSA_WORK_PER * ((long) ninsns + nvals + nblocks + 64);
     to_values();
     inline_merge();
+    ssa_work_max = SSA_WORK_PER * ((long) ninsns + nvals + nblocks + 64);
     ssa_made_mir = 0;
     if (!fail && regs_on() && mir_on()) {
         sink_steps();

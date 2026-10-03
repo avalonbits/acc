@@ -1029,8 +1029,19 @@ static Holds    now[MNREGS];
 static Holds    frame[260];             /* (ix+d), d from -128 */
 static Holds    stk[32][3];             /* what each push put there */
 static int      nstk;                   /* -1: not known */
-static struct { int n; unsigned value; } *consts;
-static int      nconsts, consts_cap;
+typedef struct { int n; unsigned value, epoch; } Const;
+static Const   *consts;                 /* hashed; a slot of another epoch
+                                           is empty */
+static int      nconsts, consts_mask = -1;
+static unsigned consts_epoch = 1;
+
+/* The table emptied: by a new epoch, not by clearing it, so that a big
+ * function does not cost every later one. */
+static void consts_clear(void)
+{
+    nconsts = 0;
+    consts_epoch++;
+}
 
 static const unsigned char pair_regs[5][3] = {
     { RC, RB, RBU }, { RE, RD, RDU }, { RL, RH, RHU },
@@ -1048,24 +1059,47 @@ static Holds holds(unsigned value, int byte)
     return value << 2 | (unsigned) byte;
 }
 
+/* The value number of a constant, the same each time it is asked until
+ * the table is emptied: from a table hashed by the constant. */
 static unsigned const_value(int n)
 {
-    int i;
+    unsigned at;
 
     n &= 0xffffff;
-    for (i = 0; i != nconsts; i++)
-        if (consts[i].n == n)
-            return consts[i].value;
-    if (nconsts == consts_cap) {
-        consts_cap = consts_cap ? consts_cap * 2 : 32;
-        consts = realloc(consts, (size_t) consts_cap * sizeof *consts);
+    if (2 * (nconsts + 1) > consts_mask + 1) {
+        int old_mask = consts_mask, i;
+        Const *old = consts;
+
+        consts_mask = consts_mask < 0 ? 63 : 2 * consts_mask + 1;
+        consts = malloc(((size_t) consts_mask + 1) * sizeof *consts);
         if (!consts)
             acc_error("out of memory for the machine code");
-    }
-    consts[nconsts].n = n;
-    consts[nconsts].value = ++nvalues;
+        for (i = 0; i <= consts_mask; i++)
+            consts[i].epoch = 0;
+        for (i = 0; i <= old_mask; i++) {
+            int key = old[i].n;
 
-    return consts[nconsts++].value;
+            if (old[i].epoch != consts_epoch)
+                continue;
+            at = (unsigned) key * 2654435761u & (unsigned) consts_mask;
+            while (consts[at].epoch == consts_epoch)
+                at = (at + 1) & (unsigned) consts_mask;
+            consts[at] = old[i];
+        }
+        free(old);
+    }
+    at = (unsigned) n * 2654435761u & (unsigned) consts_mask;
+    while (consts[at].epoch == consts_epoch) {
+        if (consts[at].n == n)
+            return consts[at].value;
+        at = (at + 1) & (unsigned) consts_mask;
+    }
+    consts[at].n = n;
+    consts[at].epoch = consts_epoch;
+    consts[at].value = ++nvalues;
+    nconsts++;
+
+    return consts[at].value;
 }
 
 static Holds need_reg(int r)
@@ -1350,7 +1384,7 @@ static int values(void)
 {
     int i, any = 0;
 
-    nconsts = 0;
+    consts_clear();
     forget_all();
     for (i = 0; i != nins; i++) {
         MInsn *m = &ins[i];
