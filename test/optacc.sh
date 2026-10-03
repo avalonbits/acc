@@ -612,6 +612,22 @@ mirs "and a value kept across the call"             yes \
     'int g(int); int f(int a) { int b = a * 3; return g(a) + b + a; }'
 mirs "but not setjmp, which IY and BC would not survive" no \
     'int setjmp(void *); int f(void *b) { return setjmp(b); }'
+# A pointer copied into IY for each member read is given IY itself, the
+# copies coming to nothing -- ld bc, (iy+0), not push iy / pop hl first --
+# and kept there across the call with push iy around it. And a constant
+# returned is gen_return's to make, as the constant: a _Bool's 0 is
+# ld hl, 0 and on to the return, not tested against zero again.
+mir() {
+    OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+        OPTACC_LEAF=1 OPTACC_MIR=1 OPTACC_PICK=0 emits "$@"
+}
+members='struct s { int a, b; }; int g(int); int f(struct s *p) { return g(p->a) + p->b; }'
+mir "$OPT" "a pointer in IY, read through"           fd0700     yes "$members"
+mir "$OPT" "not copied there from HL"                fde5e1ed07 no  "$members"
+truth='_Bool f(int *p) { if (!p) return 0; if (*p == 3) return 1; return 0; }'
+mir "$OPT" "a _Bool's constant returned as it is"     210000007d   yes "$truth"
+mir "$OPT" "not tested again"                   2100000009b7ed42 no "$truth"
+
 big=$(python3 -c "
 print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')
 for n in range(600): print('d = a + b[%d]; if (d < a) c++; a = d;' % n)

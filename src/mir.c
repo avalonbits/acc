@@ -115,7 +115,8 @@ enum {
     M_HELPER,       /* d = routine imm (a, b): HL, BC -> HL; A, F clobbered */
     M_BR,           /* to block imm2 when the flags say imm, else to the next */
     M_JMP,          /* to block imm2 */
-    M_RET,          /* return a, in HL, as type imm; or nothing */
+    M_RET,          /* return a, in HL, as type imm; or nothing; or with
+                     * imm2, the SSA return's constant */
     M_PCOPY,        /* the parallel copies an edge makes: see pcopy */
     M_SAVE,         /* before a call's arguments: the pairs imm2 says pushed */
     M_PUSH,         /* an argument: a pushed, a pair */
@@ -1332,7 +1333,16 @@ static void sel_insn(const Ins *insn, int at)
         int v = -1;
 
         /* The answer in HL, widened as its own type, as the leaf backend
-         * hands it to gen_return. */
+         * hands it to gen_return -- or a constant as the constant, which
+         * gen_return knows: a _Bool's is made as it is, not tested, and a
+         * return of one made before is a jump back to it. */
+        if (insn->nin && insn->in[0].val == S_CONST) {
+            mi = mi3(M_RET, -1, -1, -1);
+            mi->imm2 = 1;
+            mi->ssa = at;
+            mi->type = insn->in[0].attr.type;
+            return;
+        }
         if (insn->nin)
             v = in_class(operand_vr(&insn->in[0], 3), C_HL);
         mi = mi3(M_RET, -1, v, -1);
@@ -2066,6 +2076,23 @@ static void partner(int x, int y)
     }
 }
 
+/* By register: the one it is a copy of, where it is written once, by a
+ * copy from one that is written once too -- the two hold one value as
+ * long as both live, and may share a register, the copy then nothing. A
+ * pointer copied into IY for each member read is IY itself, so. -1 for
+ * none. */
+static int *copy_src, *ndefs;
+
+static int value_of(int v)
+{
+    return copy_src[v] >= 0 ? copy_src[v] : v;
+}
+
+static int same_value(int x, int y)
+{
+    return value_of(x) == value_of(y);
+}
+
 /* The intervals and what goes with them, from the code as it is now. */
 static void intervals(void)
 {
@@ -2081,7 +2108,10 @@ static void intervals(void)
     blk_end = realloc(blk_end, ((size_t) nmb + 1) * sizeof *blk_end);
     clob = realloc(clob, ((size_t) npos + 1) * sizeof *clob);
     part_head = realloc(part_head, ((size_t) nvr + 1) * sizeof *part_head);
-    if (!iv_s || !iv_e || !iv_def || !blk_pos || !blk_end || !clob || !part_head)
+    copy_src = realloc(copy_src, ((size_t) nvr + 1) * sizeof *copy_src);
+    ndefs = realloc(ndefs, ((size_t) nvr + 1) * sizeof *ndefs);
+    if (!iv_s || !iv_e || !iv_def || !blk_pos || !blk_end || !clob || !part_head
+        || !copy_src || !ndefs)
         acc_error("out of memory for the machine IR");
     memset(clob, 0, ((size_t) npos + 1) * sizeof *clob);
     nparts = 0;
@@ -2089,6 +2119,8 @@ static void intervals(void)
         iv_s[v] = iv_e[v] = iv_def[v] = -1;
         vr[v].weight = 0;
         part_head[v] = -1;
+        copy_src[v] = -1;
+        ndefs[v] = 0;
     }
     for (k = 0; k != nmb; k++)
         blk_pos[k] = blk_end[k] = -1;
@@ -2124,6 +2156,7 @@ static void intervals(void)
                 if (iv_def[v] < 0)
                     iv_def[v] = at_pos;
                 vr[v].weight += w;
+                ndefs[v]++;
             }
             if (mi->op == M_HELPER)
                 clob[pos] |= UB(U_A);
@@ -2140,6 +2173,23 @@ static void intervals(void)
             blk_end[layout[k]] = blk_pos[layout[k]];
     }
     npos = pos + 2;
+
+    /* The copies that make one value: each side written once, of a width,
+     * and the source no copy itself -- so that copies of one share it. */
+    for (k = 0; k != nlayout; k++) {
+        MBlock *b = &mb[layout[k]];
+
+        for (at = 0; at != b->n; at++) {
+            const MIns *mi = &b->ins[at];
+
+            if (mi->op == M_COPY && ndefs[mi->d] == 1 && ndefs[mi->a] == 1
+                && vr[mi->d].width == vr[mi->a].width && iv_def[mi->a] >= 0)
+                copy_src[mi->d] = mi->a;
+        }
+    }
+    for (v = 0; v != nvr; v++)
+        if (copy_src[v] >= 0 && copy_src[copy_src[v]] >= 0)
+            copy_src[v] = -1;
 
     /* Living into a loop from before it: on to its end, and to the end of
      * any loop that reaches into. */
@@ -2239,7 +2289,7 @@ static int fixed_clash(unsigned units, int s, int e, int v)
         /* Those on one unit do not overlap one another, so only the last
          * two can reach back -- the one before `v` being `v` itself. */
         for (k = lo - 1; k >= 0 && k >= lo - 2; k--)
-            if (fix_e[u][k] >= s && fix_v[u][k] != v)
+            if (fix_e[u][k] >= s && fix_v[u][k] != v && !same_value(fix_v[u][k], v))
                 return 1;
     }
 
@@ -2383,7 +2433,8 @@ static int linear_scan(void)
         for (;;) {
             scan_busy = 0;
             for (j = 0; j != nactive; j++)
-                scan_busy |= preg_units[vr[active[j]].preg];
+                if (!same_value(active[j], v))
+                    scan_busy |= preg_units[vr[active[j]].preg];
             /* A copy partner's register, where it has one; the group's;
              * a partner's that must be one register; any. */
             p = partner_reg(v, reg_ok, 0);
@@ -2679,7 +2730,8 @@ static const char *verify(void)
             if (iv_e[active[j]] < iv_s[v])
                 active[j--] = active[--nactive];
         for (j = 0; j != nactive; j++)
-            if (preg_units[vr[active[j]].preg] & preg_units[vr[v].preg]) {
+            if ((preg_units[vr[active[j]].preg] & preg_units[vr[v].preg])
+                && !(same_value(active[j], v) && vr[active[j]].preg == vr[v].preg)) {
                 clob_free();
                 return "internal: two values sharing a register";
             }
@@ -3145,7 +3197,9 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
             jump_to_block(JP_ANY, mi->imm2);
         return;
     case M_RET:
-        if (mi->a >= 0)
+        if (mi->imm2)
+            vpush_const(insns[mi->ssa].in[0].attr.val, mi->type);
+        else if (mi->a >= 0)
             vpush(VAL_REG, mi->type, R_HL);
         call(&insns[mi->ssa]);
         return;
