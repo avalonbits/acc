@@ -251,7 +251,16 @@ as opt-acc's PRs are.
    The verifier and test_mir.c with it. Measured against the leaf backend
    on the same functions; the target, agondev's sizes on them.
 2. **Calls**, and the runtime's routines as the cheaper calls they are.
-3. **Value widths**, and selection of 8-bit forms where they allow.
+3. **Value widths**, and selection of 8-bit forms where they allow. The
+   known bits are worked out in one pass over the SSA form, in the order
+   its instructions are: a byte's widening, a mask, a shift, a remainder,
+   a truth, a `_Bool` read -- a phi knowing what all its inputs know, and
+   nothing of what comes round a loop, so that the pass is linear. They
+   say where a value is a byte (compared and tested in A), where it is not
+   negative (compared without the bias) and where a mask keeps nothing it
+   has. With them: a signed comparison with a constant by the sign or with
+   the constant moved already; &, | and ^ with a constant a byte at a
+   time; an index scaled by adds.
 4. **Frames**: none, `_frameset`, or in place; slot sharing.
 5. **Longs and floats**, first in frame objects as now, then in pairs.
 6. **The leaf backend and the hybrid path deleted**, when the pick keeps

@@ -612,6 +612,8 @@ mirs "and a value kept across the call"             yes \
     'int g(int); int f(int a) { int b = a * 3; return g(a) + b + a; }'
 mirs "but not setjmp, which IY and BC would not survive" no \
     'int setjmp(void *); int f(void *b) { return setjmp(b); }'
+mirs "nor memcpy, which gen_call makes with ldir"  no \
+    'void *memcpy(void *, const void *, unsigned); void f(char *d, char *s) { memcpy(d, s, 4); }'
 # A pointer copied into IY for each member read is given IY itself, the
 # copies coming to nothing -- ld bc, (iy+0), not push iy / pop hl first --
 # and kept there across the call with push iy around it. And a constant
@@ -627,6 +629,28 @@ mir "$OPT" "not copied there from HL"                fde5e1ed07 no  "$members"
 truth='_Bool f(int *p) { if (!p) return 0; if (*p == 3) return 1; return 0; }'
 mir "$OPT" "a _Bool's constant returned as it is"     210000007d   yes "$truth"
 mir "$OPT" "not tested again"                   2100000009b7ed42 no "$truth"
+
+# Signed against a constant: against 0 the sign alone, add hl, hl;
+# against another, the left moved by half the range through DE and the
+# constant moved already -- no BC. &, | and ^ with a constant a byte at a
+# time -- ld a, l / or 0x80 / ld l, a -- not the routine. An int's index
+# scaled by adds -- push hl / pop de / add hl, hl / add hl, de -- not by a
+# call of the multiply. And a _Bool read tested as the byte it is, or a,
+# not widened and tested at 24 bits.
+mir "$OPT" "x < 0 by its sign"                dd270629      yes 'int f(int x) { if (x < 0) return 3; return 4; }'
+mir "$OPT" "x < 5 through DE"           110000801911050080 yes 'int f(int x) { if (x < 5) return 3; return 4; }'
+mir "$OPT" "not through BC"             0100008009eb09eb   no  'int f(int x) { if (x < 5) return 3; return 4; }'
+mir "$OPT" "x | 0x80 on its low byte"          7df6806f      yes 'unsigned f(unsigned x) { return x | 0x80; }'
+mir "$OPT" "p[i] scaled by adds"               e5d12919      yes 'int f(int *p, int i) { return p[i]; }'
+mir "$OPT" "not by the multiply"               01030000      no  'int f(int *p, int i) { return p[i]; }'
+# A loop's counter and pointer kept in registers where the scan spills
+# what holds one longest for its uses -- the weight over the length --
+# not the fewest uses: 85 bytes for this, where 95 spilled the pointer.
+sum='int f(const int *a, int n) { register const int *p = a; int s = 0; while (n-- > 0) s += *p++; return s; }'
+mir "$OPT" "the loop's values in registers"   dd0706dd170921000000 yes "$sum"
+boolread='extern _Bool b; int f(int *p) { *p = 1; if (b) return 3; return 4; }'
+mir "$OPT" "a _Bool read tested as a byte"   3a000000b7      yes "$boolread"
+mir "$OPT" "not widened and tested"        b7ed626f09b7ed42 no "$boolread"
 
 big=$(python3 -c "
 print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')
