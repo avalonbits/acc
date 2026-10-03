@@ -162,13 +162,17 @@ without the sign bias; a test for zero of a value known to be a byte is
 same question one width up, and moves here.
 
 Calls are instructions whose operands are the pushes of their arguments,
-whose answer is in HL (A for a byte, E:HL for a long), and which clobber A,
-F, BC, DE and HL; IX and IY come back as they went. The runtime's routines
+whose answer is in HL (A for a byte, E:HL for a long). A callee may change
+every register but IX -- an acc function with a local in IY keeps it only
+for itself -- but the allocator is told a call takes only A, F and HL: a
+value live across one in BC, DE or IY stays there, and the pairs holding
+such values are pushed before the arguments and popped back after them
+(the arguments come off through DE first). That is a byte or two a pair
+each way, where a frame slot is three to store and three to load, and
+nothing where no value lives across. setjmp is not called this way: its
+second return finds the pushed pairs long gone. The runtime's routines
 take their operands in HL and BC and keep every register but A, the flags
-and the one they answer in, so a call of one clobbers far less than a call
-of a function -- which the
-allocator can use and the leaf backend's push and pop around every call
-cannot.
+and the one they answer in, so a call of one clobbers far less again.
 
 ## Register allocation
 

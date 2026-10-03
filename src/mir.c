@@ -3,8 +3,8 @@
  *
  * A function's SSA form (ssa.c) is selected into instructions of the eZ80
  * whose operands are virtual registers, the registers are allocated over
- * them, and the bytes are made after. This is milestone 1: functions of
- * ints, pointers and chars that call nothing but the runtime's routines.
+ * them, and the bytes are made after. Milestones 1 and 2: functions of
+ * ints, pointers and chars, and their calls of functions named directly.
  * Anything else is declined (mir_ok), and the function goes to the other
  * ways the pick weighs.
  *
@@ -117,6 +117,13 @@ enum {
     M_JMP,          /* to block imm2 */
     M_RET,          /* return a, in HL, as type imm; or nothing */
     M_PCOPY,        /* the parallel copies an edge makes: see pcopy */
+    M_SAVE,         /* before a call's arguments: the pairs imm2 says pushed */
+    M_PUSH,         /* an argument: a pushed, a pair */
+    M_CALL,         /* d = sym (imm slots pushed), in HL or A; then the slots
+                     * popped, and the pairs imm2 says -- BC 1, DE 2, IY 4,
+                     * those live across it -- popped back. A, F and HL
+                     * clobbered: the callee may change BC, DE and IY too,
+                     * which is what the pushing and popping is for */
     NMOPS
 };
 
@@ -267,7 +274,37 @@ static int mir_operand_ok(const Ent *ent)
            && !ent->attr.bits;
 }
 
-/* Whether the function is one milestone 1 makes. */
+/* Whether a call is one made here: of a function named directly, not
+ * setjmp -- whose second return finds the registers pushed around it long
+ * gone -- answering void or a type held here, its arguments each one held
+ * here and, where it has a parameter, of a type held here too; a _Bool's
+ * only from a _Bool, since anything else would be tested, not narrowed. */
+static int call_ok(const Ins *insn)
+{
+    static NameRef setjmp_name;
+    int fn = (int) insn->rec->arg[0], first = (int) insn->rec->arg[2];
+    int nparams = (int) insn->rec->arg[3], arg;
+    const Sym *callee = sym_at(fn);
+
+    if (!setjmp_name)
+        setjmp_name = name_intern("setjmp", 6);
+    if (callee->name == setjmp_name)
+        return mir_why = "a call of setjmp", 0;
+    if (callee->type != TY_VOID && !mir_type(callee->type))
+        return mir_why = "a call answering a type not held here", 0;
+    for (arg = 0; arg != insn->nin; arg++) {
+        Type param = arg < nparams ? sym_param_type(first, arg) : TY_INT;
+
+        if (!mir_type(param))
+            return mir_why = "an argument of a type not held here", 0;
+        if (param == TY_BOOL && insn->in[arg].attr.type != TY_BOOL)
+            return mir_why = "an argument made a _Bool", 0;
+    }
+
+    return 1;
+}
+
+/* Whether the function is one milestones 1 and 2 make. */
 static int mir_ok(void)
 {
     int at, operand, phi;
@@ -339,6 +376,10 @@ static int mir_ok(void)
         case I_STEP:
             if (insn->local_type == TY_BOOL)
                 return mir_why = "a _Bool stepped", 0;
+            continue;
+        case GL_gen_call:
+            if (!call_ok(insn))
+                return 0;
             continue;
         case GL_vapply:
             switch ((int) insn->rec->arg[0]) {
@@ -932,13 +973,14 @@ static void sel_convert(const Ent *ent, Type to, int res)
 
         if (w == 1)
             value = type_unsigned(to) ? value & 0xff : (signed char) (value & 0xff);
-        to_val(res, const_vr(value, w));
+        to_val_as(res, const_vr(value, w), to);
         return;
     }
     d = operand_vr(ent, w);
     /* A byte to another byte keeps its bits: a char made unsigned is read
-     * as unsigned from here on, which its value's type says. */
-    to_val(res, d);
+     * as unsigned from here on -- widened by the type it was made, where
+     * the value is held as an int. */
+    to_val_as(res, d, to);
 }
 
 /* The address a load or a store reaches: a pointer's register and an
@@ -1101,6 +1143,31 @@ static void sel_store(const Ins *insn)
     to_val_as(insn->res, v, to);
 }
 
+/* A call: each argument as wide as a slot, pushed last first so that
+ * the first is lowest, under the pairs live across the call. */
+static void sel_call(const Ins *insn)
+{
+    const Sym *callee = sym_at((int) insn->rec->arg[0]);
+    int arg, d = -1, *args = malloc(((size_t) insn->nin + 1) * sizeof *args);
+    MIns *mi;
+
+    if (!args)
+        acc_error("out of memory for the machine IR");
+    for (arg = 0; arg != insn->nin; arg++)
+        args[arg] = operand_vr(&insn->in[arg], 3);
+    mi3(M_SAVE, -1, -1, -1);
+    for (arg = insn->nin - 1; arg >= 0; arg--)
+        mi3(M_PUSH, -1, in_class(args[arg], C_R24), -1);
+    free(args);
+    if (callee->type != TY_VOID && insn->res >= 0 && val_vr[insn->res] >= 0)
+        d = width_of(callee->type) == 1 ? new_vr(1, C_A) : new_vr(3, C_HL);
+    mi = mi3(M_CALL, d, -1, -1);
+    mi->sym = (int) insn->rec->arg[0];
+    mi->imm = insn->nin;
+    if (d >= 0)
+        to_val_as(insn->res, d, callee->type == TY_BOOL ? TY_UCHAR : callee->type);
+}
+
 static void sel_insn(const Ins *insn, int at)
 {
     int op = insn->op, d, a;
@@ -1233,6 +1300,9 @@ static void sel_insn(const Ins *insn, int at)
         return;
     case GL_vapply:
         sel_apply(insn, at);
+        return;
+    case GL_gen_call:
+        sel_call(insn);
         return;
     case I_BR:
         if (insn->target < 0)
@@ -2057,6 +2127,8 @@ static void intervals(void)
             }
             if (mi->op == M_HELPER)
                 clob[pos] |= UB(U_A);
+            if (mi->op == M_CALL)
+                clob[pos] |= UB(U_A) | preg_units[P_HL];
             if (mi->op == M_COPY || mi->op == M_STEP24 || mi->op == M_TRUNC)
                 partner(mi->d, mi->a);
             if (mi->op == M_PCOPY)
@@ -2529,7 +2601,8 @@ static void dump_mir(const char *when)
         "copy", "ldi", "ldsym", "ldf", "stf", "stfi", "leaf", "ldp", "stp",
         "stpi", "ldg", "stg", "add24", "sub24", "step24", "neg24", "not24",
         "alu8", "alu8i", "cmp24", "cmp24s", "tst24", "cmp8", "cmp8i", "bool",
-        "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy"
+        "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
+        "push", "call"
     };
     int blk, at, k;
 
@@ -2626,6 +2699,7 @@ static const char *verify(void)
 static void pcopy_busy(void)
 {
     int k, n = 0, j, nactive = 0, active[NPREGS + 8], next = 0, b, at, pos = 0;
+    MIns *save = NULL;
 
     for (k = 0; k != nvr; k++)
         if (iv_s[k] >= 0)
@@ -2645,6 +2719,21 @@ static void pcopy_busy(void)
             for (j = 0; j < nactive; j++)
                 if (iv_e[active[j]] < pos)
                     active[j--] = active[--nactive];
+            if (blk->ins[at].op == M_SAVE)
+                save = &blk->ins[at];
+            if (blk->ins[at].op == M_CALL) {
+                for (j = 0; j != nactive; j++)
+                    if (vr[active[j]].preg >= 0 && iv_s[active[j]] < pos
+                        && iv_e[active[j]] > pos + 1)
+                        busy |= preg_units[vr[active[j]].preg];
+                blk->ins[at].imm2 = (busy & preg_units[P_BC] ? 1 : 0)
+                                    | (busy & preg_units[P_DE] ? 2 : 0)
+                                    | (busy & preg_units[P_IY] ? 4 : 0);
+                if (save)
+                    save->imm2 = blk->ins[at].imm2;
+                save = NULL;
+                continue;
+            }
             if (blk->ins[at].op != M_PCOPY)
                 continue;
             for (j = 0; j != nactive; j++)
@@ -3010,6 +3099,39 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
     case M_HELPER:
         rt_call(mi->imm);
         return;
+    case M_SAVE:
+        if (mi->imm2 & 4)
+            push_pair(P_IY);
+        if (mi->imm2 & 1)
+            push_pair(P_BC);
+        if (mi->imm2 & 2)
+            push_pair(P_DE);
+        return;
+    case M_PUSH:
+        push_pair(pr(mi->a));
+        return;
+    case M_CALL: {
+        const Sym *callee = sym_at(mi->sym);
+        int slot;
+
+        if (sym_flags(mi->sym) & SYMF_DEFINED) {
+            want(mi->sym);
+            out_reloc(out_here() + 1);
+            out_opcode24(0xcd, callee->val);            /* call nn */
+        } else {
+            out_opcode24(0xcd, 0);
+            fixup_add(mi->sym, out_here() - ACC_INT_SIZE);
+        }
+        for (slot = 0; slot != mi->imm; slot++)
+            pop_pair(P_DE);
+        if (mi->imm2 & 2)
+            pop_pair(P_DE);
+        if (mi->imm2 & 1)
+            pop_pair(P_BC);
+        if (mi->imm2 & 4)
+            pop_pair(P_IY);
+        return;
+    }
     case M_BR:
         /* To the next block: the branch turned over, to where it would
          * have fallen -- mir_emit makes no jump after it then. */

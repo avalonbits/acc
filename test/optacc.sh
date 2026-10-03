@@ -584,8 +584,8 @@ OPTACC_INLINE=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
     "ssa f made, not by the leaf backend" "$retyped"
 
 # The machine-level backend (docs/machine-ir-backend.md), with OPTACC_MIR:
-# a function of ints and chars that calls nothing is made by it -- `mir f`
-# -- and a function of 600 statements in a few seconds, every pass of it
+# a function of ints and chars, calling others or not, is made by it --
+# `mir f` -- and a function of 600 statements in a few seconds, every pass of it
 # linear or n log n: its first allocator, an interference graph, took over
 # an hour on gcc's pr69592, which this is.
 mirs() {
@@ -606,8 +606,12 @@ mirs() {
 }
 mirs "a loop on chars, made by the machine IR"    yes \
     'int f(const char *s) { int n = 0; while (*s) if (*s++ == 32) n++; return n; }'
-mirs "one that calls, not yet"                    no \
+mirs "one that calls"                             yes \
     'int g(int); int f(int a) { return g(a) + 1; }'
+mirs "and a value kept across the call"             yes \
+    'int g(int); int f(int a) { int b = a * 3; return g(a) + b + a; }'
+mirs "but not setjmp, which IY and BC would not survive" no \
+    'int setjmp(void *); int f(void *b) { return setjmp(b); }'
 big=$(python3 -c "
 print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')
 for n in range(600): print('d = a + b[%d]; if (d < a) c++; a = d;' % n)
