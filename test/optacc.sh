@@ -583,6 +583,48 @@ OPTACC_INLINE=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
     OPTACC_LEAF=1 ssa "a slot given back, taken as another type" \
     "ssa f made, not by the leaf backend" "$retyped"
 
+# The machine-level backend (docs/machine-ir-backend.md), with OPTACC_MIR:
+# a function of ints and chars that calls nothing is made by it -- `mir f`
+# -- and a function of 600 statements in a few seconds, every pass of it
+# linear or n log n: its first allocator, an interference graph, took over
+# an hour on gcc's pr69592, which this is.
+mirs() {
+    local what=$1 want=$2 got=no
+
+    printf '%s\n' "$3" > "$tmp/c.c"
+    rm -f "$tmp/c.o"
+    OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+        OPTACC_LEAF=1 OPTACC_MIR=1 OPTACC_PICK=0 OPTACC_SSA_STATS=1 \
+        timeout 20 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 \
+        | grep -q '^mir f$' && got=yes
+    if [ "$got" = "$want" ]; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-50s mir: want %s, got %s\n' "$what" "$want" "$got"
+        fail=$((fail + 1))
+    fi
+}
+mirs "a loop on chars, made by the machine IR"    yes \
+    'int f(const char *s) { int n = 0; while (*s) if (*s++ == 32) n++; return n; }'
+mirs "one that calls, not yet"                    no \
+    'int g(int); int f(int a) { return g(a) + 1; }'
+big=$(python3 -c "
+print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')
+for n in range(600): print('d = a + b[%d]; if (d < a) c++; a = d;' % n)
+print('return d + c; }')")
+start=$(date +%s)
+printf '%s\n' "$big" > "$tmp/big.c"
+rm -f "$tmp/big.o"
+OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+    OPTACC_MIR=1 OPTACC_PICK=0 timeout 60 "$OPT" -c "$tmp/big.c" -o "$tmp/big.o" >/dev/null 2>&1
+took=$(( $(date +%s) - start ))
+if [ -f "$tmp/big.o" ] && [ "$took" -le 10 ]; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s %s seconds\n' "600 statements, in seconds" "$took"
+    fail=$((fail + 1))
+fi
+
 # Caching only the locals a loop reads or writes, as one of the ways the
 # pick weighs (OPTACC_CACHE_LOOPS makes it the first): p, whose address the
 # calls take and which the loop steps, is in BC there; x, read only after

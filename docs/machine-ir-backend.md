@@ -174,26 +174,34 @@ cannot.
 
 The eZ80's register file is small and irregular: one accumulator per
 width, pairs that are also bytes, a frame pointer, an index register. The
-constraints decide more than the colouring does. The allocator is graph
-colouring with coalescing (Chaitin-Briggs, George-Appel's conservative
-coalescing), with:
+constraints decide more than the colouring does, and nothing here may cost
+more than n log n in the size of the function: graph colouring's
+interference graph is quadratic, and the first allocator, which built one,
+took over an hour on gcc's pr69592 -- 600 statements in one function. So
+the allocator is a linear scan:
 
-- the physical registers precoloured, so that an operand constrained to HL
-  is a virtual register coalesced with HL where nothing in between needs HL
-  for something else;
-- interference on register units, as above;
-- a move between two values a candidate to remove by giving them the same
-  register, weighted by what the move costs -- `ex de,hl` one byte, `ld r,r`
-  one byte, a push and a pop two, `ld hl,(ix+d)` three;
-- spilling by cost -- uses weighted eight times over a loop, as the pick
-  weighs them -- with rematerialisation: a constant or an address is made
-  again where it is needed, never spilled;
-- spill slots frame objects like any other, sharing bytes by lifetime.
+- each instruction a position in the order the blocks are made, operands
+  read at 2i and answers written at 2i + 1, so that an operand's register
+  can be its answer's;
+- each virtual register an interval from its first position to its last,
+  carried on to a loop's end where it lives into the loop from before it
+  (the loops' extents in a sparse table, one query an interval);
+- the intervals in order of their starts, each given a register that no
+  interval still live has, that nothing inside it clobbers (a range-OR
+  over positions, a sparse table again), and that no instruction inside it
+  needs for itself -- an operand that must be HL, A or BC is a short
+  interval fixed to that register, found per unit by binary search;
+- a copy's partner's register tried first, which is what makes the copies
+  come to nothing -- coalescing by preference, not by merging;
+- where no register is free, the cheapest of the live intervals that
+  could give one up spilled instead -- a constant or a parameter cheapest,
+  being made again or read from its own slot -- or the interval itself;
+  never a short one made for one instruction, which no spill shortens;
+- the spills rewritten in one pass over the code, reloads and stores
+  through short registers of their own, and the scan run again.
 
-opt-acc runs on the host, with time and memory to spare, so where the
-heuristics disagree on a small function -- most of acc's and zap's are
-small -- the allocator can try both and keep the cheaper, as the pick does
-for whole functions now.
+The live set is never more than the eleven registers, so each step of the
+scan is constant work: the whole is the sort.
 
 ## Frames
 

@@ -44,100 +44,35 @@
 #include "genlog_calls.h"
 #undef GENLOG_OPS
 
+#include "ssa_int.h"
+
 /* ------------------------------------------------------------------ */
 /* the form                                                            */
 
-/* An operand as it was on the stack: an SSA value, or a constant made again
- * where it is used; and its attributes there, which relabelling calls
- * (vset_type and the rest) may have changed since the value was made. */
-typedef struct {
-    int      val;               /* SSA value; S_CONST or S_VOID otherwise */
-    Value    attr;              /* kind, type, val, ext, quals, bits */
-    uint64_t wide;              /* a VAL_WIDE constant's bits */
-} Ent;
 
-#define S_CONST (-1)
-#define S_VOID  (-2)
-
-/* What an instruction is, when it is not a call of the log's. */
-enum {
-    I_BR = GL_COUNT,            /* jump when the operand's truth is `sense` */
-    I_JMP,                      /* jump */
-    I_SET,                      /* a phi's slot, from the operand */
-    I_FRAME,                    /* a frame call, laid down with the prologue */
-    I_CONV,                     /* a local's new value: the operand converted
-                                 * to the local's type */
-    I_STEP                      /* ++ or -- of a local's value */
-};
-
-#define MAX_OPERANDS 8
-
-typedef struct {
-    int op;                     /* GL_* or I_* */
-    const GenRec *rec;          /* the call, for its arguments */
-    int nin;
-    Ent in[MAX_OPERANDS];       /* operands, bottom of the stack first */
-    int res;                    /* the value defined, or -1 */
-    int sense;                  /* I_BR: jump when the truth is this */
-    int target;                 /* I_BR, I_JMP: the block; I_SET: the value */
-    int block;
-    int step_op;                /* I_STEP: TK_PLUS or TK_MINUS */
-    Type local_type;            /* I_CONV, I_STEP: the local's type */
-    unsigned char kills;        /* the operands this is the last read of, a
-                                 * bit each (find_clashes) */
-    unsigned char delegated;    /* leaf backend: made by the first pass's
-                                 * code, for a wide value (leaf_delegate) */
-    unsigned char wide;         /* leaf backend: a long's, made here in its
-                                 * slots (leaf_wide) */
-    unsigned char mem_store;    /* I_STEP: of a cached local, whose new
-                                 * value is written to its memory too */
-} Ins;
-
-typedef struct {
-    Type type;                  /* as it is stored: the type it was made at */
-    int  slot;                  /* its frame slot */
-    int  def, last;             /* the instructions that make and last use it */
-    int  used;                  /* read at all: by an instruction or a phi */
-    int  reg;                   /* with OPTACC_REGS: the register it lives
-                                 * in, or HOME_SLOT for its frame slot */
-    int  fwd;                   /* left on the classic stack for its one
-                                 * use, never kept anywhere */
-    int  mem;                   /* a cached local's memory, read where it is
-                                 * read: the local's offset, or 0 */
-    int  of_cached;             /* a cached local's value: the local + 1 */
-} SVal;
-
-#define HOME_SLOT (-1)
-#define HOME_GLOBAL (-3)                /* leaf backend: a global's address,
-                                         * loaded where it is read, `slot` its
-                                         * symbol and leaf_global_off what is
-                                         * added to it -- see emit_leaf */
-
-typedef struct {
-    int first;                  /* its first instruction */
-    int old_at;                 /* where it started in the first pass */
-} Block;
 
 /* A block's statics: the records of their bytes, and the symbols settled
  * after them -- and the symbols moved with them, to be put back where a
  * function made here is gone back from (ssa_restore). */
 static const GenRec **raws;
-static int nraws, raws_cap;
+int nraws;
+static int raws_cap;
 static int *settles, nsettles, settles_cap;
 static struct { int sym, val; } *moved_syms;
 static int nmoved_syms, moved_syms_cap;
 
-static Ins   *insns;
-static int    ninsns, insns_cap;
-static SVal  *vals;
-static int    nvals, vals_cap;
-static Block *blocks;
-static int    nblocks, blocks_cap;
+Ins   *insns;
+int    ninsns;
+static int insns_cap;
+SVal  *vals;
+int    nvals;
+static int vals_cap;
+Block *blocks;
+int    nblocks;
+static int blocks_cap;
 
-static const char *fail;        /* why the function is left to the classic */
+const char *fail;        /* why the function is left to the classic */
 
-static int frame_of_value(const Ins *insn);
-static void call(const Ins *insn);
 static int native_on(void);
 static int regs_on(void);
 static int clashes(int one, int two);
@@ -145,8 +80,7 @@ static unsigned char *clash_bits;
 
 /* How deep in loops each block is, and how many calls, weighted so, each
  * value lives across: see find_loops and find_clashes. */
-static void  find_loops(void);
-static int  *loop_depth;
+int  *loop_depth;
 static long *across_calls;
 
 /* Webs of values that share one home: see coalesce. */
@@ -171,14 +105,6 @@ typedef struct {
 static Here *heres;
 static int   nheres, heres_cap;
 
-#define GROW(arr, count, cap) do {                                      \
-        if ((count) == (cap)) {                                         \
-            (cap) = (cap) ? (cap) * 2 : 64;                             \
-            (arr) = realloc((arr), (size_t) (cap) * sizeof *(arr));     \
-            if (!(arr))                                                 \
-                acc_error("out of memory for the SSA form");            \
-        }                                                               \
-    } while (0)
 
 static Ent *stk;                /* the builder's value stack */
 static int  nstk, stk_cap;
@@ -355,7 +281,7 @@ static int      ninlined, inlined_cap;
  * where each is now: a parameter that did not become values is read and
  * written there, in a slot of this frame's own, as the first pass's
  * scratch is the code made here's to use. */
-static int  nmerged;
+int  nmerged;
 
 static void inline_merge(void)
 {
@@ -408,7 +334,7 @@ static void local_move(int from, int size, int to)
 
 /* Where the first pass's frame offset `offset` is now: a parameter's, and
  * anything not moved, where it was. */
-static int inline_moved(int offset)
+int inline_moved(int offset)
 {
     int at;
 
@@ -946,26 +872,9 @@ static void thread_answers(void)
  * reaches it, and where paths with different values meet, a phi joins
  * them. What is left of the local is its values; its slot is not used. */
 
-#define MAX_LOCALS 256           /* zap's biggest have more than 64 */
-#define UNDEF (-3)              /* no value reaches: a read before any write */
 
-typedef struct {
-    int  offset;
-    Type type;
-    int  ext;
-    int  ok;                    /* still a candidate */
-    int  is_param;
-    int  entry_val;             /* a parameter's value as the function begins */
-    int  mem_val;               /* cached: its memory as a value, for a phi
-                                 * on an edge where nothing is known */
-    int  cached;                /* its address taken, so memory still, but read
-                                 * from the value last read or written there
-                                 * until something may have written it: see
-                                 * cache_barrier */
-} Local;
-
-static Local locals[MAX_LOCALS];
-static int   nlocals;
+Local locals[MAX_LOCALS];
+int   nlocals;
 
 /* A long or a float the paths join with is more than the copies into a
  * phi can carry: the form is made again with every local that wide left
@@ -977,27 +886,19 @@ static int wide_in_memory;
 /* Slots the first pass reads or holds itself -- a switch's value, the
  * local in IY -- which no local there can be cached for. */
 static int pinned[MAX_LOCALS], npinned;
-static int cached_any;          /* a read was answered from the cache */
+int cached_any;          /* a read was answered from the cache */
 static int ncached;             /* how many locals are cached */
 
-/* A phi: the local it joins, the value it makes, and what each of its
- * block's predecessors brings -- a value, or UNDEF. */
-typedef struct {
-    int block, local, val;
-    int *in;                    /* by predecessor, in preds[block] order */
-    int live;
-} Phi;
 
-static Phi *phis;
-static int  nphis, phis_cap;
+Phi *phis;
+int  nphis;
+static int phis_cap;
 
-/* The CFG, a list a block: successors and predecessors. */
-typedef struct {
-    int *at, count, cap;
-} IntList;
 
-static IntList *succs, *preds, *dom_kids;
-static int     *idom, *rpo_num, *block_last;
+IntList *succs, *preds;
+static IntList *dom_kids;
+int     *rpo_num, *block_last;
+static int *idom;
 
 static int *repl;               /* a value read in place of another, or -1 */
 
@@ -1859,7 +1760,7 @@ static int locals_kept(void)
 
 /* A frame call of the first pass's made again, its local moved to where it
  * is now -- or not made, for a local that is values now. */
-static void frame_again(const Ins *insn)
+void frame_again(const Ins *insn)
 {
     Ins frame_call = *insn;
 
@@ -2275,7 +2176,7 @@ static void load(const Ent *ent)
 
 /* The call an instruction came from, made again with the same arguments --
  * but a string's address moved to where the string is now. */
-static void call(const Ins *insn)
+void call(const Ins *insn)
 {
     const GenRec *rec = insn->rec;
     const long *arg = rec->arg;
@@ -2607,8 +2508,7 @@ static int  falls_to(int blk, int target);
 static int  leaf_mode;          /* this function made by emit_leaf */
 static int  leaf_iy_saved_at, leaf_bc_saved_at;    /* IY and BC across a
                                                      * call: see leaf_save_slots */
-static void costs(const int *block_start, int end);
-static int  blocks_from;        /* where the function made here begins */
+int  blocks_from;        /* where the function made here begins */
 
 /* Slots for IY and BC across a call, where a value that lives across one
  * has either for its home: before the values' own, so as near the frame
@@ -2766,7 +2666,7 @@ static int iy_taken_already(void)
 
 /* Whether a frame call is about a local that is values now, and so is not
  * made: the local in IY is one of them. */
-static int frame_of_value(const Ins *insn)
+int frame_of_value(const Ins *insn)
 {
     switch (insn->rec->op) {
     case GL_gen_iy_claim: case GL_gen_iy_param: case GL_gen_iy_take:
@@ -3290,7 +3190,7 @@ static int dominates(int over, int blk)
     return blk == over;
 }
 
-static void find_loops(void)
+void find_loops(void)
 {
     int *work = malloc(((size_t) nblocks + 1) * sizeof *work);
     unsigned char *in_loop = malloc((size_t) nblocks + 1);
@@ -8534,7 +8434,7 @@ static long code_cost(const unsigned char *code, int len, const int *block_of)
  * loops around its block -- the first pass's code placed in blocks by the
  * log's records, which say where each call's bytes ended and which of
  * them are in which block. */
-static void costs(const int *block_start, int end)
+void costs(const int *block_start, int end)
 {
     int *rec_block = malloc(((size_t) gl_n + 1) * sizeof *rec_block);
     int *byte_block, at, blk = 0, before, from = blocks_from;
@@ -8823,6 +8723,27 @@ int ssa_generate(const char **why)
     thread_answers();
     to_values();
     inline_merge();
+    ssa_made_mir = 0;
+    if (!fail && regs_on() && mir_on()) {
+        sink_steps();
+        ssa_made_mir = mir_build();
+        if (!ssa_made_mir && getenv("OPTACC_SSA_STATS"))
+            fprintf(stderr, "not mir %s: %s\n", name_text(sym_at(gl_fn)->name),
+                    mir_reason());
+        if (ssa_made_mir) {
+            if (getenv("OPTACC_SSA_STATS"))
+                fprintf(stderr, "mir %s\n", name_text(sym_at(gl_fn)->name));
+            gen_local_settle();
+            mir_emit();
+            forget();
+            if (fail) {
+                *why = fail;
+                return -1;              /* part emitted: the caller stops */
+            }
+
+            return 1;
+        }
+    }
     if (!fail && regs_on()) {
         leaf_why = NULL;
         leaf_mode = leaf_on() && leaf_ok();
