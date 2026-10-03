@@ -483,7 +483,11 @@ static void gl_function_end(void)
         int picking = !(getenv("OPTACC_PICK") && *getenv("OPTACC_PICK") == '0');
         int made, ssa_leaf_tried = 0, first_leaf, first_cached, first_refused;
 
+        /* OPTACC_MIR: the machine-level backend is one more way -- the
+         * first, where nothing is picked. */
+        ssa_mir_want = !picking && getenv("OPTACC_MIR") != NULL;
         made = ssa_generate(&why);
+        ssa_mir_want = 0;
         first_leaf = ssa_made_leaf;
         first_cached = ssa_cached_used;
         first_refused = ssa_cached_refused;
@@ -518,10 +522,11 @@ static void gl_function_end(void)
          * leaf backend's 13 bytes smaller and its loops a quarter slower,
          * once it could hold the long the program checks. */
         if (made > 0 && picking) {
-            static const struct { int leaf_off, cache_off; } ways[] = {
-                { 0, CACHE_ALL }, { 0, CACHE_NONE }, { 1, CACHE_NONE },
-                { 0, CACHE_LOOPS },
+            static const struct { int leaf_off, cache_off, mir; } ways[] = {
+                { 0, CACHE_ALL, 0 }, { 0, CACHE_NONE, 0 }, { 1, CACHE_NONE, 0 },
+                { 0, CACHE_LOOPS, 0 }, { 0, CACHE_NONE, 1 },
             };
+            int nways = getenv("OPTACC_MIR") ? 5 : 4;
             const char *lost = NULL;
             int way, best = -1, best_size = 0, made_way = first_refused ? 2 : 0;
             int cheap = -1;
@@ -529,7 +534,7 @@ static void gl_function_end(void)
 
             /* The first is made already: way 0, or the hybrid path's where
              * that was refused. */
-            for (way = made_way; way != (int) (sizeof ways / sizeof ways[0]); way++) {
+            for (way = made_way; way != nways; way++) {
                 const char *way_why = NULL;
                 int way_made = 1;
 
@@ -540,8 +545,13 @@ static void gl_function_end(void)
                 if (way != made_way) {
                     ssa_leaf_off = ways[way].leaf_off;
                     ssa_cache_off = ways[way].cache_off;
+                    ssa_mir_want = ways[way].mir;
                     way_made = ssa_generate(&way_why);
-                    ssa_leaf_off = ssa_cache_off = 0;
+                    ssa_leaf_off = ssa_cache_off = ssa_mir_want = 0;
+                    if (ways[way].mir && way_made > 0 && !ssa_made_mir) {
+                        gl_back();      /* declined: the same as another */
+                        continue;
+                    }
                     if (way_made < 0)
                         acc_error("internal: generating %s from its SSA form: %s",
                                   name_text(sym_at(gl_fn)->name), way_why);
@@ -573,8 +583,9 @@ static void gl_function_end(void)
             if (best >= 0) {
                 ssa_leaf_off = ways[best].leaf_off;
                 ssa_cache_off = ways[best].cache_off;
+                ssa_mir_want = ways[best].mir;
                 made = ssa_generate(&why);
-                ssa_leaf_off = ssa_cache_off = 0;
+                ssa_leaf_off = ssa_cache_off = ssa_mir_want = 0;
                 if (made <= 0)
                     acc_error("internal: generating %s again: %s",
                               name_text(sym_at(gl_fn)->name),
