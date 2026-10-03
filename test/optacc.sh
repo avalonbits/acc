@@ -625,6 +625,101 @@ else
     fail=$((fail + 1))
 fi
 
+# And with every way in the pick, each shape of function four times the
+# size takes four times the work, which perf counts in instructions: a
+# pass quadratic in the function's size makes it sixteen, and one only
+# partly so somewhere between -- 4.6 is the bound, and 6 for a straight
+# line of 12000 locals, where the parser's scope lookup costs more. And
+# none of them declined as too much work, which is where a pass quadratic
+# enough lands instead. Without perf, the time, and twice four the bound.
+shape() {
+    python3 -c "
+import sys
+shape, n = sys.argv[1], int(sys.argv[2])
+if shape == 'line':
+    print('int f(int a) { int x0 = a;')
+    for i in range(1, n): print(' int x%d = x%d + %d;' % (i, i - 1, i % 50))
+    print(' return x%d; }' % (n - 1))
+elif shape == 'ifs':
+    print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d = 0;')
+    for i in range(n): print(' d = a + b[%d]; if (d < a) c++; a = d;' % (i % 64))
+    print(' return d + c; }')
+elif shape == 'cond':
+    print('int f(int a, int b) { int s = 0;')
+    for i in range(n): print(' s += a > %d ? b : s;' % i)
+    print(' return s; }')
+elif shape == 'calls':
+    print('int g(int); int f(int a) { int s = 0;')
+    for i in range(n): print(' s += g(a + %d) ^ a;' % i)
+    print(' return s; }')
+elif shape == 'loop':
+    print('int f(int n, int *p) {')
+    for i in range(30): print(' int v%d = %d;' % (i, i))
+    print(' for (int i = 0; i < n; i++) {')
+    for i in range(n): print('  v%d = v%d + p[i];' % (i % 30, (i + 1) % 30))
+    print(' }')
+    print(' return ' + ' + '.join('v%d' % i for i in range(30)) + '; }')
+elif shape == 'signed':
+    print('int f(int a, int *p) { int s = 0;')
+    for i in range(n): print(' if (p[%d] < a) s += p[%d]; a = a - s;' % (i % 64, (i + 1) % 64))
+    print(' return s; }')
+elif shape == 'bytes':
+    print('int f(unsigned char *p, int a) { unsigned char c = 0; int s = 0;')
+    for i in range(n): print(' c = p[%d] + c; if (c == %d) s++; p[%d] = c;' % (i % 64, i % 200, (i + 3) % 64))
+    print(' return s; }')
+elif shape == 'cached':
+    print('void g(int *); int f(int a, int *p) { int x = a; g(&x);')
+    for i in range(n): print(' x = x + p[%d]; if (x < %d) x++;' % (i % 64, i))
+    print(' return x; }')
+" "$1" "$2"
+}
+counting=no
+perf stat -x, -e instructions:u true 2>&1 | grep -q instructions && counting=yes
+compile_cost() {
+    local start
+
+    local count=
+
+    [ "$counting" = yes ] && count="perf stat -x, -o $tmp/count -e instructions:u"
+    rm -f "$tmp/s.o"
+    start=$(date +%s%N)
+    OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+        OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 \
+        OPTACC_SSA_STATS=1 timeout 120 $count \
+        "$OPT" -c "$1" -o "$tmp/s.o" > "$tmp/stats" 2>&1
+    if [ "$counting" = yes ]; then
+        grep instructions "$tmp/count" | cut -d, -f1
+    else
+        echo $(( ($(date +%s%N) - start) / 1000000 ))
+    fi
+}
+scales() {
+    local small=$2 bound=${3:-46} small_cost big_cost
+
+    shape "$1" "$small" > "$tmp/s1.c"
+    shape "$1" $((4 * small)) > "$tmp/s4.c"
+    small_cost=$(compile_cost "$tmp/s1.c")
+    big_cost=$(compile_cost "$tmp/s4.c")
+    [ "$counting" = yes ] || bound=80
+    if [ -f "$tmp/s.o" ] && ! grep -q 'too big for the SSA' "$tmp/stats" \
+        && [ $((10 * big_cost)) -le $((bound * small_cost)) ]; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-50s %s, then %s%s\n' "$1 of $small, four times it" \
+            "$small_cost" "$big_cost" \
+            "$(grep -o 'too big for the SSA.*' "$tmp/stats" | head -1 | sed 's/^/: /')"
+        fail=$((fail + 1))
+    fi
+}
+scales line 3000 60
+scales ifs 4000
+scales cond 4000
+scales calls 4000
+scales loop 4000
+scales signed 2000
+scales bytes 2000
+scales cached 2000
+
 # Caching only the locals a loop reads or writes, as one of the ways the
 # pick weighs (OPTACC_CACHE_LOOPS makes it the first): p, whose address the
 # calls take and which the loop steps, is in BC there; x, read only after
