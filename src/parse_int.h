@@ -182,7 +182,6 @@ extern int body_mark;
 int push_here(NameRef name, int kind, int val);
 void not_redeclared(NameRef name, int line, const char *spot);
 __attribute__((noinline)) void local_redeclared(NameRef name, int line, const char *spot);
-extern NameRef stamp_name;
 extern int base_ext;
 const char *record_name(int x);
 void record_complete(int x, int line, const char *spot);
@@ -259,10 +258,7 @@ int ends_in(const char *path, char what);
 static inline __attribute__((always_inline))
 void local_not_redeclared(NameRef name, int line, const char *spot)
 {
-    stamp_name = name;
-    if (sym_maybe_local(stamp_name))
-        local_redeclared(name, line, spot);
-    sym_stamp_name(stamp_name);
+    local_redeclared(name, line, spot);
 }
 
 /* Inlined: it is asked before every statement in the program, and as a call

@@ -628,10 +628,9 @@ fi
 # And with every way in the pick, each shape of function four times the
 # size takes four times the work, which perf counts in instructions: a
 # pass quadratic in the function's size makes it sixteen, and one only
-# partly so somewhere between -- 4.6 is the bound, and 6 for a straight
-# line of 12000 locals, where the parser's scope lookup costs more. And
-# none of them declined as too much work, which is where a pass quadratic
-# enough lands instead. Without perf, the time, and twice four the bound.
+# partly so somewhere between -- 4.6 is the bound. And none of them
+# declined as too much work, which is where a pass quadratic enough lands
+# instead. Without perf, the time, and twice four the bound.
 shape() {
     python3 -c "
 import sys
@@ -694,7 +693,7 @@ compile_cost() {
     fi
 }
 scales() {
-    local small=$2 bound=${3:-46} small_cost big_cost
+    local small=$2 bound=46 small_cost big_cost
 
     shape "$1" "$small" > "$tmp/s1.c"
     shape "$1" $((4 * small)) > "$tmp/s4.c"
@@ -711,7 +710,7 @@ scales() {
         fail=$((fail + 1))
     fi
 }
-scales line 3000 60
+scales line 3000
 scales ifs 4000
 scales cond 4000
 scales calls 4000

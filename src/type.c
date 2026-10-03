@@ -236,8 +236,6 @@ int push_here(NameRef name, int kind, int val)
 {
     if (!in_body)
         return sym_push(name, kind, val);
-    sym_stamp_name(name);               /* see local_not_redeclared */
-
     return sym_push_local(name, kind, val);
 }
 
@@ -254,8 +252,7 @@ void not_redeclared(NameRef name, int line, const char *spot)
 /* The same for a block's own variable, which has no linkage and so may be
  * declared once in its scope (C99 6.7p3) -- where a function's outermost
  * block is the scope its parameters are in too (6.2.1p4): `void f(int x) {
- * int x; }` declares x twice. A name no local of the function has had
- * needs no walk to say so, and one that has walks only its block. */
+ * int x; }` declares x twice. A load says so: see sym_find_in. */
 __attribute__((noinline))
 void local_redeclared(NameRef name, int line, const char *spot)
 {
@@ -263,11 +260,6 @@ void local_redeclared(NameRef name, int line, const char *spot)
         acc_error_spot(line, spot, "'%s' is already declared",
                        name_text(name));
 }
-
-/* The name local_not_redeclared asks about, whose low byte is read from
- * here rather than from a local: read from one, clang put the name back
- * together around the call with __iand. */
-NameRef stamp_name;
 
 /* A tag, as the name it is looked up by: the tag's text behind a `{`, which
  * no identifier can begin with. `struct s` and a variable `s` are different
