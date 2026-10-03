@@ -13,6 +13,7 @@
  */
 #ifdef OPT_ACC
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,7 +108,7 @@ enum {
     M_ALU8,         /* d = a op b: d and a A; imm the operator */
     M_ALU8I,        /* d = a op imm2 */
     M_CMP24,        /* flags of a - b, unsigned: a HL, clobbered */
-    M_CMP24S,       /* flags of a - b as signed, through a bias: carry less */
+    M_CMP24S,       /* carry when a < b as signed: a HL, clobbered, b DE */
     M_CMP24SI,      /* flags of a - imm2 as signed: carry less; a HL, clobbered,
                      * and DE, `t`, but against 0, the sign by add hl, hl */
     M_TST24,        /* Z when a is 0: a HL, kept */
@@ -846,10 +847,7 @@ static int sel_compare(const Ins *insn, int op)
     }
     b = in_class(operand_vr(right, 3), is_signed ? C_DE : C_O24);
     if (is_signed) {
-        MIns *mi = mi3(M_CMP24S, -1, a, b);
-
-        mi->t = new_vr(3, C_BC);                /* the bias's register */
-        mi->kills = 3;
+        mi3(M_CMP24S, -1, a, b)->kills = 1;
     } else {
         mi3(M_CMP24, -1, a, b)->kills = 1;
     }
@@ -907,6 +905,8 @@ static int scaled(int v, int step)
 
     if (step == 1)
         return v;
+    if (vr[v].remat == M_LDI)           /* a constant: the product, made */
+        return const_vr(vr[v].remat_imm * step, 3);
 
     /* By adds, the constant's bits from the top down: doubled at each,
      * the int itself added where one is set -- two adds for an int's 3 --
@@ -2374,6 +2374,21 @@ static int same_value(int x, int y)
  * lives through the whole of the loop, which the order the blocks are
  * made in does not show. Each register's walk is the blocks it is live
  * in, each looked at once, through marks stamped with the register. */
+static int *livein_blk, *livein_v, nlivein, livein_cap;
+
+static void livein_add(int blk, int v)
+{
+    if (nlivein == livein_cap) {
+        livein_cap = livein_cap ? 2 * livein_cap : 256;
+        livein_blk = realloc(livein_blk, (size_t) livein_cap * sizeof *livein_blk);
+        livein_v = realloc(livein_v, (size_t) livein_cap * sizeof *livein_v);
+        if (!livein_blk || !livein_v)
+            acc_error("out of memory for the machine IR");
+    }
+    livein_blk[nlivein] = blk;
+    livein_v[nlivein++] = v;
+}
+
 static void live_through(void)
 {
     int *pred_off = calloc((size_t) nmb + 2, sizeof *pred_off), *pred_at, pass;
@@ -2450,6 +2465,7 @@ static void live_through(void)
 
     for (b = 0; b != nmb; b++)
         seen[b] = def_stamp[b] = -1;
+    nlivein = 0;
     for (v = 0; v != nvr; v++) {
         int nwork = 0, u;
 
@@ -2467,6 +2483,7 @@ static void live_through(void)
             if (seen[b] != v) {
                 seen[b] = v;
                 work[nwork++] = b;
+                livein_add(b, v);
             }
         }
         while (nwork) {
@@ -2484,6 +2501,7 @@ static void live_through(void)
                 if (blk_pos[p] < iv_s[v])
                     iv_s[v] = blk_pos[p];
                 work[nwork++] = p;
+                livein_add(p, v);
             }
         }
     }
@@ -2720,12 +2738,41 @@ static int by_start(const void *x, const void *y)
 
 /* The register a partner of `v` has, or must have, that suits `v`: a
  * byte's of a pair's low byte, a pair's of the pair. */
+/* A copy's partner as the scan has it now: with intervals split, the part
+ * of its value that holds a register now, where one does; and a part's
+ * partners are its value's. Without splitting, each is itself. */
+static int split_on;
+static int *fam;                /* by register: the one it was cut from first */
+static int *act, nact, act_cap; /* the parts in a register now */
+static int va_cap;              /* the room the by-register arrays have */
+
+static int part_root(int v)
+{
+    return split_on && v < va_cap ? fam[v] : v;
+}
+
+static int part_now(int o)
+{
+    int j, r = part_root(o);
+
+    if (!split_on)
+        return o;
+    for (j = 0; j != nact; j++)
+        if (part_root(act[j]) == r)
+            return act[j];
+
+    return o;
+}
+
 static int partner_reg(int v, int p_ok(int, int), int fixed_too)
 {
-    int e;
+    int e, from = v, round;
 
-    for (e = part_head[v]; e >= 0; e = part_next[e]) {
-        int o = part_of[e], p = vr[o].preg;
+    for (round = 0; round != 2; round++, from = part_root(v)) {
+        if (round && from == v)
+            break;
+    for (e = part_head[from]; e >= 0; e = part_next[e]) {
+        int o = part_now(part_of[e]), p = vr[o].preg;
 
         if (p < 0 && fixed_too && popcount(vr[o].cls) == 1)
             for (p = 0; !(vr[o].cls & PB(p)); p++)
@@ -2738,6 +2785,7 @@ static int partner_reg(int v, int p_ok(int, int), int fixed_too)
             continue;
         if (p >= 0 && p_ok(v, p))
             return p;
+    }
     }
 
     return -1;
@@ -3050,6 +3098,957 @@ static void spill_all(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* splitting                                                           */
+
+/* The scan with intervals split, as Wimmer and Franz's linear scan does
+ * it: where no register is free for the whole of an interval, it has one
+ * for as long as one is, and the rest is an interval of its own, back in
+ * the queue; where none is free at all, the one live whose next use is
+ * furthest gives its register up there and waits in memory until just
+ * before that use. Each part is a register of its own -- the uses after
+ * the cut renamed -- so that everything after allocation sees registers as
+ * it always did. A part in memory has no uses: each use and each write
+ * needs a register, and the cut is made before it.
+ *
+ * Then the moves that join the parts: in a block, where one part ends and
+ * the next begins -- stores, then the registers in one parallel copy, then
+ * loads; and on each edge, where what a value is in at the end of the
+ * block before differs from what it is in at the start of the one after.
+ * Each step is a binary search or a heap's: n log n in the code. */
+static int *child_next;         /* by register: the next part of its value */
+static int *inmem;              /* by register: a part kept in memory */
+static int *up_lo, *up_hi;      /* by register: its positions in upos */
+static int *upos, nupos;        /* the positions each register is read or
+                                 * written at, in order, a run a register */
+static int *ins_blk, *ins_idx;  /* by instruction number: where it is */
+static int *call_of;            /* by instruction number: the call whose
+                                 * arguments it is among -- after the
+                                 * pairs are pushed -- as a position, or -1 */
+static int splitting;           /* the scan is split_scan */
+static int *alloc_src;          /* copy_src as the scan saw it */
+static int  alloc_src_n;
+static int *heap, nheap, heap_cap;
+static int grp_n;               /* registers groups_build saw */
+static int ninsn_scan;          /* instructions split_scan numbered */
+
+static int *va_grow(int *arr, int fill)
+{
+    int k;
+
+    arr = realloc(arr, (size_t) va_cap * sizeof *arr);
+    if (!arr)
+        acc_error("out of memory for the machine IR");
+    for (k = nvr; k != va_cap; k++)
+        arr[k] = fill;
+
+    return arr;
+}
+
+static void va_fit(void)
+{
+    if (nvr + 1 <= va_cap)
+        return;
+    va_cap = 2 * (nvr + 1);
+    iv_s = va_grow(iv_s, -1);
+    iv_e = va_grow(iv_e, -1);
+    iv_def = va_grow(iv_def, -1);
+    copy_src = va_grow(copy_src, -1);
+    ndefs = va_grow(ndefs, 0);
+    part_head = va_grow(part_head, -1);
+    fam = va_grow(fam, -1);
+    child_next = va_grow(child_next, -1);
+    inmem = va_grow(inmem, 0);
+    up_lo = va_grow(up_lo, 0);
+    up_hi = va_grow(up_hi, 0);
+}
+
+static int heap_less(int x, int y)
+{
+    if (iv_s[x] != iv_s[y])
+        return iv_s[x] < iv_s[y];
+    if (popcount(vr[x].cls) != popcount(vr[y].cls))
+        return popcount(vr[x].cls) < popcount(vr[y].cls);
+
+    return x < y;
+}
+
+static void heap_push(int v)
+{
+    int at;
+
+    GROW(heap, nheap, heap_cap);
+    at = nheap++;
+    while (at && heap_less(v, heap[(at - 1) / 2])) {
+        heap[at] = heap[(at - 1) / 2];
+        at = (at - 1) / 2;
+    }
+    heap[at] = v;
+}
+
+static int heap_pop(void)
+{
+    int top = heap[0], v = heap[--nheap], at = 0;
+
+    for (;;) {
+        int kid = 2 * at + 1;
+
+        if (kid >= nheap)
+            break;
+        if (kid + 1 < nheap && heap_less(heap[kid + 1], heap[kid]))
+            kid++;
+        if (!heap_less(heap[kid], v))
+            break;
+        heap[at] = heap[kid];
+        at = kid;
+    }
+    if (nheap)
+        heap[at] = v;
+
+    return top;
+}
+
+/* The first position at or after `x` that `v` is read or written at, or
+ * -1. */
+static int next_use(int v, int x)
+{
+    int lo = up_lo[v], hi = up_hi[v];
+
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+
+        if (upos[mid] < x)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    return lo < up_hi[v] ? upos[lo] : -1;
+}
+
+/* The first position at or after `s` where something clobbers one of
+ * `units`, or -1: a binary search over the range OR. */
+static int clob_first(unsigned units, int s)
+{
+    int lo = s, hi = npos - 1;
+
+    if (s >= npos || !(clob_or(s, npos - 1) & units))
+        return -1;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+
+        if (clob_or(s, mid) & units)
+            hi = mid;
+        else
+            lo = mid + 1;
+    }
+
+    return lo;
+}
+
+/* The first start, at or after `s`, of an interval fixed to one of `units`
+ * other than `v` and its copies -- or `s` itself where one covers it. */
+static int fixed_first(unsigned units, int s, int v)
+{
+    int u, best = -1;
+
+    for (u = 0; u <= U_F; u++) {
+        int lo = 0, hi = fix_n[u], k;
+
+        if (!(units & UB(u)))
+            continue;
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+
+            if (fix_e[u][mid] < s)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        for (k = lo; k != fix_n[u]; k++) {
+            int f = fix_v[u][k];
+
+            if (f == v || same_value(f, v) || fam[f] == fam[v])
+                continue;
+            if (best < 0 || (fix_s[u][k] < s ? s : fix_s[u][k]) < best)
+                best = fix_s[u][k] < s ? s : fix_s[u][k];
+            break;
+        }
+    }
+
+    return best;
+}
+
+/* How far `v` may keep register `p` from its start, whatever holds it
+ * now: up to the next interval fixed to it, or the next instruction that
+ * clobbers it. -1 where one of those is there already. */
+static int limit_until(int v, int p)
+{
+    unsigned units = preg_units[p];
+    int s = iv_s[v], fu = npos, f, q;
+
+    /* Made among a call's arguments, after the pairs live across it are
+     * pushed: nothing made there is pushed, so it is in no register at the
+     * call -- in memory across it, where it lives across. */
+    if ((s >> 1) < ninsn_scan && call_of[s >> 1] >= 0 && call_of[s >> 1] > s)
+        fu = call_of[s >> 1] - 1;
+    f = fixed_first(units, s, v);
+    if (f >= 0) {
+        if (f <= s)
+            return -1;
+        fu = f - 1;
+    }
+    q = clob_first(units, s);
+    if (q >= 0 && q < fu)
+        fu = q;
+
+    return fu;
+}
+
+/* Whether a limit lets `v` keep a register past its start: for all of it,
+ * or up to a cut after its start -- a cut is before an instruction, at an
+ * even position. */
+static int long_enough(int v, int fu)
+{
+    return fu >= iv_e[v] || ((fu + 1) & ~1) > iv_s[v];
+}
+
+/* The same, and -1 where an interval live now holds `p`. */
+static int free_until(int v, int p)
+{
+    int j;
+
+    for (j = 0; j != nact; j++)
+        if ((preg_units[vr[act[j]].preg] & preg_units[p]) && !same_value(act[j], v))
+            return -1;
+
+    return limit_until(v, p);
+}
+
+/* The instruction at position `pos`. */
+static MIns *ins_at(int pos)
+{
+    return &mb[ins_blk[pos >> 1]].ins[ins_idx[pos >> 1]];
+}
+
+/* `v` cut at `sp`, an even position inside it: the part from there on a
+ * register of its own, its uses renamed. */
+static int split_at(int v, int sp)
+{
+    int c, lo, hi, k;
+    VReg copy = vr[v];
+
+    if (sp <= iv_s[v] || sp > iv_e[v])
+        acc_error("internal: an interval cut outside itself");
+    c = new_vr(copy.width, copy.cls);
+    vr[c] = copy;
+    vr[c].preg = -1;
+    vr[c].short_lived = 0;
+    va_fit();
+    inmem[c] = 0;
+    copy_src[c] = -1;
+    ndefs[c] = 0;
+    part_head[c] = -1;
+    iv_def[c] = -1;
+    iv_s[c] = sp;
+    iv_e[c] = iv_e[v];
+    iv_e[v] = sp - 1;
+    fam[c] = fam[v];
+    child_next[c] = child_next[v];
+    child_next[v] = c;
+    lo = up_lo[v];
+    hi = up_hi[v];
+    k = lo;
+    while (k < hi && upos[k] < sp)
+        k++;
+    up_lo[c] = k;
+    up_hi[c] = hi;
+    up_hi[v] = k;
+    for (; k != hi; k++) {
+        MIns *mi = ins_at(upos[k]);
+        int n;
+
+        if (mi->d == v) mi->d = c;
+        if (mi->a == v) mi->a = c;
+        if (mi->b == v) mi->b = c;
+        if (mi->t == v) mi->t = c;
+        if (mi->op == M_PCOPY)
+            for (n = 0; n != pc[mi->imm].n; n++) {
+                if (pc[mi->imm].src[n] == v) pc[mi->imm].src[n] = c;
+                if (pc[mi->imm].dst[n] == v) pc[mi->imm].dst[n] = c;
+            }
+    }
+
+    return c;
+}
+
+/* Where a part in memory until its next use `nu` gives way to the next:
+ * before the instruction that reads it, or at the write itself -- where
+ * what was in memory is not wanted, and nothing is loaded. */
+static int cut_for(int nu)
+{
+    return nu;
+}
+
+/* A part not yet given a place: in memory until its next use, then back
+ * in the queue -- or in memory to its end, where it has none. */
+static void requeue(int t)
+{
+    int nu = next_use(t, iv_s[t]), sp;
+
+    if (nu < 0) {
+        inmem[t] = 1;
+        return;
+    }
+    sp = cut_for(nu);
+    if (sp > iv_s[t]) {
+        int rest = split_at(t, sp);
+
+        inmem[t] = 1;
+        heap_push(rest);
+        return;
+    }
+    heap_push(t);
+}
+
+/* `v` given `p` for as long as it may have it, the rest cut off. */
+static void assign(int v, int p)
+{
+    int fu = free_until(v, p);
+
+    vr[v].preg = p;
+    if (fu < iv_e[v])
+        requeue(split_at(v, (fu + 1) & ~1));
+    GROW(act, nact, act_cap);
+    act[nact++] = v;
+}
+
+static int cur_fu[NPREGS];
+
+static int fu_whole(int v, int p)
+{
+    return (vr[v].cls & PB(p)) && cur_fu[p] >= iv_e[v];
+}
+
+/* A register free at the start of `v`: one for the whole of it -- a
+ * copy's partner's first, then its group's -- or the one free longest,
+ * where that is long enough to cut. */
+static int assign_free(int v)
+{
+    int best = -1, p;
+
+    for (p = 0; p != NPREGS; p++)
+        cur_fu[p] = vr[v].cls & PB(p) ? free_until(v, p) : -1;
+
+    /* A later part of a value: where its first part is, so that the moves
+     * joining them come to nothing where they meet -- round a loop, above
+     * all, whose head has the first. */
+    p = fam[v] != v ? vr[fam[v]].preg : -1;
+    if (p >= 0 && fu_whole(v, p)) {
+        assign(v, p);
+        return 1;
+    }
+    p = partner_reg(v, fu_whole, 0);
+    if (p < 0 && fam[v] < grp_n) {
+        p = grp_pref[grp_find(fam[v])];
+        if (p >= 0 && !fu_whole(v, p))
+            p = -1;
+    }
+    if (p < 0)
+        p = partner_reg(v, fu_whole, 1);
+    if (p < 0)
+        for (p = 0; p != NPREGS && !fu_whole(v, p); p++)
+            ;
+    if (p < NPREGS && p >= 0) {
+        assign(v, p);
+        return 1;
+    }
+    for (p = 0; p != NPREGS; p++)
+        if (cur_fu[p] >= 0 && (best < 0 || cur_fu[p] > cur_fu[best]))
+            best = p;
+    if (best >= 0 && long_enough(v, cur_fu[best])) {
+        assign(v, best);
+        return 1;
+    }
+
+    return 0;
+}
+
+/* None free at the start of `v`: the register whose holders' next use is
+ * furthest, taken from them -- each cut there and kept in memory until
+ * that use -- or `v` itself kept in memory until its own, where that is
+ * further still and it is not written here. 0 where no register can be
+ * had: those holding each are made for one instruction, or read here. */
+static int assign_blocked(int v)
+{
+    int s = iv_s[v], ev = s & ~1, best = -1, best_nu = -1, p, j, cu;
+
+    for (p = 0; p != NPREGS; p++) {
+        unsigned units = preg_units[p];
+        int nu = INT_MAX, ok = 1, f;
+
+        if (!(vr[v].cls & PB(p)))
+            continue;
+        f = limit_until(v, p);
+        if (f < 0 || !long_enough(v, f))
+            continue;
+        for (j = 0; j != nact && ok; j++) {
+            int a = act[j], na;
+
+            if (!(preg_units[vr[a].preg] & units) || same_value(a, v))
+                continue;
+            if (vr[a].short_lived || popcount(vr[a].cls) == 1 || ev <= iv_s[a]) {
+                ok = 0;
+                break;
+            }
+            na = next_use(a, ev);
+            if (na >= 0 && na <= s)
+                ok = 0;
+            else if (na >= 0 && na < nu)
+                nu = na;
+        }
+        if (ok && nu > best_nu) {
+            best = p;
+            best_nu = nu;
+        }
+    }
+    if (best < 0)
+        return 0;
+    cu = next_use(v, s);
+    if (cu != s && (cu < 0 || cu > best_nu) && !vr[v].short_lived) {
+        if (cu < 0) {
+            inmem[v] = 1;
+            return 1;
+        }
+        if (cut_for(cu) > s) {
+            heap_push(split_at(v, cut_for(cu)));
+            inmem[v] = 1;
+            return 1;
+        }
+    }
+    for (j = 0; j < nact; j++) {
+        int a = act[j];
+
+        if (!(preg_units[vr[a].preg] & preg_units[best]) || same_value(a, v))
+            continue;
+        act[j--] = act[--nact];
+        requeue(split_at(a, ev));
+    }
+    assign(v, best);
+
+    return 1;
+}
+
+/* The scan. -1 where a register cannot be had for one that must have
+ * one. */
+static int split_scan(void)
+{
+    int k, at, pos, n, v, ninsn = 0;
+
+    for (k = 0; k != nlayout; k++)
+        ninsn += mb[layout[k]].n;
+    ins_blk = realloc(ins_blk, ((size_t) ninsn + 1) * sizeof *ins_blk);
+    ins_idx = realloc(ins_idx, ((size_t) ninsn + 1) * sizeof *ins_idx);
+    if (!ins_blk || !ins_idx)
+        acc_error("out of memory for the machine IR");
+    va_cap = nvr + 1;
+    fam = realloc(fam, (size_t) va_cap * sizeof *fam);
+    child_next = realloc(child_next, (size_t) va_cap * sizeof *child_next);
+    inmem = realloc(inmem, (size_t) va_cap * sizeof *inmem);
+    up_lo = realloc(up_lo, (size_t) va_cap * sizeof *up_lo);
+    up_hi = realloc(up_hi, (size_t) va_cap * sizeof *up_hi);
+    if (!fam || !child_next || !inmem || !up_lo || !up_hi)
+        acc_error("out of memory for the machine IR");
+    for (v = 0; v != nvr; v++) {
+        fam[v] = v;
+        child_next[v] = -1;
+        inmem[v] = 0;
+        up_lo[v] = up_hi[v] = 0;
+        vr[v].preg = -1;
+    }
+
+    /* Each register's positions, in order: a count, then a fill. */
+    call_of = realloc(call_of, ((size_t) ninsn + 1) * sizeof *call_of);
+    if (!call_of)
+        acc_error("out of memory for the machine IR");
+    ninsn_scan = ninsn;
+    for (pos = 0, k = 0; k != nlayout; k++) {
+        int open = -1;
+
+        for (at = 0; at != mb[layout[k]].n; at++, pos += 2) {
+            call_of[pos >> 1] = -1;
+            if (mb[layout[k]].ins[at].op == M_SAVE) {
+                open = pos >> 1;
+                continue;
+            }
+            if (open < 0)
+                continue;
+            if (mb[layout[k]].ins[at].op == M_CALL) {
+                int j;
+
+                for (j = open + 1; j <= (pos >> 1); j++)
+                    call_of[j] = pos;
+                open = -1;
+            }
+        }
+    }
+    for (n = 0, pos = 0, k = 0; k != nlayout; k++)
+        for (at = 0; at != mb[layout[k]].n; at++, pos += 2) {
+            MIns *mi = &mb[layout[k]].ins[at];
+            int m;
+
+            ins_blk[pos >> 1] = layout[k];
+            ins_idx[pos >> 1] = at;
+            opbuf_fit(mi_nops(mi));
+            m = mi_uses(mi, opbuf);
+            while (m--)
+                up_hi[opbuf[m]]++;
+            m = mi_defs(mi, opbuf);
+            while (m--)
+                up_hi[opbuf[m]]++;
+        }
+    for (v = 0; v != nvr; v++) {
+        up_lo[v] = n;
+        n += up_hi[v];
+        up_hi[v] = up_lo[v];
+    }
+    nupos = n;
+    upos = realloc(upos, ((size_t) n + 1) * sizeof *upos);
+    if (!upos)
+        acc_error("out of memory for the machine IR");
+    for (pos = 0, k = 0; k != nlayout; k++)
+        for (at = 0; at != mb[layout[k]].n; at++, pos += 2) {
+            MIns *mi = &mb[layout[k]].ins[at];
+            int m;
+
+            m = mi_uses(mi, opbuf);
+            while (m--)
+                upos[up_hi[opbuf[m]]++] = pos;
+            m = mi_defs(mi, opbuf);
+            while (m--)
+                upos[up_hi[opbuf[m]]++] = opbuf[m] == mi->t ? pos : pos + 1;
+        }
+
+    iv_order = realloc(iv_order, ((size_t) nvr + 1) * sizeof *iv_order);
+    if (!iv_order)
+        acc_error("out of memory for the machine IR");
+    for (n = 0, v = 0; v != nvr; v++)
+        if (iv_s[v] >= 0)
+            iv_order[n++] = v;
+    qsort(iv_order, (size_t) n, sizeof *iv_order, by_start);
+    fixed_build(n);
+    groups_build();
+    grp_n = nvr;
+    nheap = nact = 0;
+    split_on = 1;
+    for (k = 0; k != n; k++)
+        heap_push(iv_order[k]);
+    while (nheap) {
+        int cur = heap_pop();
+
+        for (k = 0; k < nact; k++)
+            if (iv_e[act[k]] < iv_s[cur])
+                act[k--] = act[--nact];
+        if (!assign_free(cur) && !assign_blocked(cur)) {
+            split_on = 0;
+            return -1;
+        }
+    }
+    split_on = 0;
+    iv_order = realloc(iv_order, ((size_t) nvr + 1) * sizeof *iv_order);
+    alloc_src = realloc(alloc_src, ((size_t) nvr + 1) * sizeof *alloc_src);
+    if (!iv_order || !alloc_src)
+        acc_error("out of memory for the machine IR");
+    memcpy(alloc_src, copy_src, (size_t) nvr * sizeof *alloc_src);
+    alloc_src_n = nvr;
+
+    return 0;
+}
+
+/* The moves that join the parts of each value, put in: a move a record
+ * of where it goes -- a block, before which of its instructions -- and of
+ * what, from where to where. */
+typedef struct {
+    int blk, before, from, to;
+} Move;
+
+static Move *moves;
+static int nmoves, moves_cap;
+static unsigned char *loaded;   /* by value: its slot is read somewhere */
+
+static void move_add(int blk, int before, int from, int to)
+{
+    GROW(moves, nmoves, moves_cap);
+    moves[nmoves].blk = blk;
+    moves[nmoves].before = before;
+    moves[nmoves].from = from;
+    moves[nmoves].to = to;
+    nmoves++;
+}
+
+static Move *edge_moves_of;     /* for by_edge */
+
+/* Unplaced edge moves, by index: by source, then target. */
+static int by_edge(const void *x, const void *y)
+{
+    const Move *a = &edge_moves_of[*(const int *) x], *b = &edge_moves_of[*(const int *) y];
+
+    if (a->blk != b->blk)
+        return a->blk - b->blk;
+    if (a->before != b->before)
+        return b->before - a->before;
+
+    return *(const int *) x - *(const int *) y;
+}
+
+static int by_place(const void *x, const void *y)
+{
+    const Move *a = x, *b = y;
+
+    if (a->blk != b->blk)
+        return a->blk - b->blk;
+    if (a->before != b->before)
+        return a->before - b->before;
+
+    return a < b ? -1 : a > b;
+}
+
+/* A part's spill slot: its value's, made where first wanted -- none for
+ * a constant, an address or a parameter, made again or read from its own
+ * slot. */
+static int slot_of(int v)
+{
+    int r = fam[v];
+
+    if (vr[r].remat || vr[r].param)
+        return 0;
+    if (!vr[r].spill)
+        vr[r].spill = new_spill(vr[r].width);
+
+    return vr[r].spill;
+}
+
+/* The part of value `r` that `pos` is in, or -1: a binary search of its
+ * parts, in order. */
+static int *part_off, *part_list;
+
+static int part_at(int r, int pos)
+{
+    int lo = part_off[r], hi = part_off[r + 1];
+
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+
+        if (iv_e[part_list[mid]] < pos)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo < part_off[r + 1] && iv_s[part_list[lo]] <= pos)
+        return part_list[lo];
+
+    return -1;
+}
+
+static int same_place(int x, int y)
+{
+    if (inmem[x] || inmem[y])
+        return inmem[x] && inmem[y];
+
+    return vr[x].preg == vr[y].preg;
+}
+
+/* The instructions a run of moves at one place makes, into `out`: the
+ * stores, the registers in one parallel copy, the loads. */
+static int moves_made(const Move *run, int n, MIns *out)
+{
+    int k, made = 0, copy = -1;
+
+    for (k = 0; k != n; k++)
+        if (!inmem[run[k].from] && inmem[run[k].to] && loaded[fam[run[k].to]]
+            && slot_of(run[k].to)) {
+            MIns *mi = &out[made++];
+
+            memset(mi, 0, sizeof *mi);
+            mi->op = M_STF;
+            mi->a = run[k].from;
+            mi->d = mi->b = mi->t = -1;
+            mi->sym = -2;
+            mi->imm = slot_of(run[k].to);
+            mi->width = vr[run[k].from].width;
+        }
+    for (k = 0; k != n; k++)
+        if (!inmem[run[k].from] && !inmem[run[k].to]) {
+            if (copy < 0) {
+                MIns *mi = &out[made++];
+
+                copy = new_pcopy();
+                memset(mi, 0, sizeof *mi);
+                mi->op = M_PCOPY;
+                mi->d = mi->a = mi->b = mi->t = mi->sym = -1;
+                mi->imm = copy;
+            }
+            pcopy_add(copy, run[k].to, run[k].from);
+        }
+    for (k = 0; k != n; k++)
+        if (inmem[run[k].from] && !inmem[run[k].to]) {
+            MIns *mi = &out[made++];
+            int r = fam[run[k].to];
+
+            memset(mi, 0, sizeof *mi);
+            mi->d = run[k].to;
+            mi->a = mi->b = mi->t = mi->sym = -1;
+            mi->width = vr[r].width;
+            if (vr[r].remat) {
+                mi->op = vr[r].remat;
+                mi->imm = vr[r].remat_imm;
+                mi->sym = vr[r].remat == M_LDSYM ? vr[r].remat_sym : -1;
+            } else {
+                mi->op = M_LDF;
+                mi->imm = vr[r].param ? vr[r].param : slot_of(run[k].to);
+                mi->sym = vr[r].param ? -1 : -2;
+            }
+        }
+
+    return made;
+}
+
+/* The moves for the parts made by split_scan, and the code made again
+ * with them. */
+static const char *resolve_bad;
+
+static void split_resolve(void)
+{
+    int k, v, r, at, n, nroots = nvr, *pred_n, *npred_off, *pred_at, start;
+
+    /* Each value's parts, in order: the list from each first part. */
+    part_off = realloc(part_off, ((size_t) nvr + 2) * sizeof *part_off);
+    part_list = realloc(part_list, ((size_t) nvr + 1) * sizeof *part_list);
+    if (!part_off || !part_list)
+        acc_error("out of memory for the machine IR");
+    for (n = 0, r = 0; r != nroots; r++) {
+        part_off[r] = n;
+        if (fam[r] == r)
+            for (v = r; v >= 0; v = child_next[v])
+                if (iv_s[v] >= 0)
+                    part_list[n++] = v;
+    }
+    part_off[nroots] = n;
+    nmoves = 0;
+    resolve_bad = NULL;
+
+    /* In a block: where one part ends and the next begins, but at a
+     * block's start, which the edges see to. */
+    for (r = 0; r != nroots; r++)
+        for (k = part_off[r]; k + 1 < part_off[r + 1]; k++) {
+            int c = part_list[k], d = part_list[k + 1], x = iv_s[d];
+
+            /* No move into a part that begins with a write of it. */
+            if (same_place(c, d) || ins_idx[x >> 1] == 0 || (x & 1))
+                continue;
+            move_add(ins_blk[x >> 1], ins_idx[x >> 1], c, d);
+        }
+
+    /* On each edge: what each value live into a block is in at the end of
+     * the block before and at the start of this one. Where one differs,
+     * the moves go at the start of a block with one way in, before the
+     * jump of a block with one way out, and in a block of the edge's own
+     * where there are more of both. */
+    pred_n = calloc((size_t) nmb + 2, sizeof *pred_n);
+    if (!pred_n)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != nlayout; k++)
+        for (n = 0; n != mb[layout[k]].nsucc; n++)
+            pred_n[mb[layout[k]].succ[n] + 2]++;
+    for (k = 0; k != nmb; k++)
+        pred_n[k + 2] += pred_n[k + 1];
+    npred_off = pred_n;
+    pred_at = malloc(((size_t) npred_off[nmb + 1] + 1) * sizeof *pred_at);
+    if (!pred_at)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != nlayout; k++)
+        for (n = 0; n != mb[layout[k]].nsucc; n++)
+            pred_at[npred_off[mb[layout[k]].succ[n] + 1]++] = layout[k];
+    start = nmoves;
+    for (k = 0; k != nlivein; k++) {
+        int b = livein_blk[k], cin, j;
+
+        r = livein_v[k];
+        if (r >= nroots || fam[r] != r || blk_pos[b] < 0)
+            continue;
+        cin = part_at(r, blk_pos[b]);
+        if (cin < 0)
+            continue;
+        for (j = npred_off[b]; j != npred_off[b + 1]; j++) {
+            int pb = pred_at[j], cout;
+
+            if (blk_pos[pb] < 0)
+                continue;
+            cout = part_at(r, blk_end[pb]);
+            if (cout < 0 || same_place(cout, cin))
+                continue;
+            /* blk: the edge, for now, as its source; before: its target */
+            move_add(pb, -1 - b, cout, cin);
+        }
+    }
+
+    /* Where each edge's moves go. */
+    for (k = start; k != nmoves; k++) {
+        int pb = moves[k].blk, b = -1 - moves[k].before;
+        int nin = npred_off[b + 1] - npred_off[b];
+
+        if (nin == 1 && b != layout[0]) {
+            moves[k].blk = b;
+            moves[k].before = 0;
+        } else if (mb[pb].nsucc == 1) {
+            moves[k].before = mb[pb].n && (mb[pb].ins[mb[pb].n - 1].op == M_JMP)
+                              ? mb[pb].n - 1 : mb[pb].n;
+        } else {
+            moves[k].before = -1 - b;   /* still the edge: a block for it */
+        }
+    }
+    {
+        /* An edge block for each edge still left: its moves, and a jump
+         * on to where the edge went. Placed after the block it is from. */
+        int *after_head = malloc(((size_t) nmb + 1) * sizeof *after_head), nold = nmb;
+        int *after_next = NULL, nafter = 0, after_cap = 0, *after_blk = NULL;
+
+        if (!after_head)
+            acc_error("out of memory for the machine IR");
+        for (k = 0; k != nmb; k++)
+            after_head[k] = -1;
+        /* The edges still left, each move's (source, target) taken first,
+         * sorted, and a block made for each pair: nothing read from a move
+         * as it is changed. */
+        int *left = malloc(((size_t) (nmoves - start) + 1) * sizeof *left), nleft = 0;
+        int *left_from = malloc(((size_t) nmb + 1) * sizeof *left_from);
+        int prev_from = -1, prev_to = -1, e = -1;
+
+        if (!left || !left_from)
+            acc_error("out of memory for the machine IR");
+        for (k = start; k != nmoves; k++)
+            if (moves[k].before < 0)
+                left[nleft++] = k;
+        edge_moves_of = moves;
+        qsort(left, (size_t) nleft, sizeof *left, by_edge);
+        for (k = 0; k != nleft; k++) {
+            Move *mv = &moves[left[k]];
+            int pb = mv->blk, b = -1 - mv->before, j;
+
+            if (pb != prev_from || b != prev_to) {
+                MIns jmp;
+
+                e = new_mb(-1);
+                memset(&jmp, 0, sizeof jmp);
+                jmp.op = M_JMP;
+                jmp.d = jmp.a = jmp.b = jmp.t = jmp.sym = -1;
+                jmp.imm2 = b;
+                GROW(mb[e].ins, mb[e].n, mb[e].cap);
+                mb[e].ins[mb[e].n++] = jmp;
+                mb[e].succ[0] = b;
+                mb[e].nsucc = 1;
+                if (mb[pb].n && mb[pb].ins[mb[pb].n - 1].op == M_BR
+                    && mb[pb].ins[mb[pb].n - 1].imm2 == b)
+                    mb[pb].ins[mb[pb].n - 1].imm2 = e;
+                for (j = 0; j != mb[pb].nsucc; j++)
+                    if (mb[pb].succ[j] == b)
+                        mb[pb].succ[j] = e;
+                GROW(after_blk, nafter, after_cap);
+                after_next = realloc(after_next, (size_t) after_cap * sizeof *after_next);
+                if (!after_next)
+                    acc_error("out of memory for the machine IR");
+                after_blk[nafter] = e;
+                after_next[nafter] = after_head[pb];
+                after_head[pb] = nafter++;
+                prev_from = pb;
+                prev_to = b;
+            }
+            mv->blk = e;
+            mv->before = 0;
+        }
+        free(left);
+        free(left_from);
+        if (nafter) {
+            int *old = malloc(((size_t) nlayout + 1) * sizeof *old), nold_layout = nlayout;
+
+            if (!old)
+                acc_error("out of memory for the machine IR");
+            memcpy(old, layout, (size_t) nlayout * sizeof *old);
+            layout = realloc(layout, ((size_t) nlayout + nafter + 1) * sizeof *layout);
+            if (!layout)
+                acc_error("out of memory for the machine IR");
+            nlayout = 0;
+            for (k = 0; k != nold_layout; k++) {
+                int a;
+
+                layout[nlayout++] = old[k];
+                if (old[k] < nold)
+                    for (a = after_head[old[k]]; a >= 0; a = after_next[a])
+                        layout[nlayout++] = after_blk[a];
+            }
+            free(old);
+        }
+        free(after_head);
+        free(after_next);
+        free(after_blk);
+    }
+
+    /* A value is stored only where a load reads it back: a part kept in
+     * memory until the value is written again needs nothing there. */
+    loaded = realloc(loaded, (size_t) nvr + 1);
+    if (!loaded)
+        acc_error("out of memory for the machine IR");
+    memset(loaded, 0, (size_t) nvr + 1);
+    for (k = 0; k != nmoves; k++)
+        if (inmem[moves[k].from] && !inmem[moves[k].to])
+            loaded[fam[moves[k].from]] = 1;
+
+    /* The code made again, each block with its moves where they go. */
+    if (nmoves)
+        qsort(moves, (size_t) nmoves, sizeof *moves, by_place);
+    for (k = 0; k != nmoves; ) {
+        int b = moves[k].blk, j = k, made = 0, i;
+        MBlock *blk;
+
+        while (j != nmoves && moves[j].blk == b)
+            j++;
+        blk = &mb[b];
+        for (i = k; i != j; i++)
+            if (moves[i].before < 0 || moves[i].before > blk->n) {
+                resolve_bad = "internal: a move with nowhere to go";
+                goto out;
+            }
+        sp_n = 0;
+        for (at = 0; at <= blk->n; at++) {
+            while (k != j && moves[k].before == at) {
+                int e = k;
+                MIns out[3 * NPREGS + 64];
+
+                while (e != j && moves[e].before == at)
+                    e++;
+                made = moves_made(moves + k, e - k, out);
+                for (i = 0; i != made; i++)
+                    sp_put(&out[i]);
+                k = e;
+            }
+            if (at != blk->n)
+                sp_put(&blk->ins[at]);
+        }
+        blk = &mb[b];
+        if (sp_n > blk->cap) {
+            blk->ins = realloc(blk->ins, (size_t) sp_n * sizeof *blk->ins);
+            if (!blk->ins)
+                acc_error("out of memory for the machine IR");
+            blk->cap = sp_n;
+        }
+        memcpy(blk->ins, sp_out, (size_t) sp_n * sizeof *sp_out);
+        blk->n = sp_n;
+    }
+out:
+    free(pred_n);
+    free(pred_at);
+}
+
+/* ------------------------------------------------------------------ */
 /* checking                                                            */
 
 /* OPTACC_MIR_DUMP: the function's machine IR, with the registers where
@@ -3139,6 +4138,8 @@ static const char *verify(void)
     for (k = 0; k != n; k++) {
         int v = iv_order[k];
 
+        if (vr[v].preg < 0 && splitting && v < va_cap && inmem[v])
+            continue;                   /* a part in memory */
         if (vr[v].preg < 0 || !(vr[v].cls & PB(vr[v].preg))) {
             clob_free();
             return "internal: a register outside its class";
@@ -3167,11 +4168,388 @@ static const char *verify(void)
     return NULL;
 }
 
+/* After the parts are joined: each read finds its register holding what
+ * it reads, on every path to it. Which value each register unit holds,
+ * and which part's value each spill slot, followed through the code,
+ * each block from what all the blocks before it agree on -- an unknown
+ * or a disagreement is a failure. Passes over the blocks until nothing
+ * changes, a handful for the deepest loops: each linear in the code. A
+ * register holds a value: a copy that shares it with what it copies, as
+ * the scan lets one, holds the same. */
+#define H_TOP (-3)              /* not reached yet */
+#define H_ANY (-2)              /* the paths disagree, or nothing known */
+#define H_UNDEF (-4)            /* as the function begins: what a value
+                                 * read before it is set may be */
+
+static int *hold_in, *hold_out, *slot_in, *slot_out;
+static unsigned long long *set_out;     /* by block: the read-before-set
+                                         * values set on some path to its
+                                         * end, a bit each */
+static int *undef_bit;                  /* by value: its bit, or -1 */
+
+/* What a register holds, as the checker names it: the value a part is of,
+ * and a copy as what it copies. */
+static int value_key(int v)
+{
+    int k = splitting && v < va_cap ? fam[v] : v;
+
+    if (!splitting)
+        return value_of(k);
+
+    return k < alloc_src_n && alloc_src[k] >= 0 ? alloc_src[k] : k;
+}
+
+static int family_of(int v)
+{
+    return splitting && v < va_cap ? fam[v] : v;
+}
+/* Two paths' knowledge of one place, met: what one has and the other
+ * has not reached yet, or has as it was when the function began. */
+static int npruned;              /* moves check_joined took out */
+
+/* Whether what is in a place, undefined as the function began, will do
+ * for a read of `v`: where `v` is read before it is set, and no path here
+ * has set it yet. */
+static int undef_here(int h, int v, unsigned long long set_now)
+{
+    int bit;
+
+    if (h != H_UNDEF || v >= nvr)
+        return 0;
+    bit = undef_bit[family_of(v)];
+
+    return bit >= 0 && !(set_now >> bit & 1);
+}
+
+/* What the paths into a block agree a place holds, `init` the first
+ * block's own: one path's value where the others have not been reached;
+ * undefined only where every path has it so -- or, met with a value of
+ * one read before it is set, that value, where the paths still undefined
+ * have not set it; pruning, never. */
+static int check_merge(int init, const int *out, int width, int at, int from,
+                       int to, const int *pred, int prune)
+{
+    int result = init == H_UNDEF ? H_TOP : init, any_undef = init == H_UNDEF, j, bit;
+    unsigned long long undef_sets = 0;
+
+    for (j = from; j != to; j++) {
+        int h = out[pred[j] * width + at];
+
+        if (h == H_TOP)
+            continue;
+        if (h == H_UNDEF) {
+            any_undef = 1;
+            undef_sets |= set_out[pred[j]];
+            continue;
+        }
+        result = result == H_TOP || result == h ? h : H_ANY;
+    }
+    if (!any_undef)
+        return result;
+    if (prune)
+        return H_ANY;
+    if (result == H_TOP)
+        return H_UNDEF;
+    if (result < 0 || result >= nvr)
+        return H_ANY;
+    bit = undef_bit[result];
+
+    return bit >= 0 && !(undef_sets >> bit & 1) ? result : H_ANY;
+}
+
+/* With `prune`, the same walk takes out the moves of what is already
+ * where they move it -- on every path, strictly: a value read before it is
+ * set is not there on the path that does not set it -- and says nothing;
+ * without, it checks. */
+static const char *check_joined(int prune)
+{
+    int nunits = U_F + 1, nslot = nspills + 1, pass, k, changed = 1;
+    int *pred_off = calloc((size_t) nmb + 2, sizeof *pred_off), *pred_at;
+    int hold[U_F + 1], saved[U_F + 1], *slot = malloc(((size_t) nslot + 1) * sizeof *slot);
+    unsigned long long set_now = 0;
+    int nbits = 0;
+    const char *bad = NULL;
+
+    hold_in = realloc(hold_in, ((size_t) nmb + 1) * nunits * sizeof *hold_in);
+    hold_out = realloc(hold_out, ((size_t) nmb + 1) * nunits * sizeof *hold_out);
+    slot_in = realloc(slot_in, ((size_t) nmb + 1) * nslot * sizeof *slot_in);
+    slot_out = realloc(slot_out, ((size_t) nmb + 1) * nslot * sizeof *slot_out);
+    set_out = realloc(set_out, ((size_t) nmb + 1) * sizeof *set_out);
+    undef_bit = realloc(undef_bit, ((size_t) nvr + 1) * sizeof *undef_bit);
+    if (!pred_off || !slot || !hold_in || !hold_out || !slot_in || !slot_out
+        || !set_out || !undef_bit)
+        acc_error("out of memory for the machine IR");
+
+    /* The values read before they are set on some path: live into the
+     * function's first block. Reading what is there as it begins is what
+     * such a read is -- on a path that has not set it yet. A bit each, for
+     * the first 64 of them; the rest are held to what they are. */
+    for (k = 0; k != nvr; k++)
+        undef_bit[k] = -1;
+    for (k = 0; k != nlivein; k++)
+        if (livein_blk[k] == layout[0] && livein_v[k] < nvr
+            && undef_bit[livein_v[k]] < 0 && nbits < 64)
+            undef_bit[livein_v[k]] = nbits++;
+    for (k = 0; k != nmb; k++)
+        set_out[k] = 0;
+    for (k = 0; k != nlayout; k++) {
+        int n;
+
+        for (n = 0; n != mb[layout[k]].nsucc; n++)
+            pred_off[mb[layout[k]].succ[n] + 2]++;
+    }
+    for (k = 0; k != nmb; k++)
+        pred_off[k + 2] += pred_off[k + 1];
+    pred_at = malloc(((size_t) pred_off[nmb + 1] + 1) * sizeof *pred_at);
+    if (!pred_at)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != nlayout; k++) {
+        int n;
+
+        for (n = 0; n != mb[layout[k]].nsucc; n++)
+            pred_at[pred_off[mb[layout[k]].succ[n] + 1]++] = layout[k];
+    }
+    for (k = 0; k != (nmb + 1) * nunits; k++)
+        hold_out[k] = H_TOP;
+    for (k = 0; k != (nmb + 1) * nslot; k++)
+        slot_out[k] = H_TOP;
+
+    /* To a fixed point; then once more, saying what is wrong. */
+    for (pass = 0; !bad && pass != 66; pass++) {
+        int report = !changed || pass == 65;
+
+        changed = 0;
+        for (k = 0; k != nlayout && !bad; k++) {
+            int b = layout[k], u, j, at, pos, reached;
+
+            /* What the blocks before agree on. */
+            for (u = 0; u != nunits; u++)
+                hold[u] = k == 0 ? (prune ? H_ANY : H_UNDEF) : H_TOP;
+            for (j = 0; j != nslot; j++)
+                slot[j] = k == 0 ? (prune ? H_ANY : H_UNDEF) : H_TOP;
+            reached = k == 0;
+            set_now = 0;
+            for (j = pred_off[b]; j != pred_off[b + 1]; j++)
+                if (hold_out[pred_at[j] * nunits] != H_TOP) {
+                    reached = 1;
+                    set_now |= set_out[pred_at[j]];
+                }
+            for (u = 0; u != nunits; u++)
+                hold[u] = check_merge(hold[u], hold_out, nunits, u, pred_off[b],
+                                      pred_off[b + 1], pred_at, prune);
+            for (j = 0; j != nslot; j++)
+                slot[j] = check_merge(slot[j], slot_out, nslot, j, pred_off[b],
+                                      pred_off[b + 1], pred_at, prune);
+            if (!reached)
+                continue;               /* nothing comes here, so far */
+            for (u = 0; u != nunits; u++)
+                if (hold[u] == H_TOP)
+                    hold[u] = H_ANY;
+            for (j = 0; j != nslot; j++)
+                if (slot[j] == H_TOP)
+                    slot[j] = H_ANY;
+
+            pos = blk_pos[b];
+            for (at = 0; at != mb[b].n; at++, pos += 2) {
+                const MIns *mi = &mb[b].ins[at];
+                int n, q, uses[MAX_PCOPY + 8], defs[MAX_PCOPY + 8];
+                int src_here[MAX_PCOPY + 8];
+                unsigned cl;
+
+                opbuf_fit(mi_nops(mi));
+                n = mi_uses(mi, opbuf);
+                for (q = 0; q != n && q != MAX_PCOPY + 8; q++)
+                    uses[q] = opbuf[q];
+                for (q = 0; q != n; q++) {
+                    int v = uses[q], p = vr[v].preg, here = 1;
+
+                    if (p < 0)
+                        continue;
+                    for (u = 0; u != nunits; u++)
+                        if ((preg_units[p] & UB(u)) && hold[u] != value_key(v)
+                            && !undef_here(hold[u], v, set_now))
+                            here = 0;
+                    if (q < MAX_PCOPY + 8)
+                        src_here[q] = here;
+
+                    /* A move of a value to where else it lives -- a store
+                     * to its slot, a copy to another part of it -- reads
+                     * no use of it: what it moves is checked where read. */
+                    if ((mi->op == M_STF && mi->sym == -2)
+                        || (mi->op == M_PCOPY
+                            && family_of(pc[mi->imm].dst[q]) == family_of(v)))
+                        continue;
+                    for (u = 0; u != nunits; u++)
+                        if (report && !prune && (preg_units[p] & UB(u)) && hold[u] != value_key(v)
+                            && !undef_here(hold[u], v, set_now)) {
+                            static char why[96];
+
+                            snprintf(why, sizeof why,
+                                     "internal: m%d's instruction %d reads v%d, not there",
+                                     b, at, v);
+                            bad = why;
+                        }
+                }
+                /* A reload: the slot holds a part of the same value. */
+                if (report && !prune && mi->op == M_LDF && mi->sym == -2 && mi->d >= 0
+                    && (mi->imm >= nslot || (slot[mi->imm] != family_of(mi->d)
+                                             && !undef_here(slot[mi->imm], mi->d, set_now)))) {
+                    static char why[96];
+
+                    snprintf(why, sizeof why,
+                             "internal: m%d's instruction %d reloads v%d's slot, not stored",
+                             b, at, mi->d);
+                    bad = why;
+                }
+                /* A move of what is there already: nothing, taken out. */
+                if (prune && report) {
+                    MIns *w = &mb[b].ins[at];
+
+                    if (w->op == M_STF && w->sym == -2 && w->imm < nslot
+                        && slot[w->imm] == family_of(w->a) && src_here[0]) {
+                        w->op = M_DEAD;
+                        npruned++;
+                        continue;
+                    }
+                    if (w->op == M_LDF && w->sym == -2 && vr[w->d].preg >= 0) {
+                        int all = 1;
+
+                        for (u = 0; u != nunits; u++)
+                            if ((preg_units[vr[w->d].preg] & UB(u))
+                                && hold[u] != value_key(w->d))
+                                all = 0;
+                        if (all) {
+                            w->op = M_DEAD;
+                            npruned++;
+                            continue;
+                        }
+                    }
+                    if (w->op == M_PCOPY) {
+                        PCopy *pcp = &pc[w->imm];
+                        int e2, put = 0;
+
+                        for (e2 = 0; e2 != pcp->n; e2++) {
+                            int d2 = pcp->dst[e2], keep = 1;
+
+                            if (family_of(d2) == family_of(pcp->src[e2]) && vr[d2].preg >= 0
+                                && vr[d2].preg == vr[pcp->src[e2]].preg)
+                                keep = 0;       /* the same register */
+                            if (keep) {
+                                pcp->dst[put] = pcp->dst[e2];
+                                pcp->src[put++] = pcp->src[e2];
+                            } else {
+                                npruned++;
+                            }
+                        }
+                        pcp->n = put;
+                    }
+                }
+                if (mi->op == M_STF && mi->sym == -2 && mi->a >= 0 && mi->imm < nslot)
+                    slot[mi->imm] = src_here[0] ? family_of(mi->a) : H_ANY;
+
+                /* A call: the pairs pushed at its save come back as they
+                 * were then; anything else the callee may have changed. */
+                if (mi->op == M_SAVE)
+                    for (u = 0; u != nunits; u++)
+                        saved[u] = hold[u];
+                if (mi->op == M_CALL)
+                    for (u = 0; u != nunits; u++) {
+                        unsigned bit = UB(u);
+                        int kept = ((mi->imm2 & 1) && (preg_units[P_BC] & bit))
+                                   || ((mi->imm2 & 2) && (preg_units[P_DE] & bit))
+                                   || ((mi->imm2 & 4) && (preg_units[P_IY] & bit));
+
+                        hold[u] = kept ? saved[u] : H_ANY;
+                    }
+
+                /* What it clobbers, then what it writes. */
+                cl = pos < npos ? clob[pos] : 0;
+                if (mi->op == M_CALL)
+                    cl |= UB(U_A) | preg_units[P_HL];
+                if (mi->op == M_HELPER)
+                    cl |= UB(U_A);
+                for (u = 0; u != nunits; u++)
+                    if (cl & UB(u))
+                        hold[u] = H_ANY;
+                n = mi_defs(mi, opbuf);
+                for (q = 0; q != n && q != MAX_PCOPY + 8; q++)
+                    defs[q] = opbuf[q];
+                for (q = 0; q != n; q++) {
+                    int v = defs[q], p = vr[v].preg, key = value_key(v), moved;
+
+                    /* A move of a value from one place to another keeps
+                     * the rest of where it is; anything else writes it
+                     * anew, and every other place holding it is stale. */
+                    moved = (mi->op == M_COPY && value_key(mi->a) == key)
+                            || (mi->op == M_PCOPY && value_key(pc[mi->imm].src[q]) == key)
+                            || (mi->op == M_LDF && mi->sym == -2)
+                            || v == mi->t;
+                    if (!moved && undef_bit[family_of(v)] >= 0)
+                        set_now |= 1ULL << undef_bit[family_of(v)];
+                    if (!moved) {
+                        int m;
+
+                        for (u = 0; u != nunits; u++)
+                            if (hold[u] == key)
+                                hold[u] = H_ANY;
+                        for (m = 0; m != nslot; m++)
+                            if (slot[m] == family_of(v))
+                                slot[m] = H_ANY;
+                    }
+                    if (p < 0)
+                        continue;
+                    if (mi->op == M_PCOPY && q < MAX_PCOPY + 8
+                        && family_of(pc[mi->imm].src[q]) == family_of(v)
+                        && !src_here[q])
+                        key = H_ANY;            /* moved, but not what it is */
+                    for (u = 0; u != nunits; u++)
+                        if (preg_units[p] & UB(u))
+                            hold[u] = v == mi->t ? H_ANY : key;
+                }
+            }
+            if (set_out[b] != set_now) {
+                set_out[b] = set_now;
+                changed = 1;
+            }
+            for (u = 0; u != nunits; u++)
+                if (hold_out[b * nunits + u] != hold[u]) {
+                    hold_out[b * nunits + u] = hold[u];
+                    changed = 1;
+                }
+            for (j = 0; j != nslot; j++)
+                if (slot_out[b * nslot + j] != slot[j]) {
+                    slot_out[b * nslot + j] = slot[j];
+                    changed = 1;
+                }
+        }
+        if (report)
+            break;
+    }
+    free(pred_off);
+    free(pred_at);
+    free(slot);
+
+    /* What was taken out, taken out of the blocks. */
+    if (npruned)
+        for (k = 0; k != nmb; k++) {
+            int at, put = 0;
+
+            for (at = 0; at != mb[k].n; at++)
+                if (mb[k].ins[at].op != M_DEAD
+                    && !(mb[k].ins[at].op == M_PCOPY && pc[mb[k].ins[at].imm].n == 0))
+                    mb[k].ins[put++] = mb[k].ins[at];
+            mb[k].n = put;
+        }
+
+    return bad;
+}
+
 /* The units busy at each parallel copy, for a cycle of its bytes to go
  * round: the intervals live across it, recorded in the copy. */
 static void pcopy_busy(void)
 {
     int k, n = 0, j, nactive = 0, active[NPREGS + 8], next = 0, b, at, pos = 0;
+    int save_pos = 0;
     MIns *save = NULL;
 
     for (k = 0; k != nvr; k++)
@@ -3192,11 +4570,13 @@ static void pcopy_busy(void)
             for (j = 0; j < nactive; j++)
                 if (iv_e[active[j]] < pos)
                     active[j--] = active[--nactive];
-            if (blk->ins[at].op == M_SAVE)
+            if (blk->ins[at].op == M_SAVE) {
                 save = &blk->ins[at];
+                save_pos = pos;
+            }
             if (blk->ins[at].op == M_CALL) {
                 for (j = 0; j != nactive; j++)
-                    if (vr[active[j]].preg >= 0 && iv_s[active[j]] < pos
+                    if (vr[active[j]].preg >= 0 && iv_s[active[j]] < save_pos
                         && iv_e[active[j]] > pos + 1)
                         busy |= preg_units[vr[active[j]].preg];
                 blk->ins[at].imm2 = (busy & preg_units[P_BC] ? 1 : 0)
@@ -3486,15 +4866,20 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         out_byte(0xb7);                                 /* or a, a */
         out_byte2(0xed, pair_op(b, 0x42, 0x52, 0x62, 0));   /* sbc hl, rr */
         return;
-    case M_CMP24S:
-        ld_pair_imm(P_BC, 0x800000);                    /* both moved by */
-        out_byte(0x09);                                 /* half the range */
-        out_byte(0xeb);
-        out_byte(0x09);
-        out_byte(0xeb);
+    case M_CMP24S: {
+        /* The difference's sign is the answer unless it overflowed, and
+         * the other way round where it did: the sign into the carry, and
+         * the carry turned over on an overflow -- add hl, hl keeps P/V. */
+        int over;
+
         out_byte(0xb7);
         out_byte2(0xed, 0x52);                          /* sbc hl, de */
+        out_byte(0x29);                                 /* add hl, hl */
+        over = jump_op(0xe2);                           /* jp po */
+        out_byte(0x3f);                                 /* ccf */
+        patch_to_here(over);
         return;
+    }
     case M_CMP24SI:
         if (!mi->imm2) {
             out_byte(0x29);                             /* add hl, hl */
@@ -3713,6 +5098,13 @@ int mir_on(void)
     return ssa_mir_want;
 }
 
+static int nparts_made;
+
+int mir_parts(void)
+{
+    return nparts_made;
+}
+
 const char *mir_reason(void)
 {
     return mir_why ? mir_why : "?";
@@ -3751,16 +5143,56 @@ int mir_build(void)
         return 0;
     dead_code();
     lay_out();
-    for (round = 0; ; round++) {
+    splitting = ssa_mir_want == 2;
+    nparts_made = 0;
+    if (splitting) {
         intervals();
-        n = linear_scan();
-        if (n == 0)
-            break;
-        if (n < 0 || round == MAX_ROUNDS) {
+        n = nvr;
+        if (split_scan() < 0) {
             mir_why = "registers the allocator could not find";
             return 0;
         }
-        spill_all();
+        clob_free();
+        bad = verify();
+        if (bad) {
+            mir_why = bad;
+            return 0;
+        }
+        nparts_made = nvr - n;
+        split_resolve();
+        if (resolve_bad) {
+            mir_why = resolve_bad;
+            return 0;
+        }
+        intervals();
+        pcopy_busy();
+        npruned = 0;
+        (void) check_joined(1);
+        if (npruned) {
+            clob_free();
+            intervals();
+            pcopy_busy();
+        }
+        bad = check_joined(0);
+        clob_free();
+        if (bad)
+            dump_mir("rejected");
+        if (bad) {
+            mir_why = bad;
+            return 0;
+        }
+    } else {
+        for (round = 0; ; round++) {
+            intervals();
+            n = linear_scan();
+            if (n == 0)
+                break;
+            if (n < 0 || round == MAX_ROUNDS) {
+                mir_why = "registers the allocator could not find";
+                return 0;
+            }
+            spill_all();
+        }
     }
     {
         int bytes = 0, v;
@@ -3773,7 +5205,7 @@ int mir_build(void)
         }
     }
     dump_mir("allocated");
-    bad = verify();
+    bad = splitting ? NULL : verify();
     if (bad) {
         mir_why = bad;
         return 0;

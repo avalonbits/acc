@@ -604,6 +604,19 @@ mirs() {
         fail=$((fail + 1))
     fi
 }
+# With OPTACC_MIR_SPLIT, the allocator that splits intervals: a function
+# with more live than there are registers, made by it, its moves joining
+# the parts checked on every path before the code is made.
+printf '%s\n' 'int f(const char *a, const char *b, int n) { while (n-- > 0) if (*a++ != *b++) return 0; return 1; }' > "$tmp/c.c"
+rm -f "$tmp/c.o"
+if OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+    OPTACC_LEAF=1 OPTACC_MIR=1 OPTACC_MIR_SPLIT=1 OPTACC_PICK=0 OPTACC_SSA_STATS=1 \
+    timeout 20 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 | grep -q '^mir f, split into [1-9]'; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s\n' "more live than registers, split"
+    fail=$((fail + 1))
+fi
 mirs "a loop on chars, made by the machine IR"    yes \
     'int f(const char *s) { int n = 0; while (*s) if (*s++ == 32) n++; return n; }'
 mirs "one that calls"                             yes \
@@ -648,6 +661,14 @@ mir "$OPT" "not by the multiply"               01030000      no  'int f(int *p, 
 # not the fewest uses: 85 bytes for this, where 95 spilled the pointer.
 sum='int f(const int *a, int n) { register const int *p = a; int s = 0; while (n-- > 0) s += *p++; return s; }'
 mir "$OPT" "the loop's values in registers"   dd0706dd170921000000 yes "$sum"
+# Signed, of two variables: the sign of the difference into the carry, and
+# the carry turned over where it overflowed -- or a / sbc hl, de / add
+# hl, hl / jp po -- with no bias through BC. And a pointer stepped by a
+# constant number of elements, the product made: ld bc, 13 / add hl, bc.
+sless='int f(int a, int b) { if (a < b) return 3; return 4; }'
+mir "$OPT" "a < b by the sign and overflow"  b7ed5229e2   yes "$sless"
+mir "$OPT" "not moved by a bias in BC"       01000080     no  "$sless"
+mir "$OPT" "p + 1 of 13 bytes, the product"  010d000009   yes 'struct t { char n[10]; int v; }; struct t *f(struct t *p) { return p + 1; }'
 boolread='extern _Bool b; int f(int *p) { *p = 1; if (b) return 3; return 4; }'
 mir "$OPT" "a _Bool read tested as a byte"   3a000000b7      yes "$boolread"
 mir "$OPT" "not widened and tested"        b7ed626f09b7ed42 no "$boolread"
