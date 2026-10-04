@@ -489,8 +489,8 @@ OPTACC_LEAF=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
     ssa "gone back to more than once"   "ssa f made" \
     'extern int m, n; void a(void) { typedef int A3[3]; typedef A3 An3[n]; void h(An3[][m]); }
 void f(void) { typedef int B[m]; void *g(B); }'
-# A signed comparison moves both sides by 0x800000 through BC, saving BC
-# only where a value lives there -- lists' insert_sorted has none.
+# A signed comparison takes no register but HL -- BC is neither loaded
+# nor saved around it, as moving both sides by 0x800000 did.
 sorted='struct node { int key; struct node *next; };
 void f(struct node **head, struct node *n) { while (*head && (*head)->key < n->key) head = &(*head)->next; n->next = *head; *head = n; }'
 OPTACC_LEAF=1 all "$OPT" "a signed compare, BC free, not saved"  c501000080 no "$sorted"

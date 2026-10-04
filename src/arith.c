@@ -1229,29 +1229,21 @@ static int signed_as_unsigned(int op)
             *rhs = swapped;
             op = op == TK_GT ? TK_LT : TK_GE;
         }
-        /* The right side where it is, in DE or BC, and the other of the
-         * two holds the 0x800000: moved there, the right side went through
-         * the stack, which in a loop's condition cost more than the jumps
-         * it replaced. Either way the moved right side ends in DE. */
+        /* The right side where it is, in DE or BC, and nothing moved:
+         * the difference's sign into the carry, and the carry turned over
+         * where the subtract overflowed -- add hl, hl leaves P/V as sbc
+         * set it. Six bytes after the subtract, and no other register,
+         * where moving both by 0x800000 took the other of DE and BC. */
+        int over;
+
         force_into(lhs, R_HL);
         rr = force_reg(rhs);
-        if (rr == R_DE) {
-            evict_reg(R_BC);
-            ld_rr_imm(R_BC, 0x800000);
-            add_hl_rr(R_BC);            /* HL is moved */
-            ex_de_hl();
-            add_hl_rr(R_BC);            /* and the right side */
-            ex_de_hl();
-        } else {
-            evict_reg(R_DE);
-            ld_rr_imm(R_DE, 0x800000);
-            add_hl_rr(R_DE);            /* HL is moved */
-            ex_de_hl();
-            add_hl_rr(R_BC);            /* and BC, into HL */
-            ex_de_hl();
-        }
         or_a_a();
-        sbc_hl_rr(R_DE);
+        sbc_hl_rr(rr);
+        add_hl_rr(R_HL);
+        over = jump_op(0xe2);           /* jp po */
+        out_byte(0x3f);                 /* ccf */
+        patch_to_here(over);
     }
     vdrop();
     vdrop();
@@ -1289,13 +1281,13 @@ static void vcmp(int op)
     if (cmp_byte_const(op))
         return;
 
-    /* A signed order as an unsigned one: 0x800000 added to both sides,
-     * which moves -8388608 to 0 and 8388607 to the top and keeps them in
-     * order, so the carry of the subtraction is the answer. The signed
-     * answer read the sign and the overflow, which is three jumps and
-     * fourteen bytes where the carry is one jump; against a constant the
-     * constant is moved already, and x > c is x >= c + 1 so that x stays
-     * in HL. */
+    /* A signed order as an unsigned one, the carry the answer: against a
+     * constant, 0x800000 added to both sides, which moves -8388608 to 0
+     * and 8388607 to the top and keeps them in order -- the constant moved
+     * already, and x > c as x >= c + 1 so that x stays in HL; otherwise the
+     * sign of the difference turned into the carry. The signed answer read
+     * the sign and the overflow, which is three jumps and fourteen bytes
+     * where the carry is one jump. */
     if (!is_unsigned && op != TK_EQ && op != TK_NE
         && !val_const(lhs->kind) && signed_as_unsigned(op))
         return;
