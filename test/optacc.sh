@@ -669,6 +669,15 @@ sless='int f(int a, int b) { if (a < b) return 3; return 4; }'
 mir "$OPT" "a < b by the sign and overflow"  b7ed5229e2   yes "$sless"
 mir "$OPT" "not moved by a bias in BC"       01000080     no  "$sless"
 mir "$OPT" "p + 1 of 13 bytes, the product"  010d000009   yes 'struct t { char n[10]; int v; }; struct t *f(struct t *p) { return p + 1; }'
+# The same signed comparison where the leaf backend makes it, and where
+# the code here selects it for the first pass's: the carry turned over on
+# overflow, and no bias -- which took BC, pushed and popped where a value
+# lived there, or the right side through the stack.
+callless='int g(int); int f(int a, int b) { if (a < b) return g(1); return g(2); }'
+OPTACC_LEAF=1 all "$OPT" "a < b in the leaf backend, by the carry" ed5229e2 yes "$callless"
+OPTACC_LEAF=1 all "$OPT" "with no bias"                        01000080 no  "$callless"
+all "$OPT" "a < b in the first pass's code, by the carry"     ed5229e2 yes "$callless"
+all "$OPT" "with no bias there either"                        11000080 no  "$callless"
 boolread='extern _Bool b; int f(int *p) { *p = 1; if (b) return 3; return 4; }'
 mir "$OPT" "a _Bool read tested as a byte"   3a000000b7      yes "$boolread"
 mir "$OPT" "not widened and tested"        b7ed626f09b7ed42 no "$boolread"

@@ -5042,10 +5042,24 @@ static int native_byte_zero(const Ins *insn, int blk, int at)
     return 1;
 }
 
+/* After HL less a side, as signed: the sign of the difference into the
+ * carry, and the carry turned over where it overflowed -- add hl, hl
+ * leaves P/V as the subtract set it. The carry then says less, as for an
+ * unsigned subtract: 6 bytes, and no register but HL. */
+static void signed_carry(void)
+{
+    int over;
+
+    add_hl_rr(R_HL);
+    over = jump_op(0xe2);                       /* jp po */
+    out_byte(0x3f);                             /* ccf */
+    patch_to_here(over);
+}
+
 /* The comparison as native_compare's quick forms cannot make it: DE is
  * borrowed if it holds a value -- pushed first and popped last, which
  * leaves the flags -- the right side read and kept on the stack, the left
- * into HL, both moved by 0x800000 when signed, and HL less DE. Everything
+ * into HL, and HL less DE. Everything
  * is read before DE is written, so a side in DE is read where it is. A
  * side left on the classic stack is read first, since the others' loads
  * go through HL; two left there are the top and the one under it. */
@@ -5066,19 +5080,14 @@ static int compare_general(const Ins *insn, int op, int is_signed,
     load_into(&insn->in[right], place[right], where[right], R_HL);
     push_rr(R_HL);
     load_into(&insn->in[left], place[left], where[left], R_HL);
-    if (is_signed) {
-        ld_rr_imm(R_DE, 0x800000);
-        add_hl_rr(R_DE);
-        out_byte(0xe3);                 /* ex (sp), hl: the right side */
-        add_hl_rr(R_DE);
-        out_byte(0xe3);                 /* and the left back */
-    }
     pop_rr(R_DE);
     if (op == TK_LE || op == TK_GT)
         out_byte(0x37);                 /* scf: HL - DE - 1 */
     else
         or_a_a();
     sbc_hl_rr(R_DE);
+    if (is_signed)
+        signed_carry();
     if (borrow)
         pop_rr(R_DE);
 
@@ -5093,7 +5102,7 @@ static int native_compare(const Ins *insn, int blk, int at)
 {
     const Ins *branch = &insns[at + 1];
     int op = (int) insn->rec->arg[0], place[2], where[2] = { 0, 0 };
-    int in_hl, other, is_signed, cc, number;
+    int in_hl, other, is_signed, cc, number, carry = 0;
 
     if (at + 1 >= ninsns || insn->res < 0 || !vals[insn->res].fwd
         || branch->op != I_BR || branch->nin != 1
@@ -5113,9 +5122,9 @@ static int native_compare(const Ins *insn, int blk, int at)
 
     /* The side to subtract: one in a register where it is, if there is
      * one, and the right side otherwise. */
-    other = place[0] == AT_REG && place[1] != AT_REG && !is_signed ? 0 : 1;
+    other = place[0] == AT_REG && place[1] != AT_REG ? 0 : 1;
     in_hl = 1 - other;
-    if ((!(place[other] == AT_REG && !is_signed) && reg_taken(R_DE))
+    if ((place[other] != AT_REG && reg_taken(R_DE))
         || (place[0] == AT_STACK && place[1] == AT_STACK)) {
         op = compare_general(insn, op, is_signed, place, where);
         cc = op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
@@ -5131,25 +5140,8 @@ static int native_compare(const Ins *insn, int blk, int at)
         add_hl_rr(R_DE);
         ld_rr_imm(R_DE, (number + 0x800000) & 0xffffff);
         where[other] = R_DE;
-    } else if (is_signed) {
-        /* Each side moved, the one left on the stack first -- it is in a
-         * register already, which the other's load would overwrite -- the
-         * first kept on the stack meanwhile, and then the two put back as
-         * HL and DE. */
-        int first = place[other] == AT_STACK ? other : in_hl;
-        int second = 1 - first;
-
-        load_into(&insn->in[first], place[first], where[first], R_HL);
-        ld_rr_imm(R_DE, 0x800000);
-        add_hl_rr(R_DE);
-        push_rr(R_HL);
-        load_into(&insn->in[second], place[second], where[second], R_HL);
-        add_hl_rr(R_DE);
-        pop_rr(R_DE);
-        if (first == in_hl)
-            ex_de_hl();
-        where[other] = R_DE;
     } else {
+        carry = is_signed;
         if (place[other] == AT_STACK) {
             load_into(&insn->in[other], AT_STACK, 0, R_DE);
             place[other] = AT_REG;
@@ -5170,6 +5162,8 @@ static int native_compare(const Ins *insn, int blk, int at)
     else
         or_a_a();
     sbc_hl_rr(where[other]);
+    if (carry)
+        signed_carry();
     cc = op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT ? JP_NC
          : op == TK_EQ ? JP_Z : JP_NZ;
     branch_on(cc, branch, blk, at);
@@ -7096,26 +7090,14 @@ static int leaf_compare(const Ins *insn, int op)
         return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT
                ? JP_NC : op == TK_EQ ? JP_Z : JP_NZ;
     }
-    right = leaf_operands_in(insn, !is_signed);
-
-    if (is_signed) {
-        int keep = leaf_bc_busy((int) (insn - insns));
-
-        if (keep)
-            push_rr(R_BC);
-        ld_rr_imm(R_BC, 0x800000);
-        add_hl_rr(R_BC);
-        ex_de_hl();
-        add_hl_rr(R_BC);
-        ex_de_hl();
-        if (keep)
-            pop_rr(R_BC);
-    }
+    right = leaf_operands_in(insn, 1);
     if (op == TK_LE || op == TK_GT)
         out_byte(0x37);                         /* scf: HL - DE - 1 */
     else
         or_a_a();
     sbc_hl_rr(right);
+    if (is_signed)
+        signed_carry();
 
     return op == TK_LT || op == TK_LE ? JP_C : op == TK_GE || op == TK_GT ? JP_NC
            : op == TK_EQ ? JP_Z : JP_NZ;
