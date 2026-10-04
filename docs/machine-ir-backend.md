@@ -207,6 +207,28 @@ the allocator is a linear scan:
 The live set is never more than the eleven registers, so each step of the
 scan is constant work: the whole is the sort.
 
+A second scan splits intervals instead of spilling them whole, as Wimmer
+and Franz's does: an interval with no register free for all of it keeps
+one for as long as one is free, and the rest goes back in the queue; with
+none free, the holders whose next use is furthest give theirs up and wait
+in memory until then. Each part is a register of its own, and the moves
+that join the parts are put in afterwards -- in a block where one ends and
+the next begins, and on each edge where a value is in one place at the
+end of the block before and another at the start of the one after.
+Values read before they are set, and the moves of a call's arguments,
+which nothing may be live across but what was pushed before them, are
+the cases that need care.
+
+The parts are then checked: which value each register and each slot
+holds, followed over every path to a fixed point, every read finding its
+value. A function that fails is declined, never miscompiled; the same walk
+takes out the moves of what is already where they move it. On acc, zap
+and the rest it seldom beats spilling whole -- smaller in 21 of some
+1,250 functions it makes -- because spilling whole loads into the very
+register the use wants, where a split part competes with the uses for
+registers. It is one more way the pick weighs (`OPTACC_MIR_SPLIT` forces
+it), until it earns more.
+
 ## Frames
 
 After allocation the frame is known: its objects, their sizes, whether the

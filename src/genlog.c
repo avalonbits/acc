@@ -483,9 +483,11 @@ static void gl_function_end(void)
         int picking = !(getenv("OPTACC_PICK") && *getenv("OPTACC_PICK") == '0');
         int made, ssa_leaf_tried = 0, first_leaf, first_cached, first_refused;
 
-        /* OPTACC_MIR: the machine-level backend is one more way -- the
-         * first, where nothing is picked. */
-        ssa_mir_want = !picking && getenv("OPTACC_MIR") != NULL;
+        /* OPTACC_MIR: the machine-level backend is two more ways, its
+         * allocator splitting intervals or not -- the first, where nothing
+         * is picked, and with OPTACC_MIR_SPLIT the splitting one. */
+        ssa_mir_want = !picking && getenv("OPTACC_MIR") != NULL
+                       ? (getenv("OPTACC_MIR_SPLIT") ? 2 : 1) : 0;
         made = ssa_generate(&why);
         ssa_mir_want = 0;
         first_leaf = ssa_made_leaf;
@@ -524,9 +526,9 @@ static void gl_function_end(void)
         if (made > 0 && picking) {
             static const struct { int leaf_off, cache_off, mir; } ways[] = {
                 { 0, CACHE_ALL, 0 }, { 0, CACHE_NONE, 0 }, { 1, CACHE_NONE, 0 },
-                { 0, CACHE_LOOPS, 0 }, { 0, CACHE_NONE, 1 },
+                { 0, CACHE_LOOPS, 0 }, { 0, CACHE_NONE, 1 }, { 0, CACHE_NONE, 2 },
             };
-            int nways = getenv("OPTACC_MIR") ? 5 : 4;
+            int nways = getenv("OPTACC_MIR") ? 6 : 4;
             const char *lost = NULL;
             int way, best = -1, best_size = 0, made_way = first_refused ? 2 : 0;
             int cheap = -1;

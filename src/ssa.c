@@ -9565,7 +9565,10 @@ int ssa_generate(const char **why)
             fprintf(stderr, "not mir %s: %s\n", name_text(sym_at(gl_fn)->name),
                     mir_reason());
         if (ssa_made_mir) {
-            if (getenv("OPTACC_SSA_STATS"))
+            if (getenv("OPTACC_SSA_STATS") && mir_parts())
+                fprintf(stderr, "mir %s, split into %d parts\n",
+                        name_text(sym_at(gl_fn)->name), mir_parts());
+            else if (getenv("OPTACC_SSA_STATS"))
                 fprintf(stderr, "mir %s\n", name_text(sym_at(gl_fn)->name));
             gen_local_settle();
             mir_emit();

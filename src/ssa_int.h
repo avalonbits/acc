@@ -156,5 +156,6 @@ int  mir_on(void);
 int  mir_build(void);
 void mir_emit(void);
 const char *mir_reason(void);
+int  mir_parts(void);           /* the parts the last split made, or 0 */
 
 #endif
