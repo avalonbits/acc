@@ -179,6 +179,8 @@ extern int spill_peak;
 extern int spill_locked;
 extern int frame_patch;
 extern int frame_call;
+#ifdef OPT_ACC
+#endif
 extern int arrays_size;
 extern int *array_end;
 extern int narrays, array_end_cap;
@@ -276,6 +278,9 @@ void rt_syms_init(void);
 int rt_symbol(int which);
 int needs_helper(int op);
 void rt_call(int which);
+#ifdef OPT_ACC
+void rt_insert(int index, int which, int at);   /* a call already made */
+#endif
 void rt_fill_all(void);
 __attribute__((noreturn)) void rt_missing(int sym);
 

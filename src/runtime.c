@@ -104,6 +104,26 @@ void rt_call(int which)
     nrt_fixups++;
 }
 
+#ifdef OPT_ACC
+/* A call of `which` already in the image at `at`, put at `index` among the
+ * fixups: a function's prologue, made a call after its body, goes first
+ * among the function's. */
+void rt_insert(int index, int which, int at)
+{
+    if (nrt_fixups == rt_fixups_cap) {
+        rt_fixups_cap = rt_fixups_cap ? rt_fixups_cap * 2 : 16;
+        rt_fixups = realloc(rt_fixups, rt_fixups_cap * sizeof *rt_fixups);
+        if (!rt_fixups)
+            acc_error("out of memory for the runtime fixups");
+    }
+    memmove(rt_fixups + index + 1, rt_fixups + index,
+            (size_t) (nrt_fixups - index) * sizeof *rt_fixups);
+    rt_fixups[index].which = (unsigned char) which;
+    rt_fixups[index].at = at;
+    nrt_fixups++;
+}
+#endif
+
 /* Each routine called, once, at the slot of its first call: what the link
  * asks a library for, in the order of their slots among the other calls, as
  * a link of this file's object would meet them. Once and not a call at a

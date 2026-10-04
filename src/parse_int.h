@@ -182,6 +182,10 @@ extern int body_mark;
 int push_here(NameRef name, int kind, int val);
 void not_redeclared(NameRef name, int line, const char *spot);
 __attribute__((noinline)) void local_redeclared(NameRef name, int line, const char *spot);
+#ifdef OPT_ACC
+extern int attr_hot;            /* lex.c: `hot` said, not yet taken */
+void hot_add(NameRef name);     /* func.c: a function said hot */
+#endif
 extern int base_ext;
 const char *record_name(int x);
 void record_complete(int x, int line, const char *spot);

@@ -428,6 +428,10 @@ static void return_jump(void)
     return_epoch = out_rewinds;
 }
 
+#ifdef OPT_ACC
+static int func_sym;            /* opt-acc: the function being made */
+#endif
+
 void gen_func_begin(int fn, int nparams, Type returns)
 {
     return_type = returns;
@@ -438,6 +442,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
     sym_at(fn)->val = out_here();
 #ifdef OPT_ACC
     func_start = out_here();
+    func_sym = fn;
 #endif
     nconst_rets = 0;
     npool = npool_sites = 0;
@@ -472,7 +477,8 @@ void gen_func_begin(int fn, int nparams, Type returns)
     /* opt-acc writes the frame out instead -- push ix; ld ix, 0; add ix,
      * sp; ld hl, -frame; add hl, sp; ld sp, hl -- fifteen bytes and no
      * call, about 15 cycles less on every entry. With no frame the last
-     * six are cut (frame_cut), leaving nine. */
+     * six are cut (frame_cut), leaving nine -- or, where gen_func_end
+     * would rather, made a call as acc's is (frame_wants_call). */
     out_word24(0xdde5dd);                       /* push ix; ld ix, */
     out_word24(0x000021);                       /*   0 */
     out_word24(0x39dd00);                       /* ; add ix, sp */
@@ -516,6 +522,86 @@ static int frame_lea(void)
     frame_cut_len = 2;
 
     return frame_patch + 2;
+}
+#endif
+
+/* Whether opt-acc's prologue is made a call to acc_rt_frameset, as acc's
+ * is: four or five bytes smaller -- seven with a frame past (ix+d)'s
+ * reach -- and some fifteen cycles more on every entry. */
+#ifdef OPT_ACC
+/* The functions said hot, by name: a set, open addressing over a table
+ * twice as big as it is full. */
+static NameRef *hot_names;
+static int hot_n, hot_cap;
+
+static unsigned hot_slot(NameRef name, int cap)
+{
+    unsigned at = (unsigned) name * 2654435761u & (unsigned) (cap - 1);
+
+    while (hot_names[at] && hot_names[at] != name)
+        at = (at + 1) & (unsigned) (cap - 1);
+
+    return at;
+}
+
+void hot_add(NameRef name)
+{
+    unsigned at;
+
+    if (2 * (hot_n + 1) > hot_cap) {
+        NameRef *old = hot_names;
+        int old_cap = hot_cap, k;
+
+        hot_cap = hot_cap ? 2 * hot_cap : 16;
+        hot_names = calloc((size_t) hot_cap, sizeof *hot_names);
+        if (!hot_names)
+            acc_error("out of memory for symbols");
+        for (k = 0; k != old_cap; k++)
+            if (old[k])
+                hot_names[hot_slot(old[k], hot_cap)] = old[k];
+        free(old);
+    }
+    at = hot_slot(name, hot_cap);
+    if (!hot_names[at]) {
+        hot_names[at] = name;
+        hot_n++;
+    }
+}
+
+static int hot_has(NameRef name)
+{
+    return hot_cap && hot_names[hot_slot(name, hot_cap)] == name;
+}
+
+static int frame_wants_call(void)
+{
+    return !hot_has(sym_at(func_sym)->name);
+}
+
+/* The prologue made a call: ld hl, -frame / call acc_rt_frameset, or call
+ * acc_rt_frameset0 for no frame, over the start of what was written out;
+ * the call's fixup put first among the function's, where its place is,
+ * and the rest of the prologue cut. Where relax_function cuts. */
+static int frame_to_call(void)
+{
+    int start = frame_patch - 10, size = frame_size(), at;
+    unsigned char *op = out_img + (start - out_base);
+
+    if (size) {
+        op[0] = 0x21;                           /* ld hl, -frame */
+        put24(op + 1, -size);
+        at = start + 5;
+        frame_cut_len = 7;
+    } else {
+        at = start + 1;
+        frame_cut_len = 11;
+    }
+    op[at - start - 1] = 0xcd;                  /* call nn */
+    put24(op + (at - start), 0);
+    rt_insert(func_mark.rt, size ? RT_FRAMESET : RT_FRAMESET0, at);
+    out_reloc(at);
+
+    return at + ACC_INT_SIZE;
 }
 #endif
 
@@ -585,7 +671,7 @@ void gen_func_end(void)
         rt_fixups[frame_call].which = RT_FRAMESET0;
 #endif
 #ifdef OPT_ACC
-    relax_function(&func_mark, frame_lea());
+    relax_function(&func_mark, frame_wants_call() ? frame_to_call() : frame_lea());
     peep_function(&func_mark, func_start);
 #else
     relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
