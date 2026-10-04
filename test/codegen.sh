@@ -355,10 +355,10 @@ emits "*q == 300, out of its range"     fe2c no \
     'int f(const unsigned char *q) { return *q == 300; }'
 
 # Two sides that cannot be negative -- unsigned chars, which promote to
-# int -- are compared unsigned, which gives the same answer without
-# moving both sides by 0x800000 first, as a signed comparison does:
-# ld bc, 0x800000.
-signed_cmp=01000080
+# int -- are compared unsigned, which gives the same answer without the
+# repair a signed comparison makes: add hl, hl / jp po, its sign put in
+# the carry and turned over on an overflow.
+signed_cmp=29e2
 emits "uchar < uchar, unsigned"         "$signed_cmp" no \
     'int f(unsigned char a, unsigned char b) { return a < b; }'
 emits "uchar < int, signed"             "$signed_cmp" yes \
@@ -439,9 +439,16 @@ calls "no frame, frameset0"             acc_rt_frameset0 yes \
 calls "a frame, not frameset0"          acc_rt_frameset0 no \
     'int f(int x) { int a[4]; a[x] = 1; return a[0]; }'
 
-# A signed order is an unsigned one of both sides moved by 0x800000, and a
-# jump on the carry: no jp pe, jp m and jp p on the sign and the overflow.
+# A signed order is a jump on the carry: no jp pe, jp m and jp p on the
+# sign and the overflow. Of two variables, the subtract's sign put in the
+# carry, turned over where it overflowed -- sbc hl, de / add hl, hl /
+# jp po / ccf -- with no register but HL, and nothing moved by 0x800000;
+# against a constant, both moved, the constant already, which is shorter.
 emits "x < n, signed, branch"           ea......f2 no \
+    'int f(int x, int n) { if (x < n) return 1; return 2; }'
+emits "x < n, by the carry"             ed5229e2 yes \
+    'int f(int x, int n) { if (x < n) return 1; return 2; }'
+emits "x < n, nothing moved"            000080.9 no \
     'int f(int x, int n) { if (x < n) return 1; return 2; }'
 emits "x > 5, as x >= 6, moved"         01060080 yes \
     'int f(int x) { if (x > 5) return 1; return 2; }'
