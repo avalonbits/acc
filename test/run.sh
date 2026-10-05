@@ -4,12 +4,23 @@
 #
 # A program reports through IO port 0, so the answer is one byte. Cases are
 # written to land well inside that.
+#
+# The cases run RUN_JOBS at a time, each on its own card, and are reported in
+# their own order once all of them are done.
+#
+# agondev's answer is kept in bin/answers (ACC_ANSWERS names another place),
+# under a hash of its program and of the emulator and MOS that ran it, so the
+# same reference is run once and not again by every compiler `make test`
+# drives through here. Only a 42 is kept -- the one answer a case can pass
+# with -- so a reference that ever said anything else runs again every time.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. test/emu.sh
 
 # Which compiler to drive. `make test` points this at the sanitized build, so
 # a run that gets the right answer by reading freed memory still fails.
 ACC=${ACC:-bin/acc}
+ANSWERS=${ACC_ANSWERS:-bin/answers}
 
 # acc allocates and never frees: it is a one-shot process and giving the
 # memory back on the way out would cost code on a target where code is the
@@ -26,37 +37,50 @@ sanitizer_tripped() {
     return 1
 }
 
-[ -x "$ACC" ] || { echo "$ACC missing -- run make"; exit 2; }
+# one_case <source> <dir>: prints what the case has to say, and leaves pass,
+# fail or skip in <dir>/verdict.
+one_case() {
+    local src=$1 dir=$2 name err want got key
 
-pass=0; fail=0; skip=0
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-
-for src in ${CASES:-test/cases/*.c}; do
     name=$(basename "$src" .c)
+    echo fail > "$dir/verdict"
 
-    if ! err=$("$ACC" "$src" -o "$tmp/acc.bin" -x 2>&1); then
+    if ! err=$("$ACC" "$src" -o "$dir/acc.bin" -x 2>&1); then
         printf '  FAIL %-18s acc could not compile it\n%s\n' "$name" \
             "$(printf '%s' "$err" | sed 's/^/         /')"
-        fail=$((fail+1)); continue
+        return
     fi
     if sanitizer_tripped "$err"; then
         printf '  FAIL %-18s the sanitizer tripped\n%s\n' "$name" \
             "$(printf '%s' "$err" | sed 's/^/         /')"
-        fail=$((fail+1)); continue
+        return
     fi
 
-    if ! err=$(test/oracle.sh "$src" "$tmp/ref.bin" 2>&1); then
+    if ! err=$(test/oracle.sh "$src" "$dir/ref.bin" 2>&1); then
         case $? in
-          77) printf '  skip %-18s no agondev\n' "$name"; skip=$((skip+1)); continue ;;
+          77) printf '  skip %-18s no agondev\n' "$name"; echo skip > "$dir/verdict" ;;
           *)  printf '  FAIL %-18s the reference build failed\n%s\n' "$name" \
-                  "$(printf '%s' "$err" | sed 's/^/         /')"
-              fail=$((fail+1)); continue ;;
+                  "$(printf '%s' "$err" | sed 's/^/         /')" ;;
         esac
+        return
     fi
 
-    test/agon.sh "$tmp/ref.bin" >/dev/null 2>&1; want=$?
-    [ $want -eq 77 ] && { printf '  skip %-18s no emulator\n' "$name"; skip=$((skip+1)); continue; }
-    test/agon.sh "$tmp/acc.bin" >/dev/null 2>&1; got=$?
+    if [ -n "$NO_EMU" ]; then
+        printf '  skip %-18s no emulator\n' "$name"; echo skip > "$dir/verdict"
+        return
+    fi
+
+    key=$({ cat "$dir/ref.bin"; printf '\n%s\n%s\n' "$EMU_BIN" "$EMU_MOS"; } \
+          | sha256sum | cut -c1-64)
+    if [ -f "$ANSWERS/$key" ]; then
+        want=$(cat "$ANSWERS/$key")
+    else
+        test/agon.sh "$dir/ref.bin" >/dev/null 2>&1; want=$?
+        if [ "$want" -eq 42 ]; then
+            echo 42 > "$ANSWERS/$key.$BASHPID" && mv "$ANSWERS/$key.$BASHPID" "$ANSWERS/$key"
+        fi
+    fi
+    test/agon.sh "$dir/acc.bin" >/dev/null 2>&1; got=$?
 
     # Every case is written to come out at 42. Agreeing with agondev is not
     # enough on its own: a branch whose condition is false in both compilers
@@ -66,16 +90,42 @@ for src in ${CASES:-test/cases/*.c}; do
     if [ "$got" -eq "$want" ] && [ "$got" -ne 42 ]; then
         printf '  FAIL %-18s both say %d, but a case has to come out at 42\n' \
             "$name" "$got"
-        fail=$((fail+1)); continue
+        return
     fi
 
     if [ "$got" -eq "$want" ]; then
         printf '  ok   %-18s %3d\n' "$name" "$got"
-        pass=$((pass+1))
+        echo pass > "$dir/verdict"
     else
         printf '  FAIL %-18s acc says %d, agondev says %d\n' "$name" "$got" "$want"
-        fail=$((fail+1))
     fi
+}
+
+[ -x "$ACC" ] || { echo "$ACC missing -- run make"; exit 2; }
+
+NO_EMU=
+emu_available >/dev/null 2>&1 || NO_EMU=1
+mkdir -p "$ANSWERS"
+
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
+export ACC ANSWERS NO_EMU EMU_BIN EMU_MOS
+export -f one_case sanitizer_tripped
+
+count=0
+for src in ${CASES:-test/cases/*.c}; do
+    count=$((count+1))
+    printf '%s\n%s\n' "$src" "$tmp/$count"
+done | xargs -P "${RUN_JOBS:-8}" -n 2 bash -c 'mkdir -p "$2" && one_case "$1" "$2" > "$2/out"' _
+
+pass=0; fail=0; skip=0
+for dir in $(ls "$tmp" | sort -n); do
+    cat "$tmp/$dir/out"
+    case $(cat "$tmp/$dir/verdict") in
+      pass) pass=$((pass+1)) ;;
+      skip) skip=$((skip+1)) ;;
+      *)    fail=$((fail+1)) ;;
+    esac
 done
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"

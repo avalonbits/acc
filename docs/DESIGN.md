@@ -797,7 +797,9 @@ that build small and fast. [`test/helpers.sh`](../test/helpers.sh),
 sanitised build, and acc.bin, and runs:
 
 - [`test/run.sh`](../test/run.sh): every program in `test/cases`, compiled
-  by acc and run on the emulator, each checking its own answer.
+  by acc and by agondev and run on the emulator, eight at a time; both must
+  answer 42. agondev's answers are kept in `bin/answers`, under a hash of
+  its program and the MOS, so each is run once.
 - [`test/conformance.sh`](../test/conformance.sh): gcc's torture and
   gcc.dg tests, c-testsuite and chibicc's tests, each held to its row in a
   manifest ([c99-status.md](c99-status.md)).
@@ -811,6 +813,12 @@ sanitised build, and acc.bin, and runs:
   [`test/relax.sh`](../test/relax.sh), [`test/dead.sh`](../test/dead.sh),
   [`test/bss.sh`](../test/bss.sh), [`test/abi.sh`](../test/abi.sh),
   [`test/abandon.sh`](../test/abandon.sh) and more.
+
+The suites run as three streams at once -- most suites, then the self-build;
+the conformance suites; `test/run.sh` under acc and each of opt-acc's ways
+-- and then, with nothing else running, the ones that time the emulator or
+need it to themselves: [`test/target.sh`](../test/target.sh), the release's
+and the headers' checks, and the cycle count.
 
 Beyond `make test`: [`test/bench.sh`](../test/bench.sh) counts cycles per
 byte of source; [`test/perf.sh`](../test/perf.sh) and
