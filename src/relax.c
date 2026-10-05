@@ -590,6 +590,30 @@ int *arr_cut_at, narr_cuts, arr_cuts_cap;
  * opposite is its opcode with bit 3 turned over, every one of them. */
 #define JP_GONE 0               /* a jump taken out: see branch_over */
 
+/* Which of the n jumps at `at` something jumps to, a byte each in
+ * `marked`: each target found among them by halving, since they rise. */
+static void mark_targets(const int *at, int n, unsigned char *marked)
+{
+    int i;
+
+    memset(marked, 0, (size_t) n);
+    for (i = 0; i != n; i++) {
+        unsigned to = (unsigned) get24(out_img + (at[i] + 1 - out_base));
+        unsigned low = 0, high = (unsigned) n;
+
+        while (low != high) {
+            unsigned mid = (low + high) >> 1;
+
+            if ((unsigned) at[mid] < to)
+                low = mid + 1;
+            else
+                high = mid;
+        }
+        if (low != (unsigned) n && (unsigned) at[low] == to)
+            marked[low] = 1;
+    }
+}
+
 /* Whether any of the n jumps at `at` goes to `u`. */
 static int jumped_to(const int *at, int n, int u)
 {
@@ -600,21 +624,39 @@ static int jumped_to(const int *at, int n, int u)
     return 0;
 }
 
-static void branch_over(int *at, unsigned char *cc, int n)
-{
-    int i;
+/* Jumps past a jump asked about by a walk of all the jumps before the
+ * targets are marked instead: most functions have one or two, for which
+ * the walks are cheaper than marking. */
+#define WALKS_BEFORE_MARKS 8
 
-    /* Found first, which is a look at neighbours; the question of whether
-     * anything jumps to the one jumped over is a walk of every jump, and
-     * is asked only of those. Most functions have none. */
+static void branch_over(int *at, unsigned char *cc, int n, unsigned char *marked)
+{
+    int i, known = 0, walks = 0;
+
+    /* Found first, which is a look at neighbours; which jumps anything
+     * jumps to is worked out once, when there is one to ask of. Most
+     * functions have none. The answers stay true enough: what is changed
+     * below only takes targets away, and gives one a target another had. */
     for (i = 0; i + 1 < n; i++) {
         unsigned char *j;
 
         if (cc[i] == JP_ANY || cc[i + 1] != JP_ANY || at[i + 1] != at[i] + 4)
             continue;
         j = out_img + (at[i] - out_base);
-        if (get24(j + 1) != at[i] + 8 || jumped_to(at, n, at[i + 1]))
+        if (get24(j + 1) != at[i] + 8)
             continue;
+        if (!known && walks != WALKS_BEFORE_MARKS) {
+            walks++;
+            if (jumped_to(at, n, at[i + 1]))
+                continue;
+        } else {
+            if (!known) {
+                mark_targets(at, n, marked);
+                known = 1;
+            }
+            if (marked[i + 1])
+                continue;
+        }
         cc[i] ^= 0x08;                  /* the other way */
         j[0] = cc[i];
         put24(j + 1, get24(j + 5));     /* to where the other went */
@@ -652,6 +694,15 @@ void relax_cut_code(Cut *cuts, int ncuts, const Mark *from, int fn_from,
 }
 #endif
 
+/* How far a target is looked for among the runs by walking, from where
+ * the jump is: a short jump's is a step or two away. Further, as a return
+ * to the epilogue from the top of a long function is, it is asked of
+ * out_cut_moved, which cut_out has just indexed the runs for -- walking, a
+ * function of a thousand returns walked its runs a thousand times. A
+ * distance, not a count of steps, so that the walk counts nothing. */
+#define NEAR_BYTES 512
+
+
 void relax_function(const Mark *from, int frame_at)
 {
     Cut *cuts;
@@ -681,7 +732,7 @@ void relax_function(const Mark *from, int frame_at)
     shrink = relax_short;
 
     if (n >= 2)
-        branch_over(jump_at + from->jump, jump_cc + from->jump, n);
+        branch_over(jump_at + from->jump, jump_cc + from->jump, n, shrink);
 
     /* Where each jump goes, and which of them will reach in one byte.
      *
@@ -791,7 +842,9 @@ void relax_function(const Mark *from, int frame_at)
 
             r = run;
             g = gone;
-            if ((unsigned) *want > (unsigned) *here)
+            if ((unsigned) (*want - *here + NEAR_BYTES) > 2u * NEAR_BYTES)
+                g = *want - out_cut_moved(*want);       /* far */
+            else if ((unsigned) *want > (unsigned) *here)
                 while (r < run_end && (unsigned) r->at <= (unsigned) *want) {
                     g += r->len;
                     r++;

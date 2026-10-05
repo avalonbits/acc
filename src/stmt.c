@@ -196,6 +196,54 @@ static uint32_t *case_high;     /* the top four bytes, for a long long */
 static int  *case_at;
 static int   ncases, cases_cap;
 
+/* The cases by value, for the check that one is not there twice, in a
+ * switch with more than CASES_WALKED of them: open addressing over a table
+ * at least twice as big as what it holds, an entry a case's index plus
+ * one, or 0 for none. One left from a switch that is done may name an
+ * index a later case has; it is a match only where that case is this
+ * switch's and the same. Compared with every case before it, a switch of
+ * 256 was 33,000 compares of a long. */
+static int *case_slots, *case_slots_end;
+static int  case_slots_cap, case_slots_used;
+
+#define CASES_WALKED 16          /* compared with each before them, below */
+
+/* The slot of a case with `value`, from index `mark` up to ncases, or the
+ * empty one where it would go: hashed by the value's low bytes, cases being
+ * mostly small and in a run, which the mask alone spreads. */
+static int *case_slot(long value, uint32_t high, int mark)
+{
+    int *p = case_slots + ((unsigned) value & (unsigned) (case_slots_cap - 1));
+    int k;
+
+    while ((k = *p) != 0
+           && !((unsigned) (k - 1 - mark) < (unsigned) (ncases - mark)
+                && case_value[k - 1] == value && case_high[k - 1] == high))
+        if (++p == case_slots_end)
+            p = case_slots;
+
+    return p;
+}
+
+/* Cases `from` to ncases put in the table -- all of them again, into one
+ * twice the size, when it would be more than half full. */
+__attribute__((noinline))
+static void case_slots_add(int from)
+{
+    if ((unsigned) (2 * (case_slots_used + ncases - from)) >= (unsigned) case_slots_cap) {
+        free(case_slots);
+        case_slots_cap = 4 * (ncases + 8);
+        case_slots = calloc((size_t) case_slots_cap, sizeof *case_slots);
+        if (!case_slots)
+            acc_error("out of memory for case labels");
+        case_slots_end = case_slots + case_slots_cap;
+        case_slots_used = 0;
+        from = 0;
+    }
+    for (; from != ncases; from++, case_slots_used++)
+        *case_slot(case_value[from], case_high[from], ncases) = from + 1;
+}
+
 /* The contexts of the loops and switches the parser is inside, outermost
  * first, three ints apiece on a stack walked by a pointer.
  *
@@ -396,7 +444,7 @@ static long case_constant(uint32_t *high)
 __attribute__((noinline))
 static void case_label(void)
 {
-    int line = tok_line, i;
+    int line = tok_line, mark, dup, i;
     const char *spot = tok_at;
     long value;
     uint32_t high;
@@ -408,13 +456,23 @@ static void case_label(void)
     expect(TK_COLON, "':' after a case");
     case_in_scope(line, spot);
 
-    for (i = in_switch.case_mark; i < ncases; i++)
-        if (case_value[i] == value && case_high[i] == high)
-            acc_error_spot(line, spot, "this switch already has a case "
-                                       "for %ld",
-                           type_unsigned(in_switch.type)
-                           || type_wide(in_switch.type)
-                           ? value : (long) ((value ^ 0x800000) - 0x800000));
+    mark = in_switch.case_mark;
+    dup = 0;
+    if ((unsigned) (ncases - mark) < CASES_WALKED) {
+        for (i = mark; i != ncases; i++)
+            if (case_value[i] == value && case_high[i] == high)
+                dup = 1;
+    } else {
+        if (ncases - mark == CASES_WALKED)
+            case_slots_add(mark);       /* those walked so far */
+        dup = *case_slot(value, high, mark) != 0;
+    }
+    if (dup)
+        acc_error_spot(line, spot, "this switch already has a case "
+                                   "for %ld",
+                       type_unsigned(in_switch.type)
+                       || type_wide(in_switch.type)
+                       ? value : (long) ((value ^ 0x800000) - 0x800000));
 
     if (ncases == cases_cap) {
         cases_cap = cases_cap ? cases_cap * 2 : 16;
@@ -428,6 +486,8 @@ static void case_label(void)
     case_high[ncases] = high;
     case_at[ncases] = gen_here();
     ncases++;
+    if ((unsigned) (ncases - mark) > CASES_WALKED)
+        case_slots_add(ncases - 1);
 }
 
 __attribute__((noinline))

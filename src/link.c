@@ -167,12 +167,43 @@ static void copy_text(Object *o, int at, int n)
     out_put += n;
 }
 
+/* Whether relocations lo to hi of an object rise by where their slots are,
+ * as the format says each table's do. */
+static int relocs_rise(const Object *o, int lo, int hi)
+{
+    int r;
+
+    if (lo == hi)
+        return 1;
+    for (r = lo + 1; r != hi; r++)
+        if ((unsigned) obj_reloc_at(o, r - 1) > (unsigned) obj_reloc_at(o, r))
+            return 0;
+
+    return 1;
+}
+
+/* The first of relocations lo to hi, which rise, whose slot is at `at` or
+ * past it. */
+static int reloc_from(const Object *o, int lo, int hi, int at)
+{
+    while (lo != hi) {
+        int mid = lo + ((unsigned) (hi - lo) >> 1);
+
+        if ((unsigned) obj_reloc_at(o, mid) < (unsigned) at)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    return lo;
+}
+
 static void take_items(Object *op, Taken *t, const char *name, const char *path)
 {
     Object o = *op;
     char *want = calloc((size_t) o.nitems + 1, 1);
     int *queue = malloc(((size_t) o.nitems + 1) * sizeof *queue);
-    int nqueue = 0, i, r, want_bss = !name, new_bss = 0, want_now = 0;
+    int nqueue = 0, i, r, want_bss = !name, new_bss = 0, want_now = 0, sorted;
     int nrel = obj_nrelocs(&o);
 
     if (!want || !queue)
@@ -199,24 +230,38 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         }
     }
 
-    /* And everything that reaches, a relocation at a time. */
+    /* And everything that reaches, a relocation at a time: each item's
+     * own, found by halving in the two tables, which are each in order of
+     * where their slots are -- or, from an object whose are not, by a walk
+     * of them all for each item. */
+    sorted = relocs_rise(&o, 0, o.nrelocs) && relocs_rise(&o, o.nrelocs, nrel);
     while (nqueue) {
         int item = queue[--nqueue], from = obj_item(&o, item);
-        int to = item_end(&o, item);
+        int to = item_end(&o, item), run;
 
-        for (r = 0; r != nrel; r++) {
-            int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), next;
+        for (run = 0; run != 2; run++) {
+            int end = run ? nrel : o.nrelocs;
 
-            if (at < from || at >= to)
-                continue;
-            if (which == 1)
-                want_bss = 1;
-            if (which != 0)
-                continue;
-            next = item_of(&o, (int) obj_reloc_addend(&o, r, o.text + at));
-            if (t->placed[next] < 0 && !want[next]) {
-                want[next] = 1;
-                queue[nqueue++] = next;
+            r = run ? o.nrelocs : 0;
+            if (sorted)
+                r = reloc_from(&o, r, end, from);
+            for (; r != end; r++) {
+                int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), next;
+
+                if (at < from || at >= to) {
+                    if (sorted && (unsigned) at >= (unsigned) to)
+                        break;
+                    continue;
+                }
+                if (which == 1)
+                    want_bss = 1;
+                if (which != 0)
+                    continue;
+                next = item_of(&o, (int) obj_reloc_addend(&o, r, o.text + at));
+                if (t->placed[next] < 0 && !want[next]) {
+                    want[next] = 1;
+                    queue[nqueue++] = next;
+                }
             }
         }
     }

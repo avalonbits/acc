@@ -334,20 +334,21 @@ void gen_bss_symbol(int sym, int at)
     bss_syms[nbss_syms].sym = sym;
     bss_syms[nbss_syms].at = at;
     nbss_syms++;
+    sym_at(sym)->val = sym_bss_val(at);         /* as decl.c gives it too */
 }
 
 /* Where in the bss a symbol is, or -1 when it is not there. Asked by the
  * object writer, of every symbol it exports, so that the object can say
- * which of them have room in the file and which want it cleared. */
+ * which of them have room in the file and which want it cleared, and by a
+ * link of every symbol it relocates: read from the symbol, which says it as
+ * sym_bss_val has it until bss_emit gives it its address. Looked up in
+ * bss_syms, it was the two counts multiplied. */
 int gen_bss_offset(int sym)
 {
-    int i;
+    int val = sym_at(sym)->val;
 
-    for (i = 0; i != nbss_syms; i++)
-        if (bss_syms[i].sym == sym)
-            return bss_syms[i].at;
-
-    return -1;
+    /* sym_in_bss, val + 1 negative, without a signed compare's helper. */
+    return (unsigned) (val + 1) > (unsigned) INT_MAX ? sym_bss_at(val) : -1;
 }
 
 int gen_bss_len(void)
