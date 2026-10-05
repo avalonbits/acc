@@ -636,26 +636,38 @@ static void branch_over(int *at, unsigned char *cc, int n, unsigned char *marked
     /* Found first, which is a look at neighbours; which jumps anything
      * jumps to is worked out once, when there is one to ask of. Most
      * functions have none. The answers stay true enough: what is changed
-     * below only takes targets away, and gives one a target another had. */
-    for (i = 0; i + 1 < n; i++) {
-        unsigned char *j;
+     * below only takes targets away, and gives one a target another had.
+     *
+     * And a jump to where the code goes next anyway, whatever its
+     * condition, taken out the same way where nothing jumps to it: the
+     * end of the last arm of a ?: or an if-else that jumps past the arm
+     * after it, when that arm is nothing; a switch's last test, its
+     * default the end of the switch. */
+    for (i = 0; i != n; i++) {
+        unsigned char *j = out_img + (at[i] - out_base);
+        int to = get24(j + 1), next = to == at[i] + 4, asked;
 
-        if (cc[i] == JP_ANY || cc[i + 1] != JP_ANY || at[i + 1] != at[i] + 4)
+        if (cc[i] == JP_GONE)
             continue;
-        j = out_img + (at[i] - out_base);
-        if (get24(j + 1) != at[i] + 8)
+        if (!next && (i + 1 == n || cc[i] == JP_ANY || cc[i + 1] != JP_ANY
+                      || at[i + 1] != at[i] + 4 || to != at[i] + 8))
             continue;
+        asked = next ? i : i + 1;       /* the one to be taken out */
         if (!known && walks != WALKS_BEFORE_MARKS) {
             walks++;
-            if (jumped_to(at, n, at[i + 1]))
+            if (jumped_to(at, n, at[asked]))
                 continue;
         } else {
             if (!known) {
                 mark_targets(at, n, marked);
                 known = 1;
             }
-            if (marked[i + 1])
+            if (marked[asked])
                 continue;
+        }
+        if (next) {
+            cc[i] = JP_GONE;
+            continue;
         }
         cc[i] ^= 0x08;                  /* the other way */
         j[0] = cc[i];
@@ -731,7 +743,7 @@ void relax_function(const Mark *from, int frame_at)
     slot = relax_slot;
     shrink = relax_short;
 
-    if (n >= 2)
+    if (n)
         branch_over(jump_at + from->jump, jump_cc + from->jump, n, shrink);
 
     /* Where each jump goes, and which of them will reach in one byte.
