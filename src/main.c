@@ -74,6 +74,7 @@ __attribute__((noreturn)) static void help(void)
         "  -x              write what main returned to IO port 0\r\n"
         "  -trigraphs      read ?\?( and the eight others\r\n"
         "  -errors <file>  write an error to <file> too, and fail with 100\r\n"
+        "  @<file>         read more of these from <file>, for a long line\r\n"
         "  -v              print the version; -h prints this\r\n"
 #if defined(ACC_INCLUDE_DIR) && defined(ACC_LIBC)
         "\r\n"
@@ -251,6 +252,38 @@ static const char *output_named(const char *from, const char *ext)
     return name;
 }
 
+/* Whether c ends a word: a space, a tab, or a line's end. */
+static int at_space(int c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+/* The next word from *pp, ended with a NUL, and *pp moved past it -- a
+ * word in double quotes the words inside them -- or NULL at the end. */
+static char *next_word(char **pp)
+{
+    char *p = *pp, *word;
+
+    while (at_space(*p))
+        p++;
+    if (!*p)
+        return NULL;
+    if (*p == '"') {
+        word = ++p;
+        while (*p && *p != '"')
+            p++;
+    } else {
+        word = p;
+        while (*p && !at_space(*p))
+            p++;
+    }
+    if (*p)
+        *p++ = '\0';
+    *pp = p;
+
+    return word;
+}
+
 #if defined(AGONDEV) && defined(__clang__)
 /* The command line, split by acc with no limit on how many words it has.
  *
@@ -311,22 +344,12 @@ static char **agon_split(char *name, int *argcp)
         char *word;
         int redirect;
 
-        while (*p == ' ')
+        while (at_space(*p))
             p++;
-        if (!*p)
-            break;
         redirect = *p == '>' || *p == '<';
-        if (*p == '"') {
-            word = ++p;
-            while (*p && *p != '"')
-                p++;
-        } else {
-            word = p;
-            while (*p && *p != ' ')
-                p++;
-        }
-        if (*p)
-            *p++ = '\0';
+        word = next_word(&p);
+        if (!word)
+            break;
         if (!redirect) {
             *put++ = word;
             n++;
@@ -334,16 +357,9 @@ static char **agon_split(char *name, int *argcp)
         }
         /* `>` alone, or `>>`, or `<`: the file is the next word. */
         if (!word[1] || (word[1] == '>' && !word[2])) {
-            char *file;
+            char *file = next_word(&p);
 
-            while (*p == ' ')
-                p++;
-            file = p;
-            while (*p && *p != ' ')
-                p++;
-            if (*p)
-                *p++ = '\0';
-            agon_redirect(word, file);
+            agon_redirect(word, file ? file : "");
         } else {
             agon_redirect(word, word + (word[1] == '>' ? 2 : 1));
         }
@@ -354,6 +370,85 @@ static char **agon_split(char *name, int *argcp)
     return argv;
 }
 #endif
+
+/* The words of a file named as `@file` among the arguments, in its place:
+ * separated by spaces, tabs and line ends, a word in double quotes the
+ * words inside them, as on the command line -- for a link of more objects
+ * than MOS's line holds. Not again inside the file: a word there that
+ * starts with @ is a word. A -errors among them is taken as it is met, so
+ * that a file not there is said there. */
+static char **at_words, **at_put, **at_limit;
+
+/* Twice the room, counted in bytes: a scale by a pointer's three is a
+ * multiply, which is a call into the runtime. Room for the NULL after. */
+__attribute__((noinline))
+static void at_grow(void)
+{
+    size_t used = (size_t) ((char *) at_put - (char *) at_words);
+    size_t room = used ? used + used : 32 * sizeof *at_words;
+
+    at_words = realloc(at_words, room + sizeof *at_words);
+    if (!at_words)
+        acc_error("out of memory for the command line");
+    at_put = (char **) (void *) ((char *) at_words + used);
+    at_limit = (char **) (void *) ((char *) at_words + room);
+}
+
+static void at_add(char *word)
+{
+    if (at_put == at_limit)
+        at_grow();
+    if (at_put != at_words && !strcmp(at_put[-1], "-errors")) {
+        errors_asked = 1;
+        errors_path = word;
+    }
+    *at_put++ = word;
+}
+
+static void at_file(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    char *text, *p, *word;
+    long len;
+
+    if (!f)
+        acc_error("cannot open '%s'", path);
+    fseek(f, 0, SEEK_END);
+    len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    text = malloc((size_t) len + 1);
+    if (!text || (long) fread(text, 1, (size_t) len, f) != len)
+        acc_error("cannot read '%s'", path);
+    fclose(f);
+    text[len] = '\0';
+    p = text;
+    while ((word = next_word(&p)) != NULL)
+        at_add(word);
+}
+
+static char **expand_at(int *argcp, char **argv)
+{
+    char **p = argv + 1;
+    int n = 0;
+
+    while (*p && **p != '@')
+        p++;
+    if (!*p)
+        return argv;                    /* nothing to read */
+    at_add(*argv);
+    for (p = argv + 1; *p; p++) {
+        if (**p == '@')
+            at_file(*p + 1);
+        else
+            at_add(*p);
+    }
+    *at_put = NULL;
+    for (p = at_words; p != at_put; p++)
+        n++;                            /* counted, not a divide */
+    *argcp = n;
+
+    return at_words;
+}
 
 int main(int argc, char **argv)
 {
@@ -368,6 +463,7 @@ int main(int argc, char **argv)
 #if defined(AGONDEV) && defined(__clang__)
     argv = agon_split(argv[0], &argc);
 #endif
+    argv = expand_at(&argc, argv);
     objs = malloc((size_t) argc * sizeof *objs);
     if (!objs)
         acc_error("out of memory for the inputs");
