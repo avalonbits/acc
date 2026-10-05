@@ -463,7 +463,7 @@ emits "gi, not through HL"              21000000ed27 no \
     'int gi; int f(void) { return gi; }'
 emits "gc, a char global"               3a000000 yes \
     'char gc; int f(void) { return gc; }'
-emits "*(k ? &a : &b), read after"      1800ed27 yes \
+emits "*(k ? &a : &b), read after"      21030000ed27 yes \
     'int a, b; int f(int k) { return *(k ? &a : &b); }'
 
 # A store to a global of this file names its address -- ld (nn), hl and
@@ -591,6 +591,15 @@ emits "t == 0 of a byte by or a"        dd7e06b720 yes \
     'int v; int f(unsigned char t) { if (t == 0 && v > 0) return 1; return 2; }'
 emits "not cp 0"                        fe00 no \
     'int v; int f(unsigned char t) { if (t == 0 && v > 0) return 1; return 2; }'
+
+# A jump to the instruction after it is taken out: the else of x ? 1 : 0
+# jumped past nothing, as did a switch's last test to its end.
+emits "x ? 1 : 0, no jump past nothing"  210000001800 no \
+    'int f(int x) { return x ? 1 : 0; }'
+emits "if (x) g(1); else ;, nor here"    d1180021 no \
+    'int g(int); int f(int x) { if (x) g(1); else ; return 2; }'
+emits "nor a switch's last test"         ca100000180021 no \
+    'int f(int x) { switch (x) { case 1: break; } return 0; }'
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
