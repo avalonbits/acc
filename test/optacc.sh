@@ -85,15 +85,18 @@ regloop='int f(const char *p, int n) { register int s = 0; while (n--) s += *p++
 
 prologue=dde5dd21000000dd39         # push ix; ld ix, 0; add ix, sp
 wants "$ACC" "a frame: acc calls the prologue"     acc_rt_frameset yes "$framed"
-wants "$OPT" "a frame: opt-acc does not"           acc_rt_frameset no  "$framed"
-emits "$OPT" "a frame: opt-acc writes it out"      "${prologue}ed22..f9" yes "$framed"
-# -- lea hl, ix-frame / ld sp, hl, where the frame is in its reach, and
-# ld hl, -frame / add hl, sp / ld sp, hl where it is not.
+wants "$OPT" "a frame: opt-acc calls it too"       acc_rt_frameset yes "$framed"
+# A function said hot has it written out, which is faster -- lea hl,
+# ix-frame / ld sp, hl, where the frame is in its reach, and ld hl, -frame
+# / add hl, sp / ld sp, hl where it is not.
+hot='__attribute__((hot)) '
+wants "$OPT" "a hot frame: opt-acc does not call" acc_rt_frameset no  "$hot$framed"
+emits "$OPT" "a hot frame: opt-acc writes it out" "${prologue}ed22..f9" yes "$hot$framed"
 bigframe='int f(int x) { int a[60]; a[x & 63] = x; return a[0]; }'
-emits "$OPT" "a big frame: ld hl, -frame"          "${prologue}21......39f9" yes "$bigframe"
+emits "$OPT" "a big hot frame: ld hl, -frame"      "${prologue}21......39f9" yes "$hot$bigframe"
 emits "$ACC" "a frame: acc does not"               "$prologue" no "$framed"
 # No frame: the load and the two after it are cut, and the body follows.
-emits "$OPT" "no frame: the nine bytes, then the body" "${prologue}21070000" yes "$empty"
+emits "$OPT" "no hot frame: the nine bytes, then the body" "${prologue}21070000" yes "$hot$empty"
 
 lea_hl_iy=ed2300                    # lea hl, iy+0: a read of the IY local
 # The pre-scan chooses IY only where a body has a long or a float, which
@@ -266,8 +269,8 @@ OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
     ssa "a struct read for a member" "ssa f made" \
     'struct s { int a, b; }; int f(struct s *p, int i) { return p[i].b + (*p).a; }'
 frame='int f(int a) { int x = a + 1, y = x * 2, z = y - 3; return z; }'
-all "$OPT" "the frame without the locals made values"  ed22fdf9 yes "$frame"
-emits "$OPT" "which the first pass's has"              ed22f7f9 yes "$frame"
+all "$OPT" "the frame without the locals made values"  21fdffffcd yes "$frame"
+emits "$OPT" "which the first pass's has"              21f7ffffcd yes "$frame"
 
 # With OPTACC_LEAF, a function is made by a backend of opt-acc's own, every
 # instruction selected in ssa.c. OPTACC_SSA_STATS says which: `leaf f`.
@@ -570,11 +573,11 @@ inlined "one into a caller a worse backend makes, called" insert_sorted no "$sor
 # the stack for the next call to spill: three locals and the answer, and
 # no more, in the frame.
 args='int g(int); static int mix(int a, int b, int c) { if (a > b) return a - c; return b + c; } int f(int k) { return mix(g(k), g(k + 1), g(k + 2)); }'
-OPTACC_INLINE=1 emits "$OPT" "arguments stored as they are made"  ed22f4f9 yes "$args"
+OPTACC_INLINE=1 emits "$OPT" "arguments stored as they are made"  21f4ffffcd yes "$args"
 # A body's locals give their room back where it ends: the second body's
 # take the first's, and the frame is 18 bytes, not 30.
 twobodies='void touch(int *, int *); static int a(int k) { int x, y; touch(&x, &y); return x + y + k; } static int b(int k) { int u, v; touch(&u, &v); return u - v + k; } int f(int k) { int s = a(k); int t = b(k); return s + t; }'
-OPTACC_INLINE=1 all "$OPT" "two bodies' locals in the same room"  ed22eef9 yes "$twobodies"
+OPTACC_INLINE=1 all "$OPT" "two bodies' locals in the same room"  21eeffffcd yes "$twobodies"
 # A slot one body gave back and another takes as another type is not
 # shared as a VLA's length is: neither reads the other's, and the function
 # is made from its SSA form.
@@ -678,6 +681,12 @@ OPTACC_LEAF=1 all "$OPT" "a < b in the leaf backend, by the carry" ed5229e2 yes 
 OPTACC_LEAF=1 all "$OPT" "with no bias"                        01000080 no  "$callless"
 all "$OPT" "a < b in the first pass's code, by the carry"     ed5229e2 yes "$callless"
 all "$OPT" "with no bias there either"                        11000080 no  "$callless"
+# The prologue a call to acc_rt_frameset, as acc's: call nn first, four
+# bytes where writing it out is nine -- and written out, the faster one,
+# for a function said hot, before it or after its parameters.
+mir "$OPT" "a prologue by the call"            '^cd000000'    yes 'int f(int a) { return a + 2; }'
+mir "$OPT" "said hot, written out"             dde5dd21000000dd39 yes '__attribute__((hot)) int f(int a) { return a + 1; }'
+mir "$OPT" "said hot after, written out"       dde5dd21000000dd39 yes 'int f(int a) __attribute__((hot)); int f(int a) { return a + 1; }'
 boolread='extern _Bool b; int f(int *p) { *p = 1; if (b) return 3; return 4; }'
 mir "$OPT" "a _Bool read tested as a byte"   3a000000b7      yes "$boolread"
 mir "$OPT" "not widened and tested"        b7ed626f09b7ed42 no "$boolread"

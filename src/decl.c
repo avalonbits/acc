@@ -531,6 +531,14 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
     /* A prototype: what it said is kept -- unless an earlier one already
      * gave the parameters and this one does not -- and the parameters are
      * dropped. A function inside another's body can only be declared. */
+#ifdef OPT_ACC
+    /* Said hot, before it or after its parameters: taken now, before the
+     * token after it is read, which may be the next declaration's. */
+    if (attr_hot) {
+        hot_add(name);
+        attr_hot = 0;
+    }
+#endif
     if (tok != TK_LBRACE || in_body) {
         sym_scope_end(mark);
         if (!declared || !(sym_flags(fn) & SYMF_PARAMS)) {

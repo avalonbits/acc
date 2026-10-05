@@ -967,10 +967,22 @@ static void lex_digraph(int c)
  * tokens and count depth until the pair that opened it closes. Recursing
  * into next() is what lets the contents be anything at all, including a
  * macro that expands to more of them. */
+#ifdef OPT_ACC
+int attr_hot;                   /* opt-acc: `hot` said, for function_declarator */
+#endif
+
 __attribute__((noinline))
 static void skip_attribute(void)
 {
     int depth = 1;
+#ifdef OPT_ACC
+    static NameRef hot, hot_long;
+
+    if (!hot) {
+        hot = name_intern("hot", 3);
+        hot_long = name_intern("__hot__", 7);
+    }
+#endif
 
     next();
     if (tok != TK_LPAREN)
@@ -978,6 +990,12 @@ static void skip_attribute(void)
 
     while (depth > 0) {
         next();
+#ifdef OPT_ACC
+        /* The one opt-acc acts on: a function said hot keeps the prologue
+         * written out, the fast one (see frame_wants_call). */
+        if (tok == TK_IDENT && (tok_name == hot || tok_name == hot_long))
+            attr_hot = 1;
+#endif
         if (tok == TK_LPAREN)
             depth++;
         else if (tok == TK_RPAREN)
