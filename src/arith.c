@@ -1221,6 +1221,16 @@ static int signed_as_unsigned(int op)
             op = op == TK_GT ? TK_GE : TK_LT;
         }
         force_into(lhs, R_HL);
+        /* Against 0 the sign is the answer: add hl, hl puts it in the
+         * carry, a byte where moving both sides was twelve. */
+        if (!c) {
+            add_hl_rr(R_HL);
+            vdrop();
+            vdrop();
+            cmp_value(op, 1);
+
+            return 1;
+        }
         rr = reg_busy(R_BC) && !reg_busy(R_DE) ? R_DE : R_BC;
         evict_reg(rr);
         ld_rr_imm(rr, 0x800000);

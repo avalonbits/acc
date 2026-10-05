@@ -485,6 +485,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
     frame_unused = frame_sp_kept = 0;
 #endif
     nconst_rets = 0;
+    stored_at = -1;                     /* not a load or a store of this one */
     npool = npool_sites = 0;
     out_on_rewind = gen_rewound;
     static_begin(fn);

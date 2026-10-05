@@ -43,15 +43,68 @@ void ld_rr_imm(int reg, int imm)    /* ld rr, nn */
     }
 }
 
-/* The last register stored whole to a frame slot, and where the store
- * ended. A load of that slot into that register straight after it -- the
- * end of one statement storing x and the start of the next reading it,
- * which is a twentieth of zap's time -- loads what is there already, so it
- * is left out. Unless something may jump in between the two: join_at is
- * the last place something jumps to (gen_here, and a jump patched to where
- * the code has got to). And not once anything has been taken back. */
+/* The last register stored whole to a frame slot or loaded whole from
+ * one, and where that ended. A load of that slot into that register after
+ * it loads what is there already, so it is left out: straight after a
+ * store -- the end of one statement storing x and the start of the next
+ * reading it, which is a twentieth of zap's time -- or after a load, with
+ * only what keeps both between: `*p == ' ' || *p == '\t'` read p again
+ * past a ld a, (hl), a cp and a jump. Unless something may jump in between
+ * the two: join_at is the last place something jumps to (gen_here, and a
+ * jump patched to where the code has got to) -- one past here is one from
+ * code taken back since, and says nothing. And not where code has been
+ * taken back to before it ended (out_rewound_to): after it, the rewind
+ * left it standing. */
 int      stored_at = -1, stored_disp, stored_reg, join_at = -1;
-unsigned stored_epoch;
+
+#define STORED_REACH 32  /* bytes after it a load is looked for, at most */
+
+/* Whether the code from `at` to here changes no register pair and no
+ * memory: reads through HL, A's operators and tests, and jumps on, which
+ * the code after them is reached by only by falling through. */
+static int pairs_kept(int at)
+{
+    const unsigned char *p = out_img + (at - out_base);
+    const unsigned char *end = out_img + (out_here() - out_base);
+
+    while (p < end) {
+        switch (*p) {
+        case 0x7e: case 0x7d: case 0x7c: case 0xb7: case 0x2f:
+            p++;                        /* ld a, (hl) / l / h; or a; cpl */
+            continue;
+        case 0xfe: case 0xe6: case 0xf6: case 0xee: case 0xc6: case 0xd6:
+        case 0x20: case 0x28: case 0x30: case 0x38: case 0x18:
+            p += 2;                     /* cp, and, or, xor, add, sub n; jr */
+            continue;
+        case 0xc2: case 0xca: case 0xd2: case 0xda: case 0xc3:
+            p += 4;                     /* jp */
+            continue;
+        }
+
+        return 0;
+    }
+
+    return p == end;                    /* not past it, read as something else */
+}
+
+void ld_rr_ix(int reg, int disp)    /* ld rr, (ix+d) */
+{
+    if (stored_disp == disp && stored_reg == reg
+        && (unsigned) (out_here() - stored_at) <= STORED_REACH
+        && (unsigned) out_rewound_to >= (unsigned) stored_at
+        && (unsigned) (join_at - stored_at) > (unsigned) (out_here() - stored_at)
+        && (stored_at == out_here() || pairs_kept(stored_at)))
+        return;
+    if (disp_fits(disp)) {
+        out_byte3(0xdd, 0x07 + reg_code[reg], disp);
+        stored_at = out_here();
+        stored_disp = disp;
+        stored_reg = reg;
+        out_rewound_to = INT_MAX;
+    } else {
+        far_op(0xfd, 0x07 + reg_code[reg], disp);
+    }
+}
 
 void ld_ix_rr(int disp, int reg)    /* ld (ix+d), rr */
 {
@@ -60,7 +113,7 @@ void ld_ix_rr(int disp, int reg)    /* ld (ix+d), rr */
         stored_at = out_here();
         stored_disp = disp;
         stored_reg = reg;
-        stored_epoch = out_rewinds;
+        out_rewound_to = INT_MAX;
     } else {
         far_op(0xfd, 0x0f + reg_code[reg], disp);
     }
@@ -514,7 +567,6 @@ size_t insn_marks(unsigned char *buf, int restore)
     STATE_VAR(stored_disp);
     STATE_VAR(stored_reg);
     STATE_VAR(join_at);
-    STATE_VAR(stored_epoch);
 
     return at;
 }

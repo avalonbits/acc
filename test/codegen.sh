@@ -624,5 +624,20 @@ emits "c++; of a global, no frame"       '^2a0000002322000000c9$' yes \
 emits "p->n++; no copy kept"             dd2ffd no \
     'struct s { int n; }; void f(struct s *p) { p->n++; }'
 
+# Signed against 0, the sign alone: add hl, hl puts it in the carry --
+# not both sides moved by 0x800000, the bias loaded into BC twice.
+emits "x < 0 by add hl, hl"              dd27062930 yes \
+    'int f(int x) { if (x < 0) return 1; return 2; }'
+emits "x >= 0 too, not the bias"         01000080 no \
+    'int f(int x) { return x >= 0; }'
+
+# A slot loaded into a register, and loaded again with nothing between that
+# changes a pair or memory: `*p == ' ' || *p == '\t'` reads p once, the
+# second ld a, (hl) straight after the first test's jump.
+emits "*p twice, p loaded once"          7efe2028057efe09 yes \
+    'int f(const char *p) { if (*p == 32 || *p == 9) return 1; return 2; }'
+emits "not again"                        "28..dd2706" no \
+    'int f(const char *p) { if (*p == 32 || *p == 9) return 1; return 2; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
