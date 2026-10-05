@@ -83,11 +83,13 @@ same change in `printf`'s float code, whose numbers were provably under
 
 ## 3. Prefer unsigned
 
-An unsigned comparison is a subtract and one jump on carry. A signed
-one is turned into an unsigned one by adding `0x800000` to both sides,
-six more bytes. acc skips that when neither side can be negative, and
-against a constant it folds the adjustment in at compile time, but two
-signed variables pay it at every compare.
+An unsigned comparison is a subtract and one jump on carry. A signed one
+of two variables turns the difference's sign into the carry and turns the
+carry over where the subtract overflowed, `add hl,hl; jp po; ccf`: six
+more bytes at every compare. Against a constant other than 0, both sides
+are moved by `0x800000` first, five more bytes. acc skips both when
+neither side can be negative, and against 0 the sign alone is the answer,
+`add hl,hl`, cheaper than any unsigned compare.
 
 Counters, sizes and indexes that are never negative should be `unsigned`.
 Nothing else gets dearer for it, and an unsigned divide is cheaper too.
