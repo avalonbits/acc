@@ -65,7 +65,7 @@ compile "char f(int n) { return n; }"
 got=$(python3 - "$tmp/p.bin" <<'PY'
 import re, sys
 data = open(sys.argv[1], 'rb').read()
-print("A" if re.search(rb'\x7d\xdd\xf9\xdd\xe1\xc9', data) else "not A")
+print("A" if re.search(rb'\x7d(?:\xdd\xf9)?\xdd\xe1\xc9', data) else "not A")
 PY
 )
 check "a 1-byte result" "$got" "A"
@@ -106,7 +106,7 @@ for type in short int "unsigned int"; do
     got=$(python3 - "$tmp/p.bin" <<'PY'
 import re, sys
 data = open(sys.argv[1], 'rb').read()
-print("A" if re.search(rb'\x7d\xdd\xf9\xdd\xe1\xc9', data) else "HL")
+print("A" if re.search(rb'\x7d(?:\xdd\xf9)?\xdd\xe1\xc9', data) else "HL")
 PY
 )
     check "a result of $type" "$got" "HL"

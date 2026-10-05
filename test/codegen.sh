@@ -601,5 +601,20 @@ emits "if (x) g(1); else ;, nor here"    d1180021 no \
 emits "nor a switch's last test"         ca100000180021 no \
     'int f(int x) { switch (x) { case 1: break; } return 0; }'
 
+# A function with no frame ends pop ix / ret, SP never having moved; and
+# one that does not read IX either has no frame at all -- a static read is
+# ld hl, (nn) / ret, a call and an add call / inc hl / ret. A parameter's
+# address, lea hl, ix+6, keeps it.
+emits "no frame: pop ix alone"           ed27dde1c9 yes \
+    'int f(int *p) { return p[3]; }'
+emits "not ld sp, ix"                    ddf9 no \
+    'int f(int *p) { return p[3]; }'
+emits "IX unread: no frame at all"       '^2a000000c9$' yes \
+    'static int counter; int f(void) { return counter; }'
+emits "nor around a call"                '^cd00000023c9$' yes \
+    'int g(void); int f(void) { return g() + 1; }'
+emits "&a keeps it"                      '^cd000000ed2206' yes \
+    'int *f(int a) { return &a; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
