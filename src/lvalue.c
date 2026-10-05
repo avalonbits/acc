@@ -1040,6 +1040,29 @@ void vpostfix_indirect(int op)
     Type target = type_deref(vtype());
     Value held;
 
+    /* Stepped where it is and stepped back, as a local's is, which needs
+     * no copy of the old value kept -- in the frame, which made one for
+     * it: `n++;` of a global, or of a member through a pointer, took a
+     * frame and a store into it. The step back is marked for gen_discard,
+     * and narrowed to what was stored, which takes it back to the old
+     * value whatever the store truncated. Not for a _Bool, whose old value
+     * the new one does not say, nor a bit-field, which is narrower than
+     * its type; nor where the step back costs more than the copy. */
+    if (target != TY_BOOL && !(vsp - 1)->bits && !type_wide(target)
+        && !type_float(target)
+        && (!type_pointer(target) || type_size(type_deref(target)) <= STEP_MAX)) {
+        vprefix_indirect(op);
+        gen_effects--;                  /* counted once, above */
+        conversion_from = out_here();
+        vstep(op == TK_PLUS ? TK_MINUS : TK_PLUS, target);
+        if (type_size(target) < ACC_INT_SIZE)
+            vconvert(target);
+        conversion_to = out_here();
+        conversion_epoch = out_rewinds;
+
+        return;
+    }
+
     vdup();                     /* address, address */
     vderef();                   /* address, old */
     vdup();                     /* address, old, old */
