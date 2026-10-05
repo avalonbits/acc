@@ -156,6 +156,8 @@ int  mir_on(void);
 int  mir_build(void);
 void mir_emit(void);
 const char *mir_reason(void);
-int  mir_parts(void);           /* the parts the last split made, or 0 */
+int  mir_parts(void);
+int  ssa_moved_at(int at);      /* where what was at `at` is now */
+void ssa_moved_add(int old_at, int len, int new_at);           /* the parts the last split made, or 0 */
 
 #endif

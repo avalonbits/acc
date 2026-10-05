@@ -622,6 +622,10 @@ else
 fi
 mirs "a loop on chars, made by the machine IR"    yes \
     'int f(const char *s) { int n = 0; while (*s) if (*s++ == 32) n++; return n; }'
+mirs "a string's address, made by it"             yes \
+    'const char *f(int c) { if (c) return "yes"; return "no"; }'
+mirs "and a static's"                               yes \
+    'static int count; int *f(void) { return &count; }'
 mirs "one that calls"                             yes \
     'int g(int); int f(int a) { return g(a) + 1; }'
 mirs "and a value kept across the call"             yes \
