@@ -463,6 +463,28 @@ static void vstore_leave_value(void)
     (vsp - 1)->quals = kept.quals;
 }
 
+/* The byte on top written through the address under it, from A, where it
+ * is a byte already and the address is in a pair or in the frame: the two
+ * left as the byte in A. Whether it was. */
+static int store_byte_through(Type to)
+{
+    Value *val = vsp - 1, *at = vsp - 2;
+    int local = val->kind == VAL_LOCAL && type_size(val->type) == 1, reg;
+
+    if (val->bits || at->bits || (at->kind != VAL_REG && at->kind != VAL_LOCAL)
+        || (!local && val->kind != VAL_ACC && !widen_undo(val)))
+        return 0;
+    val->kind = VAL_ACC;                /* HL free for the address */
+    reg = force_reg(at);                /* never A: a load or nothing */
+    if (local)
+        ld_a_ix(val->val);
+    ld_ind_a(reg);
+    val->type = to;
+    vstore_leave_value();
+
+    return 1;
+}
+
 /* *p = v, with the pointer under the value on the stack. The value is left
  * behind, because an assignment is an expression and what it comes to is
  * what was assigned. */
@@ -649,6 +671,21 @@ void vstore_indirect(void)
         reg = force_reg(val);
         out_byte2(0xed, reg == R_DE ? 0x1f : 0x0f);    /* ld (hl), rr */
         vstore_leave_value();
+
+        return;
+    }
+
+    /* A byte that is a byte already -- in A, a byte local, or one just read
+     * and widened, the widening taken back -- written from A through the
+     * pair the address is in: ld (hl), a, ld (de), a or ld (bc), a. The
+     * assignment's value made after, with the mark gen_discard takes it
+     * back by. `*d = *s` was the byte widened, and ld a, l before the
+     * store. */
+    if (type_size(to) == 1 && store_byte_through(to)) {
+        conversion_from = out_here();
+        force_reg(vsp - 1);
+        conversion_to = out_here();
+        conversion_epoch = out_rewinds;
 
         return;
     }

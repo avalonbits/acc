@@ -201,6 +201,10 @@ void inc_hl(void)        { out_byte(0x23); }
 void dec_hl(void)        { out_byte(0x2b); }
 void inc_de(void)        { out_byte(0x13); }
 void ld_de_a(void)       { out_byte(0x12); }      /* ld (de), a */
+void ld_ind_a(int reg)                          /* ld (hl), a; (de); (bc) */
+{
+    out_byte(reg == R_HL ? 0x77 : reg == R_DE ? 0x12 : 0x02);
+}
 void ex_de_hl(void)      { out_byte(0xeb); }
 void ld_hl_ind_hl(void)  { out_byte2(0xed, 0x27); }  /* ld hl, (hl) */
 void ld_ind_hl_de(void)  { out_byte2(0xed, 0x1f); }  /* ld (hl), de */
@@ -420,19 +424,17 @@ const unsigned powers_of_two[16] = {
 /* Load a local of the given type into HL, widened to int. */
 static void load_narrow(int disp, Type type)
 {
+    /* A byte marked as a widening that can be taken back (branch.c). */
+    if (type_size(type) == 1) {
+        widen_local(disp, type);
+
+        return;
+    }
     if (type_unsigned(type)) {
         fill_hl_with_zero();
         ld_l_ix(disp);
         if (type_size(type) == 2)
             ld_h_ix(disp + 1);
-
-        return;
-    }
-
-    if (type_size(type) == 1) {
-        ld_a_ix(disp);
-        fill_hl_with_sign_of_a();
-        ld_l_a();
 
         return;
     }

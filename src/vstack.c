@@ -29,12 +29,16 @@ static void convert_in_hl(Type to)
         return;
 
     if (type_size(to) == 1) {
+        int from;
+
         ld_a_l();
+        from = out_here();
         if (type_unsigned(to))
             fill_hl_with_zero();
         else
             fill_hl_with_sign_of_a();
         ld_l_a();
+        widen_made(from, to);           /* A has the byte: see branch.c */
 
         return;
     }
@@ -854,12 +858,15 @@ int force_reg(Value *val)
 
             return reg;
         }
+        int from = out_here();
+
         reg = R_HL;
         if (type_unsigned(val->type))
             fill_hl_with_zero();
         else
             fill_hl_with_sign_of_a();
         ld_l_a();
+        widen_made(from, val->type);    /* A has it still: see branch.c */
         val->quals |= NARROW_QUALS(val->type);
         val->kind = VAL_REG;
         val->type = type_promote(val->type);

@@ -142,6 +142,7 @@ void inc_hl(void);
 void dec_hl(void);
 void inc_de(void);
 void ld_de_a(void);
+void ld_ind_a(int reg);
 void ex_de_hl(void);
 void ld_hl_ind_hl(void);
 void ld_ind_hl_de(void);
@@ -263,6 +264,9 @@ void gen_jump_cc_to(int op, int target);
 #endif
 extern int widen_from;
 void widen_loaded(Type to);
+void widen_local(int disp, Type to);
+void widen_made(int from, Type to);
+int  widen_byte_op(const Value *v, int op, int c);
 int widen_undo(const Value *v);
 int widen_holds(const Value *v, Type *type);
 int widen_undo_left(void);

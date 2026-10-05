@@ -234,6 +234,21 @@ int  widen_from = -1;    /* where the widening began */
 static int  widen_to;           /* and where the value was done */
 static Type widen_type;         /* the narrow type it was widened as */
 static unsigned widen_epoch;
+static int  widen_disp = INT_MIN;   /* a local's: read again into A when
+                                     * taken back, the read taken with it */
+
+/* Whether the widening marked is the last thing made: what is in HL is
+ * that byte, widened, and A has it -- or its local does. */
+static int widen_live(void)
+{
+    return widen_from != -1 && out_here() == widen_to && widen_epoch == out_rewinds;
+}
+
+/* Whether the flags a comparison or an AND left are the last thing made. */
+static int cmp_live(void)
+{
+    return cmp_from != -1 && out_here() == cmp_to && cmp_epoch == out_rewinds;
+}
 
 static void widen_as(Type to)
 {
@@ -251,11 +266,49 @@ static void widen_as(Type to)
 
 void widen_loaded(Type to)
 {
-    widen_from = out_here();
+    int from = out_here();
+
     widen_as(to);
+    widen_made(from, to);
+}
+
+/* A byte local read into HL, widened -- marked as one just read is, from
+ * before the read: taken back, it is read into A again (widen_back), so
+ * that an unsigned one need not go through A to be widened. */
+void widen_local(int disp, Type to)
+{
+    int from = out_here();
+
+    if (type_unsigned(to)) {
+        fill_hl_with_zero();
+        ld_l_ix(disp);
+    } else {
+        ld_a_ix(disp);
+        widen_as(to);
+    }
+    widen_made(from, to);
+    widen_disp = disp;
+}
+
+/* A byte in A widened into HL just now, from `from`: marked as one just
+ * read and widened is, A still holding it. */
+void widen_made(int from, Type to)
+{
+    widen_from = from;
     widen_to = out_here();
     widen_epoch = out_rewinds;
     widen_type = to;
+    widen_disp = INT_MIN;
+}
+
+/* The widening taken back, and the byte in A: where the mark was a local's,
+ * read again. */
+static void widen_back(void)
+{
+    out_rewind(widen_from);
+    widen_from = -1;
+    if (widen_disp != INT_MIN)
+        ld_a_ix(widen_disp);
 }
 
 /* If `v` is a byte just read and widened into HL, and nothing since: the
@@ -267,8 +320,7 @@ int widen_undo(const Value *v)
 
     if (!widen_holds(v, &type))
         return 0;
-    out_rewind(widen_from);
-    widen_from = -1;
+    widen_back();
 
     return 1;
 }
@@ -276,10 +328,27 @@ int widen_undo(const Value *v)
 /* Whether widen_undo would: and if so, the byte's type in *type. */
 int widen_holds(const Value *v, Type *type)
 {
-    if (widen_from < 0 || out_here() != widen_to || widen_epoch != out_rewinds
-        || v->kind != VAL_REG || v->val != R_HL || type_size(widen_type) != 1)
+    if (!widen_live() || v->kind != VAL_REG || v->val != R_HL || type_size(widen_type) != 1)
         return 0;
     *type = widen_type;
+
+    return 1;
+}
+
+/* `v`, a byte just read and widened, | or ^ a constant byte `c` -- `op`
+ * the instruction's opcode -- where the widening is the answer's too: an
+ * unsigned byte's, or a signed one's with c's top bit clear, which keeps
+ * the sign. The operator on the byte in A, the widening after, and that
+ * marked again. Whether it was. */
+int widen_byte_op(const Value *v, int op, int c)
+{
+    Type type;
+
+    if (!widen_holds(v, &type) || (!type_unsigned(type) && (c & 0x80)))
+        return 0;
+    widen_back();
+    out_byte2(op, c);
+    widen_loaded(type);
 
     return 1;
 }
@@ -301,12 +370,10 @@ int store_byte_widened(int offset, Type type)
 {
     Value *top = vsp - 1;
 
-    if (widen_from < 0 || out_here() != widen_to || widen_epoch != out_rewinds
-        || top->kind != VAL_REG || top->val != R_HL
+    if (!widen_live() || top->kind != VAL_REG || top->val != R_HL
         || type_size(widen_type) != 1)
         return 0;
-    out_rewind(widen_from);
-    widen_from = -1;
+    widen_back();
     ld_ix_a(offset);
     conversion_from = out_here();
     widen_as(type);
@@ -324,15 +391,16 @@ int widen_again(Type to)
 {
     Value *top = vsp - 1;
 
-    if (widen_from < 0 || out_here() != widen_to || widen_epoch != out_rewinds
-        || top->kind != VAL_REG
+    if (!widen_live() || top->kind != VAL_REG
         || top->val != R_HL || type_size(widen_type) != type_size(to))
         return 0;
     if (type_unsigned(widen_type) != type_unsigned(to)) {
-        out_rewind(widen_from);
+        widen_back();
+        widen_from = out_here();
         widen_as(to);
         widen_to = out_here();
         widen_epoch = out_rewinds;
+        widen_disp = INT_MIN;
     }
     widen_type = to;
     top->type = type_promote(to);
@@ -428,22 +496,32 @@ static int jump_on_truth(int when_true)
         return over;
     }
 
-    /* A byte just read or returned, and widened: the whole of it is in A,
-     * so the widening goes and A is tested. `while (*p)` and a branch on a
-     * function returning bool are these. */
-    if (widen_from >= 0 && out_here() == widen_to && widen_epoch == out_rewinds
-        && vtop == 1
-        && type_size(widen_type) == 1
-        && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
-        out_rewind(widen_from);
-        widen_from = -1;
+    /* A byte local, or a byte in A: tested in A, never widened. `if (c)`
+     * was the byte read, widened and tested at 24 bits. */
+    if (vtop == 1 && type_size((vsp - 1)->type) == 1 && !(vsp - 1)->bits
+        && ((vsp - 1)->kind == VAL_LOCAL || (vsp - 1)->kind == VAL_ACC)) {
+        if ((vsp - 1)->kind == VAL_LOCAL)
+            ld_a_ix((vsp - 1)->val);
         vdrop();
         or_a_a();
 
         return jump_op(when_true ? JP_NZ : JP_Z);
     }
 
-    if (cmp_from >= 0 && out_here() == cmp_to && cmp_epoch == out_rewinds && vtop == 1
+    /* A byte just read or returned, and widened: the whole of it is in A,
+     * so the widening goes and A is tested. `while (*p)` and a branch on a
+     * function returning bool are these. */
+    if (widen_live() && vtop == 1 && !cmp_live()
+        && type_size(widen_type) == 1
+        && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
+        widen_back();
+        vdrop();
+        or_a_a();
+
+        return jump_op(when_true ? JP_NZ : JP_Z);
+    }
+
+    if (cmp_live() && vtop == 1
         && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
         int op = when_true ? cmp_op : cmp_opposite(cmp_op);
 
@@ -578,8 +656,7 @@ void vtruth(int op)
     /* Straight after a comparison, or an AND that left its mark, the flags
      * are still there to be read: `!(a < b)` is a >= b, and `!(c & 0x80)`
      * is the AND's zero flag, with no compare against zero in between. */
-    if (cmp_from >= 0 && out_here() == cmp_to && cmp_epoch == out_rewinds
-        && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
+    if (cmp_live() && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
         int now = op == TK_EQ ? cmp_opposite(cmp_op) : cmp_op;
 
         out_rewind(cmp_from);
@@ -853,6 +930,7 @@ size_t branch_marks(unsigned char *buf, int restore)
     STATE_VAR(widen_to);
     STATE_VAR(widen_type);
     STATE_VAR(widen_epoch);
+    STATE_VAR(widen_disp);
     STATE_VAR(logic_from);
     STATE_VAR(logic_to);
     STATE_VAR(logic_settles);
