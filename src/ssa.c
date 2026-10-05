@@ -2485,15 +2485,61 @@ static Moved *moved;
 
 static int    nmoved, moved_cap;
 
+/* The moves kept in order of where they were: one is added after the
+ * last but a few places from the end, which the shift costs, and found by
+ * halving. */
+static void moved_add(int old_at, int len, int new_at)
+{
+    int at;
+
+    GROW(moved, nmoved, moved_cap);
+    at = nmoved++;
+    while (at && moved[at - 1].old_at > old_at) {
+        moved[at] = moved[at - 1];
+        at--;
+    }
+    moved[at].old_at = old_at;
+    moved[at].len = len;
+    moved[at].new_at = new_at;
+}
+
+/* The move that starts last at or before `at`, or -1. */
+static int moved_before(int at)
+{
+    int lo = 0, hi = nmoved;
+
+    while (lo < hi) {               /* the first that starts past `at` */
+        int mid = (lo + hi) / 2;
+
+        if (moved[mid].old_at <= at)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    return lo - 1;
+}
+
+/* Where what was at `at` is now: a string's terminator, one past its
+ * length, moved with it. */
 static int moved_at(int at)
 {
-    int idx;
+    int idx = moved_before(at);
 
-    for (idx = 0; idx != nmoved; idx++)
-        if (at >= moved[idx].old_at && at <= moved[idx].old_at + moved[idx].len)
-            return at - moved[idx].old_at + moved[idx].new_at;
+    if (idx >= 0 && at <= moved[idx].old_at + moved[idx].len)
+        return at - moved[idx].old_at + moved[idx].new_at;
 
     return at;
+}
+
+int ssa_moved_at(int at)
+{
+    return moved_at(at);
+}
+
+void ssa_moved_add(int old_at, int len, int new_at)
+{
+    moved_add(old_at, len, new_at);
 }
 
 /* The block's statics' bytes, jumped over where the code starts, as the
@@ -2511,27 +2557,21 @@ static void emit_raws(void)
         const unsigned char *bytes = (const unsigned char *) gl_kept(raws[at]->arg[2]);
         int len = (int) raws[at]->arg[1], byte;
 
-        GROW(moved, nmoved, moved_cap);
-        moved[nmoved].old_at = (int) raws[at]->arg[0];
-        moved[nmoved].len = len;
-        moved[nmoved].new_at = out_here();
-        nmoved++;
+        moved_add((int) raws[at]->arg[0], len, out_here());
         for (byte = 0; byte != len; byte++)
             out_byte(bytes[byte]);
     }
     for (settle = 0; settle != nsettles; settle++) {
         Sym *sym = sym_at(settles[settle]);
 
-        for (at = 0; at != nmoved; at++)
-            if (sym->val >= moved[at].old_at
-                && sym->val < moved[at].old_at + moved[at].len) {
-                GROW(moved_syms, nmoved_syms, moved_syms_cap);
-                moved_syms[nmoved_syms].sym = settles[settle];
-                moved_syms[nmoved_syms].val = sym->val;
-                nmoved_syms++;
-                sym->val += moved[at].new_at - moved[at].old_at;
-                break;
-            }
+        at = moved_before(sym->val);
+        if (at >= 0 && sym->val < moved[at].old_at + moved[at].len) {
+            GROW(moved_syms, nmoved_syms, moved_syms_cap);
+            moved_syms[nmoved_syms].sym = settles[settle];
+            moved_syms[nmoved_syms].val = sym->val;
+            nmoved_syms++;
+            sym->val += moved[at].new_at - moved[at].old_at;
+        }
         gen_settle(settles[settle]);
     }
     gen_label(over);
@@ -2680,11 +2720,7 @@ void call(const Ins *insn)
     case GL_gen_data: {
         int at = gen_data(gl_kept(arg[0]), ARG(1, int));
 
-        GROW(moved, nmoved, moved_cap);
-        moved[nmoved].old_at = (int) rec->ret;
-        moved[nmoved].len = ARG(1, int);
-        moved[nmoved].new_at = at;
-        nmoved++;
+        moved_add((int) rec->ret, ARG(1, int), at);
         break;
     }
     case GL_gen_return:
@@ -7778,11 +7814,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
          * address, a constant, read through moved_at from here on. */
         int bytes = (int) insn->rec->arg[1], put = gen_data(gl_kept(insn->rec->arg[0]), bytes);
 
-        GROW(moved, nmoved, moved_cap);
-        moved[nmoved].old_at = (int) insn->rec->ret;
-        moved[nmoved].len = bytes;
-        moved[nmoved].new_at = put;
-        nmoved++;
+        moved_add((int) insn->rec->ret, bytes, put);
         return;
     }
     case GL_vpush_global_addr:

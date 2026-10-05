@@ -88,6 +88,9 @@ enum {
     M_COPY,         /* d = a, the same width */
     M_LDI,          /* d = imm */
     M_LDSYM,        /* d = &sym + imm (24) */
+    M_LDA,          /* d = an address in the image or the bss, imm, as the
+                     * constant's kind imm2 (VAL_ADDR, VAL_BSS) has it */
+    M_DATA,         /* a string's bytes, jumped over: the SSA instruction ssa */
     M_LDF,          /* d = (ix+imm) */
     M_STF,          /* (ix+imm) = a */
     M_STFI,         /* (ix+imm) = imm2, a byte */
@@ -270,8 +273,29 @@ static int width_of(Type type)
     return type_size(type) == 1 || type == TY_BOOL ? 1 : 3;
 }
 
+/* A constant that is a number, which the code here reasons about; and one
+ * that is an address -- a string's in the image, a static's in the bss --
+ * which it only loads, where the link moves it. */
+static int is_num(const Ent *ent)
+{
+    return ent->val == S_CONST && ent->attr.kind == VAL_CONST;
+}
+
+static int is_addr(const Ent *ent)
+{
+    return ent->val == S_CONST
+           && (ent->attr.kind == VAL_ADDR || ent->attr.kind == VAL_BSS);
+}
+
 static int mir_operand_ok(const Ent *ent)
 {
+    /* An address held as a value: made by a register the code here would
+     * load with the number, unmoved -- not taken. */
+    if (ent->val >= 0 && (ent->attr.kind == VAL_ADDR || ent->attr.kind == VAL_BSS))
+        return 0;
+    if (is_addr(ent))
+        return mir_type(ent->attr.type) && width_of(ent->attr.type) == 3
+               && !ent->attr.bits;      /* a bit-field's: read as one */
     if (ent->val == S_CONST)
         return ent->attr.kind == VAL_CONST && mir_type(ent->attr.type);
     if (ent->val < 0)
@@ -372,6 +396,8 @@ static int mir_ok(void)
             if (!frame_of_value(insn))
                 return mir_why = "a local in memory", 0;
             continue;
+        case GL_gen_data:
+            continue;
         case GL_vdrop: case GL_gen_stmt_end: case GL_gen_value_end:
         case GL_vpush_const: case I_BR: case I_JMP: case I_SET: case I_CONV:
         case GL_gen_return: case GL_vpush_global_addr: case GL_vneg:
@@ -435,6 +461,21 @@ static int const_vr(int value, int width)
     return v;
 }
 
+/* An address constant's register: made again where it is read. */
+static int addrc_vr(int value, int kind)
+{
+    int v = new_vr(3, C_R24);
+    MIns *mi = mi3(M_LDA, v, -1, -1);
+
+    mi->imm = value;
+    mi->imm2 = kind;
+    vr[v].remat = M_LDA;
+    vr[v].remat_imm = value;
+    vr[v].remat_sym = kind;
+
+    return v;
+}
+
 /* A byte widened to an int, by its sign or by zeros -- and the int knowing
  * the byte it is, for what wants only that. */
 static int widen(int v, int by_sign)
@@ -461,6 +502,8 @@ static int operand_vr(const Ent *ent, int width)
     int v, w;
     Type type;
 
+    if (is_addr(ent))
+        return addrc_vr(ent->attr.val, ent->attr.kind);
     if (ent->val == S_CONST)
         return const_vr(ent->attr.val, width);
     v = val_vr[ent->val];
@@ -498,11 +541,13 @@ static int in_class(int v, unsigned cls)
     vr[t].short_lived = 1;
 
     /* A constant or an address: made again, in the class wanted. */
-    if (vr[v].remat == M_LDI || vr[v].remat == M_LDSYM) {
+    if (vr[v].remat == M_LDI || vr[v].remat == M_LDSYM || vr[v].remat == M_LDA) {
         mi = mi3(vr[v].remat, t, -1, -1);
         mi->imm = vr[v].remat_imm;
         if (vr[v].remat == M_LDSYM)
             mi->sym = vr[v].remat_sym;
+        if (vr[v].remat == M_LDA)
+            mi->imm2 = vr[v].remat_sym;
         vr[t].remat = vr[v].remat;
         vr[t].remat_imm = vr[v].remat_imm;
         vr[t].remat_sym = vr[v].remat_sym;
@@ -589,7 +634,7 @@ static unsigned as_type(unsigned kz, Type type)
 
 static unsigned ent_zero(const Ent *ent)
 {
-    if (ent->val == S_CONST)
+    if (is_num(ent))
         return ~(unsigned) ent->attr.val & ALL24;
     if (ent->val < 0 || !known_done[ent->val])
         return as_type(0, ent->attr.type);
@@ -643,17 +688,17 @@ static unsigned insn_zero(const Ins *insn)
         case TK_PLUS:
             return (top_zero(l) & top_zero(r)) << 1 & ALL24;
         case TK_SHR:
-            if (insn->in[1].val != S_CONST || !type_unsigned(insn->in[0].attr.type))
+            if (!is_num(&insn->in[1]) || !type_unsigned(insn->in[0].attr.type))
                 return 0;
             k = insn->in[1].attr.val;
             return k >= 24 ? ALL24 : ((l >> k) | (ALL24 << (24 - k))) & ALL24;
         case TK_SHL:
-            if (insn->in[1].val != S_CONST)
+            if (!is_num(&insn->in[1]))
                 return 0;
             k = insn->in[1].attr.val;
             return k >= 24 ? ALL24 : ((l << k) | ((1u << k) - 1)) & ALL24;
         case TK_PERCENT:
-            if (insn->in[1].val != S_CONST || insn->in[1].attr.val <= 0
+            if (!is_num(&insn->in[1]) || insn->in[1].attr.val <= 0
                 || !(type_unsigned(insn->in[0].attr.type)
                      || (l & 0x800000)))
                 return 0;
@@ -726,11 +771,13 @@ static int byte_kind(const Ent *ent)
 {
     int v;
 
-    if (ent->val == S_CONST) {
+    if (is_num(ent)) {
         int c = ent->attr.val;
 
         return (c >= 0 && c <= 255 ? K_ZEXT : 0) | (c >= -128 && c <= 127 ? K_SEXT : 0);
     }
+    if (ent->val < 0)
+        return 0;                       /* an address: never a byte */
     v = val_vr[ent->val];
     if (v < 0)
         return 0;
@@ -765,7 +812,7 @@ static int sel_compare(const Ins *insn, int op)
      * and the immediates want it -- c < x as x >= c + 1, c >= x as
      * x < c + 1, equality either way round -- but not for a constant
      * with no next one: 0x7fffff, or 0xffffff held as -1. */
-    if (left->val == S_CONST && right->val >= 0
+    if (is_num(left) && right->val >= 0
         && left->attr.val != 0x7fffff && left->attr.val != -1) {
         const Ent *t = left;
 
@@ -804,7 +851,7 @@ static int sel_compare(const Ins *insn, int op)
                 mi->imm2 = bias;
                 a = t;
             }
-            if (right->val == S_CONST) {
+            if (is_num(right)) {
                 MIns *mi = mi3(M_CMP8I, -1, a, -1);
 
                 value = right->attr.val;
@@ -828,7 +875,7 @@ static int sel_compare(const Ins *insn, int op)
     }
 
     /* Against zero for equality: kept where it is. */
-    if ((op == TK_EQ || op == TK_NE) && right->val == S_CONST && right->attr.val == 0) {
+    if ((op == TK_EQ || op == TK_NE) && is_num(right) && right->attr.val == 0) {
         mi3(M_TST24, -1, in_class(operand_vr(left, 3), C_HL), -1);
         return op == TK_EQ ? JP_Z : JP_NZ;
     }
@@ -836,7 +883,7 @@ static int sel_compare(const Ins *insn, int op)
 
     /* Signed against a constant: the left moved by half the range in HL
      * and the constant moved already -- or, against 0, the sign itself. */
-    if (is_signed && right->val == S_CONST) {
+    if (is_signed && is_num(right)) {
         MIns *mi = mi3(M_CMP24SI, -1, a, -1);
 
         mi->imm2 = right->attr.val & 0xffffff;
@@ -982,13 +1029,13 @@ static int sel_bitwise_const(const Ins *insn, int op)
     int c, cost, d, a;
     MIns *mi;
 
-    if (x->val == S_CONST) {
+    if (is_num(x)) {
         const Ent *t = x;
 
         x = k;
         k = t;
     }
-    if (k->val != S_CONST || x->val < 0)
+    if (!is_num(k) || x->val < 0)
         return -1;
     c = k->attr.val & 0xffffff;
     if (op == TK_AMP)
@@ -1055,7 +1102,7 @@ static void sel_apply(const Ins *insn, int at)
             || op == TK_CARET)) {
         a = in_class(operand_vr(&insn->in[0], 1), C_A);
         d = new_vr(1, C_A);
-        if (insn->in[1].val == S_CONST) {
+        if (is_num(&insn->in[1])) {
             MIns *mi = mi3(M_ALU8I, d, a, -1);
 
             mi->imm = op;
@@ -1079,7 +1126,7 @@ static void sel_apply(const Ins *insn, int at)
         int kind = bitwise_kind(op, byte_kind(l), byte_kind(r));
         MIns *mi;
 
-        if (l->val == S_CONST) {
+        if (is_num(l)) {
             const Ent *t = l;
 
             l = r;
@@ -1087,7 +1134,7 @@ static void sel_apply(const Ins *insn, int at)
         }
         a = in_class(operand_vr(l, 1), C_A);
         d = new_vr(1, C_A);
-        if (r->val == S_CONST) {
+        if (is_num(r)) {
             mi = mi3(M_ALU8I, d, a, -1);
             mi->imm2 = r->attr.val & 0xff;
         } else {
@@ -1130,7 +1177,7 @@ static void sel_apply(const Ins *insn, int at)
             b = -1;
         }
         /* A small constant: inc or dec. */
-        if (insn->in[1].val == S_CONST && !type_pointer(rt)) {
+        if (is_num(&insn->in[1]) && !type_pointer(rt)) {
             int k = insn->in[1].attr.val * step;
 
             if (op == TK_MINUS)
@@ -1189,7 +1236,7 @@ static void sel_apply(const Ins *insn, int at)
         return;
     case TK_SHL:
         /* By a small constant: adds. */
-        if (insn->in[1].val == S_CONST && insn->in[1].attr.val >= 1
+        if (is_num(&insn->in[1]) && insn->in[1].attr.val >= 1
             && insn->in[1].attr.val <= 3) {
             int k;
 
@@ -1243,7 +1290,7 @@ static void sel_convert(const Ent *ent, Type to, int res)
         to_val(res, d);
         return;
     }
-    if (ent->val == S_CONST) {
+    if (is_num(ent)) {
         int value = ent->attr.val;
 
         if (w == 1)
@@ -1371,7 +1418,7 @@ static void sel_store(const Ins *insn)
     Addr addr = address_of(&insn->in[0]);
     MIns *mi;
 
-    if (insn->in[1].val == S_CONST && w == 1) {
+    if (is_num(&insn->in[1]) && w == 1) {
         int value = insn->in[1].attr.val;
 
         if (to == TY_BOOL)
@@ -1580,11 +1627,16 @@ static void sel_insn(const Ins *insn, int at)
     case GL_gen_call:
         sel_call(insn);
         return;
+    case GL_gen_data:
+        mi = mi3(M_DATA, -1, -1, -1);
+        mi->ssa = at;
+        return;
     case I_BR:
         if (insn->target < 0)
             return;
-        if (insn->in[0].val == S_CONST) {
-            if ((insn->in[0].attr.val != 0) == insn->sense) {
+        /* A constant decides it -- an address too, which is never 0. */
+        if (is_num(&insn->in[0]) || is_addr(&insn->in[0])) {
+            if ((is_addr(&insn->in[0]) || insn->in[0].attr.val != 0) == insn->sense) {
                 mi = mi3(M_JMP, -1, -1, -1);
                 mi->imm2 = insn->target;
             }
@@ -1611,7 +1663,7 @@ static void sel_insn(const Ins *insn, int at)
          * hands it to gen_return -- or a constant as the constant, which
          * gen_return knows: a _Bool's is made as it is, not tested, and a
          * return of one made before is a jump back to it. */
-        if (insn->nin && insn->in[0].val == S_CONST) {
+        if (insn->nin && is_num(&insn->in[0])) {
             mi = mi3(M_RET, -1, -1, -1);
             mi->imm2 = 1;
             mi->ssa = at;
@@ -2017,7 +2069,7 @@ static int popcount(unsigned x)
 static int pure(int op)
 {
     switch (op) {
-    case M_COPY: case M_LDI: case M_LDSYM: case M_LDF: case M_LEAF:
+    case M_COPY: case M_LDI: case M_LDSYM: case M_LDA: case M_LDF: case M_LEAF:
     case M_ZEXT: case M_SEXT: case M_TRUNC: case M_ADD24: case M_SUB24:
     case M_STEP24: case M_ALU8: case M_ALU8I: case M_BYTES24:
         return 1;
@@ -3004,6 +3056,7 @@ static int reload(int v)
         load.op = vr[v].remat;
         load.imm = vr[v].remat_imm;
         load.sym = vr[v].remat == M_LDSYM ? vr[v].remat_sym : -1;
+        load.imm2 = vr[v].remat == M_LDA ? vr[v].remat_sym : 0;
         vr[t].remat = vr[v].remat;
         vr[t].remat_imm = vr[v].remat_imm;
         vr[t].remat_sym = vr[v].remat_sym;
@@ -3802,6 +3855,7 @@ static int moves_made(const Move *run, int n, MIns *out)
                 mi->op = vr[r].remat;
                 mi->imm = vr[r].remat_imm;
                 mi->sym = vr[r].remat == M_LDSYM ? vr[r].remat_sym : -1;
+                mi->imm2 = vr[r].remat == M_LDA ? vr[r].remat_sym : 0;
             } else {
                 mi->op = M_LDF;
                 mi->imm = vr[r].param ? vr[r].param : slot_of(run[k].to);
@@ -4069,7 +4123,7 @@ static void dump_vr(int v)
 static void dump_mir(const char *when)
 {
     static const char *const ops[NMOPS] = {
-        "copy", "ldi", "ldsym", "ldf", "stf", "stfi", "leaf", "ldp", "stp",
+        "copy", "ldi", "ldsym", "lda", "data", "ldf", "stf", "stfi", "leaf", "ldp", "stp",
         "stpi", "ldg", "stg", "add24", "sub24", "step24", "bytes24", "neg24", "not24",
         "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "cmp8", "cmp8i", "bool",
         "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
@@ -4786,6 +4840,26 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         out_byte(pair_op(d, 0x01, 0x11, 0x21, 0x21));
         sym_nn(mi->sym, mi->imm);
         return;
+    case M_LDA:
+        /* A string's address where it is now, which the link moves with
+         * the image; or a static's offset into the bss, which the link
+         * adds the bss's start to. */
+        if (d == P_IY)
+            out_byte(0xfd);
+        out_byte(pair_op(d, 0x01, 0x11, 0x21, 0x21));
+        if (mi->imm2 == VAL_ADDR)
+            out_reloc(out_here());
+        else
+            gen_bss_fixup(out_here());
+        out_word24(mi->imm2 == VAL_ADDR ? ssa_moved_at(mi->imm) : mi->imm);
+        return;
+    case M_DATA: {
+        const GenRec *rec = insns[mi->ssa].rec;
+        int bytes = (int) rec->arg[1];
+
+        ssa_moved_add((int) rec->ret, bytes, gen_data(gl_kept(rec->arg[0]), bytes));
+        return;
+    }
     case M_LDF:
         if (mi->width == 1)
             out_byte3(0xdd, 0x46 | code8(d) << 3, disp_of(mi) & 0xff);
