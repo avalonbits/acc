@@ -606,6 +606,7 @@ static void gl_function_end(void)
         }
     }
 
+    frame_unused = frame_sp_kept = 0;   /* the first pass's has its frame */
     gl_replay();
 
     /* The same code, and the same things said about it. */

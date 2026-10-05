@@ -665,9 +665,9 @@ mir "$OPT" "p[i] scaled by adds"               e5d12919      yes 'int f(int *p, 
 mir "$OPT" "not by the multiply"               01030000      no  'int f(int *p, int i) { return p[i]; }'
 # A loop's counter and pointer kept in registers where the scan spills
 # what holds one longest for its uses -- the weight over the length --
-# not the fewest uses: 85 bytes for this, where 95 spilled the pointer.
+# not the fewest uses: the pointer stepped in BC and the counter in IY.
 sum='int f(const int *a, int n) { register const int *p = a; int s = 0; while (n-- > 0) s += *p++; return s; }'
-mir "$OPT" "the loop's values in registers"   dd0706dd170921000000 yes "$sum"
+mir "$OPT" "the loop's values in registers"   030303fd2b yes "$sum"
 # Signed, of two variables: the sign of the difference into the carry, and
 # the carry turned over where it overflowed -- or a / sbc hl, de / add
 # hl, hl / jp po -- with no bias through BC. And a pointer stepped by a
@@ -694,6 +694,55 @@ mir "$OPT" "said hot after, written out"       dde5dd21000000dd39 yes 'int f(int
 boolread='extern _Bool b; int f(int *p) { *p = 1; if (b) return 3; return 4; }'
 mir "$OPT" "a _Bool read tested as a byte"   3a000000b7      yes "$boolread"
 mir "$OPT" "not widened and tested"        b7ed626f09b7ed42 no "$boolread"
+# A static read by its address, ld hl, (nn), not the address loaded and
+# read through; and with nothing in the frame, no frame -- the function the
+# load and ret. A member of a pointer moved by a constant read with both in
+# the displacement, ld a, (iy-4) -- and a byte answered not widened again
+# by the return. A parameter's pointer read at p[3] by (iy+9), the frame
+# left by pop ix alone, SP never having moved.
+mir "$OPT" "a static read by its address"     '^2a000000c9$' yes 'static int counter; int f(void) { return counter; }'
+mir "$OPT" "not through HL"                   ed27     no  'static int counter; int f(void) { return counter; }'
+vprev='struct v { int a; char k; char t; int e; }; extern struct v *vsp; char f(void) { return (vsp - 1)->t; }'
+mir "$OPT" "(p - 1)->t in the displacement"   fd7efc   yes "$vprev"
+mir "$OPT" "not by a subtract"                ed42     no  "$vprev"
+mir "$OPT" "a byte answered as widened"       6fcb05ed626f7dc9 yes "$vprev"
+mir "$OPT" "not widened twice"                7d6fcb05 no  "$vprev"
+mir "$OPT" "p[3] by (iy+9), then pop ix"      fd2709dde1c9 yes 'int f(int *p) { return p[3]; }'
+mir "$OPT" "no ld sp, ix"                     ddf9     no  'int f(int *p) { return p[3]; }'
+# A byte widened, tested as the byte: ld a, (bc) / or a. A byte &'d with a
+# constant branched on by the flags the and made, no or a after. A loop's
+# pointer stepped in its own register, inc bc, not copied out and back.
+# And a byte written through a pointer in BC as ld (bc), a.
+mir "$OPT" "*p tested as a byte, read through BC" 0ab728 yes 'int f(const char *p) { if (*p) return 3; return 4; }'
+mir "$OPT" "not widened and tested at 24 bits"    09b7ed42 no 'int f(const char *p) { if (*p) return 3; return 4; }'
+mask='extern unsigned char t[]; int f(int c) { if (t[c] & 4) return 3; return 4; }'
+mir "$OPT" "t[c] & 4 branched on as it is"     e60428   yes "$mask"
+mir "$OPT" "not tested again"                  e604b7   no  "$mask"
+count='int f(const char *s) { int n = 0; while (*s++) n++; return n; }'
+mir "$OPT" "s++ in its own register"           0318     yes "$count"
+mir "$OPT" "not copied out and back"           c5d1     no  "$count"
+mir "$OPT" "*d = c by ld (bc), a"              02dde1c9 yes 'void f(char *d, char c) { *d = c; }'
+# What the pick weighs counts the frame the code here leaves out: with no
+# frame, the call that makes one and the two that undo it -- a static read
+# is ld hl, (nn) / ret, chosen over the first pass's eight bytes more; with
+# SP kept, the ld sp, ix -- name_text's add chosen for it, where the first
+# pass's is as long without it.
+picked() {
+    OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+        OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 emits "$@"
+}
+picked "$OPT" "no frame, chosen for it"         '^2a000000c9$' yes 'static int counter; int f(void) { return counter; }'
+nametext='char arena[100]; const char *f(int ref) { return arena + ref; }'
+picked "$OPT" "no ld sp, ix, chosen for it"     '09dde1c9$'    yes "$nametext"
+picked "$OPT" "not the first pass's"            ddf9           no  "$nametext"
+# Through IY or HL, a byte read straight into the register it goes to --
+# ld d, (iy+0) -- not into A and copied.
+cmploop='int f(const char *a, const char *b, int n) { while (n-- > 0) if (*a++ != *b++) return 0; return 1; }'
+mir "$OPT" "a byte read straight into its register" fd5600 yes "$cmploop"
+mir "$OPT" "not through A"                        fd7e0057 no "$cmploop"
+# The steps there in place too, made in the block of the edge back: dec bc
+# for n--, inc iy for a++.
+mir "$OPT" "steps in place on a branch's edge"   0bfd23   yes "$cmploop"
 
 big=$(python3 -c "
 print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')

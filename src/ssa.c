@@ -9332,7 +9332,11 @@ void costs(const int *block_start, int end)
             byte_block[at - from] = blk;
     }
     ssa_cost_made = code_cost(out_img + (from - out_base), end - from, byte_block);
-    ssa_size_made = end - from;
+    /* With no frame, call acc_rt_frameset0 and ld sp, ix / pop ix are
+     * not made either: the first pass's eight bytes, not counted in its;
+     * with SP kept and no frame, the ld sp, ix. */
+    ssa_size_made = end - from - (frame_unused ? 8
+                                  : frame_sp_kept && !frame_size() ? 2 : 0);
     ssa_size_first = gl_first_len;
     free(byte_block);
 }
@@ -9572,6 +9576,7 @@ int ssa_generate(const char **why)
     inline_merge();
     ssa_work_max = SSA_WORK_PER * ((long) ninsns + nvals + nblocks + 64);
     ssa_made_mir = 0;
+    frame_unused = frame_sp_kept = 0;
     if (!fail && regs_on() && mir_on()) {
         sink_steps();
         ssa_made_mir = mir_build();
