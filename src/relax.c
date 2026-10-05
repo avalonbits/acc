@@ -677,9 +677,7 @@ static void branch_over(int *at, unsigned char *cc, int n, unsigned char *marked
     }
 }
 
-#ifdef OPT_ACC
-int frame_cut_len;
-#endif
+int frame_cut_len;                  /* see gen_func_end */
 
 #ifdef OPT_ACC
 /* Instructions peep.c took out of the function from `fn_from` to `fn_to`:
@@ -766,11 +764,7 @@ void relax_function(const Mark *from, int frame_at)
          * are still in order, and nothing jumps into it. */
         if (frame_at >= 0) {
             cut->at = frame_at;
-#ifdef OPT_ACC
-            cut->len = frame_cut_len;   /* see frame_lea */
-#else
-            cut->len = 4;
-#endif
+            cut->len = frame_cut_len;   /* see gen_func_end, frame_lea */
             cut++;
             ncuts++;
         }

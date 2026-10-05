@@ -332,11 +332,11 @@ extern unsigned char *relax_short;
 extern int relax_cap;
 extern int *arr_cut_at, narr_cuts, arr_cuts_cap;
 void relax_function(const Mark *from, int frame_at);
-#ifdef OPT_ACC
 extern int frame_cut_len;          /* relax_function's cut of the prologue */
 extern int frame_unused;           /* the code made never reads IX: no frame */
 extern int frame_sp_kept;          /* SP where the prologue left it at every
                                     * return: no frame, no ld sp, ix */
+#ifdef OPT_ACC
 void gen_return_hl(void);          /* a return, the answer in HL already */
 void gen_local_settle(void);       /* locals below all the room taken */
 void relax_cut_code(Cut *cuts, int ncuts, const Mark *from, int fn_from,

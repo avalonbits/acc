@@ -430,7 +430,45 @@ static void return_jump(void)
 
 #ifdef OPT_ACC
 static int func_sym;            /* opt-acc: the function being made */
+#endif
 int frame_unused, frame_sp_kept; /* see gen_int.h */
+
+#ifndef OPT_ACC
+/* Whether the code from `from` to `to` reads or writes IX: an instruction
+ * of it has the DD prefix, or is lea or pea from IX -- or a byte among them
+ * looks like one, a string's or a block static's, which costs only the
+ * frame it keeps. Not the bytes of an address, a jump's or one relocated:
+ * those are where the image went, and an object's are not where a
+ * program's are, which would keep the frame in one and not the other. */
+static int ix_read(int from, int to)
+{
+    const int *r = out_relocs + 1 + func_mark.reloc, *r_end = out_reloc_put;
+    const int *j = jump_at + func_mark.jump, *j_end = jump_at + njumps;
+    unsigned at = (unsigned) (from - out_base), end = (unsigned) (to - out_base);
+    unsigned jbase = (unsigned) out_base;
+
+    for (; at != end; at++) {
+        const unsigned char *p = out_img + at;
+
+        while (r != r_end && (unsigned) *r + 3 <= at)
+            r++;
+        while (j != j_end && (unsigned) *j - jbase + 4 <= at)
+            j++;
+        if ((r != r_end && (unsigned) *r <= at)
+            || (j != j_end && (unsigned) *j - jbase + 1 <= at))
+            continue;                   /* an address's bytes */
+        if (*p == 0xdd)
+            return 1;
+        if (*p == 0xed && at + 1 != end)
+            switch (p[1]) {
+            case 0x02: case 0x12: case 0x22: case 0x32:   /* lea rr, ix+d */
+            case 0x54: case 0x55: case 0x65:    /* lea ix/iy, pea ix+d */
+                return 1;
+            }
+    }
+
+    return 0;
+}
 #endif
 
 void gen_func_begin(int fn, int nparams, Type returns)
@@ -632,15 +670,18 @@ void gen_func_end(void)
     patch_to_here(return_chain);
     return_chain = 0;
 
-    /* Restoring sp from ix unconditionally costs two bytes in a function with
-     * no locals and saves the epilogue having to know the frame size. */
-#ifdef OPT_ACC
-    if (!frame_unused)
+#ifndef OPT_ACC
+    /* With no frame, SP is where the prologue left it at every return --
+     * an array whose length is known only as it runs takes room below a
+     * slot of the frame, and a struct argument's is given back after its
+     * call -- so it is IX already, and pop ix is all the epilogue does, as
+     * agondev's is. And where nothing reads IX either, there need be no
+     * frame at all: the prologue cut whole, and the epilogue a ret. */
+    frame_unused = !frame_size() && !ix_read(frame_patch + 7, out_here());
+    frame_sp_kept = 1;
 #endif
-    {
-#ifdef OPT_ACC
+    if (!frame_unused) {
         if (!frame_sp_kept || frame_size())     /* SP is IX already */
-#endif
             out_byte2(0xdd, 0xf9);      /* ld sp, ix */
         out_byte2(0xdd, 0xe1);          /* pop ix */
     }
@@ -694,6 +735,8 @@ void gen_func_end(void)
                                : frame_wants_call() ? frame_to_call() : frame_lea());
     peep_function(&func_mark, func_start);
 #else
+    /* No frame: the ld hl of its size cut, or the call to make it too. */
+    frame_cut_len = frame_unused ? 8 : 4;
     relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
 #endif
     pool_emit();

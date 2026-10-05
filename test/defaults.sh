@@ -106,9 +106,10 @@ else
     bad "one step from a source takes the defaults" "no image, or a different one"
 fi
 
-# The default library is read for every program: the runtime is in it, and
-# even main's prologue is a call into the runtime.
-printf 'int main(void) { return 0; }\n' > "$tmp/plain.c"
+# The default library is read for a program that calls nothing else: the
+# runtime is in it, and a prologue that makes a frame is a call into it.
+# (A main that needs no frame has no prologue, and calls nothing.)
+printf 'int main(int argc, char **argv) { return argc; }\n' > "$tmp/plain.c"
 if "$tmp/acc-junk" "$tmp/plain.c" -o "$tmp/pj.bin" >/dev/null 2>&1; then
     bad "a program that calls nothing else reads it" "junk.a was passed over"
 else
@@ -134,7 +135,7 @@ fi
 
 # The default directory is not an option: an object made with it is the same
 # file as one made without it, so objects carry between the Agon and a PC.
-printf 'int main(void) { return 0; }\n' > "$tmp/plain.c"
+printf 'int main(int argc, char **argv) { return argc; }\n' > "$tmp/plain.c"
 bin/acc -c "$tmp/plain.c" -o "$tmp/plain-ref.o" >/dev/null || exit 2
 if "$tmp/acc" -c "$tmp/plain.c" -o "$tmp/plain.o" >/dev/null 2>&1 \
    && cmp -s "$tmp/plain.o" "$tmp/plain-ref.o"; then
