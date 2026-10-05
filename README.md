@@ -106,6 +106,15 @@ members a program uses:
     */ acc -a mylib.a util.o parse.o
     */ acc main.c mylib.a -o prog.bin
 
+MOS cuts a command line at about 255 characters. A command longer than that
+-- the link of many objects, say -- reads the rest of its words from a
+file, named with `@`; a word may be on a line of its own:
+
+    */ type prog.lnk
+    main.o util.o parse.o
+    lex.o
+    */ acc @prog.lnk -o prog.bin
+
 Headers of your own are found beside the file that includes them, or in a
 directory given with `-I`, which is searched before `/lib/acc/include`:
 
@@ -143,6 +152,7 @@ takes, so a program of dozens of objects links in one command.
              [-D <name>[=<value>]]... [-U <name>]... [-include <file>]
     acc <file.o|lib.a>... [-o <out.bin>]
     acc -a <lib.a> <file.o>...
+    acc @<file> ...
     acc -v
     acc -h
 
@@ -163,6 +173,7 @@ takes, so a program of dozens of objects links in one command.
 | `-map <file>` | Write where each function and variable went |
 | `-trigraphs` | Read the nine trigraphs |
 | `-errors <file>` | Also write an error to `<file>`, and fail with 100 |
+| `@<file>` | Read more arguments from `<file>`, in its place: words separated by spaces, tabs or line ends, `"..."` one word. For a command longer than MOS's line, as a link of many objects |
 | `-v`, `--version` | Print the version and exit |
 | `-h`, `--help` | List the options, in one screen |
 

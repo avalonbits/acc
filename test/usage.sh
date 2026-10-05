@@ -69,5 +69,30 @@ run -errors "$tmp/e.txt" -z; rc=$?
 [ $rc -eq 100 ] && ok "a command line with -errors, 100" \
     || bad "a command line with -errors, 100" "rc $rc"
 
+# An @file that is not there is an error naming it: 1, and with -errors
+# 100 and said in the file -- the -errors given before it, or in another
+# @file before it.
+run @"$tmp/nope.lnk" -o "$tmp/x.bin"; rc=$?
+if [ $rc -eq 1 ] && grep -q "cannot open '$tmp/nope.lnk'" "$tmp/err"; then
+    ok "a missing @file is named, and fails with 1"
+else
+    bad "a missing @file is named, and fails with 1" "rc $rc"
+fi
+rm -f "$tmp/e.txt"
+run -errors "$tmp/e.txt" @"$tmp/nope.lnk"; rc=$?
+if [ $rc -eq 100 ] && grep -q "cannot open '$tmp/nope.lnk'" "$tmp/e.txt"; then
+    ok "and with -errors, 100, in the file"
+else
+    bad "and with -errors, 100, in the file" "rc $rc"
+fi
+rm -f "$tmp/e.txt"
+printf -- '-errors\n' > "$tmp/first.lnk"
+run @"$tmp/first.lnk" "$tmp/e.txt" @"$tmp/nope.lnk"; rc=$?
+if [ $rc -eq 100 ] && grep -q "cannot open '$tmp/nope.lnk'" "$tmp/e.txt"; then
+    ok "-errors at a file's end, its path after it"
+else
+    bad "-errors at a file's end, its path after it" "rc $rc"
+fi
+
 echo "  $pass passed, $fail failed"
 [ $fail -eq 0 ]
