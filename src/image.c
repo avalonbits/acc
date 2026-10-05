@@ -538,6 +538,7 @@ unsigned out_rewinds;
  * this last set it high: which marks a rewind reached, where out_rewinds
  * says only that there was one. */
 int out_rewind_floor = INT_MAX;
+int out_rewound_to = INT_MAX;       /* the same, for insn.c's ld_rr_ix */
 
 /* Told of every rewind, if set: what the code generator keeps that a
  * rewind can take back. A pointer rather than a call, so that the image stands
@@ -551,6 +552,8 @@ void out_rewind(int here)
     out_rewinds++;
     if (here < out_rewind_floor)
         out_rewind_floor = here;
+    if ((unsigned) here < (unsigned) out_rewound_to)
+        out_rewound_to = here;
     if (out_on_rewind)
         out_on_rewind(here);
     /* The slots recorded in what is being undone go with it. The table is
@@ -873,6 +876,7 @@ size_t image_marks(unsigned char *buf, int restore)
 
     STATE_VAR(out_rewinds);
     STATE_VAR(out_rewind_floor);
+    STATE_VAR(out_rewound_to);
 
     return at;
 }

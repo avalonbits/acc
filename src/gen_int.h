@@ -116,7 +116,6 @@ extern int imm_hl_end;
 extern unsigned imm_hl_epoch;
 void ld_rr_imm(int reg, int imm) /* ld rr, nn */;
 extern int stored_at, stored_disp, stored_reg, join_at;
-extern unsigned stored_epoch;
 void ld_ix_rr(int disp, int reg) /* ld (ix+d), rr */;
 void push_rr(int reg);
 void pop_rr(int reg);
@@ -377,17 +376,7 @@ void vpush_scratch(Type type, int slot);
 void vcmp_pointer_check(Type left, Type right);
 void vbinop_pointer(int op, Type left, Type right);
 
-static inline __attribute__((always_inline))
-void ld_rr_ix(int reg, int disp)           /* ld rr, (ix+d) */
-{
-    if (stored_at == out_here() && stored_disp == disp && stored_reg == reg
-        && stored_epoch == out_rewinds && join_at != stored_at)
-        return;
-    if (disp_fits(disp))
-        out_byte3(0xdd, 0x07 + reg_code[reg], disp);
-    else
-        far_op(0xfd, 0x07 + reg_code[reg], disp);
-}
+void ld_rr_ix(int reg, int disp);          /* ld rr, (ix+d) */
 
 /* Always inlined: every value the compiler handles is pushed through here,
  * and as a call it opened a frame on this target to store three fields. */
