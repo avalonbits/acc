@@ -41,6 +41,7 @@ static int bitwise_const(int op, int value)
         sbc_hl_hl();            /* and cleared the carry, so this is 0 */
         ld_l_a();
         flags_say_nonzero(at);
+        widen_made(at, TY_UCHAR);       /* a byte, in A still */
 
         return 1;
     }
@@ -89,6 +90,9 @@ static int bitwise_const(int op, int value)
     high = c1 != identity;
     if (!low && !high)
         return 1;               /* the operator would change nothing */
+    if (!high && op != TK_AMP
+        && widen_byte_op(vsp - 2, op == TK_PIPE ? 0xf6 : 0xee, c0))
+        return 1;               /* on the byte, the widening after */
 
     if (low) {
         ld_a_l();
@@ -1172,7 +1176,10 @@ static int cmp_byte_const(int op)
         xor_a_imm(0x80);
         c ^= 0x80;
     }
-    cp_a_imm(c);
+    if (c & 0xff)
+        cp_a_imm(c);
+    else
+        or_a_a();               /* the same Z and carry, a byte shorter */
 
     vdrop();
     vdrop();
@@ -1440,7 +1447,8 @@ void vapply(unsigned char op, Type narrow)
         int width = vwidth(vsp - 2);
 
         vdrop();
-        ld_a_l();
+        if (width == 2 || !widen_undo(vsp - 1))
+            ld_a_l();           /* unless the byte is in A, unwidened */
         if (width == 2)
             out_byte(0xb4);                     /* or h */
         else

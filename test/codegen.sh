@@ -545,5 +545,52 @@ emits "register p: *p++ = 0 at (iy-1)"  fd7[135]ff yes \
 emits "no register: no (iy-1)"          fd7eff no \
     'int f(const char *p) { int n = 0; while (*p++) n++; return n; }'
 
+# A byte widened into HL whose upper bytes nothing reads: the widening
+# taken back and the byte used in A. A byte local &'d with a mask is read
+# into A and and'd -- not cleared into HL first and moved to A -- and |'d
+# with a constant byte the same, widened after. Tested, it is or a in A.
+# Written through a pointer, it goes from A through the pair the pointer
+# is in, ld (hl), a -- a byte local, one just read, one cast from an int --
+# not widened and moved back to A for ld (de), a. A global byte compared
+# with 0 is ld a, (nn) / or a; a byte compared with 0 is or a, not cp 0.
+emits "x & 4 of a byte local, in A"     dd7e06e604 yes \
+    'int f(unsigned char x) { return x & 4; }'
+emits "not cleared into HL first"       ed62dd6e06 no \
+    'int f(unsigned char x) { return x & 4; }'
+emits "x | 0x20 on the byte"            dd7e06f620 yes \
+    'int f(unsigned char x) { return x | 0x20; }'
+emits "if (c) of a byte local, in A"    dd7e06b728 yes \
+    'int f(char c) { if (c) return 1; return 2; }'
+emits "not tested at 24 bits"           "$zero_test" no \
+    'int f(char c) { if (c) return 1; return 2; }'
+emits "*p = c by ld (hl), a"            dd7e0977 yes \
+    'void f(char *p, char c) { *p = c; }'
+emits "not through ld a, l"             7d12 no \
+    'void f(char *p, char c) { *p = c; }'
+emits "*d++ = *s++ from A"              7e12 yes \
+    'void f(char *d, const char *s) { while (*s) *d++ = *s++; }'
+emits "not widened between"             6fcb05 no \
+    'void f(char *d, const char *s) { while (*s) *d++ = *s++; }'
+emits "*p = (unsigned char) v from A"   7ddd270677 yes \
+    'void f(unsigned char *p, int v) { *p = (unsigned char) v; }'
+emits "not widened between"             b7ed626f no \
+    'void f(unsigned char *p, int v) { *p = (unsigned char) v; }'
+emits "g == 0 of a global byte, in A"   3a000000b721 yes \
+    'unsigned char g; int f(void) { return g == 0; }'
+emits "not widened first"               ed626f7d no \
+    'unsigned char g; int f(void) { return g == 0; }'
+emits "*p = x & 0x7f from A"            e67fdd270677 yes \
+    'void f(char *p, int x) { *p = x & 0x7f; }'
+emits "and not widened between"         e67fed62 no \
+    'void f(char *p, int x) { *p = x & 0x7f; }'
+# The byte a store leaves in A, widened for the assignment's value, is
+# taken back again by what reads it as a byte: ++s.gen == 0 is or a.
+emits "++s.gen == 0 tested in A"        77b720 yes \
+    'struct st { int a; unsigned char gen; }; extern struct st state; int f(void) { if (++state.gen == 0) return 1; return 2; }'
+emits "t == 0 of a byte by or a"        dd7e06b720 yes \
+    'int v; int f(unsigned char t) { if (t == 0 && v > 0) return 1; return 2; }'
+emits "not cp 0"                        fe00 no \
+    'int v; int f(unsigned char t) { if (t == 0 && v > 0) return 1; return 2; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

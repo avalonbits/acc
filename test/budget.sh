@@ -19,9 +19,9 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE_MAX=238946        # bytes of acc.bin
-HEAP_MIN=188631         # bytes from ___heapbot to ___heaptop
-SETFLAG_MAX=538
+IMAGE_MAX=239633        # bytes of acc.bin
+HEAP_MIN=187944         # bytes from ___heapbot to ___heaptop
+SETFLAG_MAX=532
 IMULU_MAX=301
 
 AGONDEV=${AGONDEV:-$HOME/agondev}
@@ -45,6 +45,32 @@ heap=$(awk '$2 == "___heapbot" { b = strtonum($1) }
 setflag=$(grep -c 'call[[:space:]]*pe, __setflag' "$tmp/all.s")
 imulu=$(grep -c 'call[[:space:]]*__imulu' "$tmp/all.s")
 
+# agondev makes a 0 in HL with or a / sbc hl, hl, which sets the flags --
+# and has put that between a test and the jump or call that reads it, so
+# that the test was lost: vstore_indirect's `if (val_number(...))
+# force_into` became a call z that was always taken, and the Agon's acc
+# disagreed with the host's (test/target.sh). Counted: a conditional on
+# the zero or the carry flag whose nearest flag-setter before it, within
+# its block and with no call between, is sbc hl, hl.
+lost=$(python3 - "$tmp/all.s" <<'PY'
+import re, sys
+sets = re.compile(r'\s*(add|adc|sub|sbc|and|or|xor|cp|neg|rl|rr|sla|sra|srl|bit|'
+                  r'cpl|scf|ccf|tst|daa|call|inc\s+[a-l(]|dec\s+[a-l(])\b')
+cond = re.compile(r'\s*(jp|jr|call|ret)\s+(z|nz|c|nc)\b')
+lines = open(sys.argv[1]).read().split('\n')
+n = 0
+for i, line in enumerate(lines):
+    if not cond.match(line):
+        continue
+    j = i - 1
+    while j >= 0 and not lines[j].rstrip().endswith(':') and not sets.match(lines[j]):
+        j -= 1
+    if j >= 0 and re.match(r'\s*sbc\s+hl,\s*hl', lines[j]):
+        n += 1
+print(n)
+PY
+)
+
 fail=0
 at_most() {
     if [ "$2" -le "$3" ]; then
@@ -64,4 +90,5 @@ at_most  "acc.bin" "$image" "$IMAGE_MAX"
 at_least "the heap" "$heap" "$HEAP_MIN"
 at_most  "signed compares (__setflag)" "$setflag" "$SETFLAG_MAX"
 at_most  "multiplies (__imulu)" "$imulu" "$IMULU_MAX"
+at_most  "flags lost to sbc hl, hl" "$lost" 0
 exit $fail
