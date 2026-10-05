@@ -598,9 +598,16 @@ void vstore_indirect(void)
         int reg;
 
         if (type_size(to) == ACC_INT_SIZE) {
-            if (val_number(val->kind))
+            /* A constant into HL, as an if and an else: as a test and then
+             * force_reg either way, agondev made the R_HL for force_into
+             * with sbc hl, hl -- between the test and its call z, which it
+             * then always took. */
+            if (val_number(val->kind)) {
                 force_into(val, R_HL);
-            reg = force_reg(val);
+                reg = R_HL;
+            } else {
+                reg = force_reg(val);
+            }
             if (reg == R_HL)
                 out_byte(0x22);                         /* ld (nn), hl */
             else
