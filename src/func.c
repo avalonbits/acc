@@ -430,6 +430,7 @@ static void return_jump(void)
 
 #ifdef OPT_ACC
 static int func_sym;            /* opt-acc: the function being made */
+int frame_unused, frame_sp_kept; /* see gen_int.h */
 #endif
 
 void gen_func_begin(int fn, int nparams, Type returns)
@@ -443,6 +444,7 @@ void gen_func_begin(int fn, int nparams, Type returns)
 #ifdef OPT_ACC
     func_start = out_here();
     func_sym = fn;
+    frame_unused = frame_sp_kept = 0;
 #endif
     nconst_rets = 0;
     npool = npool_sites = 0;
@@ -573,6 +575,15 @@ static int hot_has(NameRef name)
     return hot_cap && hot_names[hot_slot(name, hot_cap)] == name;
 }
 
+/* No frame at all, the code made never reading IX: the whole prologue cut,
+ * and the epilogue only the ret. Where relax_function cuts. */
+static int frame_none(void)
+{
+    frame_cut_len = 15;
+
+    return func_start;
+}
+
 static int frame_wants_call(void)
 {
     return !hot_has(sym_at(func_sym)->name);
@@ -623,8 +634,16 @@ void gen_func_end(void)
 
     /* Restoring sp from ix unconditionally costs two bytes in a function with
      * no locals and saves the epilogue having to know the frame size. */
-    out_byte2(0xdd, 0xf9);              /* ld sp, ix */
-    out_byte2(0xdd, 0xe1);              /* pop ix */
+#ifdef OPT_ACC
+    if (!frame_unused)
+#endif
+    {
+#ifdef OPT_ACC
+        if (!frame_sp_kept || frame_size())     /* SP is IX already */
+#endif
+            out_byte2(0xdd, 0xf9);      /* ld sp, ix */
+        out_byte2(0xdd, 0xe1);          /* pop ix */
+    }
     out_byte(0xc9);                              /* ret */
 
     out_patch24(frame_patch, -frame_size());
@@ -671,7 +690,8 @@ void gen_func_end(void)
         rt_fixups[frame_call].which = RT_FRAMESET0;
 #endif
 #ifdef OPT_ACC
-    relax_function(&func_mark, frame_wants_call() ? frame_to_call() : frame_lea());
+    relax_function(&func_mark, frame_unused ? frame_none()
+                               : frame_wants_call() ? frame_to_call() : frame_lea());
     peep_function(&func_mark, func_start);
 #else
     relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
@@ -849,6 +869,19 @@ void gen_return(int line, const char *spot)
     if (recorded >= 0)
         const_ret_end[recorded] = out_here();
 }
+
+#ifdef OPT_ACC
+/* A return whose answer is in HL already, as the function's type has it
+ * -- widened by its sign, or not, where that is a byte: A given its low
+ * byte then, and the jump to the epilogue. What gen_return makes, without
+ * widening it again. */
+void gen_return_hl(void)
+{
+    if (RETURNS_IN_A(return_type))
+        ld_a_l();
+    return_jump();
+}
+#endif
 
 /* That a struct argument and its parameter are the same struct: a struct
  * cannot be converted to anything, nor anything to one. */

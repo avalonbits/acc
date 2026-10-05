@@ -95,8 +95,9 @@ enum {
     M_STF,          /* (ix+imm) = a */
     M_STFI,         /* (ix+imm) = imm2, a byte */
     M_LEAF,         /* d = ix+imm (24) */
-    M_LDP,          /* d = (a+imm): a in HL, or IY */
-    M_STP,          /* (a+imm) = b */
+    M_LDP,          /* d = (a+imm): a in HL, or IY; a byte at imm 0 into A
+                     * through BC or DE too */
+    M_STP,          /* (a+imm) = b: likewise */
     M_STPI,         /* (a+imm) = imm2, a byte */
     M_LDG,          /* d = (sym+imm) */
     M_STG,          /* (sym+imm) = a */
@@ -124,8 +125,9 @@ enum {
     M_HELPER,       /* d = routine imm (a, b): HL, BC -> HL; A, F clobbered */
     M_BR,           /* to block imm2 when the flags say imm, else to the next */
     M_JMP,          /* to block imm2 */
-    M_RET,          /* return a, in HL, as type imm; or nothing; or with
-                     * imm2, the SSA return's constant */
+    M_RET,          /* return a, in HL, as `type`, imm set where it is the
+                     * function's answer already; or nothing; or with imm2,
+                     * the SSA return's constant */
     M_PCOPY,        /* the parallel copies an edge makes: see pcopy */
     M_SAVE,         /* before a call's arguments: the pairs imm2 says pushed */
     M_PUSH,         /* an argument: a pushed, a pair */
@@ -796,6 +798,22 @@ static int byte_kind(const Ent *ent)
 static Ent const_bump;
 
 /* The flags, for a comparison: its condition. */
+/* The flags of an operand tested against 0, Z where it is: a byte, or an
+ * int that is a byte widened, tested as the byte. */
+static void zero_test(const Ent *ent)
+{
+    int val = ent->val;
+
+    if (val >= 0 && (val_width(val) == 1 || known_byte(ent)
+                     || (val_vr[val] >= 0 && vr[val_vr[val]].ext >= 0))) {
+        MIns *mi = mi3(M_CMP8I, -1, in_class(operand_vr(ent, 1), C_A), -1);
+
+        mi->imm2 = 0;
+        return;
+    }
+    mi3(M_TST24, -1, in_class(operand_vr(ent, 3), C_HL), -1);
+}
+
 static int sel_compare(const Ins *insn, int op)
 {
     Type lt = insn->in[0].attr.type, rt = insn->in[1].attr.type;
@@ -876,7 +894,7 @@ static int sel_compare(const Ins *insn, int op)
 
     /* Against zero for equality: kept where it is. */
     if ((op == TK_EQ || op == TK_NE) && is_num(right) && right->attr.val == 0) {
-        mi3(M_TST24, -1, in_class(operand_vr(left, 3), C_HL), -1);
+        zero_test(left);
         return op == TK_EQ ? JP_Z : JP_NZ;
     }
     a = in_class(operand_vr(left, 3), C_HL);
@@ -1280,10 +1298,9 @@ static void sel_convert(const Ent *ent, Type to, int res)
     if (res < 0 || val_vr[res] < 0)
         return;
     if (to == TY_BOOL) {
-        int a = in_class(operand_vr(ent, 3), C_HL);
         MIns *mi;
 
-        mi3(M_TST24, -1, a, -1);
+        zero_test(ent);
         d = new_vr(1, C_R8);
         mi = mi3(M_BOOL, d, -1, -1);
         mi->imm = JP_NZ;
@@ -1310,10 +1327,14 @@ static void sel_convert(const Ent *ent, Type to, int res)
 typedef struct {
     int base;                   /* a virtual register, or -1 for a global */
     int sym, off;
+    int kind;                   /* VAL_ADDR or VAL_BSS: off is the address
+                                 * constant itself, the link moving it */
 } Addr;
 
 static int *member_base, *member_off;   /* by value: a member's pointer */
 static int *global_of;                  /* by value: a global's address */
+static int *addrc_of;                   /* by value: a constant's kind, the
+                                         * address in member_off, or 0 */
 
 static Addr address_of(const Ent *ent)
 {
@@ -1323,6 +1344,17 @@ static Addr address_of(const Ent *ent)
     addr.base = -1;
     addr.sym = -1;
     addr.off = 0;
+    addr.kind = 0;
+    if (is_addr(ent)) {
+        addr.kind = ent->attr.kind;
+        addr.off = ent->attr.val;
+        return addr;
+    }
+    if (val >= 0 && addrc_of[val]) {
+        addr.kind = addrc_of[val];
+        addr.off = member_off[val];
+        return addr;
+    }
     if (val >= 0 && global_of[val] >= 0) {
         addr.sym = global_of[val];
         addr.off = member_off[val];
@@ -1354,6 +1386,8 @@ static int addr_vr(const Ent *ent)
     int d;
     MIns *mi;
 
+    if (addr.kind)
+        return addrc_vr(addr.off, addr.kind);
     if (addr.sym >= 0) {
         d = new_vr(3, C_R24);
         mi = mi3(M_LDSYM, d, -1, -1);
@@ -1373,6 +1407,24 @@ static int addr_vr(const Ent *ent)
     return d;
 }
 
+
+/* A pointer plus or minus a constant, the bytes it moves by: or INT_MIN. */
+static int const_step(const Ins *insn)
+{
+    int op = (int) insn->rec->arg[0];
+    long long k;
+    Type lt = insn->in[0].attr.type;
+
+    if (insn->op != GL_vapply || (op != TK_PLUS && op != TK_MINUS)
+        || insn->in[0].val < 0 || !type_pointer(lt) || !is_num(&insn->in[1])
+        || !mir_operand_ok(&insn->in[0]))
+        return INT_MIN;
+    k = (long long) insn->in[1].attr.val * type_step(lt, insn->in[0].attr.ext);
+    if (k < -128 || k > 128)
+        return INT_MIN;
+
+    return (int) (op == TK_MINUS ? -k : k);
+}
 
 /* The one instruction that uses `val`, or -1. */
 static int sole_user(int val)
@@ -1395,19 +1447,36 @@ static void sel_load(const Ins *insn)
     }
     w = width_of(read);
     addr = address_of(&insn->in[0]);
-    if (addr.sym >= 0) {
+    if (addr.sym >= 0 || addr.kind) {
         d = new_vr(w, w == 1 ? C_A : C_R24);
         mi = mi3(M_LDG, d, -1, -1);
         mi->sym = addr.sym;
         mi->imm = addr.off;
+        mi->imm2 = addr.kind;
         mi->width = w;
         to_val_as(insn->res, d, read);
         return;
     }
-    d = new_vr(w, w == 1 ? C_R8 : C_R24);
-    mi = mi3(M_LDP, d, in_class(addr.base, addr.off ? C_IY : PB(P_HL) | C_IY), -1);
-    mi->imm = addr.off;
-    mi->width = w;
+    /* A byte at the pointer itself: into A, through any pair -- ld a, (bc)
+     * and ld a, (de) as well as (hl). */
+    if (w == 1 && !addr.off) {
+        int base = addr.base, t = new_vr(1, C_A);
+
+        /* Read where it is: a copy of a phi's could not share its pair.
+         * Into A, and copied from there to where it goes: through HL or
+         * IY, the two made one, ld r, (hl) (mir_emit). */
+        if (vr[base].cls & ~C_R24)
+            base = in_class(base, C_R24);
+        mi = mi3(M_LDP, t, base, -1);
+        mi->width = 1;
+        d = new_vr(1, C_R8);
+        mi3(M_COPY, d, t, -1);
+    } else {
+        d = new_vr(w, w == 1 ? C_R8 : C_R24);
+        mi = mi3(M_LDP, d, in_class(addr.base, addr.off ? C_IY : PB(P_HL) | C_IY), -1);
+        mi->imm = addr.off;
+        mi->width = w;
+    }
     to_val_as(insn->res, d, read);
 }
 
@@ -1423,11 +1492,12 @@ static void sel_store(const Ins *insn)
 
         if (to == TY_BOOL)
             value = value != 0;
-        if (addr.sym >= 0) {
+        if (addr.sym >= 0 || addr.kind) {
             v = in_class(const_vr(value, 1), C_A);
             mi = mi3(M_STG, -1, v, -1);
             mi->sym = addr.sym;
             mi->imm = addr.off;
+            mi->imm2 = addr.kind;
             mi->width = 1;
         } else {
             mi = mi3(M_STPI, -1, in_class(addr.base, addr.off ? C_IY : PB(P_HL) | C_IY), -1);
@@ -1440,20 +1510,28 @@ static void sel_store(const Ins *insn)
         return;
     }
     if (to == TY_BOOL) {
-        int a = in_class(operand_vr(&insn->in[1], 3), C_HL);
-
-        mi3(M_TST24, -1, a, -1);
+        zero_test(&insn->in[1]);
         v = new_vr(1, C_R8);
         mi = mi3(M_BOOL, v, -1, -1);
         mi->imm = JP_NZ;
     } else {
         v = operand_vr(&insn->in[1], w);
     }
-    if (addr.sym >= 0) {
+    if (addr.sym >= 0 || addr.kind) {
         mi = mi3(M_STG, -1, in_class(v, w == 1 ? C_A : C_R24), -1);
         mi->sym = addr.sym;
         mi->imm = addr.off;
+        mi->imm2 = addr.kind;
         mi->width = w;
+    } else if (w == 1 && !addr.off) {
+        int base = addr.base;
+
+        /* ld (bc), a and (de), a: the byte copied into A first -- which
+         * through HL or IY is no copy, ld (hl), r (mir_emit). */
+        if (vr[base].cls & ~C_R24)
+            base = in_class(base, C_R24);
+        mi = mi3(M_STP, -1, base, in_class(v, C_A));
+        mi->width = 1;
     } else {
         int base = in_class(addr.base, addr.off ? C_IY : PB(P_HL) | C_IY);
 
@@ -1490,6 +1568,23 @@ static void sel_call(const Ins *insn)
         to_val_as(insn->res, d, callee->type == TY_BOOL ? TY_UCHAR : callee->type);
 }
 
+/* Whether `v`, an operand of `type` as an int, is what the function
+ * answers already, gen_return having nothing to convert: an int or a
+ * pointer as another, or the function's byte widened as it widens it. */
+static int answer_made(int v, Type type)
+{
+    Type to = return_type;
+
+    if (!mir_type(to) || !mir_type(type))
+        return 0;
+    if (to == TY_BOOL)
+        return type == TY_BOOL && vr[v].ext >= 0 && !vr[v].ext_signed;
+    if (width_of(to) == 3)
+        return width_of(type) == 3;
+
+    return vr[v].ext >= 0 && vr[v].ext_signed == !type_unsigned(to);
+}
+
 static void sel_insn(const Ins *insn, int at)
 {
     int op = insn->op, d, a;
@@ -1519,6 +1614,11 @@ static void sel_insn(const Ins *insn, int at)
         {
             Addr addr = address_of(&insn->in[0]);
 
+            if (addr.kind) {
+                to_val(insn->res, addrc_vr(addr.off + (int) insn->rec->arg[0],
+                                           addr.kind));
+                return;
+            }
             if (addr.sym >= 0) {
                 d = new_vr(3, C_R24);
                 mi = mi3(M_LDSYM, d, -1, -1);
@@ -1591,14 +1691,7 @@ static void sel_insn(const Ins *insn, int at)
     case GL_vtruth: {
         int cc = (int) insn->rec->arg[0] == TK_EQ ? JP_Z : JP_NZ, n;
 
-        if (insn->in[0].val >= 0 && (val_width(insn->in[0].val) == 1
-                                     || known_byte(&insn->in[0]))) {
-            a = in_class(operand_vr(&insn->in[0], 1), C_A);
-            mi = mi3(M_CMP8I, -1, a, -1);
-            mi->imm2 = 0;
-        } else {
-            mi3(M_TST24, -1, in_class(operand_vr(&insn->in[0], 3), C_HL), -1);
-        }
+        zero_test(&insn->in[0]);
         n = fused_branch(at);
         if (n >= 0) {
             sel_branch(cc, &insns[n]);
@@ -1622,6 +1715,8 @@ static void sel_insn(const Ins *insn, int at)
         sel_store(insn);
         return;
     case GL_vapply:
+        if (insn->res >= 0 && member_base[insn->res] >= 0)
+            return;                     /* in its reader's displacement */
         sel_apply(insn, at);
         return;
     case GL_gen_call:
@@ -1642,12 +1737,7 @@ static void sel_insn(const Ins *insn, int at)
             }
             return;
         }
-        if (val_width(insn->in[0].val) == 1 || known_byte(&insn->in[0])) {
-            mi = mi3(M_CMP8I, -1, in_class(operand_vr(&insn->in[0], 1), C_A), -1);
-            mi->imm2 = 0;
-        } else {
-            mi3(M_TST24, -1, in_class(operand_vr(&insn->in[0], 3), C_HL), -1);
-        }
+        zero_test(&insn->in[0]);
         sel_branch(JP_NZ, insn);
         return;
     case I_JMP:
@@ -1671,10 +1761,11 @@ static void sel_insn(const Ins *insn, int at)
             return;
         }
         if (insn->nin)
-            v = in_class(operand_vr(&insn->in[0], 3), C_HL);
-        mi = mi3(M_RET, -1, v, -1);
+            v = operand_vr(&insn->in[0], 3);
+        mi = mi3(M_RET, -1, v >= 0 ? in_class(v, C_HL) : -1, -1);
         mi->ssa = at;
         mi->type = insn->nin ? insn->in[0].attr.type : TY_VOID;
+        mi->imm = v >= 0 && answer_made(v, mi->type);
         return;
     }
     }
@@ -1695,13 +1786,14 @@ static int setup(void)
     member_base = realloc(member_base, ((size_t) nvals + 1) * sizeof *member_base);
     member_off = realloc(member_off, ((size_t) nvals + 1) * sizeof *member_off);
     global_of = realloc(global_of, ((size_t) nvals + 1) * sizeof *global_of);
+    addrc_of = realloc(addrc_of, ((size_t) nvals + 1) * sizeof *addrc_of);
     ssa_mb = realloc(ssa_mb, ((size_t) nblocks + 1) * sizeof *ssa_mb);
-    if (!val_vr || !member_base || !member_off || !global_of || !ssa_mb)
+    if (!val_vr || !member_base || !member_off || !global_of || !addrc_of || !ssa_mb)
         acc_error("out of memory for the machine IR");
     nvr = nmb = npc = 0;
     for (val = 0; val != nvals; val++) {
         val_vr[val] = member_base[val] = global_of[val] = -1;
-        member_off[val] = 0;
+        member_off[val] = addrc_of[val] = 0;
     }
 
     /* What is made in more than one place: a phi, and what a ?: sets. */
@@ -1763,14 +1855,39 @@ static int setup(void)
             global_of[res] = (int) insn->rec->arg[0];
             continue;
         }
+        if (user >= 0 && (off = const_step(insn)) != INT_MIN
+            && insns[user].in[0].val == res
+            && (insns[user].op == GL_vderef || insns[user].op == GL_vstore_indirect
+                || insns[user].op == GL_vmember)) {
+            /* A pointer and a constant, read or written through or a
+             * member's pointer: the constant in the displacement. */
+            if (off >= -128 && off + 2 <= 127) {
+                member_base[res] = insn->in[0].val;
+                member_off[res] = off;
+            }
+            continue;
+        }
         if (insn->op != GL_vmember || user < 0
             || (insns[user].op != GL_vderef && insns[user].op != GL_vstore_indirect)
-            || insns[user].in[0].val != res || insn->in[0].val < 0)
+            || insns[user].in[0].val != res)
+            continue;
+        if (is_addr(&insn->in[0])) {
+            addrc_of[res] = insn->in[0].attr.kind;
+            member_off[res] = insn->in[0].attr.val + (int) insn->rec->arg[0];
+            continue;
+        }
+        if (insn->in[0].val < 0)
             continue;
         off = (int) insn->rec->arg[0];
         if (global_of[insn->in[0].val] >= 0) {
             global_of[res] = global_of[insn->in[0].val];
             member_off[res] = member_off[insn->in[0].val] + off;
+        } else if (member_base[insn->in[0].val] >= 0) {
+            off += member_off[insn->in[0].val];
+            if (off >= -128 && off + 2 <= 127) {
+                member_base[res] = member_base[insn->in[0].val];
+                member_off[res] = off;
+            }
         } else if (off >= -128 && off + 2 <= 127) {
             member_base[res] = insn->in[0].val;
             member_off[res] = off;
@@ -1782,7 +1899,7 @@ static int setup(void)
 
         if (!vals[val].used || !mir_type(vals[val].type))
             continue;
-        if (member_base[val] >= 0)
+        if (member_base[val] >= 0 || addrc_of[val])
             continue;                   /* folded into its read or write */
         if (global_of[val] >= 0 && sole_user(val) >= 0
             && (insns[sole_user(val)].op == GL_vderef
@@ -1877,6 +1994,62 @@ static void pcopy_add(int which, int dst, int src)
     p->n++;
 }
 
+static int mi_uses(const MIns *mi, int *out);
+static int mi_defs(const MIns *mi, int *out);
+
+/* By register: how many instructions read it, before the copies; and the
+ * one instruction that writes it, block and place, or def_blk -1 for none
+ * or more than one. */
+static int *vr_reads, *def_blk, *def_at;
+
+/* A phi's copy from a step of the phi itself -- p++ round a loop: the step
+ * made in the phi's register instead, last in the block the copy is made
+ * in, and the copy of it a copy of the register into itself, which comes
+ * to nothing. The phi's register lives through the whole loop, so that the
+ * step's own could not share it. Where the step's value is read by nothing
+ * else -- the copy on the way, and the phi, the one phi on this edge.
+ * Moved to the end of the block, it adds the same: the phi's register is
+ * written nowhere else, but by the copies into the phi's block, and the
+ * step comes after the last of those on every path from it to here, since
+ * what it makes reaches here. `once` says, by copy, that the value copied
+ * goes to that phi alone. */
+static void step_in_place(MBlock *f, int which, const unsigned char *once)
+{
+    PCopy *p = &pc[which];
+    int k, j;
+
+    for (k = 0; k != p->n; k++) {
+        int dst = p->dst[k], src = p->src[k], t = src;
+        MIns *step, *mi;
+
+        if (!once[k] || vr_reads[src] != 0 || def_blk[src] < 0)
+            continue;
+        for (j = 0; j != p->n; j++)
+            if (j != k && (p->src[j] == dst || p->src[j] == src))
+                break;
+        if (j != p->n)
+            continue;
+        mi = &mb[def_blk[src]].ins[def_at[src]];
+        if (mi->op == M_COPY) {
+            t = mi->a;
+            if (vr_reads[t] != 1 || def_blk[t] < 0)
+                continue;
+        }
+        step = &mb[def_blk[t]].ins[def_at[t]];
+        if (step->op != M_STEP24 || step->a != dst)
+            continue;
+        cur = (int) (f - mb);
+        mi = mi3(M_STEP24, dst, dst, -1);
+        step = &mb[def_blk[t]].ins[def_at[t]];         /* mi3 may move it */
+        mi->imm = step->imm;
+        mi->t = step->t;
+        /* What it made, and the copy of that: the phi before the step, read
+         * by nothing now, and taken out with the dead code. */
+        step->op = M_COPY;
+        p->src[k] = dst;
+    }
+}
+
 static int place_phis(void)
 {
     int blk, pred, phi, i, nedges = 0, *phi_head, *phi_next;
@@ -1892,6 +2065,28 @@ static int place_phis(void)
         acc_error("out of memory for the machine IR");
     for (i = 0; i != nblocks; i++)
         edge_after[i] = taken_head[i] = phi_head[i] = -1;
+    vr_reads = realloc(vr_reads, ((size_t) nvr + 1) * sizeof *vr_reads);
+    def_blk = realloc(def_blk, ((size_t) nvr + 1) * sizeof *def_blk);
+    def_at = realloc(def_at, ((size_t) nvr + 1) * sizeof *def_at);
+    if (!vr_reads || !def_blk || !def_at)
+        acc_error("out of memory for the machine IR");
+    for (i = 0; i != nvr; i++) {
+        vr_reads[i] = 0;
+        def_blk[i] = def_at[i] = -1;
+    }
+    for (blk = 0; blk != nmb; blk++)
+        for (i = 0; i != mb[blk].n; i++) {
+            const MIns *mi = &mb[blk].ins[i];
+            int ops[8], n = mi_uses(mi, ops);
+
+            while (n--)
+                vr_reads[ops[n]]++;
+            n = mi_defs(mi, ops);
+            while (n--) {
+                def_blk[ops[n]] = def_blk[ops[n]] == -1 ? blk : -2;
+                def_at[ops[n]] = i;
+            }
+        }
 
     /* The phis, a list for each block: each looked at once an edge. */
     for (phi = nphis - 1; phi >= 0; phi--)
@@ -1904,6 +2099,7 @@ static int place_phis(void)
             continue;
         for (pred = 0; pred != preds[blk].count; pred++) {
             int from = preds[blk].at[pred], which = -1;
+            unsigned char once[MAX_PCOPY];
             MBlock *f;
 
             if (rpo_num[from] < 0 && from)
@@ -1928,6 +2124,7 @@ static int place_phis(void)
                     mir_why = "a join with more phis than a copy takes";
                     goto out;
                 }
+                once[pc[which].n] = use_n[src] == 2;   /* a phi's is two */
                 pcopy_add(which, dst, val_vr[src]);
             }
             if (which < 0)
@@ -1940,6 +2137,7 @@ static int place_phis(void)
 
                 if (jumps)
                     last = f->ins[--f->n];
+                step_in_place(f, which, once);
                 cur = ssa_mb[from];
                 mi = mi3(M_PCOPY, -1, -1, -1);
                 mi->imm = which;
@@ -1954,6 +2152,7 @@ static int place_phis(void)
                 MIns *mi;
 
                 f = &mb[ssa_mb[from]];
+                step_in_place(&mb[e], which, once);
                 cur = e;
                 mi = mi3(M_PCOPY, -1, -1, -1);
                 mi->imm = which;
@@ -4734,6 +4933,27 @@ static void sym_nn(int sym, int off)
     fixup_add(sym, out_here() - ACC_INT_SIZE);
 }
 
+/* An address constant's nn: a string's address where it is now, which the
+ * link moves with the image; or a static's offset into the bss, which the
+ * link adds the bss's start to. */
+static void addrc_nn(int value, int kind)
+{
+    if (kind == VAL_ADDR)
+        out_reloc(out_here());
+    else
+        gen_bss_fixup(out_here());
+    out_word24(kind == VAL_ADDR ? ssa_moved_at(value) : value);
+}
+
+/* A load's or a store's nn: a global's, or an address constant's. */
+static void global_nn(const MIns *mi)
+{
+    if (mi->sym >= 0)
+        sym_nn(mi->sym, mi->imm);
+    else
+        addrc_nn(mi->imm, mi->imm2);
+}
+
 static void jump_to_block(int cc, int to)
 {
     if (mb_addr[to] >= 0) {
@@ -4817,10 +5037,53 @@ static int emit_pcopy(const PCopy *p, unsigned busy, int emit)
     return 1;
 }
 
+/* A byte read into A only to be copied on, or copied into A only to be
+ * written: through HL or IY, one instruction, ld r, (hl) or ld (hl), r
+ * -- A not written, which nothing else was to read. Whether made. */
+static int byte_via_a(const MIns *mi, const MIns *next)
+{
+    const MIns *mem = mi->op == M_LDP ? mi : next;
+    int base = pr(mem->a), r;
+
+    if ((mi->op != M_LDP && (mi->op != M_COPY || next->op != M_STP))
+        || mem->width != 1 || mem->imm || (base != P_HL && base != P_IY))
+        return 0;
+    if (mi->op == M_LDP) {
+        if (next->op != M_COPY || next->a != mi->d || pr(next->d) == P_A)
+            return 0;
+        r = pr(next->d);
+        if (base == P_IY)
+            out_byte3(0xfd, 0x46 | code8(r) << 3, 0);
+        else
+            out_byte(0x46 | code8(r) << 3);
+        return 1;
+    }
+    if (mi->op != M_COPY || next->op != M_STP || next->b != mi->d
+        || vr[mi->d].width != 1 || pr(mi->a) == P_A)
+        return 0;
+    r = pr(mi->a);
+    if (base == P_IY)
+        out_byte3(0xfd, 0x70 | code8(r), 0);
+    else
+        out_byte(0x70 | code8(r));
+
+    return 1;
+}
+
+/* Whether the flags are those of A's value, as or a, a would make them:
+ * after &, | or ^ into A, until anything else is made. */
+static int flags_of_a;
+
 static void make_mi(const MIns *mi, int next_blk, int falls_to)
 {
     int d = pr(mi->d), a = pr(mi->a), b = pr(mi->b), k;
+    int logic = (mi->op == M_ALU8 || mi->op == M_ALU8I)
+                && (mi->imm == TK_AMP || mi->imm == TK_PIPE || mi->imm == TK_CARET);
 
+    if (mi->op == M_CMP8I && (mi->imm2 & 0xff) == 0 && a == P_A && flags_of_a)
+        return;                         /* made already */
+    if (!(mi->op == M_COPY && d == a))
+        flags_of_a = logic;
     switch (mi->op) {
     case M_COPY:
         if (vr[mi->d].width == 1)
@@ -4841,17 +5104,10 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         sym_nn(mi->sym, mi->imm);
         return;
     case M_LDA:
-        /* A string's address where it is now, which the link moves with
-         * the image; or a static's offset into the bss, which the link
-         * adds the bss's start to. */
         if (d == P_IY)
             out_byte(0xfd);
         out_byte(pair_op(d, 0x01, 0x11, 0x21, 0x21));
-        if (mi->imm2 == VAL_ADDR)
-            out_reloc(out_here());
-        else
-            gen_bss_fixup(out_here());
-        out_word24(mi->imm2 == VAL_ADDR ? ssa_moved_at(mi->imm) : mi->imm);
+        addrc_nn(mi->imm, mi->imm2);
         return;
     case M_DATA: {
         const GenRec *rec = insns[mi->ssa].rec;
@@ -4885,6 +5141,8 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
                 out_byte3(0xfd, 0x46 | code8(d) << 3, mi->imm & 0xff);
             else                                        /* ld iy, (iy+d): fd 37 */
                 out_byte3(0xfd, pair_op(d, 0x07, 0x17, 0x27, 0x37), mi->imm & 0xff);
+        } else if (mi->width == 1 && a != P_HL) {
+            out_byte(a == P_BC ? 0x0a : 0x1a);          /* ld a, (bc) or (de) */
         } else if (mi->width == 1) {
             out_byte(0x46 | code8(d) << 3);             /* ld r, (hl) */
         } else {
@@ -4897,6 +5155,8 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
                 out_byte3(0xfd, 0x70 | code8(b), mi->imm & 0xff);
             else                                        /* ld (iy+d), iy: fd 3f */
                 out_byte3(0xfd, pair_op(b, 0x0f, 0x1f, 0x2f, 0x3f), mi->imm & 0xff);
+        } else if (mi->width == 1 && a != P_HL) {
+            out_byte(a == P_BC ? 0x02 : 0x12);          /* ld (bc) or (de), a */
         } else if (mi->width == 1) {
             out_byte(0x70 | code8(b));                  /* ld (hl), r */
         } else {
@@ -4920,7 +5180,7 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
             out_byte2(0xfd, 0x2a);
         else
             out_byte2(0xed, d == P_BC ? 0x4b : 0x5b);
-        sym_nn(mi->sym, mi->imm);
+        global_nn(mi);
         return;
     case M_STG:
         if (mi->width == 1)
@@ -4931,7 +5191,7 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
             out_byte2(0xfd, 0x22);
         else
             out_byte2(0xed, a == P_BC ? 0x43 : 0x53);
-        sym_nn(mi->sym, mi->imm);
+        global_nn(mi);
         return;
     case M_ADD24:
         out_byte(pair_op(b, 0x09, 0x19, 0x29, 0));      /* add hl, rr */
@@ -5111,10 +5371,15 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
             jump_to_block(JP_ANY, mi->imm2);
         return;
     case M_RET:
-        if (mi->imm2)
+        if (mi->imm2) {
             vpush_const(insns[mi->ssa].in[0].attr.val, mi->type);
-        else if (mi->a >= 0)
+        } else if (mi->a >= 0) {
+            if (mi->imm) {
+                gen_return_hl();
+                return;
+            }
             vpush(VAL_REG, mi->type, R_HL);
+        }
         call(&insns[mi->ssa]);
         return;
     }
@@ -5317,6 +5582,22 @@ static void select_all(void)
     }
 }
 
+/* Whether the code made reads or writes the frame -- a parameter's slot,
+ * a spill's, a local's address -- or IX is free and there need be none. */
+static int uses_frame(void)
+{
+    int blk, at;
+
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++)
+            switch (mb[blk].ins[at].op) {
+            case M_LDF: case M_STF: case M_STFI: case M_LEAF:
+                return 1;
+            }
+
+    return 0;
+}
+
 void mir_emit(void)
 {
     int k, at, *block_start;
@@ -5347,14 +5628,20 @@ void mir_emit(void)
             gen_label(pend_hole[j]);
         pend_head[blk] = -1;
         mb_addr[blk] = gen_here();
+        flags_of_a = 0;
         if (b->ssa_block >= 0)
             block_start[b->ssa_block] = mb_addr[blk];
         f = falls_into(blk);
         for (at = 0; at != b->n && !fail; at++) {
-            if (b->ins[at].op == M_PCOPY)
+            if (b->ins[at].op == M_PCOPY) {
                 (void) emit_pcopy(&pc[b->ins[at].imm], (unsigned) b->ins[at].imm2, 1);
-            else
+                flags_of_a = 0;
+            } else if (at + 1 < b->n && byte_via_a(&b->ins[at], &b->ins[at + 1])) {
+                flags_of_a = 0;
+                at++;
+            } else {
                 make_mi(&b->ins[at], next, f);
+            }
         }
         /* Falling where the next block is not: a jump there -- but for a
          * branch to the next block, which went there turned over. */
@@ -5371,6 +5658,8 @@ void mir_emit(void)
             fprintf(stderr, "\n");
         }
     }
+    frame_unused = !uses_frame();
+    frame_sp_kept = 1;                  /* every push popped before a return */
     if (!fail)
         costs(block_start, out_here());
     free(block_start);
