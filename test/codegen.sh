@@ -616,5 +616,13 @@ emits "nor around a call"                '^cd00000023c9$' yes \
 emits "&a keeps it"                      '^cd000000ed2206' yes \
     'int *f(int a) { return &a; }'
 
+# x++ of a global, or through a pointer, whose value nothing reads: stepped
+# where it is, no copy of the old value kept -- which took a frame for it,
+# ld hl, -3 / call, and a store into it.
+emits "c++; of a global, no frame"       '^2a0000002322000000c9$' yes \
+    'int c; void f(void) { c++; }'
+emits "p->n++; no copy kept"             dd2ffd no \
+    'struct s { int n; }; void f(struct s *p) { p->n++; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
