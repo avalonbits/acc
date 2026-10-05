@@ -127,7 +127,7 @@ is left between them -- and acc says so if a program will not fit.
 `acc -v` prints the version:
 
     */ acc -v
-    acc 0.2.1 (build 6059204)
+    acc 0.3.0 (build 7935801)
 
 Every compile and link ends by printing the time it took, as
 `Done in 0.04 seconds`; the examples leave that line out. An error prints
@@ -220,9 +220,9 @@ size or time over agondev's:
 
 | | code | whole image | time to run |
 | --- | --- | --- | --- |
-| the benchmark programs, mean | 1.33 | 1.06 | 1.18 |
-| zap, the assembler | 1.22 | 1.20 | 1.58 |
-| acc itself | 1.24 | 1.25 | |
+| the benchmark programs, mean | 1.31 | 1.00 | 1.09 |
+| zap, the assembler | 1.13 | 1.12 | 1.49 |
+| acc itself | 1.19 | 1.20 | |
 
 `test/size.sh` and `test/perf.sh` produce these tables; each program's
 figures are in [docs/performance.md](docs/performance.md).
@@ -247,7 +247,7 @@ The Agon build needs [AgonDev](https://github.com/AgonPlatform/agondev) in
 `~/agondev` (or `AGONDEV=<dir>`):
 
     make -f Makefile.agon       # bin/acc.bin
-    ./mkrelease.sh 0.2.1        # acc-0.2.1.zip, the SD card layout
+    ./mkrelease.sh 0.3.0        # acc-0.3.0.zip, the SD card layout
 
 `make test` runs every program it compiles on
 [fab-agon-emulator](https://github.com/tomm/fab-agon-emulator), and checks
@@ -258,8 +258,8 @@ each answer against agondev's build of the same source.
 acc is free software under the GNU Lesser General Public License, version 2.1
 or (at your option) any later version; see `COPYING`.
 
-The routines in `src/rt/` -- the startup stub and the arithmetic helpers --
-are copied into every program acc compiles, so they carry an exception, the
+The routines in `src/rt/` and `lib/rt/` -- the startup stub and the
+runtime's helpers -- are copied into every program acc compiles, so they carry an exception, the
 one glibc gives its own startup code: you may link them into your programs
 and distribute those programs without any restriction coming from them. A
 program does not take on acc's license by being compiled by it. The LGPL
