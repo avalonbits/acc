@@ -780,6 +780,17 @@ unsigned long f(const unsigned *v, int n)
 }'
 mir "$OPT" "a long's E kept over DE popped back"        7bd15f    yes "$kept_de"
 
+# A switch on an int or a char: its value read once, each case compared
+# and branched on -- ld de, n / or a / sbc hl, de / add hl, de, HL kept for
+# the next case -- but not on a long (test/cases/383 runs them).
+swint='int f(int x) { switch (x) { case 1: return 10; case 2: return 20; case 0: return 5; } return 0; }'
+mirs "a switch on an int, made by it"                yes "$swint"
+mirs "and on a char"                                 yes \
+    'int f(signed char c) { switch (c) { case 1: return 10; case -2: return 20; case 300: return 7; default: return 1; } }'
+mirs "but not on a long"                             no \
+    'int f(long x) { switch (x) { case 1: return 10; } return 0; }'
+mir "$OPT" "a case: HL kept for the next"          11010000b7ed5219 yes "$swint"
+
 # Frames the machine-level backend lays out (test/cases/381 checks what
 # they come to): spill slots shared by values never kept at once -- three
 # runs of six values held across calls, a frame of six bytes, not

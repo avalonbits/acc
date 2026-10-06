@@ -141,6 +141,7 @@ enum {
     M_CMP24SI,      /* flags of a - imm2 as signed: carry less; a HL, clobbered,
                      * and DE, `t`, but against 0, the sign by add hl, hl */
     M_TST24,        /* Z when a is 0: a HL, kept */
+    M_CASE24,       /* Z when a is imm2: a HL, kept; DE, `t`, clobbered */
     M_CMP8,         /* flags of a - b: a A */
     M_CMP8I,        /* flags of a - imm2 */
     M_BOOL,         /* d = 1 when the flags say imm (a condition), else 0 */
@@ -719,6 +720,19 @@ static int mir_ok(void)
                 return mir_why = "a step of a local not held here", 0;
             continue;
         }
+        case GL_gen_switch_load: case GL_gen_switch_case: {
+            /* A switch on a char or an int: its value read from its slot
+             * once, and each case a comparison and a branch -- the SSA
+             * form ends a block after each (mir_on). */
+            Type type = (Type) insn->rec->arg[insn->op == GL_gen_switch_load ? 1 : 2];
+            int slot = (int) insn->rec->arg[insn->op == GL_gen_switch_load ? 0 : 4];
+
+            if (type_wide(type) || type_float(type))
+                return mir_why = "a switch on a long", 0;
+            if (!disp_fits(slot) || !disp_fits(slot + width_of(type) - 1))
+                return mir_why = "a local past (ix+d)'s reach", 0;
+            continue;
+        }
         case GL_vaddr_local:
             if (!disp_fits((int) insn->rec->arg[0]))
                 return mir_why = "a local past (ix+d)'s reach", 0;
@@ -785,6 +799,7 @@ static void select_all(void);
 static int in_class(int v, unsigned cls);
 static int addr_vr(const Ent *ent);
 static int skip_to;             /* a branch fused into the comparison before */
+static int switch_vr;           /* the value a switch's cases compare */
 
 /* A constant's virtual register: made again where it is read. */
 static int const_vr(int value, int width)
@@ -2706,6 +2721,38 @@ static void sel_insn(const Ins *insn, int at)
     case GL_vprefix_local: case GL_vpostfix_local:
         sel_local(insn);
         return;
+    case GL_gen_switch_load: {
+        int w = width_of((Type) insn->rec->arg[1]);
+
+        switch_vr = new_vr(w, w == 1 ? C_A : C_HL);
+        frame_mi(M_LDF, switch_vr, -1, (int) insn->rec->arg[0], w);
+        return;
+    }
+    case GL_gen_switch_case: {
+        Type type = (Type) insn->rec->arg[2];
+        int value = (int) insn->rec->arg[0];
+
+        /* A char has no case for a value it cannot have: no test, no
+         * branch. A case of 0 is the test against 0, which needs no DE. */
+        if (vr[switch_vr].width == 1) {
+            if ((((unsigned) value + (type_unsigned(type) ? 0 : 128)) & 0xffffff) > 255)
+                return;
+            mi = mi3(M_CMP8I, -1, in_class(switch_vr, C_A), -1);
+            mi->imm2 = value & 0xff;
+        } else if ((value & 0xffffff) == 0) {
+            mi3(M_TST24, -1, in_class(switch_vr, C_HL), -1);
+        } else {
+            mi = mi3(M_CASE24, -1, in_class(switch_vr, C_HL), -1);
+            mi->t = new_vr(3, C_DE);
+            mi->imm2 = value & 0xffffff;
+        }
+        if (insn->target >= 0) {
+            mi = mi3(M_BR, -1, -1, -1);
+            mi->imm = JP_Z;
+            mi->imm2 = insn->target;
+        }
+        return;
+    }
     case GL_vaddr_local:
         if (insn->res >= 0 && val_vr[insn->res] >= 0) {
             d = new_vr(3, C_R24);
@@ -5577,7 +5624,7 @@ static void dump_mir(const char *when)
     static const char *const ops[NMOPS] = {
         "copy", "ldi", "ldsym", "lda", "data", "ldf", "stf", "stfi", "stepf", "leaf", "ldp", "stp",
         "stpi", "stepp", "array", "ldg", "stg", "add24", "sub24", "step24", "bytes24", "neg24", "not24",
-        "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "cmp8", "cmp8i", "bool",
+        "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "case24", "cmp8", "cmp8i", "bool",
         "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
         "push", "copys", "ladd", "lcall", "lcmp", "ltst", "sextl", "zextl", "ltrunc",
         "call"
@@ -6542,6 +6589,12 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         ld_pair_imm(P_DE, (mi->imm2 + 0x800000) & 0xffffff);
         out_byte(0xb7);
         out_byte2(0xed, 0x52);                          /* sbc hl, de */
+        return;
+    case M_CASE24:
+        ld_pair_imm(P_DE, mi->imm2);
+        out_byte(0xb7);                                 /* or a */
+        out_byte2(0xed, 0x52);                          /* sbc hl, de */
+        out_byte(0x19);                                 /* add hl, de: Z kept */
         return;
     case M_TST24:
         out_byte(0x09);                                 /* add hl, bc */
