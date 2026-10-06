@@ -94,6 +94,7 @@ enum {
     M_LDF,          /* d = (ix+imm) */
     M_STF,          /* (ix+imm) = a */
     M_STFI,         /* (ix+imm) = imm2, a byte */
+    M_STEPF,        /* (ix+imm) stepped by imm2, +1 or -1, a byte */
     M_LEAF,         /* d = ix+imm (24) */
     M_LDP,          /* d = (a+imm): a in HL, or IY; a byte at imm 0 into A
                      * through BC or DE too */
@@ -101,6 +102,8 @@ enum {
     M_STPI,         /* (a+imm) = imm2, a byte */
     M_STEPP,        /* (a+imm) stepped by imm2, +1 or -1, a byte: inc or dec
                      * (hl) or (iy+d) */
+    M_ARRAY,        /* d = local array imm's address, of `type`s, in HL, as
+                     * the first pass makes it: patched when the frame ends */
     M_LDG,          /* d = (sym+imm) */
     M_STG,          /* (sym+imm) = a */
     M_ADD24,        /* d = a + b: d and a HL, b HL, DE or BC */
@@ -149,10 +152,26 @@ typedef struct {
     int kills;                  /* operands it changes, a bit each: a, b */
     int ssa;                    /* M_RET: the SSA return it makes */
     int imm, imm2;
-    int sym;                    /* fixup symbol, or -1 */
+    int sym;                    /* fixup symbol, or -1; for the frame,
+                                 * SYM_SPILL or SYM_LOCAL */
     int width;                  /* 1 or 3: of a load's or a store's value */
-    Type type;                  /* M_RET: what the function answers */
+    int obj;                    /* SYM_ARRAY: the local array's number */
+    Type type;                  /* M_RET: what the function answers;
+                                 * M_ARRAY: the array's element */
 } MIns;
+
+/* An (ix+d) whose imm is a spill's number, or the first pass's offset of a
+ * local that stays in memory, or an offset into local array obj -- each made
+ * a displacement when the frame is laid out, at the end. */
+#define SYM_SPILL (-2)
+#define SYM_LOCAL (-3)
+#define SYM_ARRAY (-4)
+
+/* Whether the local arrays are laid out with the other locals, where they
+ * can be reached by (ix+d): when the whole of the first pass's frame is in
+ * reach. Otherwise their addresses are the first pass's, patched at the
+ * end. */
+static int arrays_here, array_bytes;
 
 /* A virtual register: its width, the registers it may be in, and what it
  * is when made again rather than kept -- a constant, an address, its
@@ -356,6 +375,22 @@ static int mir_ok(void)
     mir_why = NULL;
     if (cached_any)
         return mir_why = "a cached local", 0;
+    {
+        int bytes = 0, far = 0;
+
+        array_bytes = 0;
+        for (at = 1; at != ninsns; at++) {
+            if (insns[at].op != I_FRAME)
+                continue;
+            if (insns[at].rec->op == GL_gen_local)
+                bytes += (int) insns[at].rec->arg[0];
+            else if (insns[at].rec->op == GL_gen_local_array_size)
+                array_bytes += (int) insns[at].rec->arg[1];
+            else if (insns[at].rec->op == GL_gen_local_far)
+                far = 1;
+        }
+        arrays_here = !far && bytes + array_bytes + ACC_INT_SIZE <= 128;
+    }
     if (nraws || nmerged)
         return mir_why = "a block's statics, or an inlined body's room", 0;
     for (phi = 0; phi != nphis; phi++)
@@ -370,9 +405,16 @@ static int mir_ok(void)
 
         if (insn->rec && insn->rec->top.bits)
             return mir_why = "a bit-field", 0;
-        for (operand = 0; operand != insn->nin; operand++)
+        /* A VLA's, whose steps are sizes in the frame, read as it runs. */
+        if (insn->rec && insn->rec->top.ext && ext_variably_modified(insn->rec->top.ext))
+            return mir_why = "a variably modified type", 0;
+        for (operand = 0; operand != insn->nin; operand++) {
             if (!mir_operand_ok(&insn->in[operand]))
                 return mir_why = "an operand not of an int, a pointer or a char", 0;
+            if (insn->in[operand].attr.ext
+                && ext_variably_modified(insn->in[operand].attr.ext))
+                return mir_why = "a variably modified type", 0;
+        }
         if (insn->res >= 0 && vals[insn->res].used && !mir_type(vals[insn->res].type))
             return mir_why = "a value not of an int, a pointer or a char", 0;
         /* What is converted to, stepped or narrowed to: a type held here. */
@@ -407,6 +449,33 @@ static int mir_ok(void)
         case GL_gen_return: case GL_vpush_global_addr: case GL_vneg:
         case GL_vnot: case GL_vtruth: case GL_vconvert: case GL_vcast:
         case GL_vmember:
+            continue;
+        case GL_vpush_local: case GL_vstore_local:
+        case GL_vprefix_local: case GL_vpostfix_local: {
+            /* A local in memory -- its address taken -- read, written or
+             * stepped in its slot, (ix+d): of a type held here, within
+             * (ix+d)'s reach as the first pass laid it out, which laying
+             * it out again only brings nearer. */
+            Type type = (Type) insn->rec->arg[1];
+            int offset = (int) insn->rec->arg[0];
+
+            if (!mir_type(type))
+                return mir_why = "a local in memory not held here", 0;
+            if (!disp_fits(offset) || !disp_fits(offset + width_of(type) - 1))
+                return mir_why = "a local past (ix+d)'s reach", 0;
+            if ((insn->op == GL_vprefix_local || insn->op == GL_vpostfix_local)
+                && (type == TY_BOOL
+                    || (type_pointer(type)
+                        && ((insn->rec->arg[2] && ext_variably_modified((int) insn->rec->arg[2]))
+                            || type_step(type, (int) insn->rec->arg[2]) <= 0))))
+                return mir_why = "a step of a local not held here", 0;
+            continue;
+        }
+        case GL_vaddr_local:
+            if (!disp_fits((int) insn->rec->arg[0]))
+                return mir_why = "a local past (ix+d)'s reach", 0;
+            continue;
+        case GL_vaddr_array:
             continue;
         case GL_vprefix_indirect: case GL_vpostfix_indirect: {
             /* ++ and -- through a pointer: of an int, a char or a pointer
@@ -689,6 +758,8 @@ static unsigned insn_zero(const Ins *insn)
         return type_zero(insn->local_type);
     case GL_vtruth:
         return ALL24 & ~1u;
+    case GL_vpush_local: case GL_vprefix_local: case GL_vpostfix_local:
+        return as_type(0, (Type) insn->rec->arg[1]);
     case GL_vderef:                     /* what is read: as it is in memory */
     case GL_vprefix_indirect: case GL_vpostfix_indirect:
         return type_pointer(insn->in[0].attr.type)
@@ -1347,12 +1418,43 @@ typedef struct {
     int sym, off;
     int kind;                   /* VAL_ADDR or VAL_BSS: off is the address
                                  * constant itself, the link moving it */
+    int frame;                  /* a local's in memory: off is the first
+                                 * pass's offset, (ix+d) at the end -- or,
+                                 * obj a local array, the offset into it */
+    int obj;
 } Addr;
+
+#define NO_FRAME INT_MIN
+static int *frame_at;                   /* by value: a local's address in
+                                         * memory, the first pass's offset
+                                         * with a member's added, or
+                                         * NO_FRAME */
+static int *frame_arr;                  /* and the local array it is in, or
+                                         * -1 */
 
 static int *member_base, *member_off;   /* by value: a member's pointer */
 static int *global_of;                  /* by value: a global's address */
 static int *addrc_of;                   /* by value: a constant's kind, the
                                          * address in member_off, or 0 */
+
+/* A local that stays in memory, (ix+d) at the first pass's offset, laid
+ * out again at the end: SYM_LOCAL. */
+static MIns *frame_obj_mi(int op, int d, int a, int obj, int offset, int width)
+{
+    MIns *mi = mi3(op, d, a, -1);
+
+    mi->imm = offset;
+    mi->sym = obj >= 0 ? SYM_ARRAY : SYM_LOCAL;
+    mi->obj = obj;
+    mi->width = width;
+
+    return mi;
+}
+
+static MIns *frame_mi(int op, int d, int a, int offset, int width)
+{
+    return frame_obj_mi(op, d, a, -1, offset, width);
+}
 
 static Addr address_of(const Ent *ent)
 {
@@ -1363,6 +1465,14 @@ static Addr address_of(const Ent *ent)
     addr.sym = -1;
     addr.off = 0;
     addr.kind = 0;
+    addr.frame = 0;
+    addr.obj = -1;
+    if (val >= 0 && frame_at[val] != NO_FRAME) {
+        addr.frame = 1;
+        addr.off = frame_at[val];
+        addr.obj = frame_arr[val];
+        return addr;
+    }
     if (is_addr(ent)) {
         addr.kind = ent->attr.kind;
         addr.off = ent->attr.val;
@@ -1406,6 +1516,11 @@ static int addr_vr(const Ent *ent)
 
     if (addr.kind)
         return addrc_vr(addr.off, addr.kind);
+    if (addr.frame) {                   /* lea rr, ix+d */
+        d = new_vr(3, C_R24);
+        frame_obj_mi(M_LEAF, d, -1, addr.obj, addr.off, 3);
+        return d;
+    }
     if (addr.sym >= 0) {
         d = new_vr(3, C_R24);
         mi = mi3(M_LDSYM, d, -1, -1);
@@ -1473,6 +1588,12 @@ static void sel_load(const Ins *insn)
     }
     w = width_of(read);
     addr = address_of(&insn->in[0]);
+    if (addr.frame) {                   /* (ix+d), the local's own */
+        d = new_vr(w, w == 1 ? C_R8 : C_R24);
+        frame_obj_mi(M_LDF, d, -1, addr.obj, addr.off, w);
+        to_val_as(insn->res, d, read);
+        return;
+    }
     if (addr.sym >= 0 || addr.kind) {
         d = new_vr(w, w == 1 ? C_A : C_R24);
         mi = mi3(M_LDG, d, -1, -1);
@@ -1518,7 +1639,9 @@ static void sel_store(const Ins *insn)
 
         if (to == TY_BOOL)
             value = value != 0;
-        if (addr.sym >= 0 || addr.kind) {
+        if (addr.frame) {
+            frame_obj_mi(M_STFI, -1, -1, addr.obj, addr.off, 1)->imm2 = value & 0xff;
+        } else if (addr.sym >= 0 || addr.kind) {
             v = in_class(const_vr(value, 1), C_A);
             mi = mi3(M_STG, -1, v, -1);
             mi->sym = addr.sym;
@@ -1543,7 +1666,9 @@ static void sel_store(const Ins *insn)
     } else {
         v = operand_vr(&insn->in[1], w);
     }
-    if (addr.sym >= 0 || addr.kind) {
+    if (addr.frame) {
+        frame_obj_mi(M_STF, -1, in_class(v, w == 1 ? C_R8 : C_R24), addr.obj, addr.off, w);
+    } else if (addr.sym >= 0 || addr.kind) {
         mi = mi3(M_STG, -1, in_class(v, w == 1 ? C_A : C_R24), -1);
         mi->sym = addr.sym;
         mi->imm = addr.off;
@@ -1598,6 +1723,36 @@ static void sel_step_through(const Ins *insn)
 
     if ((int) insn->rec->arg[0] == TK_MINUS)
         step = -step;
+    if (addr.frame) {                   /* a local's, in (ix+d) */
+        if (width_of(to) == 1) {
+            old = -1;
+            if (used && post) {
+                old = new_vr(1, C_R8);
+                frame_obj_mi(M_LDF, old, -1, addr.obj, addr.off, 1);
+            }
+            frame_obj_mi(M_STEPF, -1, -1, addr.obj, addr.off, 1)->imm2 = step;
+            if (used && !post) {
+                old = new_vr(1, C_R8);
+                frame_obj_mi(M_LDF, old, -1, addr.obj, addr.off, 1);
+            }
+            if (used)
+                to_val_as(insn->res, old, to);
+            return;
+        }
+        old = new_vr(3, C_R24);
+        frame_obj_mi(M_LDF, old, -1, addr.obj, addr.off, 3);
+        if (step >= -4 && step <= 4) {
+            now = new_vr(3, C_R24);
+            mi3(M_STEP24, now, old, -1)->imm = step;
+        } else {
+            now = new_vr(3, C_HL);
+            mi3(M_ADD24, now, in_class(old, C_HL), in_class(const_vr(step, 3), C_O24));
+        }
+        frame_obj_mi(M_STF, -1, in_class(now, C_R24), addr.obj, addr.off, 3);
+        if (used)
+            to_val(insn->res, post ? old : now);
+        return;
+    }
     global = addr.sym >= 0 || addr.kind;
     if (width_of(to) == 1) {
         if (global) {
@@ -1649,6 +1804,82 @@ static void sel_step_through(const Ins *insn)
     mi->width = 3;
     if (used)
         to_val(insn->res, post ? old : now);
+}
+
+/* A local in memory read, written or stepped in its slot: a byte stepped
+ * where it is, inc (ix+d), and read before or after as x++ or ++x wants;
+ * anything wider read, stepped and written back. */
+static void sel_local(const Ins *insn)
+{
+    int offset = (int) insn->rec->arg[0];
+    Type type = (Type) insn->rec->arg[1];
+    int w = width_of(type), used = insn->res >= 0 && val_vr[insn->res] >= 0;
+    int d, v, step, post;
+
+    switch (insn->op) {
+    case GL_vpush_local:
+        if (!used)
+            return;
+        d = new_vr(w, w == 1 ? C_R8 : C_R24);
+        frame_mi(M_LDF, d, -1, offset, w);
+        to_val_as(insn->res, d, type);
+        return;
+    case GL_vstore_local:
+        if (is_num(&insn->in[0]) && w == 1) {
+            int value = insn->in[0].attr.val;
+
+            if (type == TY_BOOL)
+                value = value != 0;
+            frame_mi(M_STFI, -1, -1, offset, 1)->imm2 = value & 0xff;
+            if (used)
+                to_val(insn->res, const_vr(value, vr[val_vr[insn->res]].width));
+            return;
+        }
+        if (type == TY_BOOL) {
+            zero_test(&insn->in[0]);
+            v = new_vr(1, C_R8);
+            mi3(M_BOOL, v, -1, -1)->imm = JP_NZ;
+        } else {
+            v = operand_vr(&insn->in[0], w);
+        }
+        frame_mi(M_STF, -1, in_class(v, w == 1 ? C_R8 : C_R24), offset, w);
+        to_val_as(insn->res, v, type);
+        return;
+    }
+
+    /* ++ and --. */
+    post = insn->op == GL_vpostfix_local;
+    step = type_pointer(type) ? type_step(type, (int) insn->rec->arg[2]) : 1;
+    if ((int) insn->rec->arg[3] == TK_MINUS)
+        step = -step;
+    if (w == 1) {
+        int old = -1;
+
+        if (used && post) {
+            old = new_vr(1, C_R8);
+            frame_mi(M_LDF, old, -1, offset, 1);
+        }
+        frame_mi(M_STEPF, -1, -1, offset, 1)->imm2 = step;
+        if (used && !post) {
+            old = new_vr(1, C_R8);
+            frame_mi(M_LDF, old, -1, offset, 1);
+        }
+        if (used)
+            to_val_as(insn->res, old, type);
+        return;
+    }
+    v = new_vr(3, C_R24);
+    frame_mi(M_LDF, v, -1, offset, 3);
+    if (step >= -4 && step <= 4) {
+        d = new_vr(3, C_R24);
+        mi3(M_STEP24, d, v, -1)->imm = step;
+    } else {
+        d = new_vr(3, C_HL);
+        mi3(M_ADD24, d, in_class(v, C_HL), in_class(const_vr(step, 3), C_O24));
+    }
+    frame_mi(M_STF, -1, in_class(d, C_R24), offset, 3);
+    if (used)
+        to_val(insn->res, post ? v : d);
 }
 
 /* A call: each argument as wide as a slot, pushed last first so that
@@ -1727,6 +1958,14 @@ static void sel_insn(const Ins *insn, int at)
                                            addr.kind));
                 return;
             }
+            if (addr.frame && disp_fits(addr.off + (int) insn->rec->arg[0])) {
+                d = new_vr(3, C_R24);
+                frame_obj_mi(M_LEAF, d, -1, addr.obj, addr.off + (int) insn->rec->arg[0], 3);
+                to_val(insn->res, d);
+                return;
+            }
+            if (addr.frame)
+                addr.base = addr_vr(&insn->in[0]), addr.off = 0;
             if (addr.sym >= 0) {
                 d = new_vr(3, C_R24);
                 mi = mi3(M_LDSYM, d, -1, -1);
@@ -1825,8 +2064,34 @@ static void sel_insn(const Ins *insn, int at)
     case GL_vprefix_indirect: case GL_vpostfix_indirect:
         sel_step_through(insn);
         return;
+    case GL_vpush_local: case GL_vstore_local:
+    case GL_vprefix_local: case GL_vpostfix_local:
+        sel_local(insn);
+        return;
+    case GL_vaddr_local:
+        if (insn->res >= 0 && val_vr[insn->res] >= 0) {
+            d = new_vr(3, C_R24);
+            frame_mi(M_LEAF, d, -1, (int) insn->rec->arg[0], 3);
+            to_val(insn->res, d);
+        }
+        return;
+    case GL_vaddr_array:
+        if (insn->res >= 0 && val_vr[insn->res] >= 0 && arrays_here) {
+            d = new_vr(3, C_R24);
+            frame_obj_mi(M_LEAF, d, -1, (int) insn->rec->arg[0], 0, 3);
+            to_val(insn->res, d);
+        } else if (insn->res >= 0 && val_vr[insn->res] >= 0) {
+            d = new_vr(3, C_HL);
+            mi = mi3(M_ARRAY, d, -1, -1);
+            mi->imm = (int) insn->rec->arg[0];
+            mi->type = (Type) insn->rec->arg[1];
+            to_val(insn->res, d);
+        }
+        return;
     case GL_vapply:
-        if (insn->res >= 0 && member_base[insn->res] >= 0)
+        if (insn->res >= 0 && (member_base[insn->res] >= 0
+                               || (frame_at[insn->res] != NO_FRAME
+                                   && val_vr[insn->res] < 0)))
             return;                     /* in its reader's displacement */
         sel_apply(insn, at);
         return;
@@ -1898,13 +2163,18 @@ static int setup(void)
     member_off = realloc(member_off, ((size_t) nvals + 1) * sizeof *member_off);
     global_of = realloc(global_of, ((size_t) nvals + 1) * sizeof *global_of);
     addrc_of = realloc(addrc_of, ((size_t) nvals + 1) * sizeof *addrc_of);
+    frame_at = realloc(frame_at, ((size_t) nvals + 1) * sizeof *frame_at);
+    frame_arr = realloc(frame_arr, ((size_t) nvals + 1) * sizeof *frame_arr);
     ssa_mb = realloc(ssa_mb, ((size_t) nblocks + 1) * sizeof *ssa_mb);
-    if (!val_vr || !member_base || !member_off || !global_of || !addrc_of || !ssa_mb)
+    if (!val_vr || !member_base || !member_off || !global_of || !addrc_of
+        || !frame_at || !frame_arr || !ssa_mb)
         acc_error("out of memory for the machine IR");
     nvr = nmb = npc = 0;
     for (val = 0; val != nvals; val++) {
         val_vr[val] = member_base[val] = global_of[val] = -1;
         member_off[val] = addrc_of[val] = 0;
+        frame_at[val] = NO_FRAME;
+        frame_arr[val] = -1;
     }
 
     /* What is made in more than one place: a phi, and what a ?: sets. */
@@ -1966,12 +2236,28 @@ static int setup(void)
             global_of[res] = (int) insn->rec->arg[0];
             continue;
         }
+        if (insn->op == GL_vaddr_local) {
+            frame_at[res] = (int) insn->rec->arg[0];
+            continue;
+        }
+        if (insn->op == GL_vaddr_array && arrays_here) {
+            frame_at[res] = 0;
+            frame_arr[res] = (int) insn->rec->arg[0];
+            continue;
+        }
         if (user >= 0 && (off = const_step(insn)) != INT_MIN
             && insns[user].in[0].val == res
             && (through(insns[user].op) || insns[user].op == GL_vmember)) {
             /* A pointer and a constant, read or written through or a
-             * member's pointer: the constant in the displacement. */
-            if (off >= -128 && off + 2 <= 127) {
+             * member's pointer: the constant in the displacement -- a
+             * local's offset with it, where the pointer is its address. */
+            int at_frame = frame_at[insn->in[0].val];
+
+            if (at_frame != NO_FRAME && disp_fits(at_frame + off)
+                && disp_fits(at_frame + off + 2)) {
+                frame_at[res] = at_frame + off;
+                frame_arr[res] = frame_arr[insn->in[0].val];
+            } else if (off >= -128 && off + 2 <= 127) {
                 member_base[res] = insn->in[0].val;
                 member_off[res] = off;
             }
@@ -1988,7 +2274,12 @@ static int setup(void)
         if (insn->in[0].val < 0)
             continue;
         off = (int) insn->rec->arg[0];
-        if (global_of[insn->in[0].val] >= 0) {
+        if (frame_at[insn->in[0].val] != NO_FRAME
+            && disp_fits(frame_at[insn->in[0].val] + off)
+            && disp_fits(frame_at[insn->in[0].val] + off + 2)) {
+            frame_at[res] = frame_at[insn->in[0].val] + off;
+            frame_arr[res] = frame_arr[insn->in[0].val];
+        } else if (global_of[insn->in[0].val] >= 0) {
             global_of[res] = global_of[insn->in[0].val];
             member_off[res] = member_off[insn->in[0].val] + off;
         } else if (member_base[insn->in[0].val] >= 0) {
@@ -2010,6 +2301,14 @@ static int setup(void)
             continue;
         if (member_base[val] >= 0 || addrc_of[val])
             continue;                   /* folded into its read or write */
+        if (frame_at[val] != NO_FRAME && sole_user(val) >= 0
+            && insns[sole_user(val)].in[0].val == val
+            && (through(insns[sole_user(val)].op)
+                || ((insns[sole_user(val)].op == GL_vmember
+                     || const_step(&insns[sole_user(val)]) != INT_MIN)
+                    && insns[sole_user(val)].res >= 0
+                    && frame_at[insns[sole_user(val)].res] != NO_FRAME)))
+            continue;                   /* a local's, in (ix+d) there */
         if (global_of[val] >= 0 && sole_user(val) >= 0
             && (through(insns[sole_user(val)].op)
                 || (insns[sole_user(val)].op == GL_vmember
@@ -2377,6 +2676,7 @@ static int pure(int op)
 {
     switch (op) {
     case M_COPY: case M_LDI: case M_LDSYM: case M_LDA: case M_LDF: case M_LEAF:
+    case M_ARRAY:
     case M_ZEXT: case M_SEXT: case M_TRUNC: case M_ADD24: case M_SUB24:
     case M_STEP24: case M_ALU8: case M_ALU8I: case M_BYTES24:
         return 1;
@@ -3390,7 +3690,7 @@ static int restore(int v, MIns *after, int *nafter)
         store->op = M_STF;
         store->a = t;
         store->d = store->b = store->t = -1;
-        store->sym = -2;
+        store->sym = SYM_SPILL;
         store->imm = vr[v].spill;
         store->width = vr[v].width;
     }
@@ -4132,7 +4432,7 @@ static int moves_made(const Move *run, int n, MIns *out)
             mi->op = M_STF;
             mi->a = run[k].from;
             mi->d = mi->b = mi->t = -1;
-            mi->sym = -2;
+            mi->sym = SYM_SPILL;
             mi->imm = slot_of(run[k].to);
             mi->width = vr[run[k].from].width;
         }
@@ -4430,8 +4730,8 @@ static void dump_vr(int v)
 static void dump_mir(const char *when)
 {
     static const char *const ops[NMOPS] = {
-        "copy", "ldi", "ldsym", "lda", "data", "ldf", "stf", "stfi", "leaf", "ldp", "stp",
-        "stpi", "stepp", "ldg", "stg", "add24", "sub24", "step24", "bytes24", "neg24", "not24",
+        "copy", "ldi", "ldsym", "lda", "data", "ldf", "stf", "stfi", "stepf", "leaf", "ldp", "stp",
+        "stpi", "stepp", "array", "ldg", "stg", "add24", "sub24", "step24", "bytes24", "neg24", "not24",
         "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "cmp8", "cmp8i", "bool",
         "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
         "push", "call"
@@ -4468,7 +4768,7 @@ static void dump_mir(const char *when)
                     dump_vr(mi->t);
                 }
                 fprintf(stderr, "  imm %d imm2 %d%s", mi->imm, mi->imm2,
-                        mi->sym == -2 ? " (spill)" : "");
+                        mi->sym == SYM_SPILL ? " (spill)" : "");
             }
             fprintf(stderr, "\n");
         }
@@ -4736,7 +5036,7 @@ static const char *check_joined(int prune)
                     /* A move of a value to where else it lives -- a store
                      * to its slot, a copy to another part of it -- reads
                      * no use of it: what it moves is checked where read. */
-                    if ((mi->op == M_STF && mi->sym == -2)
+                    if ((mi->op == M_STF && mi->sym == SYM_SPILL)
                         || (mi->op == M_PCOPY
                             && family_of(pc[mi->imm].dst[q]) == family_of(v)))
                         continue;
@@ -4752,7 +5052,7 @@ static const char *check_joined(int prune)
                         }
                 }
                 /* A reload: the slot holds a part of the same value. */
-                if (report && !prune && mi->op == M_LDF && mi->sym == -2 && mi->d >= 0
+                if (report && !prune && mi->op == M_LDF && mi->sym == SYM_SPILL && mi->d >= 0
                     && (mi->imm >= nslot || (slot[mi->imm] != family_of(mi->d)
                                              && !undef_here(slot[mi->imm], mi->d, set_now)))) {
                     static char why[96];
@@ -4766,13 +5066,13 @@ static const char *check_joined(int prune)
                 if (prune && report) {
                     MIns *w = &mb[b].ins[at];
 
-                    if (w->op == M_STF && w->sym == -2 && w->imm < nslot
+                    if (w->op == M_STF && w->sym == SYM_SPILL && w->imm < nslot
                         && slot[w->imm] == family_of(w->a) && src_here[0]) {
                         w->op = M_DEAD;
                         npruned++;
                         continue;
                     }
-                    if (w->op == M_LDF && w->sym == -2 && vr[w->d].preg >= 0) {
+                    if (w->op == M_LDF && w->sym == SYM_SPILL && vr[w->d].preg >= 0) {
                         int all = 1;
 
                         for (u = 0; u != nunits; u++)
@@ -4805,7 +5105,7 @@ static const char *check_joined(int prune)
                         pcp->n = put;
                     }
                 }
-                if (mi->op == M_STF && mi->sym == -2 && mi->a >= 0 && mi->imm < nslot)
+                if (mi->op == M_STF && mi->sym == SYM_SPILL && mi->a >= 0 && mi->imm < nslot)
                     slot[mi->imm] = src_here[0] ? family_of(mi->a) : H_ANY;
 
                 /* A call: the pairs pushed at its save come back as they
@@ -4843,7 +5143,7 @@ static const char *check_joined(int prune)
                      * anew, and every other place holding it is stale. */
                     moved = (mi->op == M_COPY && value_key(mi->a) == key)
                             || (mi->op == M_PCOPY && value_key(pc[mi->imm].src[q]) == key)
-                            || (mi->op == M_LDF && mi->sym == -2)
+                            || (mi->op == M_LDF && mi->sym == SYM_SPILL)
                             || v == mi->t;
                     if (!moved && undef_bit[family_of(v)] >= 0)
                         set_now |= 1ULL << undef_bit[family_of(v)];
@@ -4981,7 +5281,16 @@ static int pair_op(int preg, int bc, int de, int hl, int iy)
 
 static int disp_of(const MIns *mi)
 {
-    return mi->sym == -2 ? spill_off[mi->imm - 1] : mi->imm;
+    int disp = mi->sym == SYM_SPILL ? spill_off[mi->imm - 1]
+               : mi->sym == SYM_LOCAL ? inline_moved(mi->imm)
+               : mi->sym == SYM_ARRAY ? array_moved(mi->obj) + mi->imm : mi->imm;
+
+    /* A local's place, which mir_ok saw in reach as the first pass had it,
+     * only comes nearer when the frame is laid out again. */
+    if (!disp_fits(disp) && !fail)
+        fail = "internal: a local past (ix+d)'s reach";
+
+    return disp;
 }
 
 static int pr(int v)
@@ -5240,8 +5549,15 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         out_byte3(0xdd, 0x36, disp_of(mi) & 0xff);
         out_byte(mi->imm2 & 0xff);
         return;
+    case M_STEPF:                                       /* inc or dec (ix+d) */
+        out_byte3(0xdd, mi->imm2 < 0 ? 0x35 : 0x34, disp_of(mi) & 0xff);
+        return;
     case M_LEAF:
-        out_byte3(0xed, pair_op(d, 0x02, 0x12, 0x22, 0x55), mi->imm & 0xff);
+        out_byte3(0xed, pair_op(d, 0x02, 0x12, 0x22, 0x55), disp_of(mi) & 0xff);
+        return;
+    case M_ARRAY:
+        vaddr_array(mi->imm, mi->type);
+        vdrop();
         return;
     case M_LDP:
         if (a == P_IY) {
@@ -5652,7 +5968,9 @@ int mir_build(void)
 
         for (v = 0; v != nspills; v++)
             bytes += spill_size[v] == 1 ? 1 : ACC_INT_SIZE;
-        if (bytes && !gen_local_fits(bytes)) {
+        /* The arrays laid out with the locals are in front of the spills
+         * now, which the first pass had behind. */
+        if (bytes && !gen_local_fits(bytes + (arrays_here ? array_bytes : 0))) {
             mir_why = "more spills than the frame can reach";
             return 0;
         }
@@ -5706,6 +6024,7 @@ static int uses_frame(void)
         for (at = 0; at != mb[blk].n; at++)
             switch (mb[blk].ins[at].op) {
             case M_LDF: case M_STF: case M_STFI: case M_LEAF:
+            case M_STEPF: case M_ARRAY:
                 return 1;
             }
 
@@ -5730,6 +6049,7 @@ void mir_emit(void)
 
     blocks_from = out_here();
     call(&insns[0]);
+    frame_again_all(arrays_here);       /* the locals left in memory */
     gen_local_settle();
     for (k = 0; k != nspills; k++)
         spill_off[k] = gen_local(spill_size[k] == 1 ? 1 : ACC_INT_SIZE);

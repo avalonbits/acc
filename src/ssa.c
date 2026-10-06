@@ -1945,6 +1945,48 @@ static int locals_kept(void)
 
 /* A frame call of the first pass's made again, its local moved to where it
  * is now -- or not made, for a local that is values now. */
+/* The frame as the first pass declared it, made again for the locals that
+ * stay in memory -- each where frame_again puts it, inline_moved finding
+ * it there. */
+static int *array_at, array_at_cap;
+
+void frame_again_all(int arrays_here)
+{
+    int at;
+
+    nlocal_moves = 0;
+    for (at = 1; at != ninsns; at++) {
+        const GenRec *rec = insns[at].rec;
+        int array;
+
+        if (insns[at].op != I_FRAME || frame_of_value(&insns[at]))
+            continue;
+        /* With arrays_here, a local array is a local like any other, laid
+         * out where it is declared -- not below the rest, its address
+         * patched when the function ends -- so that it is (ix+d) too. */
+        if (arrays_here && rec->op == GL_gen_local_array)
+            continue;
+        if (arrays_here && rec->op == GL_gen_local_array_size) {
+            array = (int) rec->arg[0];
+            while (array >= array_at_cap) {
+                array_at_cap = array_at_cap ? array_at_cap * 2 : 16;
+                array_at = realloc(array_at, (size_t) array_at_cap * sizeof *array_at);
+                if (!array_at)
+                    acc_error("out of memory for the SSA form");
+            }
+            array_at[array] = gen_local((int) rec->arg[1]);
+            continue;
+        }
+        frame_again(&insns[at]);
+    }
+}
+
+/* Where frame_again_all put local array `array`. */
+int array_moved(int array)
+{
+    return array_at[array];
+}
+
 void frame_again(const Ins *insn)
 {
     Ins frame_call = *insn;
