@@ -436,6 +436,7 @@ struct InlineSize {
 
 struct InlinePair {
     NameRef caller, callee;
+    int     in_loop;                    /* the call made inside a loop */
 };
 
 static struct InlineSize *fsizes;
@@ -467,7 +468,7 @@ static struct InlineSize *size_of(NameRef name, int add)
     return &fsizes[nfsizes++];
 }
 
-static void pair_add(NameRef caller, NameRef callee)
+static void pair_add(NameRef caller, NameRef callee, int in_loop)
 {
     if (npairs == pairs_cap) {
         pairs_cap = pairs_cap ? pairs_cap * 2 : 32;
@@ -477,6 +478,7 @@ static void pair_add(NameRef caller, NameRef callee)
     }
     pairs[npairs].caller = caller;
     pairs[npairs].callee = callee;
+    pairs[npairs].in_loop = in_loop;
     npairs++;
 }
 
@@ -580,7 +582,7 @@ static int inline_child(int mode)
     }
     text[len] = '\0';
     for (line = text; *line; line = next_line) {
-        int calls, address, size, backend, used = 0;
+        int calls, address, size, backend, in_loop, used = 0;
         char caller[128];
 
         next_line = strchr(line, '\n');
@@ -598,9 +600,10 @@ static int inline_child(int mode)
                    && used) {
             size_note(name_intern(line + used, (int) strlen(line + used)),
                       mode, size, backend);
-        } else if (sscanf(line, "I %127s %n", caller, &used) == 1 && used) {
+        } else if (sscanf(line, "I %d %127s %n", &in_loop, caller, &used) == 2
+                   && used) {
             pair_add(name_intern(caller, (int) strlen(caller)),
-                     name_intern(line + used, (int) strlen(line + used)));
+                     name_intern(line + used, (int) strlen(line + used)), in_loop);
         }
     }
     free(text);
@@ -613,15 +616,27 @@ static int inline_child(int mode)
  * calls. So does one a worse backend made than made a body it took apart:
  * lists' insert_sorted, made from its SSA form, ran 14% slower read into a
  * main the first pass made, for 36 bytes less. A size not known -- a
- * function left out, say -- is refused too. */
+ * function left out, say -- is refused too.
+ *
+ * Except that a caller that took a body where it is called in a loop may
+ * come out up to INLINE_LOOP_BYTES bigger: a call made each time round is
+ * paid for each time. zap's assemble_line, whose loop calls emit_row,
+ * match_row and mnemonic_of, came out 22 bytes bigger with them once the
+ * machine-level backend made them smaller apart, and zap-basic ran 5.4%
+ * slower calling them. OPTACC_INLINE_LOOP says another number. */
+#define INLINE_LOOP_BYTES 32
+
 static void inline_decide(void)
 {
+    const char *knob = getenv("OPTACC_INLINE_LOOP");
+    long loop_bytes = knob ? atol(knob) : INLINE_LOOP_BYTES;
     int at, other;
 
     for (at = 0; at != npairs; at++) {
         NameRef caller = pairs[at].caller;
         const struct InlineSize *whole = size_of(caller, 0);
         long grow;
+        int looped = 0, worse = 0;
 
         if (is_refused(caller))
             continue;
@@ -638,12 +653,13 @@ static void inline_decide(void)
             part = size_of(pairs[other].callee, 0);
             if (!part || part->alone < 0
                 || part->alone_backend > whole->merged_backend) {
-                grow = 1;
+                worse = 1;
                 break;
             }
             grow -= part->alone;
+            looped |= pairs[other].in_loop;
         }
-        if (grow > 0)
+        if (worse || grow > (looped ? loop_bytes : 0))
             refuse(caller);
     }
 }
@@ -718,7 +734,7 @@ void inline_counts_report(void)
                name_text(fsizes[at].name));
     }
     for (at = 0; at != npairs; at++)
-        REPORT("I %s %s\n", name_text(pairs[at].caller),
+        REPORT("I %d %s %s\n", pairs[at].in_loop, name_text(pairs[at].caller),
                name_text(pairs[at].callee));
 #undef REPORT
     {
@@ -967,7 +983,7 @@ int inline_body_call(const struct Inline *in, int fn, int line, const char *spot
         || is_refused(sym_at(current_fn)->name))
         return 0;
     if (inline_count_mode == CHILD_TRIAL)
-        pair_add(sym_at(current_fn)->name, sym_at(fn)->name);
+        pair_add(sym_at(current_fn)->name, sym_at(fn)->name, stmt_in_loop());
     inline_body_expand(in, fn, line, spot);
 
     return 1;

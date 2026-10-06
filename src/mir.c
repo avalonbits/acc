@@ -136,6 +136,8 @@ enum {
     M_PCOPY,        /* the parallel copies an edge makes: see pcopy */
     M_SAVE,         /* before a call's arguments: the pairs imm2 says pushed */
     M_PUSH,         /* an argument: a pushed, a pair */
+    M_COPYS,        /* imm bytes copied from b, HL, to a, DE: ldir, BC
+                     * clobbered, a and b changed */
     M_CALL,         /* d = sym (imm slots pushed), in HL or A; then the slots
                      * popped, and the pairs imm2 says -- BC 1, DE 2, IY 4,
                      * those live across it -- popped back. A, F and HL
@@ -367,6 +369,38 @@ static int call_ok(const Ins *insn)
     return 1;
 }
 
+/* Whether an instruction is `*p = s` for a struct: its bytes copied. */
+static int struct_copy(const Ins *insn)
+{
+    return insn->op == GL_vstore_indirect && type_pointer(insn->in[0].attr.type)
+           && type_is_struct(type_deref(insn->in[0].attr.type));
+}
+
+/* The struct values held here, marked by mir_ok: each a struct read
+ * through a pointer, which is the pointer -- read only to be copied, or
+ * let go. */
+static unsigned char *struct_read;
+
+static int struct_val_ok(int val)
+{
+    return struct_read[val];
+}
+
+/* Whether a struct copy's source is one made here: a struct's address --
+ * a global's -- or a struct read through a pointer, the type of where it
+ * goes. */
+static int struct_source_ok(const Ins *insn)
+{
+    const Ent *src = &insn->in[1];
+
+    if (src->attr.bits || src->attr.ext != insn->in[0].attr.ext)
+        return 0;
+    if (is_addr(src))
+        return 1;
+
+    return src->val >= 0 && struct_val_ok(src->val);
+}
+
 /* Whether the function is one milestones 1 and 2 make. */
 static int mir_ok(void)
 {
@@ -399,6 +433,14 @@ static int mir_ok(void)
                                + ACC_INT_SIZE > 128))
             return mir_why = "an inlined body's room past (ix+d)'s reach", 0;
     }
+    struct_read = realloc(struct_read, (size_t) nvals + 1);
+    if (!struct_read)
+        acc_error("out of memory for the machine IR");
+    memset(struct_read, 0, (size_t) nvals + 1);
+    for (at = 1; at != ninsns; at++)
+        if (insns[at].op == GL_vderef && insns[at].res >= 0
+            && type_is_struct(vals[insns[at].res].type))
+            struct_read[insns[at].res] = 1;
     for (phi = 0; phi != nphis; phi++)
         if (phis[phi].live && !mir_type(vals[phis[phi].val].type))
             return mir_why = "a phi not of an int, a pointer or a char", 0;
@@ -415,13 +457,25 @@ static int mir_ok(void)
         if (insn->rec && insn->rec->top.ext && ext_variably_modified(insn->rec->top.ext))
             return mir_why = "a variably modified type", 0;
         for (operand = 0; operand != insn->nin; operand++) {
-            if (!mir_operand_ok(&insn->in[operand]))
+            const Ent *ent = &insn->in[operand];
+
+            /* A struct: copied from, or let go -- nothing else. */
+            if (struct_copy(insn) && operand == 1) {
+                if (!struct_source_ok(insn))
+                    return mir_why = "a struct copied from where it is not held here", 0;
+                continue;
+            }
+            if (ent->val >= 0 && type_is_struct(vals[ent->val].type)
+                && insn->op == GL_vdrop && struct_val_ok(ent->val))
+                continue;
+            if (!mir_operand_ok(ent))
                 return mir_why = "an operand not of an int, a pointer or a char", 0;
             if (insn->in[operand].attr.ext
                 && ext_variably_modified(insn->in[operand].attr.ext))
                 return mir_why = "a variably modified type", 0;
         }
-        if (insn->res >= 0 && vals[insn->res].used && !mir_type(vals[insn->res].type))
+        if (insn->res >= 0 && vals[insn->res].used && !mir_type(vals[insn->res].type)
+            && !(insn->op == GL_vderef && struct_val_ok(insn->res)))
             return mir_why = "a value not of an int, a pointer or a char", 0;
         /* What is converted to, stepped or narrowed to: a type held here. */
         if (((insn->op == GL_vconvert || insn->op == GL_vcast)
@@ -506,6 +560,8 @@ static int mir_ok(void)
 
             if (mir_type(to) || (insn->op == GL_vderef
                                  && (type_is_struct(to) || type_is_array(to))))
+                continue;
+            if (struct_copy(insn) && ext_bytes(insn->in[0].attr.ext) > 0)
                 continue;
             return mir_why = "a read or write not of an int, a pointer or a char", 0;
         }
@@ -1636,12 +1692,29 @@ static void sel_load(const Ins *insn)
     to_val_as(insn->res, d, read);
 }
 
+/* `*p = s` for a struct: ldir from the source's address, in HL, to the
+ * pointer, in DE, BC the count. */
+static void sel_copy_struct(const Ins *insn)
+{
+    int to = in_class(operand_vr(&insn->in[0], 3), C_DE);
+    MIns *mi = mi3(M_COPYS, -1, to, in_class(operand_vr(&insn->in[1], 3), C_HL));
+
+    mi->t = new_vr(3, C_BC);            /* clobbered */
+    mi->kills = 3;
+    mi->imm = ext_bytes(insn->in[0].attr.ext);
+}
+
 static void sel_store(const Ins *insn)
 {
     Type to = type_deref(insn->in[0].attr.type);
     int w = width_of(to), v;
     Addr addr = address_of(&insn->in[0]);
     MIns *mi;
+
+    if (struct_copy(insn)) {
+        sel_copy_struct(insn);
+        return;
+    }
 
     if (is_num(&insn->in[1]) && w == 1) {
         int value = insn->in[1].attr.val;
@@ -2329,7 +2402,7 @@ static int setup(void)
     for (val = 0; val != nvals; val++) {
         int w;
 
-        if (!vals[val].used || !mir_type(vals[val].type))
+        if (!vals[val].used || (!mir_type(vals[val].type) && !struct_val_ok(val)))
             continue;
         if (member_base[val] >= 0 || addrc_of[val])
             continue;                   /* folded into its read or write */
@@ -2347,7 +2420,7 @@ static int setup(void)
                     && global_of[insns[sole_user(val)].res] >= 0))
             && insns[sole_user(val)].in[0].val == val)
             continue;
-        w = width_of(vals[val].type);
+        w = type_is_struct(vals[val].type) ? 3 : width_of(vals[val].type);
         val_vr[val] = new_vr(w, w == 1 ? C_R8 : C_R24);
     }
 
@@ -4808,7 +4881,7 @@ static void dump_mir(const char *when)
         "stpi", "stepp", "array", "ldg", "stg", "add24", "sub24", "step24", "bytes24", "neg24", "not24",
         "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "cmp8", "cmp8i", "bool",
         "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
-        "push", "call"
+        "push", "copys", "call"
     };
     int blk, at, k;
 
@@ -5743,6 +5816,10 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
             out_byte(mi->imm < 0 ? pair_op(d, 0x0b, 0x1b, 0x2b, 0x2b)
                                  : pair_op(d, 0x03, 0x13, 0x23, 0x23));
         }
+        return;
+    case M_COPYS:
+        ld_pair_imm(P_BC, mi->imm);
+        out_byte2(0xed, 0xb0);                          /* ldir */
         return;
     case M_NEG24: case M_NOT24:
         out_byte(0xeb);                                 /* ex de, hl */
