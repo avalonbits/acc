@@ -8,6 +8,12 @@
 # The cases run RUN_JOBS at a time, each on its own card, and are reported in
 # their own order once all of them are done.
 #
+# RUN_MODES names a file of ways to drive them, one a line -- a label, the
+# compiler (in bin/), and the environment it runs with, `|` between -- and
+# then every case under every way is one job of the same pool, reported a
+# way at a time: a way does not wait for the slowest case of the one
+# before it. test/modes is make test's.
+#
 # agondev's answer is kept in bin/answers (ACC_ANSWERS names another place),
 # under a hash of its program and of the emulator and MOS that ran it, so the
 # same reference is run once and not again by every compiler `make test`
@@ -101,32 +107,53 @@ one_case() {
     fi
 }
 
-[ -x "$ACC" ] || { echo "$ACC missing -- run make"; exit 2; }
+modes=$(mktemp); tmp=$(mktemp -d); trap 'rm -rf "$tmp" "$modes"' EXIT
+if [ -n "${RUN_MODES:-}" ]; then
+    grep -v '^#' "$RUN_MODES" | grep -v '^$' > "$modes"
+else
+    printf '|%s|\n' "$ACC" > "$modes"
+fi
+while IFS='|' read -r label compiler envs; do
+    case $compiler in */*) ;; *) compiler=bin/$compiler ;; esac
+    [ -x "$compiler" ] || { echo "$compiler missing -- run make"; exit 2; }
+done < "$modes"
 
 NO_EMU=
 emu_available >/dev/null 2>&1 || NO_EMU=1
 mkdir -p "$ANSWERS"
 
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-
-export ACC ANSWERS NO_EMU EMU_BIN EMU_MOS
+export ANSWERS NO_EMU EMU_BIN EMU_MOS
 export -f one_case sanitizer_tripped
 
-count=0
-for src in ${CASES:-test/cases/*.c}; do
-    count=$((count+1))
-    printf '%s\n%s\n' "$src" "$tmp/$count"
-done | xargs -P "${RUN_JOBS:-8}" -n 2 bash -c 'mkdir -p "$2" && one_case "$1" "$2" > "$2/out"' _
+# Each job: the case, its directory, the compiler and the environment.
+way=0
+while IFS='|' read -r label compiler envs; do
+    case $compiler in */*) ;; *) compiler=bin/$compiler ;; esac
+    way=$((way+1))
+    count=0
+    for src in ${CASES:-test/cases/*.c}; do
+        count=$((count+1))
+        printf '%s\n%s\n%s\n%s\n' "$src" "$tmp/$way/$count" "$compiler" "$envs"
+    done
+done < "$modes" | xargs -d '\n' -P "${RUN_JOBS:-8}" -n 4 bash -c '
+    mkdir -p "$2" && export ACC="$3" && { [ -z "$4" ] || export $4; } &&
+        one_case "$1" "$2" > "$2/out"' _
 
-pass=0; fail=0; skip=0
-for dir in $(ls "$tmp" | sort -n); do
-    cat "$tmp/$dir/out"
-    case $(cat "$tmp/$dir/verdict") in
-      pass) pass=$((pass+1)) ;;
-      skip) skip=$((skip+1)) ;;
-      *)    fail=$((fail+1)) ;;
-    esac
-done
-
-printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
-[ "$fail" -eq 0 ]
+failed=0
+way=0
+while IFS='|' read -r label compiler envs; do
+    way=$((way+1))
+    [ -n "$label" ] && printf '[%s]\n' "$label"
+    pass=0; fail=0; skip=0
+    for dir in $(ls "$tmp/$way" | sort -n); do
+        cat "$tmp/$way/$dir/out"
+        case $(cat "$tmp/$way/$dir/verdict") in
+          pass) pass=$((pass+1)) ;;
+          skip) skip=$((skip+1)) ;;
+          *)    fail=$((fail+1)) ;;
+        esac
+    done
+    printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
+    failed=$((failed+fail))
+done < "$modes"
+[ "$failed" -eq 0 ]

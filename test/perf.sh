@@ -98,54 +98,51 @@ run() {
     [ -n "$cycles" ] && [ -n "$check" ] && echo "$cycles $check"
 }
 
-printf '%-10s %12s %12s %12s %6s   %8s %8s %8s %6s\n' program \
-    "acc cycles" "-Oz cycles" "-O2 cycles" ratio "acc size" "-Oz size" "-O2 size" ratio
-status=0
-logs=
-for src in $PROGS; do
-    name=$(basename "$src" .c)
-    for how in acc Oz O2; do
-        if ! build "$src" "$how" "$work/$name.$how.bin"; then
-            echo "$name: the $how build failed" >&2
-            status=1; continue 2
-        fi
-        r=$(run "$work/$name.$how.bin")
-        if [ -z "$r" ]; then
-            echo "$name: the $how build did not report its cycles and check" >&2
-            status=1; continue 2
-        fi
-        eval "cyc_$how=${r% *} chk_$how=${r#* }"
-        eval "size_$how=$(stat -c%s "$work/$name.$how.bin")"
-    done
-    # The answer a program says it has to give -- `expect:` in its opening
-    # comment, where one has been worked out apart from either compiler --
-    # or else the three builds have to agree.
-    expect=$(sed -n 's/^ \* expect: \([0-9]*\).*/\1/p' "$src" | head -1)
-    wrong=
-    if [ -n "$expect" ]; then
-        for how in acc Oz O2; do
-            eval "[ \"\$chk_$how\" = \"$expect\" ]" || wrong="$wrong $how"
-        done
-    elif [ "$chk_acc" != "$chk_Oz" ] || [ "$chk_Oz" != "$chk_O2" ]; then
-        echo "$name: the builds disagree -- acc $chk_acc, -Oz $chk_Oz, -O2 $chk_O2" >&2
-        status=1; continue
+# The builds are run PERF_JOBS at a time, each on its own card: a count is
+# of the instructions run, all but the VBLANK interrupts MOS takes, which
+# come from the host's clock -- a busier host lets a few more in, a few
+# hundred cycles in tens of millions, as one run after another always
+# moved by. agondev's builds run once: what one counted is kept in
+# bin/perf-answers (ACC_PERF_ANSWERS names another place), under a hash
+# of its image, of what it was given to work on and of the emulator and
+# MOS that ran it -- as test/run.sh keeps agondev's answers.
+ANSWERS=${ACC_PERF_ANSWERS:-bin/perf-answers}
+mkdir -p "$ANSWERS"
+
+# measure <name> <how> <source|zap>: builds and runs one, leaving `cycles
+# check size` in $work/<name>.<how>.res -- or, where it did not build or
+# report, a line saying so in $work/<name>.<how>.err.
+measure() {
+    local name=$1 how=$2 src=$3 bin r key
+
+    bin=$work/$name.$how.bin
+    if [ "$src" = zap ]; then
+        zap_build "$how" "$bin" || { echo "zap: the $how build failed" > "$work/$name.$how.err"; return; }
+    elif ! build "$src" "$how" "$bin"; then
+        echo "$name: the $how build failed" > "$work/$name.$how.err"
+        return
     fi
-    case " $wrong " in
-      *" acc "*) echo "$name: acc's build gives $chk_acc, not $expect" >&2
-                 status=1; continue ;;
-    esac
-    printf '%-10s %12d %12d %12d %6s   %8d %8d %8d %6s\n' "$name" \
-        "$cyc_acc" "$cyc_Oz" "$cyc_O2" "$(awk -v a="$cyc_acc" -v b="$cyc_Oz" 'BEGIN { printf "%.2f", a / b }')" \
-        "$size_acc" "$size_Oz" "$size_O2" "$(awk -v a="$size_acc" -v b="$size_Oz" 'BEGIN { printf "%.2f", a / b }')"
-    # A build that gives the wrong answer did other work than the rest, and
-    # its time is no measure: said so, and left out of the mean.
-    if [ -n "$wrong" ]; then
-        echo "           (wrong answer from agondev$(printf ' %s' $wrong | sed 's/ \([A-Z]\)/ -\1/g'):" \
-             "$chk_Oz, not $expect -- left out of the mean)"
-        continue
+    key=
+    if [ "$how" != acc ]; then
+        key=$({ cat "$bin"; [ "$src" = zap ] && cat "$work/zap/basic"/*;
+                printf '\n%s\n%s\n' "$EMU_BIN" "$EMU_MOS"; } | sha256sum | cut -c1-64)
+        if [ -f "$ANSWERS/$key" ]; then
+            echo "$(cat "$ANSWERS/$key") $(stat -c%s "$bin")" > "$work/$name.$how.res"
+            return
+        fi
     fi
-    logs="$logs $cyc_acc/$cyc_Oz/$size_acc/$size_Oz"
-done
+    if [ "$src" = zap ]; then
+        r=$(zap_run "$bin")
+    else
+        r=$(run "$bin")
+    fi
+    if [ -z "$r" ]; then
+        echo "$name: the $how build did not report its cycles and check" > "$work/$name.$how.err"
+        return
+    fi
+    [ -n "$key" ] && echo "$r" > "$ANSWERS/$key.$BASHPID" && mv "$ANSWERS/$key.$BASHPID" "$ANSWERS/$key"
+    echo "$r $(stat -c%s "$bin")" > "$work/$name.$how.res"
+}
 
 # And a real program: zap, the assembler acc exists to build on the
 # machine, assembling BBC BASIC for the Agon -- twenty files, vendored in
@@ -168,6 +165,47 @@ zap_done() {
     grep -q 'Debug OUT(0x41)' "$1"
 }
 
+# zap_build <acc|Oz|O2> <image>
+zap_build() {
+    local how=$1 out=$2 z=$work/zap objs= f o
+
+    mkdir -p "$z/$how"
+    for f in "$z/src"/*.c; do
+        o="$z/$how/$(basename "$f" .c).o"
+        if [ "$how" = acc ]; then
+            "$ACC" -c "$f" -o "$o" -Iinclude -I"$z/src" -DAGONDEV >/dev/null 2>&1
+        else
+            $CC $CFLAGS -$how -DAGONDEV -fno-threadsafe-statics -I"$z/src" \
+                -c "$f" -o "$o" 2>/dev/null
+        fi || return 1
+        objs="$objs $o"
+    done
+    if [ "$how" = acc ]; then
+        "$ACC" $objs bin/libc.a -o "$out" >/dev/null 2>&1
+    else
+        "$AGONDEV/bin/ez80-none-elf-ld" -defsym=RAM_START=0x40000 \
+            -defsym=RAM_SIZE=0x70000 -defsym=_has_exit_handler=0 \
+            -T "$AGONDEV/config/linker.conf" --oformat binary \
+            -o "$out" $objs -L"$AGONDEV/lib" -lagon >/dev/null 2>&1
+    fi
+}
+
+# zap_run <image>: prints `cycles check`, the check what it assembled.
+zap_run() {
+    local sd out cycles z=$work/zap
+
+    sd=$(emu_card)
+    cp "$1" "$sd/bin/zap.bin"
+    cp "$z/t40.bin" "$sd/bin/tstart.bin"
+    cp "$z/t41.bin" "$sd/bin/tstop.bin"
+    cp "$z/basic"/* "$sd/"
+    printf 'tstart\r\nzap bbcbasicvez.s out.bin\r\ntstop\r\n' > "$sd/autoexec.txt"
+    out=$(ACC_EMU_WATCH=zap_done ACC_EMU_TIMEOUT=${PERF_TIMEOUT:-180} emu_run "$sd" -z -u 2>&1)
+    cycles=$(printf '%s' "$out" | sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
+    [ -n "$cycles" ] && [ -f "$sd/out.bin" ] && echo "$cycles $(md5sum < "$sd/out.bin" | cut -c1-8)"
+    rm -rf "$sd"
+}
+
 if [ "$with_zap" = 1 ] && git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}" >/dev/null 2>&1; then
     z=$work/zap
     mkdir -p "$z/src" "$z/basic"
@@ -180,56 +218,82 @@ if [ "$with_zap" = 1 ] && git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}
         { "$ACC" -c "$z/t$port.c" -o "$z/t$port.o" -Iinclude &&
               "$ACC" "$z/t$port.o" bin/libc.a -o "$z/t$port.bin"; } >/dev/null 2>&1 || exit 2
     done
-    ok=1
-    for how in acc Oz O2; do
-        mkdir -p "$z/$how"
-        objs=
-        for f in "$z/src"/*.c; do
-            o="$z/$how/$(basename "$f" .c).o"
-            if [ "$how" = acc ]; then
-                "$ACC" -c "$f" -o "$o" -Iinclude -I"$z/src" -DAGONDEV >/dev/null 2>&1
-            else
-                $CC $CFLAGS -$how -DAGONDEV -fno-threadsafe-statics -I"$z/src" \
-                    -c "$f" -o "$o" 2>/dev/null
-            fi || { echo "zap: the $how build failed" >&2; ok=0; continue 2; }
-            objs="$objs $o"
-        done
-        if [ "$how" = acc ]; then
-            "$ACC" $objs bin/libc.a -o "$z/$how.bin" >/dev/null 2>&1
-        else
-            "$AGONDEV/bin/ez80-none-elf-ld" -defsym=RAM_START=0x40000 \
-                -defsym=RAM_SIZE=0x70000 -defsym=_has_exit_handler=0 \
-                -T "$AGONDEV/config/linker.conf" --oformat binary \
-                -o "$z/$how.bin" $objs -L"$AGONDEV/lib" -lagon >/dev/null 2>&1
-        fi || { echo "zap: the $how link failed" >&2; ok=0; continue; }
-
-        sd=$(emu_card)
-        cp "$z/$how.bin" "$sd/bin/zap.bin"
-        cp "$z/t40.bin" "$sd/bin/tstart.bin"
-        cp "$z/t41.bin" "$sd/bin/tstop.bin"
-        cp "$z/basic"/* "$sd/"
-        printf 'tstart\r\nzap bbcbasicvez.s out.bin\r\ntstop\r\n' > "$sd/autoexec.txt"
-        out=$(ACC_EMU_WATCH=zap_done ACC_EMU_TIMEOUT=${PERF_TIMEOUT:-180} emu_run "$sd" -z -u 2>&1)
-        eval "cyc_$how=$(printf '%s' "$out" | sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)"
-        eval "chk_$how=$( [ -f "$sd/out.bin" ] && md5sum < "$sd/out.bin" | cut -c1-8)"
-        eval "size_$how=$(stat -c%s "$z/$how.bin")"
-        rm -rf "$sd"
-    done
-    if [ "$ok" = 1 ]; then
-        if [ -z "$chk_acc" ] || [ "$chk_acc" != "$chk_Oz" ] || [ "$chk_Oz" != "$chk_O2" ]; then
-            echo "zap: the builds assembled different binaries --" \
-                 "acc ${chk_acc:-none}, -Oz ${chk_Oz:-none}, -O2 ${chk_O2:-none}" >&2
-            status=1
-        else
-            printf '%-10s %12d %12d %12d %6s   %8d %8d %8d %6s\n' zap-basic \
-                "$cyc_acc" "$cyc_Oz" "$cyc_O2" "$(awk -v a="$cyc_acc" -v b="$cyc_Oz" 'BEGIN { printf "%.2f", a / b }')" \
-                "$size_acc" "$size_Oz" "$size_O2" "$(awk -v a="$size_acc" -v b="$size_Oz" 'BEGIN { printf "%.2f", a / b }')"
-            logs="$logs $cyc_acc/$cyc_Oz/$size_acc/$size_Oz"
-        fi
-    fi
 elif [ "$with_zap" = 1 ]; then
     echo "note: no zap at $ZAP ($ZAP_REV) -- zap-basic is left out" >&2
+    with_zap=0
 fi
+
+export ACC CC CFLAGS AGONDEV ANSWERS EMU_BIN EMU_MOS work
+export -f measure build run perf_done zap_build zap_run zap_done
+{
+    for src in $PROGS; do
+        for how in acc Oz O2; do
+            printf '%s\n%s\n%s\n' "$(basename "$src" .c)" "$how" "$src"
+        done
+    done
+    if [ "$with_zap" = 1 ]; then
+        for how in acc Oz O2; do
+            printf 'zap-basic\n%s\nzap\n' "$how"
+        done
+    fi
+} | xargs -d '\n' -P "${PERF_JOBS:-8}" -n 3 bash -c '. test/emu.sh; measure "$1" "$2" "$3"' _
+
+printf '%-10s %12s %12s %12s %6s   %8s %8s %8s %6s\n' program \
+    "acc cycles" "-Oz cycles" "-O2 cycles" ratio "acc size" "-Oz size" "-O2 size" ratio
+status=0
+logs=
+names=
+for src in $PROGS; do
+    names="$names $(basename "$src" .c)"
+done
+[ "$with_zap" = 1 ] && names="$names zap-basic"
+for name in $names; do
+    for how in acc Oz O2; do
+        if [ -f "$work/$name.$how.err" ]; then
+            cat "$work/$name.$how.err" >&2
+            status=1; continue 2
+        fi
+        read -r c k sz < "$work/$name.$how.res"
+        eval "cyc_$how=$c chk_$how=$k size_$how=$sz"
+    done
+    if [ "$name" = zap-basic ]; then
+        if [ "$chk_acc" != "$chk_Oz" ] || [ "$chk_Oz" != "$chk_O2" ]; then
+            echo "zap: the builds assembled different binaries --" \
+                 "acc $chk_acc, -Oz $chk_Oz, -O2 $chk_O2" >&2
+            status=1; continue
+        fi
+        expect= wrong=
+    else
+        # The answer a program says it has to give -- `expect:` in its
+        # opening comment, where one has been worked out apart from either
+        # compiler -- or else the three builds have to agree.
+        expect=$(sed -n 's/^ \* expect: \([0-9]*\).*/\1/p' "test/perf/$name.c" | head -1)
+        wrong=
+        if [ -n "$expect" ]; then
+            for how in acc Oz O2; do
+                eval "[ \"\$chk_$how\" = \"$expect\" ]" || wrong="$wrong $how"
+            done
+        elif [ "$chk_acc" != "$chk_Oz" ] || [ "$chk_Oz" != "$chk_O2" ]; then
+            echo "$name: the builds disagree -- acc $chk_acc, -Oz $chk_Oz, -O2 $chk_O2" >&2
+            status=1; continue
+        fi
+        case " $wrong " in
+          *" acc "*) echo "$name: acc's build gives $chk_acc, not $expect" >&2
+                     status=1; continue ;;
+        esac
+    fi
+    printf '%-10s %12d %12d %12d %6s   %8d %8d %8d %6s\n' "$name" \
+        "$cyc_acc" "$cyc_Oz" "$cyc_O2" "$(awk -v a="$cyc_acc" -v b="$cyc_Oz" 'BEGIN { printf "%.2f", a / b }')" \
+        "$size_acc" "$size_Oz" "$size_O2" "$(awk -v a="$size_acc" -v b="$size_Oz" 'BEGIN { printf "%.2f", a / b }')"
+    # A build that gives the wrong answer did other work than the rest, and
+    # its time is no measure: said so, and left out of the mean.
+    if [ -n "$wrong" ]; then
+        echo "           (wrong answer from agondev$(printf ' %s' $wrong | sed 's/ \([A-Z]\)/ -\1/g'):" \
+             "$chk_Oz, not $expect -- left out of the mean)"
+        continue
+    fi
+    logs="$logs $cyc_acc/$cyc_Oz/$size_acc/$size_Oz"
+done
 
 # The geometric mean of the ratios, so that no one program's size or length
 # outweighs the others.

@@ -62,7 +62,8 @@ LIBASM    = lib/strlen.s lib/strcmp.s lib/strchr.s lib/strcpy.s lib/strncpy.s \
             lib/itoa.s lib/ltoa.s lib/ultoa.s lib/toa.s
 LIBASMOBJ = $(LIBASM:lib/%.s=$(BIN)/lib/%.o)
 
-.PHONY: all clean test unit agon test-suites test-conformance test-cases test-alone
+.PHONY: all clean test unit agon test-suites test-conformance test-conformance-opt \
+	test-cases test-alone
 
 # acc-asan is part of the ordinary build and not only of `test`, because
 # every scripted test defaults to running it and none of them rebuild it.
@@ -183,92 +184,36 @@ $(BIN):
 # generates and checks it against the same table. The differential tests
 # cannot do that job -- acc links with nothing, so a convention it gets
 # consistently wrong agrees with itself everywhere.
-# The suites in four groups: three at once -- the most of them, a suite at
-# a time; the conformance suites; and test/cases under acc and each of
-# opt-acc's ways -- each stopping at its first failure, as one list did, and
-# each printed whole as it ends. The self-build after the first group. Then
+# The suites in five groups: four at once -- the most of them, a suite at
+# a time; the conformance suites under acc, and under opt-acc; and
+# test/cases under acc and each of opt-acc's ways (test/modes), every case
+# under every way one job of the same pool -- each stopping at its first
+# failure, as one list did, and each printed whole as it ends. The self-build after the first group. Then
 # what wants the emulator to itself, nothing else running: a compile on the
 # Agon of every case in one boot, the release's and the headers' checks,
 # whose long runs a busy machine would time out, and the cycle count.
 test: all unit agon
-	@$(MAKE) --no-print-directory -j3 --output-sync=target test-suites test-conformance test-cases
+	@$(MAKE) --no-print-directory -j4 --output-sync=target test-suites test-conformance \
+	    test-conformance-opt test-cases
 	@$(MAKE) --no-print-directory test-alone
 
 test-suites:
-	@test/abi.sh || [ $$? -eq 77 ]
-	@test/helpers.sh || [ $$? -eq 77 ]
-	@test/fmt_agon.sh || [ $$? -eq 77 ]
-	@test/frames.sh || [ $$? -eq 77 ]
-	@test/budget.sh || [ $$? -eq 77 ]
-	@test/msgpack.sh
-	@test/forget.sh
-	@test/linkheap.sh
-	@test/linkstream.sh
-	@test/linkfixups.sh
-	@test/manyargs.sh || [ $$? -eq 77 ]
-	@test/abandon.sh
-	@test/objmem.sh
-	@test/spill.sh
-	@test/startup.sh || [ $$? -eq 77 ]
-	@test/moslet.sh || [ $$? -eq 77 ]
-	@test/agonpp.sh || [ $$? -eq 77 ]
-	@test/flags.sh || [ $$? -eq 77 ]
-	@test/keyboard.sh || [ $$? -eq 77 ]
-	@test/buffer.sh
-	@test/include.sh
-	@ACC=$(BIN)/acc-asan test/macro.sh
-	@test/build.sh
-	@ACC=$(BIN)/acc-asan test/cpp89.sh
-	@ACC=$(BIN)/acc-asan test/reloc.sh
-	@ACC=$(BIN)/acc-asan test/object.sh
-	@ACC=$(BIN)/acc-asan test/accobj.sh
-	@ACC=$(BIN)/acc-asan test/bss.sh
-	@ACC=$(BIN)/acc-asan test/dead.sh
-	@test/scale.sh
-	@ACC=$(BIN)/acc-asan test/branch.sh
-	@ACC=$(BIN)/acc-asan test/codegen.sh
-	@ACC=$(BIN)/acc-asan test/relax.sh
-	@ACC=$(BIN)/acc-asan test/mos.sh || [ $$? -eq 77 ]
-	@ACC=$(BIN)/acc-asan test/args.sh || [ $$? -eq 77 ]
-	@ACC=$(BIN)/acc-asan test/lib.sh
-	@test/defaults.sh
-	@ACC=$(BIN)/acc-asan test/onestep.sh
-	@ACC=$(BIN)/acc-asan test/usage.sh
-	@ACC=$(BIN)/acc-asan test/printf.sh || [ $$? -eq 77 ]
-	@ACC=$(BIN)/acc-asan test/floatrt.sh || [ $$? -eq 77 ]
-	@ACC=$(BIN)/acc-asan test/hosted.sh || [ $$? -eq 77 ]
-	@ACC=$(BIN)/acc-asan test/agonlib.sh || [ $$? -eq 77 ]
-	@ACC=$(BIN)/acc-asan test/vdpreal.sh || [ $$? -eq 77 ]
-	@test/heap.sh || [ $$? -eq 77 ]
-	@test/abi-acc.sh
-	@ACC=$(BIN)/acc-asan test/errors.sh
-	@test/runner.sh || [ $$? -eq 77 ]
-	@test/rtlong.sh || [ $$? -eq 77 ]
-	@ACC=$(BIN)/acc-asan test/self.sh
-	@ACC=$(BIN)/acc-asan test/selfbuild.sh
+	@test/suites.sh test/suites
 
 test-conformance:
 	@test/conformance.sh --check || [ $$? -eq 77 ]
+
+test-conformance-opt:
 	@ACC=$(BIN)/opt-acc test/conformance.sh --check || [ $$? -eq 77 ]
 
 test-cases:
-	@ACC=$(BIN)/acc-asan test/run.sh
+	@RUN_MODES=test/modes test/run.sh
 	@test/optacc.sh
 	@test/optacc-zap.sh || [ $$? -eq 77 ]
-	@ACC=$(BIN)/opt-acc-asan test/run.sh
 	@ACC=$(BIN)/opt-acc-asan test/floatrt.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/opt-acc-asan test/printf.sh || [ $$? -eq 77 ]
-	@OPTACC_SSA=1 ACC=$(BIN)/opt-acc-asan test/run.sh
 	@OPTACC_SSA=1 ACC=$(BIN)/opt-acc-asan test/floatrt.sh || [ $$? -eq 77 ]
 	@OPTACC_SSA=1 ACC=$(BIN)/opt-acc-asan test/printf.sh || [ $$? -eq 77 ]
-	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 ACC=$(BIN)/opt-acc-asan test/run.sh
-	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_ANY_GAIN=1 OPTACC_PICK=0 ACC=$(BIN)/opt-acc-asan test/run.sh
-	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_PICK=0 ACC=$(BIN)/opt-acc-asan test/run.sh
-	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_PICK=0 OPTACC_INLINE=1 ACC=$(BIN)/opt-acc-asan test/run.sh
-	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 ACC=$(BIN)/opt-acc-asan test/run.sh
-	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_PICK=0 ACC=$(BIN)/opt-acc-asan test/run.sh
-	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_PICK=0 OPTACC_CACHE_NONE=1 ACC=$(BIN)/opt-acc-asan test/run.sh
-	@OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_MIR_SPLIT=1 OPTACC_PICK=0 ACC=$(BIN)/opt-acc-asan test/run.sh
 
 test-alone:
 	@test/cycles.sh || [ $$? -eq 77 ]
