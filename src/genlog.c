@@ -599,7 +599,7 @@ static void gl_function_end(void)
                     made <= 0 ? why : ssa_leaf_tried && !ssa_made_leaf
                     ? "made, not by the leaf backend" : "made");
         if (made > 0) {
-            gl_backend = ssa_made_leaf ? BACKEND_LEAF : BACKEND_SSA;
+            gl_backend = ssa_made_leaf || ssa_made_mir ? BACKEND_LEAF : BACKEND_SSA;
             free(first);
             free(first_relocs);
             return;

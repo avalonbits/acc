@@ -45,6 +45,11 @@ static const char *const rt_names[RT_COUNT] = {
     "llmul", "lldivu", "llremu", "lldivs", "llrems",
     "lltof", "ulltof", "ftoll",
     "shr", "sdiv",
+#ifdef OPT_ACC
+    "lrsub", "lrand", "lror", "lrxor", "lrshl", "lrshru", "lrshrs",
+    "lrneg", "lrnot", "lrcmpu", "lrcmps", "lrmul", "lrdivu",
+    "lrdivs", "lrremu", "lrrems",
+#endif
 };
 
 /* The symbol each routine is known by, once something has named it. */

@@ -573,6 +573,73 @@ int f(const char **v, int n, unsigned char *suffix) { int i, k = 0; for (i = 0; 
 OPTACC_INLINE_LOOP=80 inlined "one called in a loop, its caller let grow"  suffix_bit yes "$sfx_loop"
 OPTACC_INLINE_LOOP=80 inlined "but not where it is called once, outside"   suffix_bit no  "$sfx"
 inlined "nor past the allowance"                    suffix_bit no  "$sfx_loop"
+# The machine-level backend's functions ranked with the leaf backend's,
+# both holding values in registers: goto_statement merged, made by it,
+# takes back_to and back_in, which the leaf backend makes apart.
+rk='typedef struct { int serial, mark, vm_last; } VlaBlock;
+typedef struct { int at; VlaBlock *blocks; int nblocks; } Label;
+extern Label *labels;
+extern VlaBlock *vla_blocks;
+extern int nvla_blocks, tok_line;
+int label_find(int name, int line);
+void fail_at(int line, const char *what);
+int gen_jump(void);
+void gen_jump_to(int at);
+void gen_unwind(int to);
+int gen_goto_hole(void);
+void goto_add(int hole, int label, int line);
+int next_name(void);
+
+static int back_to(const VlaBlock *then, int nthen)
+{
+    int common = -1, i;
+
+    for (i = 0; i < nvla_blocks && i < nthen; i++) {
+        if (vla_blocks[i].serial != then[i].serial)
+            break;
+        common = i;
+    }
+    if (common < 0)
+        return -1;
+    if (then[common].mark == -1 && vla_blocks[common].mark != -1)
+        return vla_blocks[common].mark;
+    for (i = common + 1; i < nvla_blocks; i++)
+        if (vla_blocks[i].mark != -1)
+            return vla_blocks[i].mark;
+
+    return -1;
+}
+
+static int back_in(const VlaBlock *to, int nto)
+{
+    int i;
+
+    for (i = 0; i < nvla_blocks && i < nto && vla_blocks[i].serial == to[i].serial; i++)
+        ;
+    for (; i < nto; i++)
+        if (to[i].vm_last > 0 && to[i].vm_last > to[i].serial)
+            return 1;
+
+    return 0;
+}
+
+void goto_statement(void)
+{
+    int line = tok_line, label = label_find(next_name(), line);
+
+    if (labels[label].at >= 0) {
+        int back = back_to(labels[label].blocks, labels[label].nblocks);
+
+        if (back_in(labels[label].blocks, labels[label].nblocks))
+            fail_at(line, "jumps into a VLA'\''s scope");
+        if (back != -1)
+            gen_unwind(back);
+        gen_jump_to(labels[label].at);
+    } else {
+        goto_add(gen_goto_hole(), label, line);
+    }
+}'
+OPTACC_MIR=1 OPTACC_PEEP=1 inlined "a leaf body in a caller MIR makes merged"  back_in yes "$rk"
 # lists' insert_sorted: its loop made from its SSA form, and called from a
 # function the first pass makes, one holding long longs -- smaller merged,
 # and slower, the loop in the first pass's code. So it is called.
@@ -693,6 +760,111 @@ mir "$OPT" "not tested again"                   2100000009b7ed42 no "$truth"
 # A struct's bytes copied by ldir, BC their count.
 mir "$OPT" "the copy: ld bc, 7 / ldir"            01070000edb0 yes \
     'struct d { int a, b; char c; }; void f(struct d *p, const struct d *q) { *p = *q; }'
+
+# DE kept across a call that answers a long: D popped back, E the answer's
+# -- ld a, e / pop de / ld e, a (test/cases/382 runs it).
+kept_de='unsigned long mix(unsigned long h, int x);
+int g(int);
+unsigned long f(const unsigned *v, int n)
+{
+    unsigned long h = 0;
+
+    for (int i = 0; i < n; i++) {
+        _Bool b = v[i] & 0x80;
+
+        if (v[i] & 0x8000)
+            h = mix(h, 1);
+        h = mix(h, b + g(i));
+    }
+    return h;
+}'
+mir "$OPT" "a long's E kept over DE popped back"        7bd15f    yes "$kept_de"
+
+# Frames the machine-level backend lays out (test/cases/381 checks what
+# they come to): spill slots shared by values never kept at once -- three
+# runs of six values held across calls, a frame of six bytes, not
+# eighteen -- and a function of 45 locals, all of them values and given no
+# room, with an inlined body's array in (ix+d)'s reach.
+runs='int g(int);
+void h(int, int, int, int, int, int);
+void f(int k)
+{
+    int a = g(k), b = g(a), c = g(b), d = g(c), e = g(d), x = g(e);
+
+    h(a, b, c, d, e, x);
+    {
+        int p = g(1), q = g(p), r = g(q), s = g(r), t = g(s), u = g(t);
+
+        h(p, q, r, s, t, u);
+    }
+    {
+        int p = g(2), q = g(p), r = g(q), s = g(r), t = g(s), u = g(t);
+
+        h(p, q, r, s, t, u);
+    }
+}'
+mir "$OPT" "three runs' spills in a frame of six bytes"   21faffff  yes "$runs"
+mir "$OPT" "not eighteen"                                21eeffff  no  "$runs"
+many='int g(int); __attribute__((always_inline)) static inline int sq(int v) { int t[2]; t[0] = v; t[1] = g(v); return t[0] * t[1]; } int f(int k) { int v1 = g(1); int v2 = g(2); int v3 = g(3); int v4 = g(4); int v5 = g(5); int v6 = g(6); int v7 = g(7); int v8 = g(8); int v9 = g(9); int v10 = g(10); int v11 = g(11); int v12 = g(12); int v13 = g(13); int v14 = g(14); int v15 = g(15); int v16 = g(16); int v17 = g(17); int v18 = g(18); int v19 = g(19); int v20 = g(20); int v21 = g(21); int v22 = g(22); int v23 = g(23); int v24 = g(24); int v25 = g(25); int v26 = g(26); int v27 = g(27); int v28 = g(28); int v29 = g(29); int v30 = g(30); int v31 = g(31); int v32 = g(32); int v33 = g(33); int v34 = g(34); int v35 = g(35); int v36 = g(36); int v37 = g(37); int v38 = g(38); int v39 = g(39); int v40 = g(40); int v41 = g(41); int v42 = g(42); int v43 = g(43); int v44 = g(44); int v45 = g(45);  return v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10 + v11 + v12 + v13 + v14 + v15 + v16 + v17 + v18 + v19 + v20 + v21 + v22 + v23 + v24 + v25 + v26 + v27 + v28 + v29 + v30 + v31 + v32 + v33 + v34 + v35 + v36 + v37 + v38 + v39 + v40 + v41 + v42 + v43 + v44 + v45 +  sq(k); }'
+mirs "45 locals that are values, an inlined array"  yes "$many"
+# And merged: a body read in place, its room after the locals kept --
+# none of the 45 -- not after all of them, past (ix+d)'s reach.
+merged='int g(int); void h(int *); static void sq(int *o, int v) { int x = v; h(&x); *o = x; } int f(int k) { int v1 = g(1); int v2 = g(2); int v3 = g(3); int v4 = g(4); int v5 = g(5); int v6 = g(6); int v7 = g(7); int v8 = g(8); int v9 = g(9); int v10 = g(10); int v11 = g(11); int v12 = g(12); int v13 = g(13); int v14 = g(14); int v15 = g(15); int v16 = g(16); int v17 = g(17); int v18 = g(18); int v19 = g(19); int v20 = g(20); int v21 = g(21); int v22 = g(22); int v23 = g(23); int v24 = g(24); int v25 = g(25); int v26 = g(26); int v27 = g(27); int v28 = g(28); int v29 = g(29); int v30 = g(30); int v31 = g(31); int v32 = g(32); int v33 = g(33); int v34 = g(34); int v35 = g(35); int v36 = g(36); int v37 = g(37); int v38 = g(38); int v39 = g(39); int v40 = g(40); int v41 = g(41); int v42 = g(42); int v43 = g(43); int v44 = g(44); int v45 = g(45);  int r; sq(&r, k); return r +  v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10 + v11 + v12 + v13 + v14 + v15 + v16 + v17 + v18 + v19 + v20 + v21 + v22 + v23 + v24 + v25 + v26 + v27 + v28 + v29 + v30 + v31 + v32 + v33 + v34 + v35 + v36 + v37 + v38 + v39 + v40 + v41 + v42 + v43 + v44 + v45 +  0; }'
+OPTACC_INLINE=1 mirs "45 values and a body read in place, made by it" yes "$merged"
+# The room an inlined body takes is after the locals kept in memory, not
+# after all the first pass declared: acc's declaration, most of whose
+# locals are values, takes local_array and the rest in place.
+rm -f "$tmp/k.o" "$tmp/k.map"
+if OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+    OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 \
+    timeout 20 "$OPT" -c test/optacc/kept.c -o "$tmp/k.o" -map "$tmp/k.map" >/dev/null 2>&1 \
+    && grep -q '^declaration ' "$tmp/k.map" && ! grep -q '^local_array ' "$tmp/k.map"; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s\n' "acc's declaration, its bodies' room in reach"
+    fail=$((fail + 1))
+fi
+# A round of the allocator that finds a register held by a value spilled
+# already goes on scanning, and finds the rest of that round's spills: zap's
+# assemble_line, merged, wants a dozen such rounds, and ran out at 16.
+if OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+    OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_PICK=0 \
+    OPTACC_CACHE_NONE=1 OPTACC_INLINE_LOOP=100000 OPTACC_SSA_STATS=1 \
+    timeout 20 "$OPT" -c test/optacc/rounds.c -o "$tmp/r.o" 2>&1 | grep -q '^mir assemble_line$'; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s\n' "zap's assemble_line merged, made in rounds"
+    fail=$((fail + 1))
+fi
+# A call's answer let go with (void); a _Bool made of an int or a pointer
+# as an argument, 0 or 1 by its truth; and a _Bool predicate read in place
+# in a loop's test, branched on as the flags that make it -- and 1 / jr z
+# -- not made 0 or 1 in DE and tested again.
+mirs "a call's answer cast to void, made by it"     yes \
+    'int g(int); void h(void); int f(int a) { (void) g(a); (void) h(); (void) a; return a + 1; }'
+mirs "a _Bool argument made of an int or a pointer" yes \
+    'int g(_Bool, int); int f(int a, char *p) { return g(a, 1) + g(p, 2) + g(a & 4, 5); }'
+blank='extern const unsigned char kinds[256];
+__attribute__((always_inline)) static inline _Bool blank(char c) { return (kinds[(unsigned char) c] & 1) != 0; }
+void g(const char *);
+int f(const char *p, const char *e) { while (p < e && blank(*p)) p++; g(p); return 0; }'
+mir "$OPT" "a _Bool predicate tested as the flags"      e6012803  yes "$blank"
+mir "$OPT" "not made 0 or 1 first"                      e60111    no  "$blank"
+
+# Longs in registers, E:UHL and A:UBC: a + b in line, add hl, bc / adc
+# a, e / ld e, a, and nothing called; a long argument pushed as two slots
+# from E:UHL, push de / push hl, and with a long answered the arguments let
+# go into BC, E kept; an int made a long by its sign, push hl / add hl, hl
+# / sbc a, a / pop hl / ld e, a; a comparison by the routine, its carry
+# branched on, call / jr nc; and a loop's long, both of an add's operands
+# made before either is put where it goes.
+OPTACC_CACHE_NONE=1 mir "$OPT" "a + b of longs in line"            dd7e0f098b5fdde1c9 yes 'long f(long a, long b) { return a + b; }'
+OPTACC_CACHE_NONE=1 mir "$OPT" "a long argument as two slots"      d5e5cd000000 yes 'long g(long); long f(int x) { return g(x) + 1; }'
+OPTACC_CACHE_NONE=1 mir "$OPT" "and let go into BC, E:UHL kept"    cd000000c1c1 yes 'long g(long); long f(int x) { return g(x) + 1; }'
+OPTACC_CACHE_NONE=1 mir "$OPT" "an int made a long by its sign"    e5299fe15fdde1c9 yes 'long f(int x) { return x; }'
+OPTACC_CACHE_NONE=1 mir "$OPT" "a long compared, its carry branched on" cd00000030 yes 'int f(long a, long b) { if (a < b) return 3; return 4; }'
+OPTACC_CACHE_NONE=1 mirs "a loop's long, made by it"                    yes \
+    'unsigned long f(const unsigned char *p, int n) { unsigned long s = 0; while (n--) s = s * 31 + *p++; return s; }'
 
 # Signed against a constant: against 0 the sign alone, add hl, hl;
 # against another, the left moved by half the range through DE and the

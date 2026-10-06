@@ -135,7 +135,9 @@ void    prescan_param(NameRef name, int offset, int can);
 int     prescan_body(const char *at, NameRef *wants, int *param);
 void    prescan_claim(int offset, Type type, NameRef name);
 /* genlog.c: which backend made the last function, worst first -- a body
- * read in place of a call is made by its caller's (inline.c). */
+ * read in place of a call is made by its caller's (inline.c). The
+ * machine-level backend is the leaf backend's equal: both hold values in
+ * registers, where the others keep them in the frame. */
 enum { BACKEND_FIRST, BACKEND_SSA, BACKEND_LEAF };
 extern int gl_backend;
 void    gen_iy_take(int offset);     /* vstack.c: the one it chose */

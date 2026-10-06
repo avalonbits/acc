@@ -35,7 +35,8 @@
 
 /* The physical registers a value may be in: the bytes, and the pairs.
  * IX is the frame's. */
-enum { P_A, P_B, P_C, P_D, P_E, P_H, P_L, P_BC, P_DE, P_HL, P_IY, NPREGS };
+enum { P_A, P_B, P_C, P_D, P_E, P_H, P_L, P_BC, P_DE, P_HL, P_IY, P_EHL,
+       P_ABC, NPREGS };
 
 /* Their units -- the bytes they are made of, U the top byte of a pair that
  * only an ADL instruction reaches -- which is what two values in registers
@@ -49,7 +50,9 @@ enum { U_A, U_B, U_C, U_D, U_E, U_H, U_L, U_BU, U_DU, U_HU, U_IYL, U_IYH,
 static const unsigned preg_units[NPREGS] = {
     UB(U_A), UB(U_B), UB(U_C), UB(U_D), UB(U_E), UB(U_H), UB(U_L),
     UB(U_B) | UB(U_C) | UB(U_BU), UB(U_D) | UB(U_E) | UB(U_DU),
-    UB(U_H) | UB(U_L) | UB(U_HU), UB(U_IYL) | UB(U_IYH) | UB(U_IYU)
+    UB(U_H) | UB(U_L) | UB(U_HU), UB(U_IYL) | UB(U_IYH) | UB(U_IYU),
+    UB(U_E) | UB(U_H) | UB(U_L) | UB(U_HU),             /* a long: E:UHL */
+    UB(U_A) | UB(U_B) | UB(U_C) | UB(U_BU)              /* and A:UBC */
 };
 
 /* The 8-bit register codes the instructions are made with. */
@@ -65,6 +68,9 @@ static const int r8_code[] = { 7, 0, 1, 2, 3, 4, 5 };
 #define C_O24  (PB(P_DE) | PB(P_BC))
 #define C_P24  (PB(P_HL) | PB(P_DE) | PB(P_BC))
 #define C_R24  (PB(P_HL) | PB(P_DE) | PB(P_BC) | PB(P_IY))
+#define C_EHL  PB(P_EHL)
+#define C_ABC  PB(P_ABC)
+#define C_Q    (PB(P_EHL) | PB(P_ABC))
 
 /* The low byte of a pair, as an 8-bit register: a byte read of it. */
 static int low_of(int preg)
@@ -73,9 +79,23 @@ static int low_of(int preg)
     case P_BC: return P_C;
     case P_DE: return P_E;
     case P_HL: return P_L;
+    case P_EHL: return P_L;
+    case P_ABC: return P_C;
     }
 
     return -1;
+}
+
+/* A long's quad as its two parts: the pair with its low three bytes, and
+ * the byte with its top one. */
+static int quad_pair(int q)
+{
+    return q == P_EHL ? P_HL : P_BC;
+}
+
+static int quad_top(int q)
+{
+    return q == P_EHL ? P_E : P_A;
 }
 
 /* ------------------------------------------------------------------ */
@@ -135,9 +155,21 @@ enum {
                      * the SSA return's constant */
     M_PCOPY,        /* the parallel copies an edge makes: see pcopy */
     M_SAVE,         /* before a call's arguments: the pairs imm2 says pushed */
-    M_PUSH,         /* an argument: a pushed, a pair */
+    M_PUSH,         /* an argument: a pushed, a pair -- or a long in E:UHL,
+                     * two slots: push de, push hl */
     M_COPYS,        /* imm bytes copied from b, HL, to a, DE: ldir, BC
                      * clobbered, a and b changed */
+    M_LADD,         /* d = a + b, longs: d and a E:UHL, b A:UBC, which it
+                     * changes */
+    M_LCALL,        /* d = routine imm (a, b): longs in registers, d and a
+                     * E:UHL, b A:UBC -- or a shift's count in A -- or none;
+                     * A and the flags clobbered (lib/rt/lr*.s) */
+    M_LCMP,         /* the flags of routine imm (a, b): carry where a is the
+                     * less, Z where equal; a E:UHL kept, b A:UBC */
+    M_LTST,         /* Z where a, E:UHL, is 0; A clobbered */
+    M_SEXTL,        /* d (E:UHL) = a (HL), widened by its sign; A clobbered */
+    M_ZEXTL,        /* d (E:UHL) = a (HL), widened by zeros */
+    M_LTRUNC,       /* d (a pair) = a long's low three bytes */
     M_CALL,         /* d = sym (imm slots pushed), in HL or A; then the slots
                      * popped, and the pairs imm2 says -- BC 1, DE 2, IY 4,
                      * those live across it -- popped back. A, F and HL
@@ -293,9 +325,48 @@ static int mir_type(Type type)
     return type_size(type) == 1 || type_size(type) == ACC_INT_SIZE;
 }
 
+/* The registers a value of width w may be in: a byte, a pair, or a long's
+ * quad; and the bytes it takes in memory. */
+static unsigned width_class(int w)
+{
+    return w == 1 ? C_R8 : w == 4 ? C_Q : C_R24;
+}
+
+static int width_bytes(int w)
+{
+    return w == 1 ? 1 : w == 4 ? ACC_LONG_SIZE : ACC_INT_SIZE;
+}
+
+static int long_type(Type type);
+
 static int width_of(Type type)
 {
-    return type_size(type) == 1 || type == TY_BOOL ? 1 : 3;
+    return type_size(type) == 1 || type == TY_BOOL ? 1 : long_type(type) ? 4 : 3;
+}
+
+/* A long: four bytes, held as a quad -- E:UHL or A:UBC -- and worked on by
+ * the runtime's routines that take it there (lib/rt/lr*.s), or in line.
+ * Not a long long, nor a float. */
+static int long_type(Type type)
+{
+    return type_wide(type) && !type_float(type) && !type_eight(type)
+           && !type_is_struct(type);
+}
+
+/* A constant's four bytes as a long: a narrow one widened as its own type
+ * widens it -- an unsigned int's 0xffffff, held as -1, is not 0xffffffff. */
+static int long_bits(const Ent *ent)
+{
+    Type t = ent->attr.type;
+    int v = ent->attr.val;
+
+    if (ent->attr.kind == VAL_WIDE)
+        return (int) (uint32_t) ent->wide;
+    if (type_size(t) == 1 || t == TY_BOOL)
+        return type_unsigned(t) || t == TY_BOOL ? v & 0xff : (signed char) v;
+    if (type_size(t) == ACC_INT_SIZE && (type_unsigned(t) || type_pointer(t)))
+        return v & 0xffffff;
+    return type_size(t) == ACC_INT_SIZE ? (int) ((unsigned) v << 8) >> 8 : v;
 }
 
 /* A constant that is a number, which the code here reasons about; and one
@@ -335,8 +406,8 @@ static int mir_operand_ok(const Ent *ent)
  * gone -- nor longjmp, nor one gen_call makes in place of a call, memcpy
  * and the rest with ldir and exit, which would be the library's slower
  * C here; answering void or a type held here, its arguments each one held
- * here and, where it has a parameter, of a type held here too; a _Bool's
- * only from a _Bool, since anything else would be tested, not narrowed. */
+ * here and, where it has a parameter, of a type held here too -- a _Bool's
+ * made 0 or 1 by its truth, where it is not a _Bool already (sel_call). */
 static int call_ok(const Ins *insn)
 {
     static NameRef setjmp_name;
@@ -355,18 +426,29 @@ static int call_ok(const Ins *insn)
     for (arg = 0; in_place[arg]; arg++)
         if (!strcmp(name_text(callee->name), in_place[arg]))
             return mir_why = "a call gen_call makes in place", 0;
-    if (callee->type != TY_VOID && !mir_type(callee->type))
+    if (callee->type != TY_VOID && !mir_type(callee->type) && !long_type(callee->type))
         return mir_why = "a call answering a type not held here", 0;
     for (arg = 0; arg != insn->nin; arg++) {
-        Type param = arg < nparams ? sym_param_type(first, arg) : TY_INT;
+        Type param = arg < nparams ? sym_param_type(first, arg)
+                     : long_type(insn->in[arg].attr.type) ? insn->in[arg].attr.type
+                     : TY_INT;
 
-        if (!mir_type(param))
+        if (!mir_type(param) && !long_type(param))
             return mir_why = "an argument of a type not held here", 0;
-        if (param == TY_BOOL && insn->in[arg].attr.type != TY_BOOL)
+        /* A long made a _Bool: tested whole, which zero_test does not. */
+        if (param == TY_BOOL && (long_type(insn->in[arg].attr.type)
+                                 || (insn->in[arg].val >= 0
+                                     && long_type(vals[insn->in[arg].val].type))))
             return mir_why = "an argument made a _Bool", 0;
     }
 
     return 1;
+}
+
+/* Whether an instruction is `(void) x`: x made, and nothing more. */
+static int void_cast(const Ins *insn)
+{
+    return insn->op == GL_vcast && (Type) insn->rec->arg[0] == TY_VOID;
 }
 
 /* Whether an instruction is `*p = s` for a struct: its bytes copied. */
@@ -401,6 +483,100 @@ static int struct_source_ok(const Ins *insn)
     return src->val >= 0 && struct_val_ok(src->val);
 }
 
+/* Whether an instruction has a long in it: an operand, its answer, or what
+ * it reads, writes, converts to or steps. */
+static int insn_long(const Ins *insn)
+{
+    int k;
+
+    if (insn->res >= 0 && long_type(vals[insn->res].type))
+        return 1;
+    if (insn->op == I_SET && insn->target >= 0 && long_type(vals[insn->target].type))
+        return 1;
+    for (k = 0; k != insn->nin; k++)
+        if (long_type(insn->in[k].attr.type)
+            || (insn->in[k].val >= 0 && long_type(vals[insn->in[k].val].type)))
+            return 1;
+    switch (insn->op) {
+    case I_CONV: case I_STEP:
+        return long_type(insn->local_type);
+    case GL_vconvert: case GL_vcast:
+        return long_type((Type) insn->rec->arg[0]);
+    case GL_vpush_local: case GL_vstore_local:
+    case GL_vprefix_local: case GL_vpostfix_local:
+        return long_type((Type) insn->rec->arg[1]);
+    case GL_gen_return:                 /* a long answered, from anything */
+        return insn->nin && long_type(return_type);
+    case GL_vderef: case GL_vstore_indirect:
+    case GL_vprefix_indirect: case GL_vpostfix_indirect:
+        return insn->nin && type_pointer(insn->in[0].attr.type)
+               && long_type(type_deref(insn->in[0].attr.type));
+    }
+
+    return 0;
+}
+
+/* Whether an instruction with a long in it is one made here: of these, its
+ * operands longs, constants or the types held here, its answer one of
+ * those or nothing -- no bit-field, no long long, no float. */
+static int long_ok(const Ins *insn)
+{
+    int k;
+
+    switch (insn->op) {
+    case GL_vapply:
+        if (insn->rec->arg[1])
+            return 0;
+        switch ((int) insn->rec->arg[0]) {
+        case TK_PLUS: case TK_MINUS: case TK_STAR: case TK_SLASH:
+        case TK_PERCENT: case TK_AMP: case TK_PIPE: case TK_CARET:
+        case TK_SHL: case TK_SHR: case TK_LT: case TK_GT: case TK_LE:
+        case TK_GE: case TK_EQ: case TK_NE:
+            break;
+        default:
+            return 0;
+        }
+        /* A pointer stepped by a long: not here. */
+        if (type_pointer(insn->in[0].attr.type) || type_pointer(insn->in[1].attr.type))
+            return 0;
+        break;
+    case GL_vconvert: case GL_vcast: case I_CONV: case GL_vtruth:
+    case GL_vneg: case GL_vnot: case GL_vpush_local: case GL_vstore_local:
+    case GL_vprefix_local: case GL_vpostfix_local: case GL_vderef:
+    case GL_vstore_indirect: case GL_vprefix_indirect:
+    case GL_vpostfix_indirect: case I_STEP: case I_BR: case I_SET:
+    case GL_gen_return: case GL_vpush_const: case GL_gen_call:
+        break;
+    default:
+        return 0;
+    }
+    if (insn->rec && insn->rec->top.bits)
+        return 0;
+    if (insn->op == GL_gen_call && !call_ok(insn))
+        return 0;
+    if (insn->res >= 0 && vals[insn->res].used && !mir_type(vals[insn->res].type)
+        && !long_type(vals[insn->res].type))
+        return 0;
+    if ((insn->op == GL_vconvert || insn->op == GL_vcast)
+        && !mir_type((Type) insn->rec->arg[0]) && !long_type((Type) insn->rec->arg[0]))
+        return 0;
+    for (k = 0; k != insn->nin; k++) {
+        const Ent *ent = &insn->in[k];
+
+        if (ent->attr.bits || type_is_struct(ent->attr.type)
+            || type_float(ent->attr.type) || type_eight(ent->attr.type))
+            return 0;
+        if (ent->val == S_CONST && ent->attr.kind == VAL_WIDE)
+            continue;
+        if (ent->val >= 0 && long_type(vals[ent->val].type))
+            continue;
+        if (!mir_operand_ok(ent) && !(ent->val == S_CONST && long_type(ent->attr.type)))
+            return 0;
+    }
+
+    return 1;
+}
+
 /* Whether the function is one milestones 1 and 2 make. */
 static int mir_ok(void)
 {
@@ -416,13 +592,14 @@ static int mir_ok(void)
         for (at = 1; at != ninsns; at++) {
             if (insns[at].op != I_FRAME)
                 continue;
-            if (insns[at].rec->op == GL_gen_local)
-                bytes += (int) insns[at].rec->arg[0];
-            else if (insns[at].rec->op == GL_gen_local_array_size)
+            if (insns[at].rec->op == GL_gen_local_array_size)
                 array_bytes += (int) insns[at].rec->arg[1];
             else if (insns[at].rec->op == GL_gen_local_far)
                 far = 1;
         }
+        /* Only the locals left in memory are given room again: those
+         * that are values now take none (frame_again_all). */
+        bytes = ssa_locals_kept();
         arrays_here = !far && bytes + array_bytes + ACC_INT_SIZE <= 128;
         /* An inlined body's room is laid out after the rest of the frame,
          * where the first pass had it among it: all of it in (ix+d)'s
@@ -442,7 +619,8 @@ static int mir_ok(void)
             && type_is_struct(vals[insns[at].res].type))
             struct_read[insns[at].res] = 1;
     for (phi = 0; phi != nphis; phi++)
-        if (phis[phi].live && !mir_type(vals[phis[phi].val].type))
+        if (phis[phi].live && !mir_type(vals[phis[phi].val].type)
+            && !long_type(vals[phis[phi].val].type))
             return mir_why = "a phi not of an int, a pointer or a char", 0;
     for (at = 0; at != nlocals; at++)
         if (locals[at].ok && locals[at].is_param
@@ -451,6 +629,13 @@ static int mir_ok(void)
     for (at = 1; at != ninsns; at++) {
         const Ins *insn = &insns[at];
 
+        if (insn->op == GL_vdrop && insn_long(insn))
+            continue;                   /* a long let go: nothing made */
+        if (insn->op != GL_vdrop && insn->op != I_FRAME && insn_long(insn)) {
+            if (!long_ok(insn))
+                return mir_why = "a long's instruction not made here", 0;
+            continue;
+        }
         if (insn->rec && insn->rec->top.bits)
             return mir_why = "a bit-field", 0;
         /* A VLA's, whose steps are sizes in the frame, read as it runs. */
@@ -468,6 +653,9 @@ static int mir_ok(void)
             if (ent->val >= 0 && type_is_struct(vals[ent->val].type)
                 && insn->op == GL_vdrop && struct_val_ok(ent->val))
                 continue;
+            /* Nothing -- a void call's answer -- let go, or cast to void. */
+            if (ent->val == S_VOID && (insn->op == GL_vdrop || void_cast(insn)))
+                continue;
             if (!mir_operand_ok(ent))
                 return mir_why = "an operand not of an int, a pointer or a char", 0;
             if (insn->in[operand].attr.ext
@@ -479,7 +667,7 @@ static int mir_ok(void)
             return mir_why = "a value not of an int, a pointer or a char", 0;
         /* What is converted to, stepped or narrowed to: a type held here. */
         if (((insn->op == GL_vconvert || insn->op == GL_vcast)
-             && !mir_type((Type) insn->rec->arg[0]))
+             && !mir_type((Type) insn->rec->arg[0]) && !void_cast(insn))
             || ((insn->op == I_CONV || insn->op == I_STEP) && !mir_type(insn->local_type))
             || (insn->op == I_SET && insn->target >= 0 && !mir_type(vals[insn->target].type))
             || (insn->op == GL_vapply && insn->rec->arg[1]
@@ -601,10 +789,10 @@ static int skip_to;             /* a branch fused into the comparison before */
 /* A constant's virtual register: made again where it is read. */
 static int const_vr(int value, int width)
 {
-    int v = new_vr(width, width == 1 ? C_R8 : C_R24);
+    int v = new_vr(width, width_class(width));
     MIns *mi = mi3(M_LDI, v, -1, -1);
 
-    mi->imm = width == 1 ? value & 0xff : value & 0xffffff;
+    mi->imm = width == 1 ? value & 0xff : width == 4 ? value : value & 0xffffff;
     vr[v].remat = M_LDI;
     vr[v].remat_imm = mi->imm;
 
@@ -654,8 +842,16 @@ static int operand_vr(const Ent *ent, int width)
 
     if (is_addr(ent))
         return addrc_vr(ent->attr.val, ent->attr.kind);
+    if (ent->val == S_CONST && (width == 4 || ent->attr.kind == VAL_WIDE)) {
+        int bits = long_bits(ent);
+
+        return const_vr(width == 4 ? bits : width == 1 ? bits & 0xff : bits & 0xffffff,
+                        width);
+    }
     if (ent->val == S_CONST)
         return const_vr(ent->attr.val, width);
+    if (ent->val == UNDEF)
+        return const_vr(0, width);
     v = val_vr[ent->val];
     if (v < 0)
         v = addr_vr(ent);               /* a folded address, wanted whole */
@@ -663,6 +859,29 @@ static int operand_vr(const Ent *ent, int width)
     type = vals[ent->val].type;
     if (w == width)
         return v;
+    if (w == 4) {                       /* a long read narrower: its low bytes */
+        int d = new_vr(3, C_P24);
+
+        mi3(M_LTRUNC, d, in_class(v, C_Q), -1);
+        if (width == 3)
+            return d;
+        v = new_vr(1, C_R8);
+        mi3(M_TRUNC, v, in_class(d, C_P24), -1);
+        return v;
+    }
+    if (width == 4) {                   /* a narrow one read as a long */
+        int d = new_vr(4, C_EHL), a = in_class(w == 1 ? widen(v, !type_unsigned(type))
+                                                      : v, C_HL);
+        MIns *mi;
+
+        if (type_unsigned(type) || type_pointer(type) || type == TY_BOOL) {
+            mi3(M_ZEXTL, d, a, -1);
+        } else {
+            mi = mi3(M_SEXTL, d, a, -1);
+            mi->t = new_vr(1, C_A);
+        }
+        return d;
+    }
     if (w == 3 && vr[v].ext >= 0)       /* a byte widened: the byte */
         return vr[v].ext;
     if (w == 3) {                       /* a byte of a pair */
@@ -810,6 +1029,11 @@ static unsigned insn_zero(const Ins *insn)
     unsigned r = insn->nin > 1 ? ent_zero(&insn->in[1]) : 0;
     int k;
 
+    /* The bits here are an int's, 24 of them: of a long, or of what is made
+     * from one, nothing is known -- a long shifted right by 8 has 24 bits
+     * still, which an int's three bytes are all of. */
+    if (insn_long(insn))
+        return 0;
     switch (insn->op) {
     case GL_vpush_const:
         return ~(unsigned) insn->rec->arg[0] & ALL24;
@@ -948,16 +1172,47 @@ static int byte_kind(const Ent *ent)
     return 0;
 }
 
+/* Whether the flags say already whether an operand is 0, Z where it is:
+ * the operand made by the M_BOOL just before, on NZ, nothing since but
+ * copies of it and its low byte, which leave the flags alone -- as
+ * M_BOOL does, ld and jr and inc. The truth an inlined body answers,
+ * tested where it is called. */
+static int flags_hold(const Ent *ent)
+{
+    const MBlock *blk = &mb[cur];
+    int v, at;
+
+    if (ent->val < 0 || val_vr[ent->val] < 0)
+        return 0;
+    v = val_vr[ent->val];
+    for (at = blk->n - 1; at >= 0; at--) {
+        const MIns *mi = &blk->ins[at];
+
+        if (mi->op == M_BOOL)
+            return mi->d == v && mi->imm == JP_NZ;
+        if (mi->op != M_COPY && mi->op != M_TRUNC)
+            return 0;
+        if (mi->d == v)
+            v = mi->a;
+    }
+
+    return 0;
+}
+
 /* A constant one larger than one compared with, for sel_compare. */
 static Ent const_bump;
 
 /* The flags, for a comparison: its condition. */
 /* The flags of an operand tested against 0, Z where it is: a byte, or an
  * int that is a byte widened, tested as the byte. */
+static int flags_hold(const Ent *ent);
+
 static void zero_test(const Ent *ent)
 {
     int val = ent->val;
 
+    if (flags_hold(ent))
+        return;
     if (val >= 0 && (val_width(val) == 1 || known_byte(ent)
                      || (val_vr[val] >= 0 && vr[val_vr[val]].ext >= 0))) {
         MIns *mi = mi3(M_CMP8I, -1, in_class(operand_vr(ent, 1), C_A), -1);
@@ -1451,6 +1706,12 @@ static void sel_convert(const Ent *ent, Type to, int res)
 
     if (res < 0 || val_vr[res] < 0)
         return;
+    /* A value that is 0 or 1 already -- a comparison's, another _Bool's
+     * widened -- is its low byte. */
+    if (to == TY_BOOL && !is_num(ent) && (ent_zero(ent) & 0xfffffeu) == 0xfffffeu) {
+        to_val_as(res, operand_vr(ent, vr[val_vr[res]].width), TY_BOOL);
+        return;
+    }
     if (to == TY_BOOL) {
         MIns *mi;
 
@@ -1654,7 +1915,7 @@ static void sel_load(const Ins *insn)
     w = width_of(read);
     addr = address_of(&insn->in[0]);
     if (addr.frame) {                   /* (ix+d), the local's own */
-        d = new_vr(w, w == 1 ? C_R8 : C_R24);
+        d = new_vr(w, width_class(w));
         frame_obj_mi(M_LDF, d, -1, addr.obj, addr.off, w);
         to_val_as(insn->res, d, read);
         return;
@@ -1684,7 +1945,7 @@ static void sel_load(const Ins *insn)
         d = new_vr(1, C_R8);
         mi3(M_COPY, d, t, -1);
     } else {
-        d = new_vr(w, w == 1 ? C_R8 : C_R24);
+        d = new_vr(w, width_class(w));
         mi = mi3(M_LDP, d, in_class(addr.base, addr.off ? C_IY : PB(P_HL) | C_IY), -1);
         mi->imm = addr.off;
         mi->width = w;
@@ -1749,7 +2010,7 @@ static void sel_store(const Ins *insn)
         v = operand_vr(&insn->in[1], w);
     }
     if (addr.frame) {
-        frame_obj_mi(M_STF, -1, in_class(v, w == 1 ? C_R8 : C_R24), addr.obj, addr.off, w);
+        frame_obj_mi(M_STF, -1, in_class(v, width_class(w)), addr.obj, addr.off, w);
     } else if (addr.sym >= 0 || addr.kind) {
         mi = mi3(M_STG, -1, in_class(v, w == 1 ? C_A : C_R24), -1);
         mi->sym = addr.sym;
@@ -1768,7 +2029,7 @@ static void sel_store(const Ins *insn)
     } else {
         int base = in_class(addr.base, addr.off ? C_IY : PB(P_HL) | C_IY);
 
-        mi = mi3(M_STP, -1, base, in_class(v, w == 1 ? C_R8 : C_R24));
+        mi = mi3(M_STP, -1, base, in_class(v, width_class(w)));
         mi->imm = addr.off;
         mi->width = w;
     }
@@ -1902,7 +2163,7 @@ static void sel_local(const Ins *insn)
     case GL_vpush_local:
         if (!used)
             return;
-        d = new_vr(w, w == 1 ? C_R8 : C_R24);
+        d = new_vr(w, width_class(w));
         frame_mi(M_LDF, d, -1, offset, w);
         to_val_as(insn->res, d, type);
         return;
@@ -1924,7 +2185,7 @@ static void sel_local(const Ins *insn)
         } else {
             v = operand_vr(&insn->in[0], w);
         }
-        frame_mi(M_STF, -1, in_class(v, w == 1 ? C_R8 : C_R24), offset, w);
+        frame_mi(M_STF, -1, in_class(v, width_class(w)), offset, w);
         to_val_as(insn->res, v, type);
         return;
     }
@@ -1969,22 +2230,44 @@ static void sel_local(const Ins *insn)
 static void sel_call(const Ins *insn)
 {
     const Sym *callee = sym_at((int) insn->rec->arg[0]);
-    int arg, d = -1, *args = malloc(((size_t) insn->nin + 1) * sizeof *args);
+    int first = (int) insn->rec->arg[2], nparams = (int) insn->rec->arg[3];
+    int arg, d = -1, slots = 0, *args = malloc(((size_t) insn->nin + 1) * sizeof *args);
     MIns *mi;
 
     if (!args)
         acc_error("out of memory for the machine IR");
-    for (arg = 0; arg != insn->nin; arg++)
-        args[arg] = operand_vr(&insn->in[arg], 3);
+    /* Each as wide as its parameter has it -- a long, made one where it is
+     * narrower, two slots from E:UHL -- or as its own type past them. */
+    for (arg = 0; arg != insn->nin; arg++) {
+        Type param = arg < nparams ? sym_param_type(first, arg) : insn->in[arg].attr.type;
+        const Ent *ent = &insn->in[arg];
+
+        /* A _Bool made of anything else: 0 or 1, by its truth. */
+        if (param == TY_BOOL && ent->attr.type != TY_BOOL) {
+            if (is_num(ent) || is_addr(ent)) {
+                args[arg] = const_vr(is_addr(ent) || ent->attr.val != 0, 3);
+            } else {
+                args[arg] = new_vr(3, C_P24);
+                zero_test(ent);
+                mi = mi3(M_BOOL, args[arg], -1, -1);
+                mi->imm = JP_NZ;
+            }
+            slots++;
+            continue;
+        }
+        args[arg] = operand_vr(ent, long_type(param) ? 4 : 3);
+        slots += vr[args[arg]].width == 4 ? 2 : 1;
+    }
     mi3(M_SAVE, -1, -1, -1);
     for (arg = insn->nin - 1; arg >= 0; arg--)
-        mi3(M_PUSH, -1, in_class(args[arg], C_R24), -1);
+        mi3(M_PUSH, -1, in_class(args[arg], vr[args[arg]].width == 4 ? C_EHL : C_R24), -1);
     free(args);
     if (callee->type != TY_VOID && insn->res >= 0 && val_vr[insn->res] >= 0)
-        d = width_of(callee->type) == 1 ? new_vr(1, C_A) : new_vr(3, C_HL);
+        d = width_of(callee->type) == 1 ? new_vr(1, C_A)
+            : width_of(callee->type) == 4 ? new_vr(4, C_EHL) : new_vr(3, C_HL);
     mi = mi3(M_CALL, d, -1, -1);
     mi->sym = (int) insn->rec->arg[0];
-    mi->imm = insn->nin;
+    mi->imm = slots;
     if (d >= 0)
         to_val_as(insn->res, d, callee->type == TY_BOOL ? TY_UCHAR : callee->type);
 }
@@ -2006,11 +2289,284 @@ static int answer_made(int v, Type type)
     return vr[v].ext >= 0 && vr[v].ext_signed == !type_unsigned(to);
 }
 
+/* A long operator by its routine: d = op(a, b), d and a in E:UHL, b in
+ * A:UBC -- or a shift's count in A, or nothing -- copies of both, which
+ * the routine takes and changes. Both made before either is copied where
+ * it goes: making one -- a byte widened into E:UHL -- would find E:UHL
+ * taken by the other's copy. */
+static int long_call(int which, int a, int b, int b_cls)
+{
+    int ca = in_class(a, C_EHL), cb = b >= 0 ? in_class(b, b_cls) : -1;
+    int d = new_vr(4, C_EHL);
+    MIns *mi = mi3(M_LCALL, d, ca, cb);
+
+    mi->imm = which;
+    if (b >= 0)
+        mi->kills = 2;                  /* A, which b is in */
+    else
+        mi->t = new_vr(1, C_A);
+
+    return d;
+}
+
+/* The flags of comparing two longs, for a branch or a truth: carry where
+ * the left is the less, Z where equal. */
+static void long_compare(const Ent *left, const Ent *right, int is_signed)
+{
+    int a = operand_vr(left, 4), b = operand_vr(right, 4);
+    MIns *mi = mi3(M_LCMP, -1, in_class(a, C_EHL), in_class(b, C_ABC));
+
+    mi->imm = is_signed ? RT_LRCMPS : RT_LRCMPU;
+    mi->kills = 2;
+}
+
+/* A long at an address: through IY -- the address made there whole, a
+ * member's or a constant's offset in its displacement -- or in the frame. */
+static void long_at(const Ent *ptr, int d_or_v, int store)
+{
+    Addr addr = address_of(ptr);
+    MIns *mi;
+    int base;
+
+    if (addr.frame) {
+        frame_obj_mi(store ? M_STF : M_LDF, store ? -1 : d_or_v,
+                     store ? in_class(d_or_v, C_Q) : -1, addr.obj, addr.off, 4);
+        return;
+    }
+    if (addr.sym >= 0 || addr.kind || !disp_fits(addr.off) || !disp_fits(addr.off + 3)) {
+        base = in_class(addr_vr(ptr), C_IY);
+        addr.off = 0;
+    } else {
+        base = in_class(addr.base, C_IY);
+    }
+    if (store)
+        mi = mi3(M_STP, -1, base, in_class(d_or_v, C_Q));
+    else
+        mi = mi3(M_LDP, d_or_v, base, -1);
+    mi->imm = addr.off;
+    mi->width = 4;
+}
+
+/* An instruction with a long in it (long_ok). */
+static void sel_long(const Ins *insn, int at)
+{
+    int res = insn->res >= 0 && val_vr[insn->res] >= 0 ? insn->res : -1;
+    int d, v, n, op;
+    MIns *mi;
+
+    switch (insn->op) {
+    case GL_vapply: {
+        Type lt = insn->in[0].attr.type;
+        int is_signed = !type_unsigned(lt);
+
+        op = (int) insn->rec->arg[0];
+        switch (op) {
+        case TK_LT: case TK_GT: case TK_LE: case TK_GE: case TK_EQ: case TK_NE: {
+            /* a > b is b < a, and a <= b not b < a: carry the less. */
+            int swap = op == TK_GT || op == TK_LE;
+            int cc = op == TK_EQ ? JP_Z : op == TK_NE ? JP_NZ
+                     : op == TK_LT || op == TK_GT ? JP_C : JP_NC;
+
+            long_compare(&insn->in[swap], &insn->in[!swap], is_signed);
+            n = fused_branch(at);
+            if (n >= 0) {
+                sel_branch(cc, &insns[n]);
+                skip_to = n;
+                return;
+            }
+            if (res >= 0) {
+                int w = vr[val_vr[res]].width;
+
+                d = new_vr(w, w == 1 ? C_R8 : C_P24);
+                mi3(M_BOOL, d, -1, -1)->imm = cc;
+                to_val(res, d);
+            }
+            return;
+        }
+        case TK_PLUS:
+            if (res < 0)
+                return;
+            v = operand_vr(&insn->in[0], 4);
+            n = operand_vr(&insn->in[1], 4);
+            v = in_class(v, C_EHL);
+            n = in_class(n, C_ABC);
+            d = new_vr(4, C_EHL);
+            mi = mi3(M_LADD, d, v, n);
+            mi->kills = 2;
+            to_val(res, d);
+            return;
+        case TK_SHL: case TK_SHR:
+            if (res < 0)
+                return;
+            v = operand_vr(&insn->in[0], 4);
+            n = operand_vr(&insn->in[1], 1);
+            d = long_call(op == TK_SHL ? RT_LRSHL : is_signed ? RT_LRSHRS : RT_LRSHRU,
+                          v, n, C_A);
+            to_val(res, d);
+            return;
+        }
+        if (res < 0)
+            return;
+        is_signed = !type_unsigned(vals[insn->res].type);
+        v = operand_vr(&insn->in[0], 4);
+        n = operand_vr(&insn->in[1], 4);
+        d = long_call(op == TK_MINUS ? RT_LRSUB : op == TK_AMP ? RT_LRAND
+                      : op == TK_PIPE ? RT_LROR : op == TK_CARET ? RT_LRXOR
+                      : op == TK_STAR ? RT_LRMUL
+                      : op == TK_SLASH ? (is_signed ? RT_LRDIVS : RT_LRDIVU)
+                      : (is_signed ? RT_LRREMS : RT_LRREMU),
+                      v, n, C_ABC);
+        to_val(res, d);
+        return;
+    }
+    case GL_vneg: case GL_vnot:
+        if (res < 0)
+            return;
+        to_val(res, long_call(insn->op == GL_vneg ? RT_LRNEG : RT_LRNOT,
+                              operand_vr(&insn->in[0], 4), -1, 0));
+        return;
+    case GL_vtruth: case I_BR: {
+        int cc = insn->op == GL_vtruth && (int) insn->rec->arg[0] == TK_EQ ? JP_Z : JP_NZ;
+
+        if (insn->op == I_BR && insn->target < 0)
+            return;
+        mi = mi3(M_LTST, -1, in_class(operand_vr(&insn->in[0], 4), C_EHL), -1);
+        mi->t = new_vr(1, C_A);
+        if (insn->op == I_BR) {
+            sel_branch(JP_NZ, insn);
+            return;
+        }
+        n = fused_branch(at);
+        if (n >= 0) {
+            sel_branch(cc, &insns[n]);
+            skip_to = n;
+            return;
+        }
+        if (res >= 0) {
+            int w = vr[val_vr[res]].width;
+
+            d = new_vr(w, w == 1 ? C_R8 : C_P24);
+            mi3(M_BOOL, d, -1, -1)->imm = cc;
+            to_val(res, d);
+        }
+        return;
+    }
+    case GL_vconvert: case GL_vcast: case I_CONV: case I_SET: {
+        Type to = insn->op == I_CONV ? insn->local_type
+                  : insn->op == I_SET ? vals[insn->target].type
+                  : (Type) insn->rec->arg[0];
+        int target = insn->op == I_SET ? insn->target : res;
+
+        if (target < 0 || val_vr[target] < 0)
+            return;
+        if (to == TY_BOOL) {            /* a long's truth */
+            mi = mi3(M_LTST, -1, in_class(operand_vr(&insn->in[0], 4), C_EHL), -1);
+            mi->t = new_vr(1, C_A);
+            d = new_vr(1, C_R8);
+            mi3(M_BOOL, d, -1, -1)->imm = JP_NZ;
+            to_val_as(target, d, TY_BOOL);
+            return;
+        }
+        /* To a long, from one or widened; from a long, its low bytes --
+         * operand_vr makes either. */
+        to_val_as(target, operand_vr(&insn->in[0], width_of(to)), to);
+        return;
+    }
+    case GL_vpush_const:
+        if (res >= 0)
+            to_val(res, const_vr((int) insn->rec->arg[0], 4));
+        return;
+    case GL_vpush_local: case GL_vstore_local:
+    case GL_vprefix_local: case GL_vpostfix_local: {
+        int offset = (int) insn->rec->arg[0];
+
+        if (insn->op == GL_vstore_local) {
+            v = operand_vr(&insn->in[0], 4);
+            frame_mi(M_STF, -1, in_class(v, C_Q), offset, 4);
+            if (res >= 0)
+                to_val(res, v);
+            return;
+        }
+        v = new_vr(4, C_Q);
+        frame_mi(M_LDF, v, -1, offset, 4);
+        if (insn->op == GL_vpush_local) {
+            if (res >= 0)
+                to_val(res, v);
+            return;
+        }
+        d = new_vr(4, C_EHL);
+        mi = mi3(M_LADD, d, in_class(v, C_EHL),
+                 in_class(const_vr((int) insn->rec->arg[3] == TK_MINUS ? -1 : 1, 4), C_ABC));
+        mi->kills = 2;
+        frame_mi(M_STF, -1, in_class(d, C_Q), offset, 4);
+        if (res >= 0)
+            to_val(res, insn->op == GL_vpostfix_local ? v : d);
+        return;
+    }
+    case GL_vderef:
+        if (res < 0)
+            return;
+        d = new_vr(4, C_Q);
+        long_at(&insn->in[0], d, 0);
+        to_val(res, d);
+        return;
+    case GL_vstore_indirect:
+        v = operand_vr(&insn->in[1], 4);
+        long_at(&insn->in[0], v, 1);
+        if (res >= 0)
+            to_val(res, v);
+        return;
+    case GL_vprefix_indirect: case GL_vpostfix_indirect:
+        v = new_vr(4, C_Q);
+        long_at(&insn->in[0], v, 0);
+        d = new_vr(4, C_EHL);
+        mi = mi3(M_LADD, d, in_class(v, C_EHL),
+                 in_class(const_vr((int) insn->rec->arg[0] == TK_MINUS ? -1 : 1, 4), C_ABC));
+        mi->kills = 2;
+        long_at(&insn->in[0], d, 1);
+        if (res >= 0)
+            to_val(res, insn->op == GL_vpostfix_indirect ? v : d);
+        return;
+    case I_STEP:
+        if (res < 0)
+            return;
+        d = new_vr(4, C_EHL);
+        mi = mi3(M_LADD, d, in_class(operand_vr(&insn->in[0], 4), C_EHL),
+                 in_class(const_vr(insn->step_op == TK_MINUS ? -1 : 1, 4), C_ABC));
+        mi->kills = 2;
+        to_val(res, d);
+        return;
+    case GL_gen_return:
+        if (!long_type(return_type)) {
+            /* A long answered narrower -- a short, say: its low bytes as an
+             * int, which gen_return makes the function's type. */
+            mi = mi3(M_RET, -1, in_class(operand_vr(&insn->in[0], 3), C_HL), -1);
+            mi->ssa = at;
+            mi->type = TY_INT;
+            return;
+        }
+        mi = mi3(M_RET, -1, in_class(operand_vr(&insn->in[0], 4), C_EHL), -1);
+        mi->ssa = at;
+        mi->type = return_type;
+        mi->imm = 2;                    /* in E:UHL already, as answered */
+        return;
+    case GL_gen_call:
+        sel_call(insn);
+        return;
+    }
+    sel_fail = "internal: a long's instruction long_ok let through";
+}
+
 static void sel_insn(const Ins *insn, int at)
 {
     int op = insn->op, d, a;
     MIns *mi;
 
+    if (op != I_FRAME && op != GL_vdrop && op != GL_gen_stmt_end
+        && op != GL_gen_value_end && insn_long(insn)) {
+        sel_long(insn, at);
+        return;
+    }
     switch (op) {
     case I_FRAME: case GL_vdrop: case GL_gen_stmt_end: case GL_gen_value_end:
         return;
@@ -2402,7 +2958,9 @@ static int setup(void)
     for (val = 0; val != nvals; val++) {
         int w;
 
-        if (!vals[val].used || (!mir_type(vals[val].type) && !struct_val_ok(val)))
+        if (!vals[val].used
+            || (!mir_type(vals[val].type) && !long_type(vals[val].type)
+                && !struct_val_ok(val)))
             continue;
         if (member_base[val] >= 0 || addrc_of[val])
             continue;                   /* folded into its read or write */
@@ -2421,7 +2979,7 @@ static int setup(void)
             && insns[sole_user(val)].in[0].val == val)
             continue;
         w = type_is_struct(vals[val].type) ? 3 : width_of(vals[val].type);
-        val_vr[val] = new_vr(w, w == 1 ? C_R8 : C_R24);
+        val_vr[val] = new_vr(w, width_class(w));
     }
 
     for (at = 0; at != nblocks; at++)
@@ -2775,7 +3333,8 @@ static int popcount(unsigned x)
 /* What nothing reads, taken out: a copy, a constant, an address, a
  * widening whose register no instruction reads -- left behind by the
  * constants selection made again where they are read, and by the bytes
- * read in place of what widened them. A worklist: each instruction looked
+ * read in place of what widened them -- and a truth made 0 or 1 whose
+ * branch took the flags instead. A worklist: each instruction looked
  * at once more for each operand of it that goes. */
 static int pure(int op)
 {
@@ -2783,7 +3342,7 @@ static int pure(int op)
     case M_COPY: case M_LDI: case M_LDSYM: case M_LDA: case M_LDF: case M_LEAF:
     case M_ARRAY:
     case M_ZEXT: case M_SEXT: case M_TRUNC: case M_ADD24: case M_SUB24:
-    case M_STEP24: case M_ALU8: case M_ALU8I: case M_BYTES24:
+    case M_STEP24: case M_ALU8: case M_ALU8I: case M_BYTES24: case M_BOOL:
         return 1;
     }
 
@@ -3353,7 +3912,7 @@ static void intervals(void)
             if (mi->op == M_CALL)
                 clob[pos] |= UB(U_A) | preg_units[P_HL];
             if (mi->op == M_COPY || mi->op == M_STEP24 || mi->op == M_TRUNC
-                || mi->op == M_BYTES24)
+                || mi->op == M_BYTES24 || mi->op == M_LADD || mi->op == M_LCALL)
                 partner(mi->d, mi->a);
             if (mi->op == M_PCOPY)
                 for (n = 0; n != pc[mi->imm].n; n++)
@@ -3730,10 +4289,10 @@ static int linear_scan(void)
                 active[jv] = active[--nactive];
             }
         }
-        if (p == NPREGS)
-            break;                      /* the spills first: see above */
-        if (p < 0)
-            continue;
+        if (p == NPREGS || p < 0)
+            continue;                   /* NPREGS: the spills first, see
+                                         * above -- the rest of the scan
+                                         * finding theirs this round too */
         vr[v].preg = p;
         active[nactive++] = v;
     }
@@ -3756,6 +4315,145 @@ static int new_spill(int width)
     spill_size[nspills] = width;
 
     return ++nspills;                   /* 1-based: 0 is none */
+}
+
+/* Spill slots shared: two whose values are never kept at once -- of the
+ * same width, the one's reads and writes all before the other's first --
+ * given one slot. A slot read or written in a loop is taken for the whole
+ * of every loop around its first and last, as a value living round one
+ * is. By start, each taking the slot of one ended before it: n log n.
+ * spill_rep[k] is the spill whose slot spill k takes (0-based). Only for
+ * spill_all's code, where every read and write of a slot is an M_LDF or
+ * an M_STF in the blocks. */
+static int *spill_rep, *spill_lo, *spill_hi, spill_rep_cap;
+
+static int by_spill_lo(const void *x, const void *y)
+{
+    int a = *(const int *) x, b = *(const int *) y;
+
+    return spill_lo[a] != spill_lo[b] ? (spill_lo[a] < spill_lo[b] ? -1 : 1) : a - b;
+}
+
+/* spill_rep made room for, each spill its own slot. */
+static void share_spills_none(void)
+{
+    if (nspills > spill_rep_cap) {
+        spill_rep_cap = nspills * 2;
+        spill_rep = realloc(spill_rep, (size_t) spill_rep_cap * sizeof *spill_rep);
+        spill_lo = realloc(spill_lo, (size_t) spill_rep_cap * sizeof *spill_lo);
+        spill_hi = realloc(spill_hi, (size_t) spill_rep_cap * sizeof *spill_hi);
+        if (!spill_rep || !spill_lo || !spill_hi)
+            acc_error("out of memory for the machine IR");
+    }
+}
+
+static void share_spills(void)
+{
+    int k, at, pos = 0, *order, *heap, nheap = 0, *free_head, *free_next;
+
+    share_spills_none();
+    for (k = 0; k != nspills; k++) {
+        spill_rep[k] = k;
+        spill_lo[k] = spill_hi[k] = -1;
+    }
+    for (k = 0; k != nlayout; k++) {
+        const MBlock *b = &mb[layout[k]];
+
+        for (at = 0; at != b->n; at++, pos += 2) {
+            const MIns *mi = &b->ins[at];
+            int s;
+
+            if ((mi->op != M_LDF && mi->op != M_STF) || mi->sym != SYM_SPILL)
+                continue;
+            s = mi->imm - 1;
+            if (spill_lo[s] < 0)
+                spill_lo[s] = pos;
+            spill_hi[s] = pos;
+        }
+    }
+    for (k = 0; k != nspills; k++) {
+        int guard = 0;
+
+        if (spill_lo[k] < 0)
+            continue;
+        while (nloops && guard++ < 64) {
+            int s2 = loop_around_start(spill_lo[k]), e2 = loop_around_end(spill_hi[k]);
+            int s3 = loop_around_start(spill_hi[k]), e3 = loop_around_end(spill_lo[k]);
+            int lo = spill_lo[k], hi = spill_hi[k];
+
+            if (s2 >= 0 && s2 < lo)
+                lo = s2;
+            if (s3 >= 0 && s3 < lo)
+                lo = s3;
+            if (e2 > hi)
+                hi = e2;
+            if (e3 > hi)
+                hi = e3;
+            if (lo == spill_lo[k] && hi == spill_hi[k])
+                break;
+            spill_lo[k] = lo;
+            spill_hi[k] = hi;
+        }
+    }
+
+    /* By start; a heap of the slots taken, by end; and, by width, those
+     * free again. */
+    order = malloc(((size_t) nspills + 1) * sizeof *order);
+    heap = malloc(((size_t) nspills + 1) * sizeof *heap);
+    free_next = malloc(((size_t) nspills + 1) * sizeof *free_next);
+    free_head = malloc(5 * sizeof *free_head);
+    if (!order || !heap || !free_next || !free_head)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != 5; k++)
+        free_head[k] = -1;
+    for (k = 0; k != nspills; k++)
+        order[k] = k;
+    qsort(order, (size_t) nspills, sizeof *order, by_spill_lo);
+    for (k = 0; k != nspills; k++) {
+        int s = order[k], w = width_bytes(spill_size[s]);
+
+        if (spill_lo[s] < 0)
+            continue;                   /* never read or written: its own */
+        while (nheap && spill_hi[heap[0]] < spill_lo[s]) {
+            int done = heap[0], i = 0, wd = width_bytes(spill_size[done]);
+
+            free_next[done] = free_head[wd];
+            free_head[wd] = done;
+            heap[0] = heap[--nheap];
+            for (;;) {                  /* sift down */
+                int c = 2 * i + 1, t;
+
+                if (c >= nheap)
+                    break;
+                if (c + 1 < nheap && spill_hi[heap[c + 1]] < spill_hi[heap[c]])
+                    c++;
+                if (spill_hi[heap[i]] <= spill_hi[heap[c]])
+                    break;
+                t = heap[i];
+                heap[i] = heap[c];
+                heap[c] = t;
+                i = c;
+            }
+        }
+        if (free_head[w] >= 0) {
+            int slot = free_head[w];
+
+            free_head[w] = free_next[slot];
+            spill_rep[s] = spill_rep[slot];
+        }
+        heap[nheap] = s;                /* sift up */
+        for (at = nheap++; at > 0 && spill_hi[heap[(at - 1) / 2]] > spill_hi[heap[at]];
+             at = (at - 1) / 2) {
+            int t = heap[at];
+
+            heap[at] = heap[(at - 1) / 2];
+            heap[(at - 1) / 2] = t;
+        }
+    }
+    free(order);
+    free(heap);
+    free(free_next);
+    free(free_head);
 }
 
 /* Every register marked kept in a frame slot -- or made again where it is
@@ -3809,7 +4507,7 @@ static int reload(int v, unsigned cls)
  * where A is the left's. */
 static unsigned use_class(const MIns *mi, int is_b, int v)
 {
-    int any = vr[v].width == 1 ? C_R8 : C_R24;
+    int any = width_class(vr[v].width);
 
     switch (mi->op) {
     case M_ALU8: case M_CMP8:
@@ -4864,7 +5562,7 @@ out:
 static void dump_vr(int v)
 {
     static const char *const names[NPREGS] = {
-        "a", "b", "c", "d", "e", "h", "l", "bc", "de", "hl", "iy"
+        "a", "b", "c", "d", "e", "h", "l", "bc", "de", "hl", "iy", "ehl", "abc"
     };
 
     if (v < 0)
@@ -4881,7 +5579,8 @@ static void dump_mir(const char *when)
         "stpi", "stepp", "array", "ldg", "stg", "add24", "sub24", "step24", "bytes24", "neg24", "not24",
         "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "cmp8", "cmp8i", "bool",
         "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
-        "push", "copys", "call"
+        "push", "copys", "ladd", "lcall", "lcmp", "ltst", "sextl", "zextl", "ltrunc",
+        "call"
     };
     int blk, at, k;
 
@@ -5475,6 +6174,15 @@ static void move24(int d, int s)
     pop_pair(d);
 }
 
+/* A long from quad s to quad d: its pair, and its top byte. */
+static void move32(int d, int s)
+{
+    if (d == s)
+        return;
+    move24(quad_pair(d), quad_pair(s));
+    move8(quad_top(d), quad_top(s));
+}
+
 static void imm24(int value)
 {
     out_byte(value & 0xff);
@@ -5543,35 +6251,46 @@ static void jump_to_block(int cc, int to)
 
 static int emit_pcopy(const PCopy *p, unsigned busy, int emit)
 {
-    int k, left, moved, src[MAX_PCOPY], done[MAX_PCOPY];
+    int k, n = 0, left, moved, src[2 * MAX_PCOPY], dst[2 * MAX_PCOPY];
+    int wide[2 * MAX_PCOPY], done[2 * MAX_PCOPY];
 
     if (p->n > MAX_PCOPY)
         return 0;
+    /* The copies as parts: a pair's, or a byte's -- a long's both, its
+     * pair and its top byte, each moved as those are. */
     for (k = 0; k != p->n; k++) {
-        src[k] = pr(p->src[k]);
-        busy |= preg_units[src[k]] | preg_units[pr(p->dst[k])];
-        done[k] = vr[p->src[k]].width == 3 || src[k] == pr(p->dst[k]);
+        int s = pr(p->src[k]), d = pr(p->dst[k]);
+
+        busy |= preg_units[s] | preg_units[d];
+        if (vr[p->src[k]].width == 4) {
+            src[n] = quad_pair(s), dst[n] = quad_pair(d), wide[n++] = 1;
+            src[n] = quad_top(s), dst[n] = quad_top(d), wide[n++] = 0;
+        } else {
+            src[n] = s, dst[n] = d, wide[n++] = vr[p->src[k]].width == 3;
+        }
     }
+    for (k = 0; k != n; k++)
+        done[k] = wide[k] || src[k] == dst[k];
     if (emit)
-        for (k = 0; k != p->n; k++)
-            if (vr[p->src[k]].width == 3 && src[k] != pr(p->dst[k]))
+        for (k = 0; k != n; k++)
+            if (wide[k] && src[k] != dst[k])
                 push_pair(src[k]);
     do {
         moved = 0;
         left = 0;
-        for (k = 0; k != p->n; k++) {
+        for (k = 0; k != n; k++) {
             int j, blocked = 0;
 
             if (done[k])
                 continue;
             left++;
-            for (j = 0; j != p->n; j++)
-                if (!done[j] && j != k && src[j] == pr(p->dst[k]))
+            for (j = 0; j != n; j++)
+                if (!done[j] && j != k && src[j] == dst[k])
                     blocked = 1;
             if (blocked)
                 continue;
             if (emit)
-                move8(pr(p->dst[k]), src[k]);
+                move8(dst[k], src[k]);
             done[k] = 1;
             moved = 1;
         }
@@ -5584,7 +6303,7 @@ static int emit_pcopy(const PCopy *p, unsigned busy, int emit)
                     free_r = r;
             if (free_r < 0)
                 return 0;
-            for (k = 0; k != p->n; k++)
+            for (k = 0; k != n; k++)
                 if (!done[k])
                     break;
             if (emit)
@@ -5594,9 +6313,9 @@ static int emit_pcopy(const PCopy *p, unsigned busy, int emit)
         }
     } while (left);
     if (emit)
-        for (k = p->n - 1; k >= 0; k--)
-            if (vr[p->src[k]].width == 3 && pr(p->src[k]) != pr(p->dst[k]))
-                pop_pair(pr(p->dst[k]));
+        for (k = n - 1; k >= 0; k--)
+            if (wide[k] && src[k] != dst[k])
+                pop_pair(dst[k]);
 
     return 1;
 }
@@ -5652,14 +6371,20 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
     case M_COPY:
         if (vr[mi->d].width == 1)
             move8(d, a);
+        else if (vr[mi->d].width == 4)
+            move32(d, a);
         else
             move24(d, a);
         return;
     case M_LDI:
-        if (vr[mi->d].width == 1)
+        if (vr[mi->d].width == 1) {
             out_byte2(0x06 | code8(d) << 3, mi->imm & 0xff);
-        else
+        } else if (vr[mi->d].width == 4) {
+            ld_pair_imm(quad_pair(d), mi->imm & 0xffffff);
+            out_byte2(0x06 | code8(quad_top(d)) << 3, (mi->imm >> 24) & 0xff);
+        } else {
             ld_pair_imm(d, mi->imm);
+        }
         return;
     case M_LDSYM:
         if (d == P_IY)
@@ -5681,13 +6406,23 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         return;
     }
     case M_LDF:
-        if (mi->width == 1)
+        if (mi->width == 4) {                           /* a long: pair, top */
+            int disp = disp_of(mi);
+
+            out_byte3(0xdd, pair_op(quad_pair(d), 0x07, 0x17, 0x27, 0x31), disp & 0xff);
+            out_byte3(0xdd, 0x46 | code8(quad_top(d)) << 3, (disp + 3) & 0xff);
+        } else if (mi->width == 1)
             out_byte3(0xdd, 0x46 | code8(d) << 3, disp_of(mi) & 0xff);
         else
             out_byte3(0xdd, pair_op(d, 0x07, 0x17, 0x27, 0x31), disp_of(mi) & 0xff);
         return;
     case M_STF:
-        if (mi->width == 1)
+        if (mi->width == 4) {
+            int disp = disp_of(mi);
+
+            out_byte3(0xdd, pair_op(quad_pair(a), 0x0f, 0x1f, 0x2f, 0x3e), disp & 0xff);
+            out_byte3(0xdd, 0x70 | code8(quad_top(a)), (disp + 3) & 0xff);
+        } else if (mi->width == 1)
             out_byte3(0xdd, 0x70 | code8(a), disp_of(mi) & 0xff);
         else
             out_byte3(0xdd, pair_op(a, 0x0f, 0x1f, 0x2f, 0x3e), disp_of(mi) & 0xff);
@@ -5707,7 +6442,10 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         vdrop();
         return;
     case M_LDP:
-        if (a == P_IY) {
+        if (mi->width == 4) {                           /* a long, through IY */
+            out_byte3(0xfd, pair_op(quad_pair(d), 0x07, 0x17, 0x27, 0x37), mi->imm & 0xff);
+            out_byte3(0xfd, 0x46 | code8(quad_top(d)) << 3, (mi->imm + 3) & 0xff);
+        } else if (a == P_IY) {
             if (mi->width == 1)
                 out_byte3(0xfd, 0x46 | code8(d) << 3, mi->imm & 0xff);
             else                                        /* ld iy, (iy+d): fd 37 */
@@ -5721,7 +6459,10 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         }
         return;
     case M_STP:
-        if (a == P_IY) {
+        if (mi->width == 4) {
+            out_byte3(0xfd, pair_op(quad_pair(b), 0x0f, 0x1f, 0x2f, 0x3f), mi->imm & 0xff);
+            out_byte3(0xfd, 0x70 | code8(quad_top(b)), (mi->imm + 3) & 0xff);
+        } else if (a == P_IY) {
             if (mi->width == 1)
                 out_byte3(0xfd, 0x70 | code8(b), mi->imm & 0xff);
             else                                        /* ld (iy+d), iy: fd 3f */
@@ -5915,7 +6656,41 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
             push_pair(P_DE);
         return;
     case M_PUSH:
+        if (vr[mi->a].width == 4) {                     /* a long: two slots */
+            push_pair(P_DE);
+            push_pair(P_HL);
+            return;
+        }
         push_pair(pr(mi->a));
+        return;
+    case M_LADD:
+        out_byte(0x09);                                 /* add hl, bc */
+        out_byte(0x8b);                                 /* adc a, e */
+        out_byte(0x5f);                                 /* ld e, a */
+        return;
+    case M_LCALL: case M_LCMP:
+        rt_call(mi->imm);
+        return;
+    case M_LTST:                                        /* Z where all are 0 */
+        out_byte(0x09);                                 /* add hl, bc */
+        out_byte(0xb7);
+        out_byte2(0xed, 0x42);                          /* sbc hl, bc */
+        out_byte2(0x20, 2);                             /* jr nz, past: */
+        out_byte(0x7b);                                 /* ld a, e */
+        out_byte(0xb7);                                 /* or a, a */
+        return;
+    case M_SEXTL:
+        out_byte(0xe5);                                 /* push hl */
+        out_byte(0x29);                                 /* add hl, hl */
+        out_byte(0x9f);                                 /* sbc a, a */
+        out_byte(0xe1);                                 /* pop hl */
+        out_byte(0x5f);                                 /* ld e, a */
+        return;
+    case M_ZEXTL:
+        out_byte2(0x1e, 0);                             /* ld e, 0 */
+        return;
+    case M_LTRUNC:
+        move24(d, quad_pair(a));
         return;
     case M_CALL: {
         const Sym *callee = sym_at(mi->sym);
@@ -5929,10 +6704,20 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
             out_opcode24(0xcd, 0);
             fixup_add(mi->sym, out_here() - ACC_INT_SIZE);
         }
+        /* The arguments let go into DE -- or, where a long comes back in
+         * E:UHL, into BC, which is free here: one live across the call is
+         * pushed under the arguments and comes back after them. */
         for (slot = 0; slot != mi->imm; slot++)
+            pop_pair(mi->d >= 0 && vr[mi->d].width == 4 ? P_BC : P_DE);
+        /* DE kept across a call that answers a long: D comes back, and E
+         * stays the answer's -- through A, which the call took already. */
+        if ((mi->imm2 & 2) && mi->d >= 0 && vr[mi->d].width == 4) {
+            out_byte(0x7b);                             /* ld a, e */
             pop_pair(P_DE);
-        if (mi->imm2 & 2)
+            out_byte(0x5f);                             /* ld e, a */
+        } else if (mi->imm2 & 2) {
             pop_pair(P_DE);
+        }
         if (mi->imm2 & 1)
             pop_pair(P_BC);
         if (mi->imm2 & 4)
@@ -6118,15 +6903,28 @@ int mir_build(void)
             spill_all();
         }
     }
+    if (splitting) {
+        int k;
+
+        share_spills_none();
+        for (k = 0; k != nspills; k++)
+            spill_rep[k] = k;
+    } else {
+        share_spills();
+    }
     {
         int bytes = 0, v;
 
         for (v = 0; v != nspills; v++)
-            bytes += spill_size[v] == 1 ? 1 : ACC_INT_SIZE;
-        /* The arrays laid out with the locals are in front of the spills
-         * now, which the first pass had behind. */
-        if (bytes && !gen_local_fits(bytes + (arrays_here ? array_bytes : 0)
-                                     + inline_bytes)) {
+            if (spill_rep[v] == v)
+                bytes += width_bytes(spill_size[v]);
+        /* The frame is laid out here, all of it: the locals kept in
+         * memory, the arrays laid out with them, an inlined body's room
+         * and the spills -- none of the first pass's scratch, which
+         * gen_local_fits keeps a third of the reach for. So the same
+         * reach as mir_ok holds the rest to. */
+        if (bytes && ssa_locals_kept() + (arrays_here ? array_bytes : 0) + inline_bytes
+                     + bytes + ACC_INT_SIZE > 128) {
             mir_why = "more spills than the frame can reach";
             return 0;
         }
@@ -6209,7 +7007,10 @@ void mir_emit(void)
     ssa_inline_slots();                 /* an inlined body's room */
     gen_local_settle();
     for (k = 0; k != nspills; k++)
-        spill_off[k] = gen_local(spill_size[k] == 1 ? 1 : ACC_INT_SIZE);
+        if (spill_rep[k] == k)
+            spill_off[k] = gen_local(width_bytes(spill_size[k]));
+    for (k = 0; k != nspills; k++)
+        spill_off[k] = spill_off[spill_rep[k]];
     ssa_emit_statics();                 /* a block's, jumped over */
 
     for (k = 0; k != nlayout && !fail; k++) {
