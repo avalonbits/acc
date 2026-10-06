@@ -685,6 +685,11 @@ mirs() {
         fail=$((fail + 1))
     fi
 }
+# mir <compiler> <name> <hex> <yes|no> <source>: emits, made by the machine IR.
+mir() {
+    OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+        OPTACC_LEAF=1 OPTACC_MIR=1 OPTACC_PICK=0 emits "$@"
+}
 # With OPTACC_MIR_SPLIT, the allocator that splits intervals: a function
 # with more live than there are registers, made by it, its moves joining
 # the parts checked on every path before the code is made.
@@ -757,10 +762,6 @@ mirs "but not assigned twice over"                 no \
 # and kept there across the call with push iy around it. And a constant
 # returned is made as the constant, not tested against zero again: where
 # the function answers in A, a _Bool's 0 is ld a, 0 and on to the return.
-mir() {
-    OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
-        OPTACC_LEAF=1 OPTACC_MIR=1 OPTACC_PICK=0 emits "$@"
-}
 members='struct s { int a, b; }; int g(int); int f(struct s *p) { return g(p->a) + p->b; }'
 mir "$OPT" "a pointer in IY, read through"           fd0700     yes "$members"
 mir "$OPT" "not copied there from HL"                fde5e1ed07 no  "$members"
@@ -1080,6 +1081,11 @@ picked "$OPT" "no frame, chosen for it"         '^2a000000c9$' yes 'static int c
 nametext='char arena[100]; const char *f(int ref) { return arena + ref; }'
 picked "$OPT" "no ld sp, ix, chosen for it"     '09dde1c9$'    yes "$nametext"
 picked "$OPT" "not the first pass's"            ddf9           no  "$nametext"
+# Smaller code costlier to run by no more than an eighth is chosen: a
+# static set to 1 is ld bc, 1 / ld (nn), bc / ret, ten bytes for the first
+# pass's twenty-one, framed.
+picked "$OPT" "smaller, an eighth costlier, chosen" '^01010000ed43000000c9$' yes \
+    'static int flag; void f(void) { flag = 1; }'
 # Through IY or HL, a byte read straight into the register it goes to --
 # ld d, (iy+0) -- not into A and copied.
 cmploop='int f(const char *a, const char *b, int n) { while (n-- > 0) if (*a++ != *b++) return 0; return 1; }'

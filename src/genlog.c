@@ -426,10 +426,15 @@ static void gl_back(void)
 }
 
 /* Whether the code just made from the SSA form loses to the first pass's:
- * costlier to run, or bigger; `*why` says which. */
+ * costlier to run, or bigger; `*why` says which. Smaller code may cost up
+ * to an eighth more to run: on the corpus that took 0.7% off the code mean
+ * for 0.005% on the speed mean, where a quarter more cost lists' main 29%
+ * of its time. */
 static int ssa_loses(const char **why)
 {
-    if (ssa_cost_made > ssa_cost_first) {
+    if (ssa_cost_made > ssa_cost_first
+        && !(ssa_size_made < ssa_size_first
+             && ssa_cost_made <= ssa_cost_first + ssa_cost_first / 8)) {
         *why = "the first pass's code is cheaper";
         return 1;
     }
