@@ -735,6 +735,28 @@ mir "$OPT" "g-- read before dec (hl)"         210000007e35 yes 'char g; int f(vo
 mir "$OPT" "++gi through (nn)"                2a0000002322000000 yes 'int gi; int f(void) { return ++gi; }'
 mir "$OPT" "*x->p++ written back by (iy+3)"   fd1f03   yes 'struct s { int n; char *p; }; int f(struct s *x) { return *x->p++; }'
 mir "$OPT" "(*pp)++ by the struct's 13 bytes" 110d000019 yes 'struct b { char pad[13]; }; struct b *f(struct b **pp) { return (*pp)++; }'
+# Locals whose address is taken, in memory: made here where no way caches
+# them (OPTACC_CACHE_NONE) -- but not where the type is a VLA's, whose steps
+# are sizes read as it runs. A char set and stepped in its slot, ld (ix-1),
+# 3 and inc (ix-1); an array laid out with the other locals, b[1] read by
+# (ix-9); a struct's members at theirs, inc (ix-1) for p.tag and (ix-4) for
+# p.y; and an array too big for (ix+d), its address the first pass's,
+# push de / ld de, n.
+OPTACC_CACHE_NONE=1 mirs "a local whose address is taken, made by it" yes \
+    'void g(int *); int f(void) { int x = 5; g(&x); return x; }'
+OPTACC_CACHE_NONE=1 mirs "but not with a VLA's type"      no \
+    'int f(int n, int a[][n]) { return a[1][0]; }'
+memchar='void g(char *); int f(void) { char c = 3; g(&c); c++; return c; }'
+OPTACC_CACHE_NONE=1 mir "$OPT" "c = 3 by ld (ix-1), 3"       dd36ff03 yes "$memchar"
+OPTACC_CACHE_NONE=1 mir "$OPT" "c++ by inc (ix-1)"           dd34ff   yes "$memchar"
+OPTACC_CACHE_NONE=1 mir "$OPT" "b[1] of a local array by (ix-9)" dd27f7 yes 'void g(int *); int f(void) { int b[4]; g(b); return b[1]; }'
+OPTACC_CACHE_NONE=1 mir "$OPT" "p.tag++ and p.y at their own (ix+d)" dd34ffdd27fc yes 'struct pt { int x, y; char tag; }; void g(struct pt *); int f(void) { struct pt p; g(&p); p.tag++; return p.y; }'
+OPTACC_CACHE_NONE=1 mir "$OPT" "an array out of reach, as the first pass has it" d51138ffff yes 'void g(char *); int f(void) { char s[200]; g(s); return s[3]; }'
+# An array laid out with the locals is in front of the spills: 124 bytes of
+# it and the spills of a deep expression are past (ix+d)'s reach together,
+# which the code here refuses rather than make.
+OPTACC_CACHE_NONE=1 mirs "spills past the reach behind an array, refused" no \
+    'void g(char *); int f(int a, int b, int c, int d) { char s[124]; g(s); return (a + b) ^ ((b + c) ^ ((c + d) ^ ((d + a) ^ ((a - b) ^ ((b - c) ^ ((c - d) ^ (s[1] + a))))))); }'
 # What the pick weighs counts the frame the code here leaves out: with no
 # frame, the call that makes one and the two that undo it -- a static read
 # is ld hl, (nn) / ret, chosen over the first pass's eight bytes more; with
