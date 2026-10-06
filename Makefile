@@ -25,6 +25,9 @@ SAN      = -fsanitize=address,undefined -fno-sanitize-recover=all \
 
 BIN = bin
 
+# Where agondev is, for the Agon build `make test` makes first.
+AGONDEV ?= $(HOME)/agondev
+
 # The library acc links programs against, written in C and built by acc
 # itself -- which is what makes it something the Agon can build for itself,
 # and what keeps it honest: every line of it is a line acc has to compile.

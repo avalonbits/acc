@@ -117,9 +117,9 @@ $(OBJ)/marks.o: src/marks.s | $(OBJ)
 	@echo [assembling $<]
 	$(TOOLS)/ez80-none-elf-as -march=ez80+full $< -o $@
 
-# Only the one file that reads it, so that editing the lexer does not rebuild
-# the whole compiler for the Agon.
-$(OBJ)/obj.o: src/acc_build.h
+# Only the files that read it -- an object's header and a library's -- so
+# that editing the lexer does not rebuild the whole compiler for the Agon.
+$(OBJ)/obj.o $(OBJ)/archive.o: src/acc_build.h
 
 size: $(BIN)/$(NAME).bin
 	@echo "[$$(stat -c%s $(BIN)/$(NAME).bin) bytes of image, of 458752 available]"
