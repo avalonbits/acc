@@ -146,6 +146,8 @@ extern const char *fail;
 void call(const Ins *insn);
 int  frame_of_value(const Ins *insn);
 void frame_again(const Ins *insn);
+void frame_again_all(int arrays_here);
+int  array_moved(int array);
 void costs(const int *block_start, int end);
 int  inline_moved(int offset);
 void find_loops(void);
