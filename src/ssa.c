@@ -1931,7 +1931,7 @@ static int local_gone(int from, int size)
 }
 
 /* The bytes of the first pass's locals kept in the frame. */
-static int locals_kept(void)
+int ssa_locals_kept(void)
 {
     int at, kept = 0;
 
@@ -3097,7 +3097,7 @@ static int plan_slots(void)
         bytes += inlined[slot].size;
     /* Against the locals kept -- gen_local_fits counts from locals_size,
      * which the first pass left at all of them. */
-    if (bytes && !gen_local_fits(bytes + locals_kept() - locals_size)) {
+    if (bytes && !gen_local_fits(bytes + ssa_locals_kept() - locals_size)) {
         fail = "more values than the frame can reach";
         return 0;
     }

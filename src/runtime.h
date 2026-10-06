@@ -24,6 +24,13 @@ enum {
     RT_LLMUL, RT_LLDIVU, RT_LLREMU, RT_LLDIVS, RT_LLREMS,
     RT_LLTOF, RT_ULLTOF, RT_FTOLL,
     RT_SHR, RT_SDIV,
+#ifdef OPT_ACC
+    /* A long in registers, E:UHL and A:UBC: opt-acc's machine-level
+     * backend's. */
+    RT_LRSUB, RT_LRAND, RT_LROR, RT_LRXOR, RT_LRSHL, RT_LRSHRU, RT_LRSHRS,
+    RT_LRNEG, RT_LRNOT, RT_LRCMPU, RT_LRCMPS, RT_LRMUL, RT_LRDIVU,
+    RT_LRDIVS, RT_LRREMU, RT_LRREMS,
+#endif
     RT_COUNT
 };
 
