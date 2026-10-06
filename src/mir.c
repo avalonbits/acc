@@ -175,13 +175,16 @@ enum {
                      * popped, and the pairs imm2 says -- BC 1, DE 2, IY 4,
                      * those live across it -- popped back. A, F and HL
                      * clobbered: the callee may change BC, DE and IY too,
-                     * which is what the pushing and popping is for */
+                     * which is what the pushing and popping is for. With
+                     * no sym, the runtime's routine obj, its operands in
+                     * registers -- a HL, b DE or A, c BC -- mem*() */
     NMOPS
 };
 
 typedef struct {
     int op;
     int d, a, b;                /* virtual registers, or -1 */
+    int c;                      /* a third read: M_CALL of a routine's, BC */
     int t;                      /* a register it clobbers, as a virtual one:
                                  * the bias's BC, NEG's DE -- or -1 */
     int kills;                  /* operands it changes, a bit each: a, b */
@@ -294,7 +297,7 @@ static MIns *emit_mi(int op)
     mi = &blk->ins[blk->n++];
     memset(mi, 0, sizeof *mi);
     mi->op = op;
-    mi->d = mi->a = mi->b = mi->t = mi->sym = -1;
+    mi->d = mi->a = mi->b = mi->c = mi->t = mi->sym = -1;
 
     return mi;
 }
@@ -403,6 +406,28 @@ static int mir_operand_ok(const Ent *ent)
            && !ent->attr.bits;
 }
 
+/* memcpy, memmove, memset and memchr by name: made in place, by the
+ * runtime's routine that takes its operands in registers (func.c's
+ * mem_builtin) -- or -1 where the call is not one, or not of that shape. */
+static int mem_name(const Sym *callee)
+{
+    const char *name = name_text(callee->name);
+
+    return !strcmp(name, "memcpy") ? RT_MEMCPY : !strcmp(name, "memmove") ? RT_MEMMOVE
+           : !strcmp(name, "memset") ? RT_MEMSET : !strcmp(name, "memchr") ? RT_MEMCHR : 0;
+}
+
+static int mem_routine(const Ins *insn)
+{
+    const Sym *callee = sym_at((int) insn->rec->arg[0]);
+    int which = mem_name(callee);
+
+    if (!which || insn->nin != 3 || !type_pointer(callee->type))
+        return -1;
+
+    return which;
+}
+
 /* Whether a call is one made here: of a function named directly, not
  * setjmp -- whose second return finds the registers pushed around it long
  * gone -- nor longjmp, nor one gen_call makes in place of a call, memcpy
@@ -417,9 +442,7 @@ static int call_ok(const Ins *insn)
     int nparams = (int) insn->rec->arg[3], arg;
     const Sym *callee = sym_at(fn);
 
-    static const char *const in_place[] = {
-        "memcpy", "memmove", "memset", "memchr", "exit", "longjmp", NULL
-    };
+    static const char *const in_place[] = { "exit", "longjmp", NULL };
 
     if (!setjmp_name)
         setjmp_name = name_intern("setjmp", 6);
@@ -428,6 +451,8 @@ static int call_ok(const Ins *insn)
     for (arg = 0; in_place[arg]; arg++)
         if (!strcmp(name_text(callee->name), in_place[arg]))
             return mir_why = "a call gen_call makes in place", 0;
+    if (mem_routine(insn) < 0 && mem_name(callee))
+        return mir_why = "a call gen_call makes in place", 0;
     if (callee->type != TY_VOID && !mir_type(callee->type) && !long_type(callee->type))
         return mir_why = "a call answering a type not held here", 0;
     for (arg = 0; arg != insn->nin; arg++) {
@@ -2243,13 +2268,51 @@ static void sel_local(const Ins *insn)
 
 /* A call: each argument as wide as a slot, pushed last first so that
  * the first is lowest, under the pairs live across the call. */
+/* The routine's call: its operands in the registers it takes -- how many
+ * in BC, and the source in HL and the destination in DE, or the pointer in
+ * HL and the byte in A -- the answer in HL; and, as any call, the pairs
+ * live across it pushed round it. */
+static void sel_mem(const Ins *insn, int which)
+{
+    int dst = operand_vr(&insn->in[0], 3), src, count = operand_vr(&insn->in[2], 3);
+    int d = -1, a, b, c;
+    MIns *mi;
+
+    if (which == RT_MEMSET || which == RT_MEMCHR)
+        src = operand_vr(&insn->in[1], 1);
+    else
+        src = operand_vr(&insn->in[1], 3);
+    mi3(M_SAVE, -1, -1, -1);
+    if (insn->res >= 0 && val_vr[insn->res] >= 0)
+        d = new_vr(3, C_HL);
+    /* Each in its register before the call, which reads all three. */
+    if (which == RT_MEMSET || which == RT_MEMCHR) {
+        a = in_class(dst, C_HL);
+        b = in_class(src, C_A);
+    } else {
+        a = in_class(src, C_HL);
+        b = in_class(dst, C_DE);
+    }
+    c = in_class(count, C_BC);
+    mi = mi3(M_CALL, d, a, b);
+    mi->c = c;
+    mi->obj = which;
+    if (d >= 0)
+        to_val(insn->res, d);
+}
+
 static void sel_call(const Ins *insn)
 {
     const Sym *callee = sym_at((int) insn->rec->arg[0]);
     int first = (int) insn->rec->arg[2], nparams = (int) insn->rec->arg[3];
-    int arg, d = -1, slots = 0, *args = malloc(((size_t) insn->nin + 1) * sizeof *args);
+    int arg, d = -1, slots = 0, *args, which = mem_routine(insn);
     MIns *mi;
 
+    if (which > 0) {
+        sel_mem(insn, which);
+        return;
+    }
+    args = malloc(((size_t) insn->nin + 1) * sizeof *args);
     if (!args)
         acc_error("out of memory for the machine IR");
     /* Each as wide as its parameter has it -- a long, made one where it is
@@ -3323,6 +3386,8 @@ static int mi_uses(const MIns *mi, int *out)
         out[n++] = mi->a;
     if (mi->b >= 0)
         out[n++] = mi->b;
+    if (mi->c >= 0)
+        out[n++] = mi->c;
 
     return n;
 }
@@ -4596,7 +4661,7 @@ static int reload(int v, unsigned cls)
     vr[t].short_lived = 1;
     memset(&load, 0, sizeof load);
     load.d = t;
-    load.a = load.b = load.t = load.sym = -1;
+    load.a = load.b = load.c = load.t = load.sym = -1;
     load.width = vr[v].width;
     if (vr[v].remat) {
         load.op = vr[v].remat;
@@ -4651,7 +4716,7 @@ static int restore(int v, MIns *after, int *nafter)
         memset(store, 0, sizeof *store);
         store->op = M_STF;
         store->a = t;
-        store->d = store->b = store->t = -1;
+        store->d = store->b = store->c = store->t = -1;
         store->sym = SYM_SPILL;
         store->imm = vr[v].spill;
         store->width = vr[v].width;
@@ -4701,6 +4766,8 @@ static void spill_all(void)
                 }
                 if (mi.b >= 0 && spilled[mi.b])
                     mi.b = reload(mi.b, use_class(&mi, 1, mi.b));
+                if (mi.c >= 0 && spilled[mi.c])
+                    mi.c = reload(mi.c, vr[mi.c].cls);
                 if (mi.d >= 0 && spilled[mi.d])
                     mi.d = restore(mi.d, after, &nafter);
             }
@@ -4993,6 +5060,7 @@ static int split_at(int v, int sp)
         if (mi->d == v) mi->d = c;
         if (mi->a == v) mi->a = c;
         if (mi->b == v) mi->b = c;
+        if (mi->c == v) mi->c = c;
         if (mi->t == v) mi->t = c;
         if (mi->op == M_PCOPY)
             for (n = 0; n != pc[mi->imm].n; n++) {
@@ -5394,7 +5462,7 @@ static int moves_made(const Move *run, int n, MIns *out)
             memset(mi, 0, sizeof *mi);
             mi->op = M_STF;
             mi->a = run[k].from;
-            mi->d = mi->b = mi->t = -1;
+            mi->d = mi->b = mi->c = mi->t = -1;
             mi->sym = SYM_SPILL;
             mi->imm = slot_of(run[k].to);
             mi->width = vr[run[k].from].width;
@@ -5407,7 +5475,7 @@ static int moves_made(const Move *run, int n, MIns *out)
                 copy = new_pcopy();
                 memset(mi, 0, sizeof *mi);
                 mi->op = M_PCOPY;
-                mi->d = mi->a = mi->b = mi->t = mi->sym = -1;
+                mi->d = mi->a = mi->b = mi->c = mi->t = mi->sym = -1;
                 mi->imm = copy;
             }
             pcopy_add(copy, run[k].to, run[k].from);
@@ -5419,7 +5487,7 @@ static int moves_made(const Move *run, int n, MIns *out)
 
             memset(mi, 0, sizeof *mi);
             mi->d = run[k].to;
-            mi->a = mi->b = mi->t = mi->sym = -1;
+            mi->a = mi->b = mi->c = mi->t = mi->sym = -1;
             mi->width = vr[r].width;
             if (vr[r].remat) {
                 mi->op = vr[r].remat;
@@ -5564,7 +5632,7 @@ static void split_resolve(void)
                 e = new_mb(-1);
                 memset(&jmp, 0, sizeof jmp);
                 jmp.op = M_JMP;
-                jmp.d = jmp.a = jmp.b = jmp.t = jmp.sym = -1;
+                jmp.d = jmp.a = jmp.b = jmp.c = jmp.t = jmp.sym = -1;
                 jmp.imm2 = b;
                 GROW(mb[e].ins, mb[e].n, mb[e].cap);
                 mb[e].ins[mb[e].n++] = jmp;
@@ -5727,6 +5795,7 @@ static void dump_mir(const char *when)
                     fprintf(stderr, " <-");
                 dump_vr(mi->a);
                 dump_vr(mi->b);
+                dump_vr(mi->c);
                 if (mi->t >= 0) {
                     fprintf(stderr, " clobbers");
                     dump_vr(mi->t);
@@ -6817,13 +6886,14 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         move24(d, quad_pair(a));
         return;
     case M_CALL: {
-        const Sym *callee = sym_at(mi->sym);
         int slot;
 
-        if (sym_flags(mi->sym) & SYMF_DEFINED) {
+        if (mi->sym < 0) {                              /* the runtime's: mem*() */
+            rt_call(mi->obj);
+        } else if (sym_flags(mi->sym) & SYMF_DEFINED) {
             want(mi->sym);
             out_reloc(out_here() + 1);
-            out_opcode24(0xcd, callee->val);            /* call nn */
+            out_opcode24(0xcd, sym_at(mi->sym)->val);   /* call nn */
         } else {
             out_opcode24(0xcd, 0);
             fixup_add(mi->sym, out_here() - ACC_INT_SIZE);

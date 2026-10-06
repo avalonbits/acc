@@ -730,8 +730,18 @@ mirs "an inlined body's room, made by it"      yes \
     '__attribute__((always_inline)) static inline int g(int v, int w) { return v * w + 3; } int f(int v) { return g(v + 1, v) + 1; }'
 mirs "but not setjmp, which IY and BC would not survive" no \
     'int setjmp(void *); int f(void *b) { return setjmp(b); }'
-mirs "nor memcpy, which gen_call makes with ldir"  no \
+mirs "nor exit, which gen_call makes in place"     no \
+    'void exit(int); void f(int k) { if (k) exit(k); }'
+# memcpy, memmove, memset and memchr by name: made in place, the runtime's
+# routine called with its operands in registers -- BC the count, HL and DE
+# or HL and A -- and what is live across it kept as round any call
+# (test/cases/385 runs them).
+mirs "but memcpy, made in place"                   yes \
     'void *memcpy(void *, const void *, unsigned); void f(char *d, char *s) { memcpy(d, s, 4); }'
+mirs "and memset, memchr and memmove"              yes \
+    'void *memset(void *, int, unsigned); void *memchr(const void *, int, unsigned); void *memmove(void *, const void *, unsigned); char *f(char *p, int n) { memset(p, 0, n); memmove(p + 1, p, n); return memchr(p, 1, n); }'
+mir "$OPT" "the count in BC before the call"           010a0000cd    yes \
+    'void *memset(void *, int, unsigned); struct s { char a[10]; int n; }; void f(struct s *p, int k) { memset(p->a, k, sizeof p->a); p->n = k; }'
 # A struct assigned through a pointer: its bytes copied with ldir, from a
 # global's or another pointer's, one after another in a loop -- but not
 # assigned twice over, where the first copy is a value read again
