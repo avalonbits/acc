@@ -4245,6 +4245,76 @@ static long spill_cost(int v)
     return vr[v].weight * (vr[v].remat || vr[v].param ? 1 : 2) * 4096 / length;
 }
 
+/* Values a call would keep pushed and popped round it, spilled before the
+ * scan instead: kept in a register across a call, a value costs a push
+ * and a pop there at every call it lives across -- two bytes for BC or
+ * DE, four for IY, and counted at four, which measured smaller on the
+ * corpus than two; in its slot, a store where it is made and a load where
+ * it is read, three bytes each.
+ * Each weighed by the loops it is in, as the allocator weighs uses. A
+ * value read once after a run of calls -- a pointer kept across a loop of
+ * them -- is cheaper in its slot. The calls by position, their weights
+ * summed, each value's found by bisection: n log n. Answers how many. */
+static int call_spills(void)
+{
+    int k, at, pos = 0, ncalls = 0, n = 0, *call_pos;
+    long *call_sum;
+
+    spilled = realloc(spilled, ((size_t) nvr + 1) * sizeof *spilled);
+    call_pos = malloc(((size_t) npos + 1) * sizeof *call_pos);
+    call_sum = malloc(((size_t) npos + 2) * sizeof *call_sum);
+    if (!spilled || !call_pos || !call_sum)
+        acc_error("out of memory for the machine IR");
+    call_sum[0] = 0;
+    for (k = 0; k != nlayout; k++) {
+        const MBlock *b = &mb[layout[k]];
+        int depth = b->ssa_block >= 0 ? loop_depth[b->ssa_block] : 0;
+        long w = 1L << (3 * (depth > 5 ? 5 : depth));
+
+        for (at = 0; at != b->n; at++, pos += 2)
+            if (b->ins[at].op == M_CALL) {
+                call_pos[ncalls] = pos;
+                call_sum[ncalls + 1] = call_sum[ncalls] + w;
+                ncalls++;
+            }
+    }
+    for (k = 0; k != nvr; k++) {
+        int lo, hi, first, last;
+
+        spilled[k] = 0;
+        if (iv_s[k] < 0 || vr[k].short_lived || vr[k].width == 4 || !ncalls
+            || !(vr[k].cls & (PB(P_BC) | PB(P_DE) | PB(P_IY))))
+            continue;
+        /* The first call after it is made, the last before it is read. */
+        for (lo = 0, hi = ncalls; lo < hi;) {
+            int mid = (lo + hi) / 2;
+
+            if (call_pos[mid] > iv_s[k])
+                hi = mid;
+            else
+                lo = mid + 1;
+        }
+        first = lo;
+        for (lo = first, hi = ncalls; lo < hi;) {
+            int mid = (lo + hi) / 2;
+
+            if (call_pos[mid] + 1 < iv_e[k])
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        last = lo;
+        if (last > first && 4 * (call_sum[last] - call_sum[first]) > 3 * vr[k].weight) {
+            spilled[k] = 1;
+            n++;
+        }
+    }
+    free(call_pos);
+    free(call_sum);
+
+    return n;
+}
+
 /* One scan: each interval a register, or marked to be spilled. Answers
  * how many were, or -1 where one that no spill helps could have none. */
 static int linear_scan(void)
@@ -6947,6 +7017,10 @@ int mir_build(void)
     } else {
         for (round = 0; ; round++) {
             intervals();
+            if (round == 0 && call_spills()) {
+                spill_all();
+                intervals();
+            }
             n = linear_scan();
             if (n == 0)
                 break;
