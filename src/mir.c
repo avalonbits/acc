@@ -99,6 +99,8 @@ enum {
                      * through BC or DE too */
     M_STP,          /* (a+imm) = b: likewise */
     M_STPI,         /* (a+imm) = imm2, a byte */
+    M_STEPP,        /* (a+imm) stepped by imm2, +1 or -1, a byte: inc or dec
+                     * (hl) or (iy+d) */
     M_LDG,          /* d = (sym+imm) */
     M_STG,          /* (sym+imm) = a */
     M_ADD24,        /* d = a + b: d and a HL, b HL, DE or BC */
@@ -406,6 +408,21 @@ static int mir_ok(void)
         case GL_vnot: case GL_vtruth: case GL_vconvert: case GL_vcast:
         case GL_vmember:
             continue;
+        case GL_vprefix_indirect: case GL_vpostfix_indirect: {
+            /* ++ and -- through a pointer: of an int, a char or a pointer
+             * whose step is a size known here, not a VLA's -- not a _Bool,
+             * which is set, not stepped. */
+            Type to = type_pointer(insn->in[0].attr.type)
+                      ? type_deref(insn->in[0].attr.type) : TY_VOID;
+            int ext = insn->in[0].attr.ext;
+
+            if (!mir_type(to) || to == TY_BOOL
+                || (type_pointer(to)
+                    && ((ext && ext_variably_modified(ext))
+                        || type_step(to, ext) <= 0)))
+                return mir_why = "a step through a pointer not held here", 0;
+            continue;
+        }
         case GL_vderef: case GL_vstore_indirect: {
             /* What is read or written: a type held here -- or, read, a
              * struct or an array, which is its address. */
@@ -673,6 +690,7 @@ static unsigned insn_zero(const Ins *insn)
     case GL_vtruth:
         return ALL24 & ~1u;
     case GL_vderef:                     /* what is read: as it is in memory */
+    case GL_vprefix_indirect: case GL_vpostfix_indirect:
         return type_pointer(insn->in[0].attr.type)
                ? as_type(0, type_deref(insn->in[0].attr.type)) : 0;
     case GL_vapply:
@@ -1426,6 +1444,14 @@ static int const_step(const Ins *insn)
     return (int) (op == TK_MINUS ? -k : k);
 }
 
+/* Whether an instruction reads or writes through its first operand: its
+ * address folded into it, (nn) or (iy+d). */
+static int through(int op)
+{
+    return op == GL_vderef || op == GL_vstore_indirect
+           || op == GL_vprefix_indirect || op == GL_vpostfix_indirect;
+}
+
 /* The one instruction that uses `val`, or -1. */
 static int sole_user(int val)
 {
@@ -1541,6 +1567,88 @@ static void sel_store(const Ins *insn)
     }
     /* The assignment's value is what was stored, as its type has it. */
     to_val_as(insn->res, v, to);
+}
+
+/* A byte read through a pointer in HL or IY, (hl) or (iy+d). */
+static int byte_at(int base, int off)
+{
+    int d = new_vr(1, C_R8);
+    MIns *mi = mi3(M_LDP, d, base, -1);
+
+    mi->imm = off;
+    mi->width = 1;
+
+    return d;
+}
+
+/* ++ and -- through a pointer. A byte is stepped where it is -- inc (hl),
+ * dec (iy+d), a global's through its address -- and read before or after,
+ * where what the expression is is wanted. Anything wider is read, stepped
+ * and written back, through (iy+d), (hl) or (nn) as its reads and writes
+ * are. */
+static void sel_step_through(const Ins *insn)
+{
+    Type to = type_deref(insn->in[0].attr.type);
+    int post = insn->op == GL_vpostfix_indirect;
+    int used = insn->res >= 0 && val_vr[insn->res] >= 0;
+    int step = type_pointer(to) ? type_step(to, insn->in[0].attr.ext) : 1;
+    int global, base = -1, old, now;
+    Addr addr = address_of(&insn->in[0]);
+    MIns *mi;
+
+    if ((int) insn->rec->arg[0] == TK_MINUS)
+        step = -step;
+    global = addr.sym >= 0 || addr.kind;
+    if (width_of(to) == 1) {
+        if (global) {
+            base = addr_vr(&insn->in[0]);
+            addr.off = 0;
+        } else {
+            base = addr.base;
+        }
+        base = in_class(base, addr.off ? C_IY : PB(P_HL) | C_IY);
+        old = used && post ? byte_at(base, addr.off) : -1;
+        mi = mi3(M_STEPP, -1, base, -1);
+        mi->imm = addr.off;
+        mi->imm2 = step;
+        mi->width = 1;
+        if (used && !post)
+            old = byte_at(base, addr.off);
+        if (used)
+            to_val_as(insn->res, old, to);
+        return;
+    }
+
+    old = new_vr(3, C_R24);
+    if (global) {
+        mi = mi3(M_LDG, old, -1, -1);
+        mi->sym = addr.sym;
+        mi->imm2 = addr.kind;
+    } else {
+        base = in_class(addr.base, addr.off ? C_IY : PB(P_HL) | C_IY);
+        mi = mi3(M_LDP, old, base, -1);
+    }
+    mi->imm = addr.off;
+    mi->width = 3;
+    if (step >= -4 && step <= 4) {
+        now = new_vr(3, C_R24);
+        mi = mi3(M_STEP24, now, old, -1);
+        mi->imm = step;
+    } else {
+        now = new_vr(3, C_HL);
+        mi3(M_ADD24, now, in_class(old, C_HL), in_class(const_vr(step, 3), C_O24));
+    }
+    if (global) {
+        mi = mi3(M_STG, -1, in_class(now, C_R24), -1);
+        mi->sym = addr.sym;
+        mi->imm2 = addr.kind;
+    } else {
+        mi = mi3(M_STP, -1, base, in_class(now, C_R24));
+    }
+    mi->imm = addr.off;
+    mi->width = 3;
+    if (used)
+        to_val(insn->res, post ? old : now);
 }
 
 /* A call: each argument as wide as a slot, pushed last first so that
@@ -1714,6 +1822,9 @@ static void sel_insn(const Ins *insn, int at)
     case GL_vstore_indirect:
         sel_store(insn);
         return;
+    case GL_vprefix_indirect: case GL_vpostfix_indirect:
+        sel_step_through(insn);
+        return;
     case GL_vapply:
         if (insn->res >= 0 && member_base[insn->res] >= 0)
             return;                     /* in its reader's displacement */
@@ -1857,8 +1968,7 @@ static int setup(void)
         }
         if (user >= 0 && (off = const_step(insn)) != INT_MIN
             && insns[user].in[0].val == res
-            && (insns[user].op == GL_vderef || insns[user].op == GL_vstore_indirect
-                || insns[user].op == GL_vmember)) {
+            && (through(insns[user].op) || insns[user].op == GL_vmember)) {
             /* A pointer and a constant, read or written through or a
              * member's pointer: the constant in the displacement. */
             if (off >= -128 && off + 2 <= 127) {
@@ -1867,8 +1977,7 @@ static int setup(void)
             }
             continue;
         }
-        if (insn->op != GL_vmember || user < 0
-            || (insns[user].op != GL_vderef && insns[user].op != GL_vstore_indirect)
+        if (insn->op != GL_vmember || user < 0 || !through(insns[user].op)
             || insns[user].in[0].val != res)
             continue;
         if (is_addr(&insn->in[0])) {
@@ -1902,8 +2011,7 @@ static int setup(void)
         if (member_base[val] >= 0 || addrc_of[val])
             continue;                   /* folded into its read or write */
         if (global_of[val] >= 0 && sole_user(val) >= 0
-            && (insns[sole_user(val)].op == GL_vderef
-                || insns[sole_user(val)].op == GL_vstore_indirect
+            && (through(insns[sole_user(val)].op)
                 || (insns[sole_user(val)].op == GL_vmember
                     && global_of[insns[sole_user(val)].res] >= 0))
             && insns[sole_user(val)].in[0].val == val)
@@ -4323,7 +4431,7 @@ static void dump_mir(const char *when)
 {
     static const char *const ops[NMOPS] = {
         "copy", "ldi", "ldsym", "lda", "data", "ldf", "stf", "stfi", "leaf", "ldp", "stp",
-        "stpi", "ldg", "stg", "add24", "sub24", "step24", "bytes24", "neg24", "not24",
+        "stpi", "stepp", "ldg", "stg", "add24", "sub24", "step24", "bytes24", "neg24", "not24",
         "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "cmp8", "cmp8i", "bool",
         "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
         "push", "call"
@@ -5170,6 +5278,12 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         } else {
             out_byte2(0x36, mi->imm2 & 0xff);
         }
+        return;
+    case M_STEPP:
+        if (a == P_IY)
+            out_byte3(0xfd, mi->imm2 < 0 ? 0x35 : 0x34, mi->imm & 0xff);
+        else
+            out_byte(mi->imm2 < 0 ? 0x35 : 0x34);       /* inc or dec (hl) */
         return;
     case M_LDG:
         if (mi->width == 1)
