@@ -1295,7 +1295,11 @@ static void dominators(void)
  * Only ints and pointers, three bytes: zap's `p`, whose address the
  * expression parser takes. */
 
-#define CACHE_NONE (-4)         /* memory may have changed: read it */
+/* A cached local's value where memory may have changed: read it again.
+ * Not CACHE_NONE, genlog.h's way that caches nothing, which a macro of
+ * that name here hid: choose_cached then compared the way's 1 with -4,
+ * and the ways meant to cache no local cached them all. */
+#define MEM_CHANGED (-4)
 
 extern int ssa_cache_off;
 
@@ -1390,9 +1394,12 @@ static void choose_cached(void)
     int local, mode = ssa_cache_off;
 
     /* OPTACC_CACHE_LOOPS: the first way caches only a loop's locals, as
-     * OPTACC_PICK=0 keeps the first way -- for test/optacc.sh. */
+     * OPTACC_PICK=0 keeps the first way -- for test/optacc.sh; and
+     * OPTACC_CACHE_NONE none of them. */
     if (mode == CACHE_ALL && getenv("OPTACC_CACHE_LOOPS"))
         mode = CACHE_LOOPS;
+    if (mode == CACHE_ALL && getenv("OPTACC_CACHE_NONE"))
+        mode = CACHE_NONE;
     cached_any = ncached = 0;
     if (mode == CACHE_LOOPS)
         find_loops();               /* which blocks are in one: in_a_loop */
@@ -1678,7 +1685,7 @@ static void rename_block(int blk)
         if (ncached)
             for (local = 0; local != nlocals; local++)
                 if (locals[local].cached && cache_barrier(insn, local))
-                    DEF_PUSH(local, CACHE_NONE);
+                    DEF_PUSH(local, MEM_CHANGED);
         if (insn->op != GL_vpush_local && insn->op != GL_vstore_local
             && insn->op != GL_vprefix_local && insn->op != GL_vpostfix_local)
             continue;
@@ -1706,7 +1713,7 @@ static void rename_block(int blk)
                 DEF_PUSH(local, insn->res);
                 cached_any = 1;
             } else {
-                DEF_PUSH(local, known ? insn->res : CACHE_NONE);
+                DEF_PUSH(local, known ? insn->res : MEM_CHANGED);
             }
             continue;
         }
@@ -1770,7 +1777,7 @@ static void rename_block(int blk)
         for (phi = rn_phi_head[to]; phi >= 0; phi = rn_phi_next[phi]) {
             int local = phis[phi].local, in = DEF_TOP(local);
 
-            phis[phi].in[pred] = in == CACHE_NONE ? locals[local].mem_val : in;
+            phis[phi].in[pred] = in == MEM_CHANGED ? locals[local].mem_val : in;
         }
     }
     for (kid = 0; kid != dom_kids[blk].count; kid++)
@@ -1860,7 +1867,7 @@ static void to_values(void)
         if (locals[local].ok && locals[local].is_param)
             def_push(local, locals[local].entry_val);
         else if (locals[local].cached)
-            def_push(local, CACHE_NONE);
+            def_push(local, MEM_CHANGED);
     }
     rename_lists();
     rename_block(0);
