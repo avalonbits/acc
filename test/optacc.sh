@@ -876,6 +876,13 @@ loopcache='void h(int *); void g(const char **); int f(const char *p, const char
 OPTACC_LEAF=1 OPTACC_CACHE_LOOPS=1 all "$OPT" "a loop's local cached: p into BC"  dd0706 yes "$loopcache"
 OPTACC_LEAF=1 OPTACC_CACHE_LOOPS=1 all "$OPT" "and one outside loops, not"  dd31fd no  "$loopcache"
 OPTACC_LEAF=1 all "$OPT" "which caching all of them puts in IY"  dd31fd yes "$loopcache"
+# And the way that caches none of them (OPTACC_CACHE_NONE makes it the
+# first): x read again after the call for each use, push hl / ld hl,
+# (ix-3), where caching reads it once. A macro in ssa.c named as this way
+# is had made every way cache.
+nocache='void g(int *); int f(void) { int x = 1; g(&x); return x + x * 4; }'
+OPTACC_LEAF=1 OPTACC_CACHE_NONE=1 all "$OPT" "no local cached: x read again"  e5dd27fd yes "$nocache"
+OPTACC_LEAF=1 all "$OPT" "which caching reads once"  e5dd27fd no "$nocache"
 
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
