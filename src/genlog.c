@@ -525,9 +525,11 @@ static void gl_function_end(void)
          * time, where the pick had kept it in memory. Of those no
          * costlier and no bigger than the first pass's, the smallest, and
          * of two the same size the cheaper, is made again -- unless the
-         * cheapest of them costs a tenth less than it: sieve's main, the
+         * cheapest of them costs a twelfth less than it: sieve's main, the
          * leaf backend's 13 bytes smaller and its loops a quarter slower,
-         * once it could hold the long the program checks. */
+         * once it could hold the long the program checks; and lists'
+         * insert_sorted, the machine-level backend's 9 bytes smaller and
+         * 9.5% costlier than the leaf backend's, lists then 8.5% slower. */
         if (made > 0 && picking) {
             static const struct { int leaf_off, cache_off, mir; } ways[] = {
                 { 0, CACHE_ALL, 0 }, { 0, CACHE_NONE, 0 }, { 1, CACHE_NONE, 0 },
@@ -583,8 +585,8 @@ static void gl_function_end(void)
                 }
                 gl_back();
             }
-            if (best >= 0 && cheap_cost * 10 < best_cost * 9)
-                best = cheap;           /* a tenth cheaper: see above */
+            if (best >= 0 && cheap_cost * 12 < best_cost * 11)
+                best = cheap;           /* a twelfth cheaper: see above */
             made = 0;
             why = lost ? lost : why;
             if (best >= 0) {
