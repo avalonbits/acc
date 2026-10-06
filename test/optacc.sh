@@ -982,6 +982,10 @@ OPTACC_CACHE_NONE=1 mir "$OPT" "an array out of reach, as the first pass has it"
 # An array laid out with the locals is in front of the spills: 124 bytes of
 # it and the spills of a deep expression are past (ix+d)'s reach together,
 # which the code here refuses rather than make.
+# A union, its type code the one that says "look at its extension": not
+# a long for being wider than an int (test/cases/384 runs one).
+OPTACC_CACHE_NONE=1 mirs "a union written by its bytes, read whole"  yes \
+    'int f(const unsigned char *d, int n) { union { int v; unsigned char b[3]; } u; u.v = 0; if (n > 0) u.b[0] = d[0]; if (n > 1) u.b[1] = d[1]; return u.v; }'
 OPTACC_CACHE_NONE=1 mirs "spills past the reach behind an array, refused" no \
     'void g(char *); int f(int a, int b, int c, int d) { char s[124]; g(s); return (a + b) ^ ((b + c) ^ ((c + d) ^ ((d + a) ^ ((a - b) ^ ((b - c) ^ ((c - d) ^ (s[1] + a))))))); }'
 # A byte answered in A, as the function answers it, not widened into HL
