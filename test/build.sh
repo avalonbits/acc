@@ -66,6 +66,33 @@ case $(sed -n 's/^\$(OBJ)\/%.o: *//p' Makefile.agon) in
 esac
 check "the Agon objects depend on them" "$got" yes
 
+# And that `make test` makes the Agon build at all. The Makefile stopped
+# saying where agondev is, so its agon target looked for /bin/ez80-...,
+# said there was no agondev, and every test of acc.bin ran whatever had
+# last been built by hand.
+if [ -x "${AGONDEV:-$HOME/agondev}/bin/ez80-none-elf-clang" ]; then
+    # The recipe run for real -- a dry run prints its whole if -- with MAKE
+    # echoed rather than run, so its test is made and nothing is built.
+    case $(make -s --no-print-directory agon MAKE=echo 2>/dev/null) in
+      *Makefile.agon*) got=yes ;;
+      *)               got=no ;;
+    esac
+    check "\`agon\` makes the Agon build" "$got" yes
+fi
+
+# And that every Agon object reading the build id is made again when it
+# changes: archive.c stamps it into a library as obj.c does into an
+# object, and only obj.o was listed, so a library the Agon made kept the
+# old id and was not the one the host made.
+deps=$(grep ': src/acc_build.h$' Makefile.agon)
+for src in $(grep -lE 'ACC_BUILD|"obj_int\.h"' src/*.c); do
+    case $deps in
+      *"\$(OBJ)/$(basename "$src" .c).o"*) got=yes ;;
+      *)                                  got=no ;;
+    esac
+    check "the Agon $(basename "$src" .c).o follows the build id" "$got" yes
+done
+
 # A member taken out of the library. Every prerequisite left is as old as it
 # was, so the library was not made again and kept the member that had gone,
 # and its object stayed in bin/lib for test/lib.sh to archive. Done on a
