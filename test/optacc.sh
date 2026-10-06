@@ -853,6 +853,14 @@ int f(const macro* m, int lo, int hi, int base,
 }'
 OPTACC_CACHE_NONE=1 mirs "a join of values in their slots, made by it" yes "$subst"
 
+# A function's address as a value: the constant, moved as the link moves
+# the image, where the function is defined already; a load the link fills
+# in where it is not yet (test/cases/387 runs both).
+mirs "a defined function's address, made by it"   yes \
+    'static int lt(int a, int b) { return a < b; } int apply(int (*)(int, int), int, int); int f(int k) { return apply(lt, k, 2); }'
+mirs "and one defined further down"               yes \
+    'int gt(int, int); int apply(int (*)(int, int), int, int); int f(int k) { return apply(gt, k, 2); }'
+
 # Frames the machine-level backend lays out (test/cases/381 checks what
 # they come to): spill slots shared by values never kept at once -- three
 # runs of six values held across calls, a frame of nine bytes, not

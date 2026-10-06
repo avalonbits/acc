@@ -388,11 +388,17 @@ static int is_addr(const Ent *ent)
            && (ent->attr.kind == VAL_ADDR || ent->attr.kind == VAL_BSS);
 }
 
+/* By value: whether it is a function's address, which selection loads as
+ * the link moves it (GL_vpush_function). Marked by mir_ok. */
+static unsigned char *fn_address;
+
 static int mir_operand_ok(const Ent *ent)
 {
     /* An address held as a value: made by a register the code here would
-     * load with the number, unmoved -- not taken. */
-    if (ent->val >= 0 && (ent->attr.kind == VAL_ADDR || ent->attr.kind == VAL_BSS))
+     * load with the number, unmoved -- not taken. A function's is loaded
+     * moved. */
+    if (ent->val >= 0 && (ent->attr.kind == VAL_ADDR || ent->attr.kind == VAL_BSS)
+        && !fn_address[ent->val])
         return 0;
     if (is_addr(ent))
         return mir_type(ent->attr.type) && width_of(ent->attr.type) == 3
@@ -641,6 +647,13 @@ static int mir_ok(void)
     if (!struct_read)
         acc_error("out of memory for the machine IR");
     memset(struct_read, 0, (size_t) nvals + 1);
+    fn_address = realloc(fn_address, (size_t) nvals + 1);
+    if (!fn_address)
+        acc_error("out of memory for the machine IR");
+    memset(fn_address, 0, (size_t) nvals + 1);
+    for (at = 1; at != ninsns; at++)
+        if (insns[at].op == GL_vpush_function && insns[at].res >= 0)
+            fn_address[insns[at].res] = 1;
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == GL_vderef && insns[at].res >= 0
             && type_is_struct(vals[insns[at].res].type))
@@ -723,7 +736,7 @@ static int mir_ok(void)
         case GL_vpush_const: case I_BR: case I_JMP: case I_SET: case I_CONV:
         case GL_gen_return: case GL_vpush_global_addr: case GL_vneg:
         case GL_vnot: case GL_vtruth: case GL_vconvert: case GL_vcast:
-        case GL_vmember:
+        case GL_vmember: case GL_vpush_function:
             continue;
         case GL_vpush_local: case GL_vstore_local:
         case GL_vprefix_local: case GL_vpostfix_local: {
@@ -2815,6 +2828,30 @@ static void sel_insn(const Ins *insn, int at)
             mi->imm = JP_Z;
             mi->imm2 = insn->target;
         }
+        return;
+    }
+    case GL_vpush_function: {
+        /* A function's address as a value: the constant, where the
+         * function is defined already, made again where it is read; or a
+         * load the link fills in -- each wanted, as the first pass wants
+         * it (func.c's vpush_function). */
+        int fn = (int) insn->rec->arg[0];
+
+        if (insn->res < 0 || val_vr[insn->res] < 0)
+            return;
+        want(fn);
+        if (sym_flags(fn) & SYMF_DEFINED) {
+            to_val(insn->res, addrc_vr(sym_at(fn)->val, VAL_ADDR));
+            return;
+        }
+        d = new_vr(3, C_R24);
+        mi = mi3(M_LDSYM, d, -1, -1);
+        mi->sym = fn;
+        mi->imm = 0;
+        vr[d].remat = M_LDSYM;
+        vr[d].remat_sym = fn;
+        vr[d].remat_imm = 0;
+        to_val(insn->res, d);
         return;
     }
     case GL_vaddr_local:
