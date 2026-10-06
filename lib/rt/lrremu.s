@@ -8,16 +8,23 @@
 ;
 
 	XDEF	_acc_rt_lrremu
-	XREF	_acc_rt_lremu
-	XREF	acc_rt_lrcall
+	XREF	acc_rt_lrdivmod
 
 	.assume adl=1
 	SEGMENT CODE
 
-; e:hl = e:hl % a:bc, unsigned: _acc_rt_lremu, in memory, through
-; acc_rt_lrcall.
+; e:hl = e:hl % a:bc, unsigned, in registers (lrdivmod.s): the remainder,
+; which comes back in c:hl. bc, d, ix and iy kept.
 _acc_rt_lrremu:
-	push	hl
-	ld	hl, _acc_rt_lremu
-	ex	(sp), hl
-	jp	acc_rt_lrcall
+	push	iy
+	push	ix
+	push	bc
+	push	de
+	call	acc_rt_lrdivmod
+	ld	a, c
+	pop	de
+	ld	e, a
+	pop	bc
+	pop	ix
+	pop	iy
+	ret
