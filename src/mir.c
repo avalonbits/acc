@@ -4652,13 +4652,12 @@ static void sp_put(const MIns *mi)
     sp_out[sp_n++] = *mi;
 }
 
-/* A short register loaded with spilled `v`, the load put out first. */
-static int reload(int v, unsigned cls)
+/* Spilled `v` loaded into `t`: from its slot, its parameter's, or made
+ * again where it is a constant or an address. */
+static void load_into(int v, int t, MIns *out)
 {
-    int t = new_vr(vr[v].width, cls);
     MIns load;
 
-    vr[t].short_lived = 1;
     memset(&load, 0, sizeof load);
     load.d = t;
     load.a = load.b = load.c = load.t = load.sym = -1;
@@ -4676,6 +4675,17 @@ static int reload(int v, unsigned cls)
         load.imm = vr[v].param ? vr[v].param : vr[v].spill;
         load.sym = vr[v].param ? -1 : -2;               /* -2: a spill's */
     }
+    *out = load;
+}
+
+/* A short register loaded with spilled `v`, the load put out first. */
+static int reload(int v, unsigned cls)
+{
+    int t = new_vr(vr[v].width, cls);
+    MIns load;
+
+    vr[t].short_lived = 1;
+    load_into(v, t, &load);
     sp_put(&load);
 
     return t;
@@ -4725,6 +4735,21 @@ static int restore(int v, MIns *after, int *nafter)
     return t;
 }
 
+/* `a` stored into spilled `v`'s slot. */
+static void spill_store(int a, int v, MIns *out)
+{
+    memset(out, 0, sizeof *out);
+    out->op = M_STF;
+    out->a = a;
+    out->d = out->b = out->c = out->t = -1;
+    out->sym = SYM_SPILL;
+    out->imm = vr[v].spill;
+    out->width = vr[v].width;
+}
+
+/* By spill: whether the join being rewritten stores into its slot. */
+static unsigned char *slot_stored;
+
 static void spill_all(void)
 {
     int blk, v;
@@ -4732,13 +4757,17 @@ static void spill_all(void)
     for (v = 0; v != nvr; v++)
         if (spilled[v] && !vr[v].remat && !vr[v].param && !vr[v].spill)
             vr[v].spill = new_spill(vr[v].width);
+    slot_stored = realloc(slot_stored, (size_t) nspills + 1);
+    if (!slot_stored)
+        acc_error("out of memory for the machine IR");
+    memset(slot_stored, 0, (size_t) nspills + 1);
     for (blk = 0; blk != nmb; blk++) {
         MBlock *b = &mb[blk];
         int at, k;
 
         sp_n = 0;
         for (at = 0; at != b->n; at++) {
-            MIns mi = b->ins[at], after[MAX_PCOPY + 2];
+            MIns mi = b->ins[at], after[3 * MAX_PCOPY + 2];
             int nafter = 0;
 
             /* The definition of a constant, an address or a parameter is
@@ -4748,7 +4777,69 @@ static void spill_all(void)
                 continue;
             if (mi.op == M_PCOPY) {
                 PCopy *p = &pc[mi.imm];
+                int marked[MAX_PCOPY], nmarked = 0;
 
+                /* A source in its slot is read after the copies, which
+                 * write registers only: straight into where it goes, or
+                 * through one short register into its own slot. Reloaded
+                 * before them, every one would want a register of its
+                 * own at once, and a join of five spilled pairs found
+                 * none. Not where this join stores into that slot -- a
+                 * loop's swap reads the slot another of its values is
+                 * stored into -- which is reloaded first, as it was. */
+                for (k = 0; k != p->n; k++)
+                    if (spilled[p->dst[k]] && vr[p->dst[k]].spill) {
+                        slot_stored[vr[p->dst[k]].spill] = 1;
+                        marked[nmarked++] = vr[p->dst[k]].spill;
+                    }
+                for (k = 0; k < p->n;) {
+                    int src = p->src[k], dst = p->dst[k];
+
+                    if (!spilled[src] || (vr[src].spill && slot_stored[vr[src].spill])) {
+                        k++;
+                        continue;
+                    }
+                    if (!spilled[dst]) {
+                        load_into(src, dst, &after[nafter++]);
+                    } else if (vr[dst].spill) {
+                        int t = new_vr(vr[src].width, width_class(vr[src].width));
+
+                        vr[t].short_lived = 1;
+                        load_into(src, t, &after[nafter++]);
+                        spill_store(t, dst, &after[nafter++]);
+                    }
+                    p->n--;
+                    p->src[k] = p->src[p->n];
+                    p->dst[k] = p->dst[p->n];
+                }
+                while (nmarked)
+                    slot_stored[marked[--nmarked]] = 0;
+                /* And a register into a slot no source of this join is
+                 * read from: stored before the copies, not through a short
+                 * register after them -- each of which, too, wanted one
+                 * of its own at once. */
+                for (k = 0; k != p->n; k++)
+                    if (spilled[p->src[k]] && vr[p->src[k]].spill) {
+                        slot_stored[vr[p->src[k]].spill] = 1;
+                        marked[nmarked++] = vr[p->src[k]].spill;
+                    }
+                for (k = 0; k < p->n;) {
+                    MIns store;
+                    int src = p->src[k], dst = p->dst[k];
+
+                    if (spilled[src] || !spilled[dst] || !vr[dst].spill
+                        || slot_stored[vr[dst].spill]) {
+                        k++;
+                        continue;
+                    }
+                    spill_store(src, dst, &store);
+                    sp_put(&store);
+                    p->n--;
+                    p->src[k] = p->src[p->n];
+                    p->dst[k] = p->dst[p->n];
+                }
+                while (nmarked)
+                    slot_stored[marked[--nmarked]] = 0;
                 for (k = 0; k != p->n; k++)
                     if (spilled[p->src[k]])
                         p->src[k] = reload(p->src[k], use_class(&mi, 0, p->src[k]));
