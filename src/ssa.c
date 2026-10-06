@@ -780,6 +780,8 @@ static void build_one(const GenRec *rec)
     case GL_gen_switch_case:
         insn = new_insn(op, rec);
         insn->target = back_to(rec->arg[3]);
+        if (mir_on())
+            new_block(-1);              /* a branch, and the next case after */
         return;
     case GL_gen_return:
         insn = new_insn(op, rec);
