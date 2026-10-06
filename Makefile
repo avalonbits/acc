@@ -243,6 +243,7 @@ test-suites:
 	@test/abi-acc.sh
 	@ACC=$(BIN)/acc-asan test/errors.sh
 	@test/runner.sh || [ $$? -eq 77 ]
+	@test/rtlong.sh || [ $$? -eq 77 ]
 	@ACC=$(BIN)/acc-asan test/self.sh
 	@ACC=$(BIN)/acc-asan test/selfbuild.sh
 

@@ -30,6 +30,14 @@ allocator may have live values in DE, and IY is its scratch. A `long`, a
 `long long` or a `float` lives in the frame; the routine takes the address
 of the destination and left operand in HL and of the right in DE.
 
+The routines named `_acc_rt_lr...` take a `long` in registers instead, as
+agondev's do: the left operand, and the answer, in E:UHL -- E the top byte,
+HL the low three -- and the right in A:UBC, or for a shift its count in A.
+A comparison answers in the flags, carry where the left is the less and Z
+where they are equal, and changes neither. They keep BC, D, IX and IY; A
+and the flags they do not. `test/rtlong.sh` holds each to acc's long
+operators.
+
 What is named as C names it (`_setjmp`, `_longjmp`) is a C function: its
 arguments are three bytes each from `(sp+3)`, the answer is in HL, and only
 IX is kept. The names that start `_acc_rt_` are not C's to call.
