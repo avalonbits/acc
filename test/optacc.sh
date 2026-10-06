@@ -807,6 +807,52 @@ across='void g(int); int f(int *p) { int k = *p; g(1); g(2); g(3); g(4); return 
 mir "$OPT" "a value across four calls, in its slot"    dd0ffd        yes "$across"
 mir "$OPT" "not pushed and popped round them"         cd000000d1c1  no  "$across"
 
+# A join whose copies come from values in their slots: each read after
+# the copies, into where it goes -- reloaded first, each into a pair of
+# its own, zap's macro_subst wanted more pairs than there are and was
+# refused (test/cases/386 runs it).
+subst='typedef unsigned int size_t;
+void *realloc(void *p, size_t n);
+typedef struct { int off; unsigned char k; unsigned char len; } macmark;
+typedef struct { unsigned char nparam; const char *params; char *body; int bodylen; } macro;
+extern int margn[64];
+int f(const macro* m, int lo, int hi, int base,
+                       const macmark** mkp, const macmark* mkend,
+                       char** bufp, int* capp) {
+    char* out = *bufp;
+    int cap = *capp;
+    int len = 0;
+    int cur = lo;
+    const macmark* mk = *mkp;
+    while (mk < mkend && mk->off < hi) {
+        const int span = mk->off - cur;
+        const int need = margn[base + mk->k];
+        if (len + span + need + 2 > cap) {
+            cap = (len + span + need + 2) * 2;
+            char* grown = (char*) realloc(out, (size_t) cap);
+            if (grown == ((void *) 0)) {
+                return -1;
+            }
+            out = grown;
+        }
+        len += need;
+        cur = mk->off + mk->len;
+        mk++;
+    }
+    const int span = hi - cur;
+    if (len + span + 2 > cap) {
+        return -2;
+    }
+    for (int i = 0; i < span; i++) {
+        out[len + i] = m->body[cur + i];
+    }
+    *bufp = out;
+    *capp = cap;
+    *mkp = mk;
+    return len + span;
+}'
+OPTACC_CACHE_NONE=1 mirs "a join of values in their slots, made by it" yes "$subst"
+
 # Frames the machine-level backend lays out (test/cases/381 checks what
 # they come to): spill slots shared by values never kept at once -- three
 # runs of six values held across calls, a frame of nine bytes, not
