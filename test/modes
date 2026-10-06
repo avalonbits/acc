@@ -1,0 +1,20 @@
+# The ways make test drives test/cases through (test/run.sh, RUN_MODES):
+# a label, the compiler in bin/, and the environment it runs with. Every
+# case under every way is one job of the same pool.
+#
+# acc; opt-acc as it is with nothing asked of it; and opt-acc's backends,
+# each forced where the pick would choose among them -- with the full set
+# as it is measured and shipped, the pick choosing. A way here earns its
+# place by objects no other way makes: the leaf backend without inlining,
+# and the machine-level one caching locals, were left out when they made
+# 41 and 10 of 303 cases' objects the others did not, the rest the same.
+acc|acc-asan|
+opt-acc|opt-acc-asan|
+ssa|opt-acc-asan|OPTACC_SSA=1
+native|opt-acc-asan|OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1
+homes forced|opt-acc-asan|OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_ANY_GAIN=1 OPTACC_PICK=0
+leaf forced, inlining|opt-acc-asan|OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_PICK=0 OPTACC_INLINE=1
+no mir|opt-acc-asan|OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1
+mir forced, no cache|opt-acc-asan|OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_PICK=0 OPTACC_CACHE_NONE=1
+mir split forced|opt-acc-asan|OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_MIR_SPLIT=1 OPTACC_PICK=0
+full|opt-acc-asan|OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_HOMES=2 OPTACC_IY=1 OPTACC_NATIVE=1 OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1
