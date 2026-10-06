@@ -346,11 +346,12 @@ static int width_of(Type type)
 
 /* A long: four bytes, held as a quad -- E:UHL or A:UBC -- and worked on by
  * the runtime's routines that take it there (lib/rt/lr*.s), or in line.
- * Not a long long, nor a float. */
+ * Four bytes exactly: not a long long, nor a float, nor a union or a
+ * struct whose code says only "look at its extension" (TY_EXT), which
+ * type_wide calls wide too. */
 static int long_type(Type type)
 {
-    return type_wide(type) && !type_float(type) && !type_eight(type)
-           && !type_is_struct(type);
+    return type_size(type) == ACC_LONG_SIZE && !type_float(type);
 }
 
 /* A constant's four bytes as a long: a narrow one widened as its own type
