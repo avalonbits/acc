@@ -630,6 +630,19 @@ mirs "one that calls"                             yes \
     'int g(int); int f(int a) { return g(a) + 1; }'
 mirs "and a value kept across the call"             yes \
     'int g(int); int f(int a) { int b = a * 3; return g(a) + b + a; }'
+# The allocator, spilling everything it cannot hold, never gives up where
+# a spill would do: two bytes that each must be in A, one of them spilled
+# and its claim on A still counted this round -- the spills made, and the
+# scan again; a byte made in A read back as an or's right, not held to A
+# then; four bytes in B, C, D and E with a pair wanted, one of them
+# spilled to free it; and a value made in HL read back for a copy, into
+# any pair.
+mirs "two bytes that must be in A, made by it" yes \
+    'struct d { unsigned char r1, r2; }; unsigned char f(const struct d *op) { if (op->r1 & 4) return 0xdd; if ((op->r1 & 8) | (op->r2 & 16)) return 0xfd; return 0; }'
+mirs "four bytes held with a pair wanted, made by it" yes \
+    'extern const unsigned char hv[]; int f(const char *d, int n) { unsigned char bad = 0, a, b, c, e; int r; if (n < 4) return -1; a = hv[(unsigned char) d[0]]; b = hv[(unsigned char) d[1]]; c = hv[(unsigned char) d[2]]; e = hv[(unsigned char) d[3]]; bad = a | b | c | e; r = (a << 12) + (b << 8) + (c << 4) + e; return bad & 0x80 ? -1 : r; }'
+mirs "a value spilled from HL read back for a copy" yes \
+    'struct v { char kind; char t; int val; int ext; unsigned char x; }; extern struct v *vsp; extern int vtop; void err(const char *); char f(int depth) { if ((unsigned) vtop <= (unsigned) depth) err("x"); return (vsp - 1 - depth)->t; }'
 mirs "but not setjmp, which IY and BC would not survive" no \
     'int setjmp(void *); int f(void *b) { return setjmp(b); }'
 mirs "nor memcpy, which gen_call makes with ldir"  no \
@@ -637,8 +650,8 @@ mirs "nor memcpy, which gen_call makes with ldir"  no \
 # A pointer copied into IY for each member read is given IY itself, the
 # copies coming to nothing -- ld bc, (iy+0), not push iy / pop hl first --
 # and kept there across the call with push iy around it. And a constant
-# returned is gen_return's to make, as the constant: a _Bool's 0 is
-# ld hl, 0 and on to the return, not tested against zero again.
+# returned is made as the constant, not tested against zero again: where
+# the function answers in A, a _Bool's 0 is ld a, 0 and on to the return.
 mir() {
     OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
         OPTACC_LEAF=1 OPTACC_MIR=1 OPTACC_PICK=0 emits "$@"
@@ -647,7 +660,7 @@ members='struct s { int a, b; }; int g(int); int f(struct s *p) { return g(p->a)
 mir "$OPT" "a pointer in IY, read through"           fd0700     yes "$members"
 mir "$OPT" "not copied there from HL"                fde5e1ed07 no  "$members"
 truth='_Bool f(int *p) { if (!p) return 0; if (*p == 3) return 1; return 0; }'
-mir "$OPT" "a _Bool's constant returned as it is"     210000007d   yes "$truth"
+mir "$OPT" "a _Bool's constant returned as it is"     3e00         yes "$truth"
 mir "$OPT" "not tested again"                   2100000009b7ed42 no "$truth"
 
 # Signed against a constant: against 0 the sign alone, add hl, hl;
