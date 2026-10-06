@@ -2626,6 +2626,29 @@ static void emit_raws(void)
     gen_label(over);
 }
 
+/* For the machine-level backend, which lays a function down as the leaf
+ * backend does: an inlined body's room made slots of this frame, the
+ * block's statics laid down where the code starts, and how much room. */
+void ssa_inline_slots(void)
+{
+    inline_slots();
+}
+
+void ssa_emit_statics(void)
+{
+    emit_raws();
+}
+
+int ssa_inline_bytes(void)
+{
+    int region, bytes = 0;
+
+    for (region = 0; region != nmerged; region++)
+        bytes += inlined[region].size;
+
+    return bytes;
+}
+
 /* A new function: the last one's statics stay where they were made. */
 void ssa_keep_moves(void)
 {

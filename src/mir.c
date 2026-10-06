@@ -171,7 +171,7 @@ typedef struct {
  * can be reached by (ix+d): when the whole of the first pass's frame is in
  * reach. Otherwise their addresses are the first pass's, patched at the
  * end. */
-static int arrays_here, array_bytes;
+static int arrays_here, array_bytes, inline_bytes;
 
 /* A virtual register: its width, the registers it may be in, and what it
  * is when made again rather than kept -- a constant, an address, its
@@ -390,9 +390,15 @@ static int mir_ok(void)
                 far = 1;
         }
         arrays_here = !far && bytes + array_bytes + ACC_INT_SIZE <= 128;
+        /* An inlined body's room is laid out after the rest of the frame,
+         * where the first pass had it among it: all of it in (ix+d)'s
+         * reach, or none of it made here. Arrays not laid out with the
+         * locals are below all of it, and in no one's way. */
+        inline_bytes = nmerged ? ssa_inline_bytes() : 0;
+        if (nmerged && (far || bytes + (arrays_here ? array_bytes : 0) + inline_bytes
+                               + ACC_INT_SIZE > 128))
+            return mir_why = "an inlined body's room past (ix+d)'s reach", 0;
     }
-    if (nraws || nmerged)
-        return mir_why = "a block's statics, or an inlined body's room", 0;
     for (phi = 0; phi != nphis; phi++)
         if (phis[phi].live && !mir_type(vals[phis[phi].val].type))
             return mir_why = "a phi not of an int, a pointer or a char", 0;
@@ -6042,7 +6048,8 @@ int mir_build(void)
             bytes += spill_size[v] == 1 ? 1 : ACC_INT_SIZE;
         /* The arrays laid out with the locals are in front of the spills
          * now, which the first pass had behind. */
-        if (bytes && !gen_local_fits(bytes + (arrays_here ? array_bytes : 0))) {
+        if (bytes && !gen_local_fits(bytes + (arrays_here ? array_bytes : 0)
+                                     + inline_bytes)) {
             mir_why = "more spills than the frame can reach";
             return 0;
         }
@@ -6122,9 +6129,11 @@ void mir_emit(void)
     blocks_from = out_here();
     call(&insns[0]);
     frame_again_all(arrays_here);       /* the locals left in memory */
+    ssa_inline_slots();                 /* an inlined body's room */
     gen_local_settle();
     for (k = 0; k != nspills; k++)
         spill_off[k] = gen_local(spill_size[k] == 1 ? 1 : ACC_INT_SIZE);
+    ssa_emit_statics();                 /* a block's, jumped over */
 
     for (k = 0; k != nlayout && !fail; k++) {
         int blk = layout[k], next = k + 1 < nlayout ? layout[k + 1] : -1, j, f;

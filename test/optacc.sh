@@ -643,6 +643,13 @@ mirs "four bytes held with a pair wanted, made by it" yes \
     'extern const unsigned char hv[]; int f(const char *d, int n) { unsigned char bad = 0, a, b, c, e; int r; if (n < 4) return -1; a = hv[(unsigned char) d[0]]; b = hv[(unsigned char) d[1]]; c = hv[(unsigned char) d[2]]; e = hv[(unsigned char) d[3]]; bad = a | b | c | e; r = (a << 12) + (b << 8) + (c << 4) + e; return bad & 0x80 ? -1 : r; }'
 mirs "a value spilled from HL read back for a copy" yes \
     'struct v { char kind; char t; int val; int ext; unsigned char x; }; extern struct v *vsp; extern int vtop; void err(const char *); char f(int depth) { if ((unsigned) vtop <= (unsigned) depth) err("x"); return (vsp - 1 - depth)->t; }'
+# A block's static, its bytes laid down where the code starts, and an
+# inlined body's room, made slots of this frame: made here, as the leaf
+# backend makes them (test/cases/377 checks what they come to).
+mirs "a block's static, made by it"            yes \
+    'const char *f(int k) { static const char n[] = "statics"; return n + k; }'
+mirs "an inlined body's room, made by it"      yes \
+    '__attribute__((always_inline)) static inline int g(int v, int w) { return v * w + 3; } int f(int v) { return g(v + 1, v) + 1; }'
 mirs "but not setjmp, which IY and BC would not survive" no \
     'int setjmp(void *); int f(void *b) { return setjmp(b); }'
 mirs "nor memcpy, which gen_call makes with ldir"  no \
