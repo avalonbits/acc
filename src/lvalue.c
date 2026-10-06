@@ -23,7 +23,9 @@ static void bitfield_write(void);
  * Another read of the local still waiting on the stack would read what is
  * written here instead of what was there, so it is taken first -- `x++`
  * reads it that way already, and nothing else is ordered between its read
- * and a write. */
+ * and a write. A struct read through it, `*q++` copied, is the address
+ * IY holds, taken as one: opt-acc's, whose SSA form puts a pointer in IY
+ * and writes it back with the read still waiting. */
 __attribute__((noinline)) static void vstore_iy(void)
 {
     Value *top = vsp - 1, *v;
@@ -31,8 +33,17 @@ __attribute__((noinline)) static void vstore_iy(void)
     if (top->kind == VAL_IY && top->val == 0)
         return;
     for (v = vstack; v < top; v++)
-        if (v->kind == VAL_IY)
+        if (v->kind == VAL_IY) {
+#ifdef OPT_ACC
+            Type type = v->type;        /* a struct's is its address */
+
+            v->type = TY_INT;
             force_reg(v);
+            v->type = type;
+#else
+            force_reg(v);
+#endif
+        }
     if (top->kind == VAL_IY) {
         /* The local and a step: a step, and the answer is what it now is.
          * inc iy and dec iy for one, lea iy, iy+d for the rest. */

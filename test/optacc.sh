@@ -562,6 +562,17 @@ static int suffix_bit(const char *t, int n, int adl, unsigned char *out) { const
  return 0; }
 const char *f(const char *s, int n, unsigned char *suffix) { int i = 1; while (i < n && s[i] != 46) i++; if (i == n) return 0; if (!suffix_bit(&s[i + 1], n - i - 1, state.adl, suffix)) return 0; return mnemonic_of(s, i); }'
 inlined "one that makes its caller bigger, called" suffix_bit no "$sfx"
+# Called in a loop, the same body makes its caller 72 bytes bigger, and is
+# read in place where a caller with a call in a loop may grow that much
+# (OPTACC_INLINE_LOOP): the call is made each time round. Called outside
+# one, it is not, whatever the allowance; and the allowance as it is, 32
+# bytes, does not stretch to 72.
+sfx_body=$(printf '%s\n' "$sfx" | sed '$d')
+sfx_loop="$sfx_body
+int f(const char **v, int n, unsigned char *suffix) { int i, k = 0; for (i = 0; i < n; i++) { if (!suffix_bit(v[i], 3, state.adl, suffix)) continue; k++; } return k; }"
+OPTACC_INLINE_LOOP=80 inlined "one called in a loop, its caller let grow"  suffix_bit yes "$sfx_loop"
+OPTACC_INLINE_LOOP=80 inlined "but not where it is called once, outside"   suffix_bit no  "$sfx"
+inlined "nor past the allowance"                    suffix_bit no  "$sfx_loop"
 # lists' insert_sorted: its loop made from its SSA form, and called from a
 # function the first pass makes, one holding long longs -- smaller merged,
 # and slower, the loop in the first pass's code. So it is called.
@@ -654,6 +665,16 @@ mirs "but not setjmp, which IY and BC would not survive" no \
     'int setjmp(void *); int f(void *b) { return setjmp(b); }'
 mirs "nor memcpy, which gen_call makes with ldir"  no \
     'void *memcpy(void *, const void *, unsigned); void f(char *d, char *s) { memcpy(d, s, 4); }'
+# A struct assigned through a pointer: its bytes copied with ldir, from a
+# global's or another pointer's, one after another in a loop -- but not
+# assigned twice over, where the first copy is a value read again
+# (test/cases/380 checks what they come to).
+mirs "a struct copied from a global's, made by it"   yes \
+    'struct d { int a, b; char c; }; extern const struct d none; void f(struct d *p) { *p = none; }'
+mirs "and from another pointer's, in a loop"       yes \
+    'struct d { int a, b; char c; }; void f(struct d *p, const struct d *q, int n) { while (n--) *p++ = *q++; }'
+mirs "but not assigned twice over"                 no \
+    'struct d { int a, b; char c; }; void f(struct d *p, struct d *q, const struct d *r) { *p = *q = *r; }'
 # A pointer copied into IY for each member read is given IY itself, the
 # copies coming to nothing -- ld bc, (iy+0), not push iy / pop hl first --
 # and kept there across the call with push iy around it. And a constant
@@ -669,6 +690,9 @@ mir "$OPT" "not copied there from HL"                fde5e1ed07 no  "$members"
 truth='_Bool f(int *p) { if (!p) return 0; if (*p == 3) return 1; return 0; }'
 mir "$OPT" "a _Bool's constant returned as it is"     3e00         yes "$truth"
 mir "$OPT" "not tested again"                   2100000009b7ed42 no "$truth"
+# A struct's bytes copied by ldir, BC their count.
+mir "$OPT" "the copy: ld bc, 7 / ldir"            01070000edb0 yes \
+    'struct d { int a, b; char c; }; void f(struct d *p, const struct d *q) { *p = *q; }'
 
 # Signed against a constant: against 0 the sign alone, add hl, hl;
 # against another, the left moved by half the range through DE and the

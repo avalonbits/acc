@@ -162,6 +162,15 @@ typedef struct {
 
 static Jumps jumps = { -1, -1, -1 };
 
+#ifdef OPT_ACC
+/* Whether the parser is inside a loop: for opt-acc's inliner, which weighs
+ * a call made there as made many times. */
+int stmt_in_loop(void)
+{
+    return jumps.continue_mark >= 0;
+}
+#endif
+
 /* A switch the parser is inside, for the case labels in it -- which may be
  * anywhere in its body, inside loops and blocks, and in Duff's device are. */
 typedef struct {

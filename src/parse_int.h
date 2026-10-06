@@ -165,6 +165,7 @@ void inline_body_begin(int fn);   /* the body's `{` read: keep it? */
 void inline_body_end(void);       /* its `}` the current token */
 int  inline_body_returning(void); /* whether a return is a body's */
 int  inline_body_call(const struct Inline *in, int fn, int line, const char *spot);
+int  stmt_in_loop(void);
 void call_args_stored(int fn, const int *slots, int n, int line, const char *spot);
 void inline_statement(void);     /* stmt.c */
 int  gen_stack_depth(void);       /* vstack.c */
