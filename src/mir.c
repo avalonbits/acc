@@ -758,6 +758,9 @@ static unsigned insn_zero(const Ins *insn)
         return type_zero(insn->local_type);
     case GL_vtruth:
         return ALL24 & ~1u;
+    case GL_gen_call:                   /* what the callee answers, as it is */
+        return mir_type(sym_at((int) insn->rec->arg[0])->type)
+               ? as_type(0, sym_at((int) insn->rec->arg[0])->type) : 0;
     case GL_vpush_local: case GL_vprefix_local: case GL_vpostfix_local:
         return as_type(0, (Type) insn->rec->arg[1]);
     case GL_vderef:                     /* what is read: as it is in memory */
@@ -2134,6 +2137,19 @@ static void sel_insn(const Ins *insn, int at)
             mi->imm2 = 1;
             mi->ssa = at;
             mi->type = insn->in[0].attr.type;
+            return;
+        }
+        /* A byte answered in A, as the function answers it, not widened
+         * into HL to be cut again: a char's low byte, and a _Bool known to
+         * be 0 or 1 already -- a _Bool's own answer, or a truth. */
+        if (insn->nin && RETURNS_IN_A(return_type) && insn->in[0].val >= 0
+            && (return_type != TY_BOOL
+                || (ent_zero(&insn->in[0]) | 1u) == ALL24)) {
+            v = operand_vr(&insn->in[0], 1);
+            mi = mi3(M_RET, -1, in_class(v, C_A), -1);
+            mi->ssa = at;
+            mi->type = return_type;
+            mi->imm = 2;
             return;
         }
         if (insn->nin)
@@ -5804,6 +5820,10 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         if (mi->imm2) {
             vpush_const(insns[mi->ssa].in[0].attr.val, mi->type);
         } else if (mi->a >= 0) {
+            if (mi->imm == 2) {
+                gen_return_a();
+                return;
+            }
             if (mi->imm) {
                 gen_return_hl();
                 return;

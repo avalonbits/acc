@@ -697,15 +697,15 @@ mir "$OPT" "not widened and tested"        b7ed626f09b7ed42 no "$boolread"
 # A static read by its address, ld hl, (nn), not the address loaded and
 # read through; and with nothing in the frame, no frame -- the function the
 # load and ret. A member of a pointer moved by a constant read with both in
-# the displacement, ld a, (iy-4) -- and a byte answered not widened again
-# by the return. A parameter's pointer read at p[3] by (iy+9), the frame
+# the displacement, ld a, (iy-4) -- and that byte answered from A as it
+# was read, not widened at all. A parameter's pointer read at p[3] by (iy+9), the frame
 # left by pop ix alone, SP never having moved.
 mir "$OPT" "a static read by its address"     '^2a000000c9$' yes 'static int counter; int f(void) { return counter; }'
 mir "$OPT" "not through HL"                   ed27     no  'static int counter; int f(void) { return counter; }'
 vprev='struct v { int a; char k; char t; int e; }; extern struct v *vsp; char f(void) { return (vsp - 1)->t; }'
 mir "$OPT" "(p - 1)->t in the displacement"   fd7efc   yes "$vprev"
 mir "$OPT" "not by a subtract"                ed42     no  "$vprev"
-mir "$OPT" "a byte answered as widened"       6fcb05ed626f7dc9 yes "$vprev"
+mir "$OPT" "a byte answered from A, as read"  fd7efcc9 yes "$vprev"
 mir "$OPT" "not widened twice"                7d6fcb05 no  "$vprev"
 mir "$OPT" "p[3] by (iy+9), then pop ix"      fd2709dde1c9 yes 'int f(int *p) { return p[3]; }'
 mir "$OPT" "no ld sp, ix"                     ddf9     no  'int f(int *p) { return p[3]; }'
@@ -757,6 +757,15 @@ OPTACC_CACHE_NONE=1 mir "$OPT" "an array out of reach, as the first pass has it"
 # which the code here refuses rather than make.
 OPTACC_CACHE_NONE=1 mirs "spills past the reach behind an array, refused" no \
     'void g(char *); int f(int a, int b, int c, int d) { char s[124]; g(s); return (a + b) ^ ((b + c) ^ ((c + d) ^ ((d + a) ^ ((a - b) ^ ((b - c) ^ ((c - d) ^ (s[1] + a))))))); }'
+# A byte answered in A, as the function answers it, not widened into HL
+# and cut again: a _Bool callee's answer as it is, the call then the
+# epilogue; a char's low byte; a mask of a byte; a comparison's truth, the
+# 0 or 1 never rebuilt from HL.
+mir "$OPT" "a _Bool callee's answer returned as it is" cd000000d1dde1c9 yes '_Bool p(int); _Bool f(int x) { return p(x); }'
+mir "$OPT" "not made 0 or 1 again"                     210100007d       no  '_Bool p(int); _Bool f(int x) { return p(x); }'
+mir "$OPT" "a char's answer not widened"               cb05ed626f       no  'char f(int x) { return x + 1; }'
+mir "$OPT" "p[2] & 7 answered from A"                  e607dde1c9       yes 'unsigned char f(unsigned char *p) { return p[2] & 7; }'
+mir "$OPT" "a < b answered as the truth it is"         210100007d       no  '_Bool f(int a, int b) { return a < b; }'
 # What the pick weighs counts the frame the code here leaves out: with no
 # frame, the call that makes one and the two that undo it -- a static read
 # is ld hl, (nn) / ret, chosen over the first pass's eight bytes more; with
