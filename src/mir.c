@@ -2132,6 +2132,16 @@ static void sel_insn(const Ins *insn, int at)
          * hands it to gen_return -- or a constant as the constant, which
          * gen_return knows: a _Bool's is made as it is, not tested, and a
          * return of one made before is a jump back to it. */
+        if (insn->nin && is_num(&insn->in[0]) && RETURNS_IN_A(return_type)) {
+            int value = insn->in[0].attr.val;   /* a byte's: ld a, n */
+
+            value = return_type == TY_BOOL ? value != 0 : value & 0xff;
+            mi = mi3(M_RET, -1, in_class(const_vr(value, 1), C_A), -1);
+            mi->ssa = at;
+            mi->type = return_type;
+            mi->imm = 2;
+            return;
+        }
         if (insn->nin && is_num(&insn->in[0])) {
             mi = mi3(M_RET, -1, -1, -1);
             mi->imm2 = 1;
@@ -3594,16 +3604,22 @@ static int linear_scan(void)
                     ;
             if (p < NPREGS)
                 break;
-            /* None: the cheapest of the live ones in a register `v` could
-             * have, or `v` itself, to be spilled. */
+            /* None: the cheapest of the live ones on a unit of a register
+             * `v` could have, or `v` itself, to be spilled -- a byte in B
+             * is in the way of BC, and spilling it, and C's after it, is
+             * how BC comes free. */
             {
                 int victim = -1, jv = -1;
                 long cost, best = 0;
+                unsigned want = 0;
 
+                for (j = 0; j != NPREGS; j++)
+                    if (vr[v].cls & PB(j))
+                        want |= preg_units[j];
                 for (j = 0; j != nactive; j++) {
                     int a = active[j];
 
-                    if (vr[a].short_lived || !(vr[v].cls & PB(vr[a].preg)))
+                    if (vr[a].short_lived || !(want & preg_units[vr[a].preg]))
                         continue;
                     cost = spill_cost(a);
                     if (victim < 0 || cost < best) {
@@ -3618,13 +3634,25 @@ static int linear_scan(void)
                     p = -1;
                     break;
                 }
-                if (victim < 0 || ++nsp > NPREGS)
-                    return -1;
+                if (victim < 0 || ++nsp > NPREGS) {
+                    /* Nothing to take it from -- a register this one
+                     * must have, held by a value spilled already, whose
+                     * claim on it this round still counts. The spills
+                     * made so far rewritten first, and the scan again:
+                     * a failure only where there are none. */
+                    for (j = 0; j != nvr && !spilled[j]; j++)
+                        ;
+                    if (j == nvr)
+                        return -1;
+                    break;
+                }
                 spilled[victim] = 1;
                 vr[victim].preg = -1;
                 active[jv] = active[--nactive];
             }
         }
+        if (p == NPREGS)
+            break;                      /* the spills first: see above */
         if (p < 0)
             continue;
         vr[v].preg = p;
@@ -3665,9 +3693,9 @@ static void sp_put(const MIns *mi)
 }
 
 /* A short register loaded with spilled `v`, the load put out first. */
-static int reload(int v)
+static int reload(int v, unsigned cls)
 {
-    int t = new_vr(vr[v].width, vr[v].cls);
+    int t = new_vr(vr[v].width, cls);
     MIns load;
 
     vr[t].short_lived = 1;
@@ -3691,6 +3719,29 @@ static int reload(int v)
     sp_put(&load);
 
     return t;
+}
+
+/* The registers a read of spilled `v` may be made into, as `mi` reads it:
+ * where the instruction takes any register in that place -- the other
+ * operand of an 8-bit operator or compare, what a push or a store to the
+ * frame takes, what a copy is made from -- any of its width, though what
+ * made `v` had to be in one; elsewhere, those `v` may be in. A value an
+ * and made in A, read back as the right of an or, is not held to A then,
+ * where A is the left's. */
+static unsigned use_class(const MIns *mi, int is_b, int v)
+{
+    int any = vr[v].width == 1 ? C_R8 : C_R24;
+
+    switch (mi->op) {
+    case M_ALU8: case M_CMP8:
+        return is_b ? C_R8 : vr[v].cls;
+    case M_PUSH: case M_PCOPY: case M_COPY:
+        return any;
+    case M_STF:
+        return any;
+    }
+
+    return vr[v].cls;
 }
 
 /* A short register for a write of spilled `v`, and its store after. */
@@ -3740,20 +3791,21 @@ static void spill_all(void)
 
                 for (k = 0; k != p->n; k++)
                     if (spilled[p->src[k]])
-                        p->src[k] = reload(p->src[k]);
+                        p->src[k] = reload(p->src[k], use_class(&mi, 0, p->src[k]));
                 for (k = 0; k != p->n; k++)
                     if (spilled[p->dst[k]])
                         p->dst[k] = restore(p->dst[k], after, &nafter);
             } else {
                 if (mi.a >= 0 && spilled[mi.a]) {
-                    int t = reload(mi.a);
+                    int t = reload(mi.a, mi.b == mi.a ? vr[mi.a].cls
+                                                      : use_class(&mi, 0, mi.a));
 
                     if (mi.b == mi.a)
                         mi.b = t;
                     mi.a = t;
                 }
                 if (mi.b >= 0 && spilled[mi.b])
-                    mi.b = reload(mi.b);
+                    mi.b = reload(mi.b, use_class(&mi, 1, mi.b));
                 if (mi.d >= 0 && spilled[mi.d])
                     mi.d = restore(mi.d, after, &nafter);
             }
