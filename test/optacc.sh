@@ -791,10 +791,16 @@ mirs "but not on a long"                             no \
     'int f(long x) { switch (x) { case 1: return 10; } return 0; }'
 mir "$OPT" "a case: HL kept for the next"          11010000b7ed5219 yes "$swint"
 
+# A value made before a run of calls and read once after them: kept in
+# its slot -- ld (ix-3), bc once -- not pushed and popped round each call.
+across='void g(int); int f(int *p) { int k = *p; g(1); g(2); g(3); g(4); return k; }'
+mir "$OPT" "a value across four calls, in its slot"    dd0ffd        yes "$across"
+mir "$OPT" "not pushed and popped round them"         cd000000d1c1  no  "$across"
+
 # Frames the machine-level backend lays out (test/cases/381 checks what
 # they come to): spill slots shared by values never kept at once -- three
-# runs of six values held across calls, a frame of six bytes, not
-# eighteen -- and a function of 45 locals, all of them values and given no
+# runs of six values held across calls, a frame of nine bytes, not
+# eighteen or more -- and a function of 45 locals, all of them values and given no
 # room, with an inlined body's array in (ix+d)'s reach.
 runs='int g(int);
 void h(int, int, int, int, int, int);
@@ -814,7 +820,7 @@ void f(int k)
         h(p, q, r, s, t, u);
     }
 }'
-mir "$OPT" "three runs' spills in a frame of six bytes"   21faffff  yes "$runs"
+mir "$OPT" "three runs' spills in a frame of nine bytes"  21f7ffff  yes "$runs"
 mir "$OPT" "not eighteen"                                21eeffff  no  "$runs"
 many='int g(int); __attribute__((always_inline)) static inline int sq(int v) { int t[2]; t[0] = v; t[1] = g(v); return t[0] * t[1]; } int f(int k) { int v1 = g(1); int v2 = g(2); int v3 = g(3); int v4 = g(4); int v5 = g(5); int v6 = g(6); int v7 = g(7); int v8 = g(8); int v9 = g(9); int v10 = g(10); int v11 = g(11); int v12 = g(12); int v13 = g(13); int v14 = g(14); int v15 = g(15); int v16 = g(16); int v17 = g(17); int v18 = g(18); int v19 = g(19); int v20 = g(20); int v21 = g(21); int v22 = g(22); int v23 = g(23); int v24 = g(24); int v25 = g(25); int v26 = g(26); int v27 = g(27); int v28 = g(28); int v29 = g(29); int v30 = g(30); int v31 = g(31); int v32 = g(32); int v33 = g(33); int v34 = g(34); int v35 = g(35); int v36 = g(36); int v37 = g(37); int v38 = g(38); int v39 = g(39); int v40 = g(40); int v41 = g(41); int v42 = g(42); int v43 = g(43); int v44 = g(44); int v45 = g(45);  return v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10 + v11 + v12 + v13 + v14 + v15 + v16 + v17 + v18 + v19 + v20 + v21 + v22 + v23 + v24 + v25 + v26 + v27 + v28 + v29 + v30 + v31 + v32 + v33 + v34 + v35 + v36 + v37 + v38 + v39 + v40 + v41 + v42 + v43 + v44 + v45 +  sq(k); }'
 mirs "45 locals that are values, an inlined array"  yes "$many"
