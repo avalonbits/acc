@@ -722,6 +722,19 @@ count='int f(const char *s) { int n = 0; while (*s++) n++; return n; }'
 mir "$OPT" "s++ in its own register"           0318     yes "$count"
 mir "$OPT" "not copied out and back"           c5d1     no  "$count"
 mir "$OPT" "*d = c by ld (bc), a"              02dde1c9 yes 'void f(char *d, char c) { *d = c; }'
+# ++ and -- through a pointer: made here, a byte stepped where it is --
+# inc (iy+3), read after it for ++x; a global's byte read before dec (hl)
+# for x--; an int global's through (nn); a member pointer written back
+# by (iy+3); and a pointer to a 13-byte struct stepped by 13.
+mirs "++ and -- through a pointer, made by it"     yes \
+    'struct s { int n; char c; int *p; }; void f(struct s *x) { x->n++; x->c--; x->p++; }'
+stepc='struct s { int n; char c; }; int f(struct s *x) { return ++x->c; }'
+mir "$OPT" "++x->c by inc (iy+3)"             fd3403   yes "$stepc"
+mir "$OPT" "not read, stepped and written"    fd7703   no  "$stepc"
+mir "$OPT" "g-- read before dec (hl)"         210000007e35 yes 'char g; int f(void) { return g--; }'
+mir "$OPT" "++gi through (nn)"                2a0000002322000000 yes 'int gi; int f(void) { return ++gi; }'
+mir "$OPT" "*x->p++ written back by (iy+3)"   fd1f03   yes 'struct s { int n; char *p; }; int f(struct s *x) { return *x->p++; }'
+mir "$OPT" "(*pp)++ by the struct's 13 bytes" 110d000019 yes 'struct b { char pad[13]; }; struct b *f(struct b **pp) { return (*pp)++; }'
 # What the pick weighs counts the frame the code here leaves out: with no
 # frame, the call that makes one and the two that undo it -- a static read
 # is ld hl, (nn) / ret, chosen over the first pass's eight bytes more; with

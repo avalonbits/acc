@@ -9590,6 +9590,7 @@ int ssa_generate(const char **why)
             else if (getenv("OPTACC_SSA_STATS"))
                 fprintf(stderr, "mir %s\n", name_text(sym_at(gl_fn)->name));
             gen_local_settle();
+            nmoved = 0;                 /* its strings' moves, and only those */
             mir_emit();
             forget();
             if (fail) {
