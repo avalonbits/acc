@@ -337,6 +337,7 @@ extern int frame_sp_kept;          /* SP where the prologue left it at every
                                     * return: no frame, no ld sp, ix */
 #ifdef OPT_ACC
 void gen_return_hl(void);          /* a return, the answer in HL already */
+void gen_return_a(void);           /* and a byte's, in A already */
 void gen_local_settle(void);       /* locals below all the room taken */
 void relax_cut_code(Cut *cuts, int ncuts, const Mark *from, int fn_from,
                     int fn_to);

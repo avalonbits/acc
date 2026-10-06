@@ -925,6 +925,13 @@ void gen_return_hl(void)
         ld_a_l();
     return_jump();
 }
+
+/* And one whose answer is a byte in A already, where the function answers
+ * in A: the jump alone. */
+void gen_return_a(void)
+{
+    return_jump();
+}
 #endif
 
 /* That a struct argument and its parameter are the same struct: a struct
