@@ -763,6 +763,16 @@ mir "$OPT" "the count in BC before the call"           010a0000cd    yes \
 # where the code starts, and the function made by it (test/cases/392).
 mirs "a block static at zero, made by it"            yes \
     'int f(void) { static int n; return ++n; }'
+# Structs by value: a call answering one, its room in the frame; one
+# passed as words; one returned, copied to where the caller asked
+# (test/cases/393 runs them).
+keyt='typedef struct { char ch, vkey, mods; } key; key next(int); int take(int, key);'
+mirs "a call answering a struct, made by it"     yes \
+    "$keyt int f(int k) { key kp = next(k); return kp.ch + kp.mods; }"
+mirs "a struct passed by value"                  yes \
+    "$keyt extern key g; int f(void) { return take(1, g); }"
+mirs "a struct returned"                         yes \
+    "$keyt key f(const key *p) { return *p; }"
 # Bytes C widens and the code cuts back, made as bytes: (char) (ch + 32)
 # an add a, 32, and the ?: of two chars returned as a char joined as the
 # byte -- not widened by rlc l / sbc hl, hl and cut again
