@@ -178,7 +178,8 @@ enum {
                      * which is what the pushing and popping is for. With
                      * no sym, the runtime's routine obj, its operands in
                      * registers -- a HL, b DE or A, c BC -- mem*() */
-    NMOPS
+    NMOPS,
+    M_NOP_NARROW,   /* narrow_bytes' mark, gone before anything reads it */
 };
 
 typedef struct {
@@ -3500,6 +3501,303 @@ static int pure(int op)
 }
 
 #define M_DEAD NMOPS            /* an instruction taken out, until compacted */
+
+/* Byte arithmetic done at 24 bits and then cut to its low byte: (char)
+ * (c + 32), where C widens c and the 32 to int and the cast takes the low
+ * byte back. The low byte of a sum or a difference is that of its
+ * operands' low bytes, so where each operand is a byte widened or a
+ * constant, and what the cut reads is read by it alone, the cut is made the
+ * byte op itself, in A -- add a, 32 -- and the 24-bit one goes with
+ * dead_code. Not where the flags the op sets could be read before a compare
+ * sets them again. */
+static MIns *nb_def;                    /* by register: its one writer, or op -1 */
+static int  *nb_reads;
+
+static int nb_through(int v, int once)
+{
+    while (v >= 0 && nb_def[v].op == M_COPY && vr[v].width == vr[nb_def[v].a].width
+           && (!once || nb_reads[v] == 1))
+        v = nb_def[v].a;
+
+    return v;
+}
+
+/* An operand's low byte: a byte's register, or a constant (*k, -1 back). */
+static int nb_byte(int v, int *k)
+{
+    v = nb_through(v, 0);
+    *k = 0;
+    if (v < 0)
+        return -2;
+    if (nb_def[v].op == M_LDI) {
+        *k = nb_def[v].imm & 0xff;
+        return -1;
+    }
+    if ((nb_def[v].op == M_SEXT || nb_def[v].op == M_ZEXT) && nb_def[v].a >= 0
+        && vr[nb_def[v].a].width == 1 && nb_def[nb_def[v].a].op >= 0)
+        return nb_def[v].a;
+
+    return -2;
+}
+
+static int nb_flags_free(const MBlock *b, int at)
+{
+    for (at++; at < b->n; at++)
+        switch (b->ins[at].op) {
+        case M_BR: case M_BOOL:
+            return 0;
+        case M_CMP24: case M_CMP24S: case M_CMP24SI: case M_TST24: case M_CASE24:
+        case M_CMP8: case M_CMP8I: case M_LCMP: case M_LTST:
+            return 1;
+        }
+
+    return 1;
+}
+
+/* A value joined from paths, each a byte widened or a constant, and read
+ * only to be cut to a byte again: `c >= 'A' ? c + 32 : c` returned as a
+ * char, the ?: an int by C's promotions. Joined as the byte instead: each
+ * path's copy into it a copy of the byte, each cut of it a copy from it --
+ * the widenings and the cuts go with dead_code. In place, before the
+ * phis are placed, where such a value is still one register written on
+ * each path. */
+static void narrow_joins(void)
+{
+    int blk, at, k, v, ops[2 * MAX_PCOPY + 8], n, nold = nvr;
+    int *ndefs_of, *bad, *byte_of;
+
+    nb_def = malloc(((size_t) nvr + 1) * sizeof *nb_def);
+    nb_reads = calloc((size_t) nvr + 1, sizeof *nb_reads);
+    ndefs_of = calloc((size_t) nvr + 1, sizeof *ndefs_of);
+    bad = calloc((size_t) nvr + 1, sizeof *bad);
+    byte_of = malloc(((size_t) nvr + 1) * sizeof *byte_of);
+    if (!nb_def || !nb_reads || !ndefs_of || !bad || !byte_of)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != nvr; k++) {
+        nb_def[k].op = -1;
+        byte_of[k] = -1;
+    }
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++) {
+            const MIns *mi = &mb[blk].ins[at];
+
+            n = mi_uses(mi, ops);
+            for (k = 0; k != n; k++)
+                nb_reads[ops[k]]++;
+            n = mi_defs(mi, ops);
+            for (k = 0; k != n; k++) {
+                ndefs_of[ops[k]]++;
+                if (nb_def[ops[k]].op == -1 && n == 1)
+                    nb_def[ops[k]] = *mi;
+                else
+                    nb_def[ops[k]].op = -2;
+                /* Each write a copy of a byte widened, or a constant. */
+                if (mi->op != M_COPY || n != 1 || vr[ops[k]].width != 3) {
+                    bad[ops[k]] = 1;
+                } else {
+                    int c, y = nb_byte(mi->a, &c);
+
+                    if (y == -2)
+                        bad[ops[k]] = 1;
+                }
+            }
+        }
+    /* Not one a phi joins or is joined from: the copies placed for those
+     * read and write it later, place_phis', which nothing here sees. */
+    for (k = 0; k != nphis; k++)
+        if (phis[k].live) {
+            int p;
+
+            if (val_vr[phis[k].val] >= 0)
+                bad[val_vr[phis[k].val]] = 1;
+            for (p = 0; p != preds[phis[k].block].count; p++)
+                if (phis[k].in[p] >= 0 && val_vr[phis[k].in[p]] >= 0)
+                    bad[val_vr[phis[k].in[p]]] = 1;
+        }
+    /* Each read a cut, or a copy read only by a cut. */
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++) {
+            const MIns *mi = &mb[blk].ins[at];
+
+            n = mi_uses(mi, ops);
+            for (k = 0; k != n; k++) {
+                v = ops[k];
+                if (bad[v] || ndefs_of[v] < 2)
+                    continue;
+                if (mi->op == M_TRUNC)
+                    continue;
+                if (mi->op == M_COPY && nb_reads[mi->d] == 1 && ndefs_of[mi->d] == 1)
+                    continue;           /* the cut checked below */
+                bad[v] = 1;
+            }
+        }
+    /* A copy read once: by a cut. byte_of marks, for now, what one reads. */
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++)
+            if (mb[blk].ins[at].op == M_TRUNC && mb[blk].ins[at].a >= 0)
+                byte_of[mb[blk].ins[at].a] = 1;
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++) {
+            const MIns *mi = &mb[blk].ins[at];
+
+            if (mi->op == M_COPY && mi->a >= 0 && !bad[mi->a] && ndefs_of[mi->a] >= 2
+                && byte_of[mi->d] != 1)
+                bad[mi->a] = 1;
+        }
+    for (k = 0; k != nvr; k++)
+        byte_of[k] = -1;
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++) {
+            MIns *mi = &mb[blk].ins[at];
+            int c, y;
+
+            n = mi_defs(mi, ops);
+            if (n != 1 || mi->op != M_COPY || (v = ops[0], bad[v]) || ndefs_of[v] < 2)
+                continue;
+            if (byte_of[v] < 0)
+                byte_of[v] = new_vr(1, C_R8);
+            y = nb_byte(mi->a, &c);
+            mi->d = byte_of[v];
+            if (y >= 0) {
+                mi->a = y;
+            } else {
+                mi->op = M_LDI;
+                mi->a = -1;
+                mi->imm = c;
+            }
+        }
+    /* A copy of it, which a cut reads: the copy is of the byte, where the
+     * copy is -- the value then, not what it is by the time of the cut --
+     * and the cut a copy of that. */
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++) {
+            MIns *mi = &mb[blk].ins[at];
+
+            if (mi->op == M_COPY && mi->a >= 0 && mi->a < nold && byte_of[mi->a] >= 0
+                && mi->d < nold && vr[mi->d].width == 3) {
+                int u = mi->d;
+
+                byte_of[u] = new_vr(1, C_R8);
+                mi->d = byte_of[u];
+                mi->a = byte_of[mi->a];
+            }
+        }
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++) {
+            MIns *mi = &mb[blk].ins[at];
+
+            if (mi->op == M_TRUNC && mi->a >= 0 && mi->a < nold && byte_of[mi->a] >= 0) {
+                mi->op = M_COPY;
+                mi->a = byte_of[mi->a];
+            }
+        }
+    free(nb_def);
+    free(nb_reads);
+    free(ndefs_of);
+    free(bad);
+    free(byte_of);
+}
+
+static void narrow_bytes(void)
+{
+    int blk, at, k, ops[2 * MAX_PCOPY + 8], n, any = 0;
+
+    nb_def = malloc(((size_t) nvr + 1) * sizeof *nb_def);
+    nb_reads = calloc((size_t) nvr + 1, sizeof *nb_reads);
+    if (!nb_def || !nb_reads)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != nvr; k++)
+        nb_def[k].op = -1;
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++) {
+            const MIns *mi = &mb[blk].ins[at];
+
+            n = mi_uses(mi, ops);
+            for (k = 0; k != n; k++)
+                nb_reads[ops[k]]++;
+            n = mi_defs(mi, ops);
+            for (k = 0; k != n; k++)
+                if (nb_def[ops[k]].op == -1 && n == 1)
+                    nb_def[ops[k]] = *mi;
+                else
+                    nb_def[ops[k]].op = -2;
+        }
+    for (blk = 0; blk != nmb; blk++) {
+        MBlock *b = &mb[blk];
+
+        for (at = 0; at != b->n; at++) {
+            MIns *mi = &b->ins[at];
+            int x, op, ya, yb, ka, kb;
+
+            if (mi->op != M_TRUNC || nb_reads[mi->a] != 1 || !nb_flags_free(b, at))
+                continue;
+            x = nb_through(mi->a, 1);
+            if (x < 0 || nb_reads[x] != 1 || nb_def[x].op < 0)
+                continue;
+            switch (nb_def[x].op) {
+            case M_ADD24: op = TK_PLUS; break;
+            case M_SUB24: op = TK_MINUS; break;
+            case M_STEP24: op = TK_PLUS; break;
+            default: continue;
+            }
+            ya = nb_byte(nb_def[x].a, &ka);
+            if (nb_def[x].op == M_STEP24) {
+                yb = -1;
+                kb = nb_def[x].imm & 0xff;
+            } else {
+                yb = nb_byte(nb_def[x].b, &kb);
+            }
+            if (ya == -2 || yb == -2 || (ya < 0 && yb < 0))
+                continue;
+            if (ya < 0) {               /* k + y: y + k, and k - y not here */
+                if (op == TK_MINUS)
+                    continue;
+                ya = yb;
+                yb = -1;
+                kb = ka;
+            }
+            mi->op = M_NOP_NARROW;      /* marked: made again below */
+            mi->t = ya;
+            mi->c = yb;
+            mi->imm = op;
+            mi->imm2 = kb;
+            any = 1;
+        }
+    }
+    free(nb_def);
+    free(nb_reads);
+    if (!any)
+        return;
+    /* Each block made again with the marked cuts as the byte ops. */
+    for (blk = 0; blk != nmb; blk++) {
+        MBlock *b = &mb[blk];
+        MIns *old = b->ins;
+        int nold = b->n;
+
+        for (at = 0; at != nold && old[at].op != M_NOP_NARROW; at++)
+            ;
+        if (at == nold)
+            continue;
+        b->ins = NULL;
+        b->n = b->cap = 0;
+        cur = blk;
+        for (at = 0; at != nold; at++) {
+            const MIns *o = &old[at];
+
+            if (o->op == M_NOP_NARROW) {
+                int t = in_class(o->t, C_A), d2 = new_vr(1, C_A);
+                MIns *alu = o->c >= 0 ? mi3(M_ALU8, d2, t, o->c) : mi3(M_ALU8I, d2, t, -1);
+
+                alu->imm = o->imm;
+                alu->imm2 = o->imm2;
+                mi3(M_COPY, o->d, d2, -1);
+            } else {
+                *emit_mi(o->op) = *o;
+            }
+        }
+        free(old);
+    }
+}
 
 static void dead_code(void)
 {
@@ -7180,6 +7478,8 @@ int mir_build(void)
         mir_why = "a function too big to take";
         return 0;
     }
+    narrow_joins();
+    narrow_bytes();
     link_blocks();
     if (!place_phis())
         return 0;
