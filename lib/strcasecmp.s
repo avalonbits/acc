@@ -13,40 +13,50 @@
 	.assume adl=1
 	SEGMENT CODE
 
-; int strcasecmp(const char *a, const char *b): strncasecmp's loop with no
-; count. See lib/strncasecmp.s.
+; int strcasecmp(const char *a, const char *b): strcmp's loop, the two bytes
+; compared as they are first. Only where they differ are both lowered, in
+; place, to see whether they are the same letter -- an assembler looking a
+; word up in its tables compares mostly bytes that are equal or differ at
+; once, and lowering every one of them through a call each cost seven times
+; agondev's strcasecmp.
 _strcasecmp:
 	ld	iy, 0
 	add	iy, sp
 	ld	de, (iy+3)		; a
 	ld	hl, (iy+6)		; b
 .case_loop:
-	ld	a, (hl)
-	call	.case_lower
-	ld	c, a			; b's, lowered
 	ld	a, (de)
-	call	.case_lower
-	sub	a, c			; carry when a's is below b's
-	jr	nz, .case_diff
-	or	a, c
+	cp	a, (hl)
+	jr	nz, .case_fold		; not the same byte: the same letter?
+	or	a, a
 	jr	z, .case_same		; both ended together
+.case_next:
 	inc	de
 	inc	hl
 	jr	.case_loop
+.case_fold:
+	ld	b, a			; a's
+	ld	a, (hl)			; b's, lowered into c
+	cp	a, 'A'
+	jr	c, .case_b_low
+	cp	a, 'Z' + 1
+	jr	nc, .case_b_low
+	add	a, 32
+.case_b_low:
+	ld	c, a
+	ld	a, b			; and a's
+	cp	a, 'A'
+	jr	c, .case_a_low
+	cp	a, 'Z' + 1
+	jr	nc, .case_a_low
+	add	a, 32
+.case_a_low:
+	sub	a, c			; carry when a's is below b's
+	jr	z, .case_next		; the same letter; not an end, as they differed
+	sbc	hl, hl			; a's less b's, as an int
+	ld	l, a
+	ret
 .case_same:
 	or	a, a
 	sbc	hl, hl
-	ret
-
-.case_diff:				; a's less b's, as an int
-	sbc	hl, hl
-	ld	l, a
-	ret
-
-.case_lower:
-	cp	a, 'A'
-	ret	c
-	cp	a, 'Z' + 1
-	ret	nc
-	add	a, 32
 	ret
