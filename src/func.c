@@ -739,7 +739,13 @@ void gen_func_end(void)
 #ifdef OPT_ACC
     relax_function(&func_mark, frame_unused ? frame_none()
                                : frame_wants_call() ? frame_to_call() : frame_lea());
+    peep_answer = return_type == TY_VOID ? PEEP_VOID
+                  : type_is_struct(return_type) ? PEEP_PAIR
+                  : type_eight(return_type) ? PEEP_EIGHT
+                  : type_wide(return_type) ? PEEP_LONG
+                  : type_size(return_type) == 1 ? PEEP_BYTE : PEEP_PAIR;
     peep_function(&func_mark, func_start);
+    peep_answer = PEEP_ANY;
 #else
     /* No frame: the ld hl of its size cut, or the call to make it too. */
     frame_cut_len = frame_unused ? 8 : 4;
