@@ -1,6 +1,6 @@
 #!/bin/bash
 # The real programs, against agondev -Oz: how big acc makes them and how
-# fast they run, each built both ways.
+# fast they run, each built both ways -- acc, vi, AED and zap.
 #
 #   test/apps.sh                 # ACC=bin/opt-acc for opt-acc's builds
 #
@@ -10,8 +10,10 @@
 # fetches it), substituting through a file and writing it out; and AED, the
 # editor, from a checkout at a tag (AED, AED_REV), running its own
 # benchmark -- test/bench/bench.c, searching, walking lines, copying a range
-# and typing with undo -- a fixed number of times. None of vi or AED is
-# committed here: both are GPL.
+# and typing with undo -- a fixed number of times; and zap, the assembler,
+# from a checkout at a tag (ZAP, ZAP_REV) as test/perf.sh takes it,
+# assembling BBC BASIC for the Agon -- perf.sh's zap-basic. None of vi, AED
+# or zap is committed here: all three are GPL.
 #
 # `code` is the program's own objects, what each compiler made of its C, as
 # size.sh counts it. `cycles` is the emulator's count from the command
@@ -20,8 +22,8 @@
 # Library calls are in it: acc's libc in the one build, agondev's in the
 # other, which is what a program built either way runs with. Each run's
 # output -- the objects acc wrote, the file vi wrote, the counts AED
-# reports -- has to be the same from both builds, or its time is no
-# measure.
+# reports, the binary zap assembled -- has to be the same from both
+# builds, or its time is no measure.
 #
 # AED calls hub's client library: agondev's build links the libhub.a AED
 # carries, acc's the one hub's Makefile assembles for acc (HUB_ACC). The
@@ -51,6 +53,9 @@ VI_URL=https://github.com/tomm/toms-agon-experiments.git
 VI_REV=${VI_REV:-b2789b763c8041a0487ab3cfbbdfbe10d27c87c3}
 AED=${AED:-$HOME/code/aed}
 AED_REV=${AED_REV:-v1.6.3}
+ZAP=${ZAP:-$HOME/code/zap}
+ZAP_REV=${ZAP_REV:-v1.1.0}
+BASIC=test/corpus/Z_PRG_Agon-bbc-basic-v/tests
 CACHE=test/perf/cache
 
 work=$(mktemp -d)
@@ -129,6 +134,17 @@ else
     echo "note: no AED at $AED ($AED_REV) -- left out" >&2
 fi
 
+# zap, and the BBC BASIC it assembles, as perf.sh takes them.
+if git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}" >/dev/null 2>&1; then
+    mkdir -p "$work/zap/src" "$work/zap/basic"
+    git -C "$ZAP" archive "$ZAP_REV" src | tar -x -C "$work/zap/src" --strip-components=1
+    rm -f "$work/zap/src/zmalloc.c"     # zap's measuring shim, a link
+    git -C "$ZAP" archive "$ZAP_REV" "$BASIC" | tar -x -C "$work/zap/basic" --strip-components=4
+    names="$names zap"
+else
+    echo "note: no zap at $ZAP ($ZAP_REV) -- left out" >&2
+fi
+
 # build <name> <acc|Oz>: objects into $work/<name>/<how>/, the image as
 # $work/<name>/<how>.bin.
 build() {
@@ -196,6 +212,10 @@ run() {
         # The file first; the commands after it are run last first.
         printf 'tstart\r\nvi text.txt +wq +%%s/e/E/g +%%s/int/INT/g\r\ntstop\r\n' \
             > "$sd/autoexec.txt" ;;
+      zap)
+        cp "$dir/$how.bin" "$sd/bin/zap.bin"
+        cp "$dir/basic"/* "$sd/"
+        printf 'tstart\r\nzap bbcbasicvez.s out.bin\r\ntstop\r\n' > "$sd/autoexec.txt" ;;
       aed)
         cp "$dir/$how.bin" "$sd/bin/aedbench.bin"
         cp "$dir/bench.txt" "$sd/bench.txt"
@@ -207,6 +227,7 @@ run() {
       acc) check=$(cat "$sd/in"/*.o 2>/dev/null | md5sum | cut -c1-8)
            [ -n "$(ls "$sd/in"/*.o 2>/dev/null)" ] || check= ;;
       vi)  check=$([ -f "$sd/text.txt" ] && md5sum < "$sd/text.txt" | cut -c1-8) ;;
+      zap) check=$([ -f "$sd/out.bin" ] && md5sum < "$sd/out.bin" | cut -c1-8) ;;
       aed) # Each case's line but the hundredths it took.
            check=$([ -f "$sd/bench.out" ] && tr -d '\r' < "$sd/bench.out" |
                    awk 'NF == 3 && $3 ~ /^x/ { print $1, $3; next } { print }' |
@@ -230,7 +251,7 @@ one() {
     echo "$r $(code "$name" "$how")" > "$work/$name.$how.res"
 }
 
-# APPS_ONLY: the names of the ones to measure, of acc, vi and aed.
+# APPS_ONLY: the names of the ones to measure, of acc, vi, aed and zap.
 if [ -n "${APPS_ONLY:-}" ]; then
     only=
     for name in $names; do
