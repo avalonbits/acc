@@ -124,6 +124,20 @@ runs "the arguments are strings of their own" 00002a ' abc de' \
 }
 '
 
+# argv[argc] is a null pointer, as C has it -- getopt reads it to know the
+# arguments are done, and ez80asm's crashed. With a few, and with the most
+# there is room for, where it is the slot after the table's last.
+runs "argv[argc] is null" 00002a ' one two' \
+'int main(int argc, char **argv) {
+    return argc == 3 && argv[argc] == 0 ? 42 : 1;
+}
+'
+runs "argv[argc] is null at the most" 00002a ' a b c d e f g h i j k l m n o' \
+'int main(int argc, char **argv) {
+    return argc == 16 && same(argv[15], "o") && argv[argc] == 0 ? 42 : 1;
+}
+'
+
 # A main that takes nothing still runs: the stub hands it two values it does
 # not read, and takes them back itself.
 runs "a main that takes no arguments" 00002a ' one two' \
