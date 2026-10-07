@@ -298,7 +298,7 @@ static void gl_check_out(const GenRec *rec, int which, long got)
 static void gl_replay_raw(const GenRec *rec)
 {
     const unsigned char *bytes = (const unsigned char *) gl_kept(rec->arg[2]);
-    const int *relocs = (const int *) (const void *) gl_kept(rec->arg[4]);
+    const char *relocs = gl_kept(rec->arg[4]);  /* as bytes: not aligned */
     long at;
 
     if (out_here() != rec->arg[0])
@@ -308,7 +308,8 @@ static void gl_replay_raw(const GenRec *rec)
     for (at = 0; at != rec->arg[3]; at++) {
         if (out_reloc_put == out_reloc_limit)
             out_reloc_grow();
-        *out_reloc_put++ = relocs[at];
+        memcpy(out_reloc_put++, relocs + at * (long) sizeof *out_reloc_put,
+               sizeof *out_reloc_put);
     }
 }
 
