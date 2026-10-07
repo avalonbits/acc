@@ -763,6 +763,11 @@ mir "$OPT" "the count in BC before the call"           010a0000cd    yes \
 # starts and jumped over (test/cases/394).
 mirs "a block static with a value, made by it"       yes \
     'int f(int k) { static const int t[3] = { 5, 6, 7 }; return t[k]; }'
+# A function's strings, all laid down where its code starts behind one
+# jump -- jr past "ab" and "cd" -- not each jumped over where it is read
+# (test/cases/401).
+mir "$OPT" "strings behind one jump" 1806616200636400 yes \
+    'const char *f(int k) { return k ? "ab" : "cd"; }'
 # And ones whose values hold addresses: a string of the same initial
 # value, a global, a static at zero -- each moved with what it points at
 # (test/cases/396).
