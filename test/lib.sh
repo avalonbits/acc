@@ -1354,5 +1354,51 @@ case $err in
      fail=$((fail + 1)) ;;
 esac
 
+# malloc with many blocks held: it walks the free ones, not all of them.
+# 1500 blocks kept, then 1500 more made, counted by the emulator (IO ports
+# 0x40 and 0x41): a walk of every block was ~2250 blocks a malloc, some 100
+# million cycles; walking only the free ones is a few hundred cycles each.
+# Under 10 million is linear with room to spare.
+cat > "$tmp/many.c" <<'C'
+#include <stdlib.h>
+#include <ez80f92.h>
+
+static char *kept[3000];
+
+int main(void) {
+    int i;
+
+    for (i = 0; i < 1500; i++)
+        kept[i] = malloc(5);
+    io_out(0x40, 0);
+    for (i = 1500; i < 3000; i++)
+        kept[i] = malloc(5);
+    io_out(0x41, 0);
+    return kept[2999] ? 42 : 1;
+}
+C
+if "$ACC" -c "$tmp/many.c" -o "$tmp/many.o" -Iinclude >/dev/null 2>&1 &&
+   "$ACC" "$tmp/many.o" "$LIB" -o "$tmp/many.bin" -x >/dev/null 2>&1; then
+    if emu_available >/dev/null 2>&1; then
+        sd=$(emu_card)
+        cp "$tmp/many.bin" "$sd/bin/p.bin"
+        printf 'bin/p\r\n' > "$sd/autoexec.txt"
+        cycles=$(ACC_EMU_TIMEOUT=60 emu_run "$sd" -z -u 2>&1 |
+                 sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
+        rm -rf "$sd"
+        if [ -n "$cycles" ] && [ "$cycles" -lt 10000000 ]; then
+            pass=$((pass + 1))
+        else
+            printf '  FAIL %-36s %s cycles\n' "malloc with 1500 blocks held" "${cycles:-no count of}"
+            fail=$((fail + 1))
+        fi
+    else
+        pass=$((pass + 1))
+    fi
+else
+    printf '  FAIL %-36s %s\n' "malloc with 1500 blocks held" "did not build"
+    fail=$((fail + 1))
+fi
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -17,28 +17,20 @@ extern char acc_heap_end[];
 /* A block, and the whole of what this knows about the heap.
  *
  * Blocks in one list in address order, each saying how long it is, whether
- * it is in use, and where the one in front of it starts. Allocating walks
- * until something big enough turns up; freeing marks the block and joins it
- * to whichever of its two neighbours is free.
+ * it is in use, and where the one in front of it starts -- so that freeing
+ * joins a block to whichever of its two neighbours is free with two tests
+ * and no walk. The free ones are in a second list as well, threaded
+ * through their own bytes, and allocating walks only that: first fit among
+ * the free blocks, not among all of them. Walking all of them made a
+ * program that holds many blocks pay for every one at every malloc: Busybox
+ * vi, substituting through 40 KB with an undo record a change, spent 70% of
+ * its time in malloc's walk. A block freed goes to the front of the free
+ * list; what is left of one split takes its place there, so the room at the
+ * end of the heap stays where it was.
  *
- * The link backwards is what makes the second half of that cheap. Without
- * it, joining to the block in front means finding it, and finding it means
- * walking from the start of the heap -- so every free costs the length of
- * the list, and a program that frees as it goes pays for the whole heap
- * every time it lets go of anything.
- *
- * That is insurance and not a speed-up: it is one byte a block, and on the
- * one program it has been measured against -- zap, assembling a 6 KB source
- * twelve times -- the walk and the two tests came to the same time to the
- * hundredth. What it buys is that there is no length of list at which
- * letting go of something becomes the expensive part.
- *
- * First fit, and no more than that. It does not lose memory to a pattern of
- * allocation, and it is forty lines rather than three hundred. What it is
- * still not is fast to allocate from: the walk is the length of the list,
- * so a program holding thousands of small blocks pays for it at every
- * malloc. Where that stops being the right trade is when something here is
- * measured rather than supposed. */
+ * realloc grows a block into a free one after it, rather than copying it
+ * elsewhere, where that is room enough: a buffer grown a little at a time
+ * was copied whole each time. */
 typedef struct block {
     struct block *next;
     struct block *prev;
@@ -46,7 +38,40 @@ typedef struct block {
     unsigned char used;
 } block;
 
-static block *heap;
+/* A free block's first bytes: its neighbours in the free list. */
+typedef struct {
+    block *next;
+    block *prev;
+} links;
+
+#define LINKS(b) ((links *) ((b) + 1))
+
+static block *heap, *free_list;
+
+/* `b` into the free list, in front, or in `at`'s place. */
+static void free_put(block *b, block *before, block *after)
+{
+    LINKS(b)->prev = before;
+    LINKS(b)->next = after;
+    if (before)
+        LINKS(before)->next = b;
+    else
+        free_list = b;
+    if (after)
+        LINKS(after)->prev = b;
+}
+
+static void free_take(block *b)
+{
+    block *before = LINKS(b)->prev, *after = LINKS(b)->next;
+
+    if (before)
+        LINKS(before)->next = after;
+    else
+        free_list = after;
+    if (after)
+        LINKS(after)->prev = before;
+}
 
 static void heap_start(void)
 {
@@ -55,16 +80,22 @@ static void heap_start(void)
     heap->prev = NULL;
     heap->size = (size_t) (acc_heap_end - acc_heap_start) - sizeof(block);
     heap->used = 0;
+    free_list = NULL;
+    free_put(heap, NULL, NULL);
 }
 
-/* What is left of a block after `n` bytes, as a block of its own -- if there
- * is enough left for one to be worth having. */
-static void split(block *b, size_t n)
+/* What is left of a block after `n` bytes, as a free block of its own -- if
+ * there is enough left for one to be worth having -- in the free list
+ * where the block was, or in front where it was not free. */
+static void split(block *b, size_t n, int was_free)
 {
     block *rest;
 
-    if (b->size < n + sizeof(block) + 4)
+    if (b->size < n + sizeof(block) + sizeof(links) + 4) {
+        if (was_free)
+            free_take(b);
         return;
+    }
     rest = (block *) ((char *) (b + 1) + n);
     rest->next = b->next;
     rest->prev = b;
@@ -74,6 +105,20 @@ static void split(block *b, size_t n)
         rest->next->prev = rest;
     b->next = rest;
     b->size = n;
+    if (was_free)
+        free_put(rest, LINKS(b)->prev, LINKS(b)->next);
+    else
+        free_put(rest, NULL, free_list);
+}
+
+/* Rounded up to three bytes, which is what this machine's words are, so
+ * that what comes back is as aligned as anything here needs -- and to room
+ * for the links once it is free again. */
+static size_t rounded(size_t n)
+{
+    n = (n + 2) & ~(size_t) 2;
+
+    return n < sizeof(links) ? sizeof(links) : n;
 }
 
 void *malloc(size_t n)
@@ -84,15 +129,11 @@ void *malloc(size_t n)
         return NULL;
     if (!heap)
         heap_start();
-
-    /* Rounded up to three bytes, which is what this machine's words are, so
-     * that what comes back is as aligned as anything here needs. */
-    n = (n + 2) & ~(size_t) 2;
-
-    for (b = heap; b; b = b->next) {
-        if (b->used || b->size < n)
+    n = rounded(n);
+    for (b = free_list; b; b = LINKS(b)->next) {
+        if (b->size < n)
             continue;
-        split(b, n);
+        split(b, n, 1);
         b->used = 1;
 
         return b + 1;
@@ -101,11 +142,13 @@ void *malloc(size_t n)
     return NULL;
 }
 
-/* A free block and the free block after it, made one. */
+/* A block and the free block after it, made one: the second out of the
+ * free list, the first where it was. */
 static void join(block *b)
 {
     block *rest = b->next;
 
+    free_take(rest);
     b->size += rest->size + sizeof(block);
     b->next = rest->next;
     if (rest->next)
@@ -122,12 +165,20 @@ void free(void *p)
     b->used = 0;
 
     /* Joined to the block after it and to the one in front, so that the room
-     * a program gives back is room it can ask for again as one piece. Two
-     * tests and no walk: that is what the link backwards is for. */
+     * a program gives back is room it can ask for again as one piece. */
     if (b->next && !b->next->used)
         join(b);
-    if (b->prev && !b->prev->used)
-        join(b->prev);
+    if (b->prev && !b->prev->used) {
+        block *front = b->prev;         /* free, and in the list already */
+
+        front->size += b->size + sizeof(block);
+        front->next = b->next;
+        if (b->next)
+            b->next->prev = front;
+
+        return;
+    }
+    free_put(b, NULL, free_list);
 }
 
 void *calloc(size_t count, size_t size)
@@ -156,6 +207,13 @@ void *realloc(void *p, size_t n)
     b = (block *) p - 1;
     if (b->size >= n)
         return p;
+    n = rounded(n);
+    if (b->next && !b->next->used && b->size + sizeof(block) + b->next->size >= n) {
+        join(b);
+        split(b, n, 0);
+
+        return p;
+    }
     fresh = malloc(n);
     if (fresh)
         memcpy(fresh, p, b->size);
