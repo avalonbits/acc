@@ -8,7 +8,6 @@
 ;
 
 	XDEF	_acc_rt_memchr
-	XREF	acc_rt_bc_is_zero
 
 	.assume adl=1
 	SEGMENT CODE
@@ -21,7 +20,11 @@
 ;	hl = where to look, a = the byte, bc = how many
 ;	returns hl = the byte, or nothing at all
 _acc_rt_memchr:
-	call	acc_rt_bc_is_zero
+	push	hl
+	or	a, a			; carry clear, and A kept
+	sbc	hl, hl
+	sbc	hl, bc			; zero when there are none
+	pop	hl
 	jr	z, _rt_chr_none
 	cpir
 	jr	nz, _rt_chr_none

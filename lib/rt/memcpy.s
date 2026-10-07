@@ -9,7 +9,6 @@
 
 	XDEF	_acc_rt_memcpy
 	XDEF	_acc_rt_memmove
-	XREF	acc_rt_bc_is_zero
 
 	.assume adl=1
 	SEGMENT CODE
@@ -21,7 +20,9 @@
 ;
 ; ldir and lddr read the count as the full twenty-four bits of BC, so a count
 ; of nothing copies sixteen megabytes rather than nothing at all. The guard
-; is here and not at the call, because here it is written once.
+; is here and not at the call, because here it is written once -- and in
+; place rather than called, which for the small copies of a struct would be
+; most of the work.
 ;
 ;	hl = source, de = destination, bc = how many
 ;	returns hl = the destination, which is what memcpy answers
@@ -29,7 +30,11 @@
 
 _acc_rt_memcpy:
 	push	de			; the answer
-	call	acc_rt_bc_is_zero
+	push	hl
+	or	a, a
+	sbc	hl, hl
+	sbc	hl, bc			; zero when there are none
+	pop	hl
 	jr	z, _rt_copy_done
 	ldir
 _rt_copy_done:
@@ -40,10 +45,15 @@ _rt_copy_done:
 ; Overlapping forwards is what ldir already does correctly.
 _acc_rt_memmove:
 	push	de
-	call	acc_rt_bc_is_zero
+	push	hl
+	or	a, a
+	sbc	hl, hl
+	sbc	hl, bc			; zero when there are none
+	pop	hl
 	jr	z, _rt_copy_done
 	push	hl			; source below destination: go backwards
-	sbc	hl, de			; carry is clear, from bc_is_zero
+	or	a, a
+	sbc	hl, de
 	pop	hl
 	jr	nc, _rt_move_up
 	add	hl, bc			; both ends, one past the last byte

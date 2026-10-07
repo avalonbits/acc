@@ -8,23 +8,30 @@
 ;
 
 	XDEF	_acc_rt_memset
-	XREF	acc_rt_bc_is_zero
 
 	.assume adl=1
 	SEGMENT CODE
 
 ;	hl = where, a = the byte, bc = how many
 ;	returns hl = where, which is what memset answers
+; The tests for none are made in place, not called: a struct cleared with
+; memset on every line of a program's input spends more in two calls than
+; in the fill.
 _acc_rt_memset:
-	push	hl
-	call	acc_rt_bc_is_zero
+	push	hl			; the answer
+	ex	de, hl			; de = where
+	or	a, a			; carry clear, and A kept
+	sbc	hl, hl
+	sbc	hl, bc			; zero when there are none
 	jr	z, _rt_fill_done
-	ld	(hl), a			; the first one by hand, then copy it
+	ld	(de), a			; the first one by hand, then copy it
 	dec	bc			; along, which is how ldir fills
-	call	acc_rt_bc_is_zero
+	or	a, a
+	sbc	hl, hl
+	sbc	hl, bc			; zero when that was the only one
 	jr	z, _rt_fill_done
-	push	hl
-	pop	de
+	push	de
+	pop	hl
 	inc	de
 	ldir
 _rt_fill_done:
