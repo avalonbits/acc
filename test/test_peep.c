@@ -591,6 +591,78 @@ int main(void)
     is("lea hl, iy+0 with HL holding IY: gone", gone(7), 1);
     is("an instruction not known: left", run(unknown, sizeof unknown), 0);
 
+    /* Each after a nop: what a function begins with is something jumped
+     * to, which no rule touches.
+     *
+     * A member read through a pointer in the frame, in a function whose
+     * answer is in HL: ld hl, (ix+6) / ld de, 3 / add hl, de / ld hl, (hl)
+     * / ret made ld iy, (ix+6) / ld hl, (iy+3) / ret -- DE and IY no
+     * return reads, the constant a displacement. */
+    {
+        static const unsigned char member[] = {
+            0x00, 0xdd, 0x27, 0x06, 0x11, 0x03, 0x00, 0x00, 0x19, 0xed, 0x27, 0xc9
+        };
+        static const unsigned char member_e[] = {      /* ld (hl), e */
+            0x00, 0xdd, 0x27, 0x06, 0x11, 0x03, 0x00, 0x00, 0x19, 0x73, 0xc9
+        };
+        static const unsigned char member_far[] = {    /* past a displacement */
+            0x00, 0xdd, 0x27, 0x06, 0x11, 0x80, 0x00, 0x00, 0x19, 0xed, 0x27, 0xc9
+        };
+        static const unsigned char local_member[] = {  /* lea hl, ix-10 / +4 */
+            0x00, 0xed, 0x22, 0xf6, 0x11, 0x04, 0x00, 0x00, 0x19, 0xed, 0x27, 0xc9
+        };
+        static const unsigned char de_left[] = {       /* ld de, 5 / ret */
+            0x00, 0x21, 0x01, 0x00, 0x00, 0x11, 0x05, 0x00, 0x00, 0xc9
+        };
+        static const unsigned char rlc_carry[] = {     /* scf / rlc l / ret */
+            0x00, 0x37, 0xcb, 0x05, 0xc9
+        };
+
+        peep_answer = PEEP_PAIR;
+        run(member, sizeof member);
+        is("p->member: ld iy, (ix+6)", code[2], 0x31);
+        is("p->member: ld hl, (iy+3)", code[4] == 0xfd && code[5] == 0x27 && code[6] == 0x03, 1);
+        is("p->member: the load trimmed a byte", trimmed(4), 1);
+        is("p->member: add hl, de and ld hl, (hl) gone", gone(8) && gone(9), 1);
+        peep_answer = PEEP_VOID;        /* HL not read after: only E stops it */
+        run(member_e, sizeof member_e);
+        is("p->member stored from E, the constant's: kept", code[2], 0x27);
+        peep_answer = PEEP_PAIR;
+        run(member_far, sizeof member_far);
+        is("p->member past (iy+d)'s reach: kept", code[2], 0x27);
+        peep_answer = PEEP_LONG;
+        run(member, sizeof member);
+        is("p->member, E returned: kept", code[2], 0x27);
+        peep_answer = PEEP_ANY;
+        run(member, sizeof member);
+        is("p->member, what returns read not known: kept", code[2], 0x27);
+        peep_answer = PEEP_PAIR;
+        run(local_member, sizeof local_member);
+        is("a local's member: lea hl, ix-6", code[3], 0xfa);
+        is("a local's member: ld de and add hl, de gone", gone(4) && gone(8), 1);
+        run(de_left, sizeof de_left);
+        is("DE loaded, an int returned: gone", gone(5), 1);
+        peep_answer = PEEP_LONG;
+        run(de_left, sizeof de_left);
+        is("DE loaded, a long returned: kept", gone(5), 0);
+        /* exit's way out, a jump through the stack to the startup with
+         * the status in HL: the ret is not the function's, and HL kept,
+         * in a function that returns nothing. */
+        {
+            static const unsigned char exit_jump[] = {
+                0x00, 0x21, 0x00, 0x00, 0x00, 0xd5, 0xc9    /* ld hl, 0 / push de / ret */
+            };
+
+            peep_answer = PEEP_VOID;
+            run(exit_jump, sizeof exit_jump);
+            is("ld hl before push de / ret, a void function: kept", gone(1), 0);
+        }
+        peep_answer = PEEP_PAIR;
+        run(rlc_carry, sizeof rlc_carry);
+        is("scf before rlc, which reads no carry: gone", gone(1), 1);
+        peep_answer = PEEP_ANY;
+    }
+
     fprintf(stderr, "  %d of %d held\n", checks - failures, checks);
 
     return failures != 0;

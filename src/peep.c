@@ -63,6 +63,27 @@ enum {
     K_POP               /* pop rr */
 };
 
+/* What a return reads: the answer's registers, as func.c says what the
+ * function returns -- A and HL for a byte, which acc leaves widened in HL
+ * too; E:HL for a long or a float; BC:DE:HL for a long long; HL for
+ * anything else; none for void -- and IX and SP, which the caller gets
+ * back. Every other register is the callee's to change (docs/DESIGN.md,
+ * section 10), so what is left in DE or IY at the end is dead. Not said
+ * (PEEP_ANY): everything but the flags. */
+int peep_answer;
+
+static Regs ret_use(void)
+{
+    static const Regs answer[] = {
+        M_ALL & ~M_F, 0, M_A | M_HL, M_HL, M_HL | BIT(RE), M_HL | M_DE | M_BC
+    };
+
+    if (peep_answer == PEEP_ANY)
+        return answer[PEEP_ANY];
+
+    return answer[peep_answer] | M_IX | M_SP;
+}
+
 /* What it may do besides its registers: never taken out for being dead. */
 #define E_STORE   1     /* writes memory, or ports */
 #define E_STACK   2     /* moves sp: push, pop, ex (sp) */
@@ -188,7 +209,8 @@ static int decode(int at, MInsn *m)
         case 0:                     /* rlc rrc rl rr sla sra - srl */
             if (((sub >> 3) & 7) == 6)
                 return 0;
-            m->use |= r | M_F;
+            /* Only rl and rr read the carry; the rest only set it. */
+            m->use |= r | (((sub >> 3) & 7) == 2 || ((sub >> 3) & 7) == 3 ? M_F : 0);
             m->def |= r | M_F;
             break;
         case 1:                     /* bit: Z, carry kept */
@@ -605,7 +627,13 @@ static int decode(int at, MInsn *m)
         return 4;
     case 0xc9:                      /* ret: the caller reads no flags */
         m->kind = K_RET;
-        m->use = M_ALL & ~M_F;
+        /* Just after a push, or ex (sp), hl, a ret is a jump to what was
+         * put there -- exit's back into the startup, the status in HL --
+         * and not the function's return: anything may be read there. A
+         * byte that only looks like one, the end of another instruction,
+         * costs only what the return might have let go. */
+        m->use = at > fn_from && ((img(at - 1)[0] & 0xcf) == 0xc5 || img(at - 1)[0] == 0xe3)
+                 ? M_ALL & ~M_F : ret_use();
         m->len = 1;
 
         return 1;
@@ -643,7 +671,7 @@ static int decode(int at, MInsn *m)
     switch (z) {
     case 0:                         /* ret cc */
         m->kind = K_RETCC;
-        m->use = M_ALL;
+        m->use = ret_use() | M_F;
         m->len = 1;
 
         return 1;
@@ -1727,6 +1755,150 @@ static int zero_load(int i)
     return 1;
 }
 
+/* A pointer read into HL, a constant added and the sum read or written
+ * through: the pointer read into IY and the constant the displacement of
+ * an (iy+d) that reads or writes it -- what agondev makes of `p->member`,
+ * which acc's ld de, n / add hl, de / ld (hl) made four instructions:
+ *   ld hl, (ix+d) | ld hl, (hl) | ld hl, (iy+d)   made ld iy, the same
+ *   ld de, n                                      made the access, (iy+n)
+ *   add hl, de                                    gone
+ *   ld r, (hl) | ld rr, (hl) | ld (hl), r | ...   gone
+ * ten bytes made six for a pair's load, nine made six for a byte's. The
+ * constant fits a displacement and is no slot the link fills in; nothing
+ * jumps between; and what the four left changed and the two do not -- DE,
+ * IY, the flags, HL where the access does not make it -- nobody reads. */
+static int iy_access(const unsigned char *b, unsigned char *op)
+{
+    int r;
+
+    if (b[0] == 0xed && (b[1] == 0x27 || b[1] == 0x17 || b[1] == 0x07
+                         || b[1] == 0x1f || b[1] == 0x0f)) {
+        *op = b[1];                         /* ld rr, (hl) and ld (hl), rr */
+        return 2;
+    }
+    if ((b[0] & 0xc7) == 0x46 && b[0] != 0x76) {
+        *op = b[0];                         /* ld r, (hl) */
+        return 1;
+    }
+    r = b[0] & 7;
+    if ((b[0] & 0xf8) == 0x70 && r != 4 && r != 5 && r != 6) {
+        *op = b[0];                         /* ld (hl), r: not H or L, the address's */
+        return 1;
+    }
+
+    return 0;
+}
+
+static void rewrite_byte(int i, int offset, unsigned char byte)
+{
+    MInsn keep = ins[i];
+
+    out_img[keep.at + offset - out_base] = byte;
+    decode(keep.at, &ins[i]);
+    ins[i].labelled = keep.labelled;
+    ins[i].slot = keep.slot;
+    ins[i].linked = keep.linked;
+    ins[i].runtime = keep.runtime;
+    ins[i].next = keep.next;
+    ins[i].to = keep.to;
+    ins[i].live_out = keep.live_out;
+}
+
+static int iy_offset(int i)
+{
+    const MInsn *p = &ins[i];
+    const unsigned char *b = img(p->at);
+    int k, add, acc, n, len, retarget;
+    unsigned char op, *w;
+    unsigned value;
+    MInsn keep;
+
+    if (p->len == 3 && (b[0] == 0xdd || b[0] == 0xfd) && b[1] == 0x27)
+        retarget = b[0] == 0xdd ? 0x31 : 0x37;  /* ld iy, (ix+d) | (iy+d) */
+    else if (p->len == 2 && b[0] == 0xed && b[1] == 0x27)
+        retarget = 0x31;                        /* ld iy, (hl) */
+    else
+        return 0;
+    if (p->frozen || p->trim || p->linked)
+        return 0;
+    k = after(i);
+    if (k < 0 || k != p->next || ins[k].len != 4 || img(ins[k].at)[0] != 0x11)
+        return 0;
+    if (ins[k].labelled || ins[k].slot || ins[k].linked || ins[k].frozen)
+        return 0;
+    value = img(ins[k].at)[1] | img(ins[k].at)[2] << 8 | (unsigned) img(ins[k].at)[3] << 16;
+    if (value > 0x7f && value < 0xffff80)
+        return 0;
+    add = after(k);
+    if (add < 0 || add != ins[k].next || ins[add].labelled || ins[add].frozen
+        || ins[add].len != 1 || img(ins[add].at)[0] != 0x19)
+        return 0;
+    acc = after(add);
+    if (acc < 0 || acc != ins[add].next || ins[acc].labelled || ins[acc].frozen
+        || ins[acc].trim || ins[acc].slot)
+        return 0;
+    if (!(len = iy_access(img(ins[acc].at), &op)) || len != ins[acc].len)
+        return 0;
+    /* Nor may the access read DE: it would read the constant. */
+    if ((ins[acc].use & M_DE)
+        || (ins[acc].live_out & (M_DE | M_IY | M_F | (M_HL & ~ins[acc].def))))
+        return 0;
+
+    rewrite_byte(i, 1, (unsigned char) retarget);
+    keep = ins[k];
+    w = out_img + (keep.at - out_base);
+    w[0] = 0xfd;
+    w[1] = op;
+    w[2] = (unsigned char) (value & 0xff);
+    n = decode(keep.at, &ins[k]);
+    ins[k].labelled = keep.labelled;
+    ins[k].next = keep.next;
+    ins[k].live_out = ins[acc].live_out;
+    ins[k].trim = (unsigned char) (4 - n);
+    ins[k].frozen = 1;
+    take(add);
+    take(acc);
+    npeep_bytes += 4 - n;
+    rewrite_end = acc;
+
+    return 1;
+}
+
+/* A local's address and a constant added: the one address, lea hl, ix+d
+ * with the constant in the displacement, where it fits -- five bytes. */
+static int lea_offset(int i)
+{
+    const MInsn *p = &ins[i];
+    const unsigned char *b = img(p->at);
+    int k, add, d;
+    unsigned value;
+
+    if (p->len != 3 || b[0] != 0xed || b[1] != 0x22 || p->frozen || p->trim)
+        return 0;
+    k = after(i);
+    if (k < 0 || k != p->next || ins[k].labelled || ins[k].slot || ins[k].linked
+        || ins[k].frozen || ins[k].len != 4 || img(ins[k].at)[0] != 0x11)
+        return 0;
+    value = img(ins[k].at)[1] | img(ins[k].at)[2] << 8 | (unsigned) img(ins[k].at)[3] << 16;
+    if (value > 0x7f && value < 0xffff80)
+        return 0;
+    add = after(k);
+    if (add < 0 || add != ins[k].next || ins[add].labelled || ins[add].frozen
+        || ins[add].len != 1 || img(ins[add].at)[0] != 0x19
+        || (ins[add].live_out & (M_DE | M_F)))
+        return 0;
+    d = (signed char) b[2] + (value > 0x7f ? (int) value - 0x1000000 : (int) value);
+    if (d < -128 || d > 127)
+        return 0;
+    rewrite_byte(i, 2, (unsigned char) (d & 0xff));
+    ins[i].live_out = ins[add].live_out;
+    take(k);
+    take(add);
+    rewrite_end = add;
+
+    return 1;
+}
+
 /* Whether two instructions do the same: the same bytes, the link filling
  * in the same thing -- or, of two relative branches, the same opcode and
  * the same target, whose bytes differ for where each is. */
@@ -2022,7 +2194,8 @@ static int rules(void)
          * every one. Taking an instruction out only makes less live, which
          * the rules above may go on from. */
         if ((m->kind == K_PUSH && m->pair == M_HL && load_to_de(i))
-            || (m->kind == K_PUSH && park(i)) || through(i) || zero_load(i)) {
+            || (m->kind == K_PUSH && park(i)) || through(i) || zero_load(i)
+            || iy_offset(i) || lea_offset(i)) {
             any = 1;
             i = rewrite_end;
             continue;

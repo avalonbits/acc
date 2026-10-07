@@ -342,6 +342,9 @@ void gen_local_settle(void);       /* locals below all the room taken */
 void relax_cut_code(Cut *cuts, int ncuts, const Mark *from, int fn_from,
                     int fn_to);
 void peep_function(const Mark *from, int start);   /* peep.c */
+/* What the function made returns, for what its returns read (peep.c). */
+enum { PEEP_ANY, PEEP_VOID, PEEP_BYTE, PEEP_PAIR, PEEP_LONG, PEEP_EIGHT };
+extern int peep_answer;
 int  peep_analyse(const Mark *from, int start, int end);
 int  peep_gone(int at);
 int  peep_trimmed(int at);
