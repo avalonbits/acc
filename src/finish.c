@@ -498,9 +498,10 @@ static void bss_emit(void)
  * everything after the name that was typed, which is why the name is not in
  * it and has to come from somewhere else. The routine below walks that text,
  * writes a zero over each separator so that every word is a string of its
- * own, and fills a table of pointers to them. It is the same walk agondev's
- * startup makes, down to the sixteen-argument limit, because a program that
- * works under one has to work under the other.
+ * own, and fills a table of pointers to them, with a null pointer after the
+ * last: argv[argc], which C says is one and getopt reads. It is the same walk
+ * agondev's startup makes, down to the sixteen-argument limit, because a
+ * program that works under one has to work under the other.
  *
  * It is written whether main asks for it or not. Whether it does is not a
  * question the link can answer -- main arrives from an object, and an object
@@ -529,7 +530,8 @@ static const unsigned char args_code[] = {
     0xaf, 0x12,                                 /* xor a, a / ld (de), a */
     0xed, 0x32, 0x03,                           /* lea ix, ix+3 */
     0x0c, 0x79, 0xb8, 0x38, 0xe1,               /* inc c / cp b / jr c, next */
-    0x11, 0x00, 0x00, 0x00, 0x59,               /* done: ld de, 0 / ld e, c */
+    0x11, 0x00, 0x00, 0x00,                     /* done: ld de, 0 */
+    0xdd, 0x1f, 0x00, 0x59,                     /* ld (ix+0), de / ld e, c */
     0x21, 0x00, 0x00, 0x00,                     /* ld hl, argv */
     0xc9,
     0x0e, 0x00,                                 /* token: ld c, 0 */
@@ -546,12 +548,12 @@ static const unsigned char args_code[] = {
  * and the table again, where it is answered with. */
 #define ARGS_ARGV_AT    0x02
 #define ARGS_NAME_AT    0x06
-#define ARGS_ARGV2_AT   0x3c
+#define ARGS_ARGV2_AT   0x3f
 
 static const struct { int at, to; } args_calls[] = {
-    { 0x10, 0x4f },                             /* spaces */
-    { 0x1a, 0x40 },                             /* token */
-    { 0x29, 0x4f }                              /* spaces */
+    { 0x10, 0x52 },                             /* spaces */
+    { 0x1a, 0x43 },                             /* token */
+    { 0x29, 0x52 }                              /* spaces */
 };
 
 /* The name argv[0] is given. MOS does not pass one -- what was typed is not
@@ -581,11 +583,12 @@ static void args_emit(void)
 
     /* The table goes past everything that is cleared rather than among it.
      * Nothing reads a slot the routine has not written -- argc says how many
-     * there are -- so zeroing forty-eight bytes at every start would be work
-     * for no one, and leaving them out keeps a program whose own bss is one
-     * byte a program whose bss is one byte. */
+     * there are, and the null after them is written too -- so zeroing the
+     * fifty-one bytes at every start would be work for no one, and leaving
+     * them out keeps a program whose own bss is one byte a program whose bss
+     * is one byte. */
     argv_at = bss_len;
-    bss_extra = ARGV_MAX * ACC_INT_SIZE;
+    bss_extra = (ARGV_MAX + 1) * ACC_INT_SIZE;  /* and argv[argc] after */
     base = out_here();
     for (i = 0; i < (int) sizeof args_code; i++)
         out_byte(args_code[i]);

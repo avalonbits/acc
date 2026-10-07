@@ -207,11 +207,13 @@ return_jp_hl:
 
 ; hl holds what MOS passed: the command line past the name that was typed.
 ; Each word in it is given a zero of its own and a slot in the table, and the
-; name -- which MOS does not pass -- is put in front as argv[0]. Answers with
-; hl = argv and de = argc, which the stub pushes in that order.
+; name -- which MOS does not pass -- is put in front as argv[0], and a null
+; pointer after the last, argv[argc], as C has it. Answers with hl = argv and
+; de = argc, which the stub pushes in that order.
 ;
 ; The sixteen-argument limit is agondev's, and is here for the same reason the
 ; walk is: a program that works under one startup has to work under the other.
+; The table has a seventeenth slot, for the null after sixteen.
 _acc_args:
 	ld	ix, 0			; [hole] the table of pointers
 	ld	bc, 0			; [hole] the name this was built under
@@ -242,6 +244,7 @@ args_next:
 	jr	c, args_next
 args_done:
 	ld	de, 0
+	ld	(ix + 0), de		; argv[argc]
 	ld	e, c
 	ld	hl, 0			; [hole] the table of pointers
 	ret
