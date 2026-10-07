@@ -105,6 +105,12 @@ lea_hl_iy=ed2300                    # lea hl, iy+0: a read of the IY local
 longloop='long f(const char *p, int n) { long t = 1; int s = 0; while (n--) s += *p++; return s + t; }'
 emits "$OPT" "a loop with a long: opt-acc keeps a local in IY" "$lea_hl_iy" yes "$longloop"
 emits "$OPT" "a loop without: left to the SSA form"  "$lea_hl_iy" no "$loop"
+# A jump in reach once the jumps between it and its target are short, two
+# bytes: vi's skip_thing, whose loop's jump back is 134 bytes as written and
+# 108 once the ten inside it are cut -- jr, not jp.
+skipthing='extern char *end, *text; int st_test(char *p, int type, int dir, char *c); char *f(char *p, int linecnt, int dir, int type) { char c; while (st_test(p, type, dir, &c)) { if (c == 10 && --linecnt < 1) break; if (dir >= 0 && p >= end - 1) break; if (dir < 0 && p <= text) break; p += dir; } return p; }'
+emits "$OPT" "a jump in reach once others are cut, jr" 1894 yes "$skipthing"
+emits "$OPT" "not jp"                                  c308   no  "$skipthing"
 # There a long goes three bytes at a time through DE or BC, where free,
 # rather than IY with the local pushed and popped around every move.
 crctable='unsigned long t[256]; void f(void) { for (unsigned n = 0; n < 256; n++) { unsigned long c = n; for (int k = 0; k < 8; k++) c = c & 1 ? 0xedb88320UL ^ (c >> 1) : c >> 1; t[n] = c; } }'
