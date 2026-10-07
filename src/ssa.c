@@ -52,11 +52,14 @@
 
 
 
-/* A block's statics: the records of their bytes, and the symbols settled
- * after them -- and the symbols moved with them, to be put back where a
- * function made here is gone back from (ssa_restore). */
+/* A block's statics: the records of their bytes -- strings among them, and
+ * the slots in them that the link or the bss fills -- and the symbols
+ * settled after them; and the symbols moved with them, to be put back where
+ * a function made here is gone back from (ssa_restore). in_data: within a
+ * static's initial value, whose strings are its bytes, not code. */
 static const GenRec **raws;
 int nraws;
+static int in_data;
 /* A block static that starts at zero: its room in the bss, reserved again
  * where the function's code starts, as the first pass reserved it -- the
  * bss given back to where it was with the rest of the function. */
@@ -746,13 +749,17 @@ static void build_one(const GenRec *rec)
     pops = rec->vtop_in - rec->vtop_out + pushes(op);
 
     switch (op) {
-    case GL_RAW:
+    case GL_RAW: case GL_gen_data_fixup: case GL_gen_bss_fixup:
         /* A block's static: its bytes, made again where the function's
-         * code starts (emit_raws). With relocations among them, not yet. */
-        if (rec->arg[3]) {
-            fail = "a static local's bytes, with addresses";
-            return;
-        }
+         * code starts (emit_raws), and the slots among them that hold an
+         * address or wait for one. */
+        GROW(raws, nraws, raws_cap);
+        raws[nraws++] = rec;
+        return;
+    case GL_gen_data:
+        /* A string in a static's initial value: laid with its bytes. */
+        if (!in_data)
+            break;
         GROW(raws, nraws, raws_cap);
         raws[nraws++] = rec;
         return;
@@ -785,15 +792,16 @@ static void build_one(const GenRec *rec)
         GROW(bss_recs, nbss_recs, bss_recs_cap);
         bss_recs[nbss_recs++] = rec;
         return;
-    case GL_gen_data_begin: case GL_gen_data_end: case GL_gen_pending_clear:
+    case GL_gen_data_begin: case GL_gen_data_end:
         /* A block static's initial value being read: the parser's state,
-         * nothing in the code. Its bytes are the GL_RAW records after,
-         * which emit_raws lays down again; one with an address among them
-         * is still refused there. */
+         * nothing in the code. Its bytes are the records emit_raws lays
+         * down again. */
+        in_data = op == GL_gen_data_begin;
         return;
-    case GL_gen_data_fixup: case GL_gen_bss_move:
-    case GL_gen_bss_forget: case GL_gen_bss_fixup:
-    case GL_gen_late_fixup: case GL_gen_slot: case GL_gen_link_fixup:
+    case GL_gen_pending_clear:
+        return;
+    case GL_gen_bss_move: case GL_gen_bss_forget: case GL_gen_late_fixup:
+    case GL_gen_slot: case GL_gen_link_fixup:
     case GL_out_rewind: case GL_out_seek:
         fail = "a static local";
         return;
@@ -2689,6 +2697,72 @@ void ssa_moved_add(int old_at, int len, int new_at)
     moved_add(old_at, len, new_at);
 }
 
+/* Whether the three bytes at `at` are among the statics' bytes: `spans`,
+ * their GL_RAW records with bytes in them, in the order written -- which
+ * is where, since the image went back nowhere among them. */
+static int in_spans(const GenRec **spans, int nspans, int at)
+{
+    int lo = 0, hi = nspans;
+
+    while (lo < hi) {               /* the first that starts past `at` */
+        int mid = (lo + hi) / 2;
+
+        if (spans[mid]->arg[0] <= at)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    return lo && at + ACC_INT_SIZE <= spans[lo - 1]->arg[0] + spans[lo - 1]->arg[1];
+}
+
+/* Whether every slot the statics' records name is in their bytes, where
+ * emit_raws moves it: one anywhere else would be left where the first
+ * pass had it, in code since gone. */
+static void raws_check(void)
+{
+    const GenRec **spans;
+    int nspans = 0, at;
+
+    if (!nraws)
+        return;
+    spans = malloc((size_t) nraws * sizeof *spans);
+    if (!spans)
+        acc_error("out of memory for the SSA form");
+    for (at = 0; at != nraws; at++)
+        if (raws[at]->op == GL_RAW && raws[at]->arg[1])
+            spans[nspans++] = raws[at];
+    for (at = 0; at != nraws && !fail; at++) {
+        const GenRec *rec = raws[at];
+        const char *relocs;
+        int reloc;
+
+        switch (rec->op) {
+        case GL_gen_data_fixup:
+            if (!in_spans(spans, nspans, (int) rec->arg[1]))
+                fail = "a static local";
+            continue;
+        case GL_gen_bss_fixup:
+            if (!in_spans(spans, nspans, (int) rec->arg[0]))
+                fail = "a static local";
+            continue;
+        case GL_RAW:
+            break;
+        default:
+            continue;
+        }
+        relocs = gl_kept(rec->arg[4]);
+        for (reloc = 0; reloc != rec->arg[3]; reloc++) {
+            int offset;
+
+            memcpy(&offset, relocs + reloc * (int) sizeof offset, sizeof offset);
+            if (!in_spans(spans, nspans, out_base + offset))
+                fail = "a static local";
+        }
+    }
+    free(spans);
+}
+
 /* The block's statics' bytes, jumped over where the code starts, as the
  * first pass had them where they were declared; their addresses moved
  * with them -- moved_at for the constants that are them, and each symbol
@@ -2722,12 +2796,53 @@ static void emit_raws(void)
         return;
     over = gen_jump();
     for (at = 0; at != nraws; at++) {
-        const unsigned char *bytes = (const unsigned char *) gl_kept(raws[at]->arg[2]);
-        int len = (int) raws[at]->arg[1], byte;
+        const GenRec *rec = raws[at];
+        const unsigned char *bytes = (const unsigned char *)
+            gl_kept(rec->arg[rec->op == GL_gen_data ? 0 : 2]);
+        int len = (int) rec->arg[1], byte;
 
-        moved_add((int) raws[at]->arg[0], len, out_here());
+        if (rec->op == GL_gen_data) {   /* a string, and its terminator */
+            moved_add((int) rec->ret, len, out_here());
+            for (byte = 0; byte != len; byte++)
+                out_byte(bytes[byte]);
+            out_byte(0);
+            gen_data_bytes += len + 1;
+            continue;
+        }
+        if (rec->op != GL_RAW)
+            continue;
+        moved_add((int) rec->arg[0], len, out_here());
         for (byte = 0; byte != len; byte++)
             out_byte(bytes[byte]);
+    }
+    /* With every byte down, the slots among them: an address, moved with
+     * what it is the address of; and one the link or the bss fills. */
+    for (at = 0; at != nraws; at++) {
+        const GenRec *rec = raws[at];
+        const char *relocs;
+        int reloc;
+
+        switch (rec->op) {
+        case GL_gen_data_fixup:
+            gen_data_fixup((int) rec->arg[0], moved_at((int) rec->arg[1]));
+            continue;
+        case GL_gen_bss_fixup:
+            gen_bss_fixup(moved_at((int) rec->arg[0]));
+            continue;
+        case GL_RAW:
+            break;
+        default:
+            continue;
+        }
+        relocs = gl_kept(rec->arg[4]);  /* kept as bytes, not aligned */
+        for (reloc = 0; reloc != rec->arg[3]; reloc++) {
+            int offset, slot;
+
+            memcpy(&offset, relocs + reloc * (int) sizeof offset, sizeof offset);
+            slot = moved_at(out_base + offset);
+            out_patch24(slot, moved_at(out_read24(slot)));
+            out_reloc(slot);
+        }
     }
     for (settle = 0; settle != nsettles; settle++) {
         Sym *sym = sym_at(settles[settle]);
@@ -9762,7 +9877,7 @@ int ssa_generate(const char **why)
         acc_error("out of memory for the SSA form");
     ninsns = nvals = nblocks = nholes = nstk = ninlined = nmerged = 0;
     holes_start();
-    nraws = nsettles = nbss_recs = 0;
+    nraws = nsettles = nbss_recs = in_data = 0;
     fail = NULL;
     ssa_cost_made = ssa_cost_first = 0;
     leaf_mode = ssa_made_leaf = ssa_cached_refused = ssa_cached_used = 0;
@@ -9781,6 +9896,8 @@ int ssa_generate(const char **why)
     free(keep);
     if (!fail && nstk)
         fail = "values left on the stack at the end";
+    if (!fail)
+        raws_check();
     for (rec_at = 0; rec_at != nholes && !fail; rec_at++)
         if (holes[rec_at].hole > 0 && holes[rec_at].insn >= 0)
             fail = "a jump that never landed";

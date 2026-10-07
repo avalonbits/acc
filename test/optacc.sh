@@ -763,6 +763,15 @@ mir "$OPT" "the count in BC before the call"           010a0000cd    yes \
 # starts and jumped over (test/cases/394).
 mirs "a block static with a value, made by it"       yes \
     'int f(int k) { static const int t[3] = { 5, 6, 7 }; return t[k]; }'
+# And ones whose values hold addresses: a string of the same initial
+# value, a global, a static at zero -- each moved with what it points at
+# (test/cases/396).
+mirs "a block static of strings, made by it"         yes \
+    'const char *f(int k) { static const char *w[] = { "ab", "cd" }; return w[k]; }'
+mirs "a block static with a global's address, made by it" yes \
+    'int g; int *f(void) { static int *p = &g; return p; }'
+mirs "a block static with a zero one's address, made by it" yes \
+    'int f(void) { static int n; static int *p = &n; return ++*p; }'
 # A block static that starts at zero: its room in the bss reserved again
 # where the code starts, and the function made by it (test/cases/392).
 mirs "a block static at zero, made by it"            yes \
