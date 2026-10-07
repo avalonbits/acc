@@ -1441,5 +1441,53 @@ else
     fail=$((fail + 1))
 fi
 
+# memset and memcpy test for a count of none in place, not by a call: a
+# thousand fills and a thousand copies of seven bytes -- ez80asm's token,
+# cleared for every one it reads -- are 287 thousand cycles with the test
+# called and 227 thousand with it in place.
+cat > "$tmp/mem.c" <<'C'
+#include <ez80f92.h>
+#include <string.h>
+
+struct token { char *start, *next; char terminator; };
+
+int main(void) {
+    struct token t, u;
+    volatile unsigned char seed = 3;
+    int i, sum = 0;
+
+    io_out(0x40, 0);
+    for (i = 0; i < 1000; i++) {
+        memset(&t, seed, sizeof t);
+        memcpy(&u, &t, sizeof u);
+        sum += u.terminator;
+    }
+    io_out(0x41, 0);
+    return sum == 3000 ? 42 : 1;
+}
+C
+if "$ACC" -c "$tmp/mem.c" -o "$tmp/mem.o" -Iinclude >/dev/null 2>&1 &&
+   "$ACC" "$tmp/mem.o" "$LIB" -o "$tmp/mem.bin" -x >/dev/null 2>&1; then
+    if emu_available >/dev/null 2>&1; then
+        sd=$(emu_card)
+        cp "$tmp/mem.bin" "$sd/bin/p.bin"
+        printf 'bin/p\r\n' > "$sd/autoexec.txt"
+        cycles=$(ACC_EMU_TIMEOUT=60 emu_run "$sd" -z -u 2>&1 |
+                 sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
+        rm -rf "$sd"
+        if [ -n "$cycles" ] && [ "$cycles" -lt 257000 ]; then
+            pass=$((pass + 1))
+        else
+            printf '  FAIL %-36s %s cycles\n' "seven-byte fills and copies" "${cycles:-no count of}"
+            fail=$((fail + 1))
+        fi
+    else
+        pass=$((pass + 1))
+    fi
+else
+    printf '  FAIL %-36s %s\n' "seven-byte fills and copies" "did not build"
+    fail=$((fail + 1))
+fi
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

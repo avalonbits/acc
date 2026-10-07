@@ -32,8 +32,8 @@
 ; hl = hl / bc, de = hl % bc, both unsigned. The common core.
 _acc_rt_udivmod:
 	push	hl			; all twenty-four bits of the divisor, here
-	ld	hl, 0			; rather than through acc_rt_bc_is_zero,
-	or	a, a			; a call and a return on every divide
+	ld	hl, 0			; rather than through a call, a call and
+	or	a, a			; a return on every divide
 	sbc	hl, bc
 	pop	hl
 	jr	nz, .div_go
