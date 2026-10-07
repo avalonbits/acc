@@ -713,6 +713,81 @@ void relax_cut_code(Cut *cuts, int ncuts, const Mark *from, int fn_from,
 #define NEAR_BYTES 512
 
 
+#ifdef OPT_ACC
+/* How many of the cuts begin at or before `x`: by halving, since they rise. */
+static int cuts_upto(const Cut *cuts, int ncuts, int x)
+{
+    int lo = 0, hi = ncuts;
+
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+
+        if ((unsigned) cuts[mid].at <= (unsigned) x)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    return lo;
+}
+
+/* The jumps that just missed, measured again with what the cuts decided
+ * take out between each and its target: twice, each round's into the
+ * cuts, in order. Only ever nearer than measured -- more is cut after,
+ * never less -- so a jump that reaches here reaches where it ends up. A
+ * round is the cuts' running total and a halving a jump: n log n. Answers
+ * how many cuts there are now. */
+static int relax_again(Cut *cuts, int ncuts, const int *at, const unsigned char *cc,
+                       const int *target, unsigned char *fits, int n)
+{
+    long *sum = NULL;
+    int *add = malloc((size_t) n * sizeof *add + 1);
+    int round, i, k, w;
+
+    for (round = 0; round != 2; round++) {
+        int nadd = 0;
+
+        sum = realloc(sum, ((size_t) ncuts + 1) * sizeof *sum);
+        if (!sum || !add)
+            acc_error("out of memory shortening the jumps");
+        sum[0] = 0;
+        for (k = 0; k != ncuts; k++)
+            sum[k + 1] = sum[k] + cuts[k].len;
+        for (i = 0; i != n; i++) {
+            int d = target[i] - (at[i] + 2), forward = target[i] > at[i];
+            long gone;
+
+            if (fits[i] || cc[i] == JP_GONE || !jr_of(cc[i]))
+                continue;
+            gone = sum[cuts_upto(cuts, ncuts, forward ? target[i] : at[i])]
+                   - sum[cuts_upto(cuts, ncuts, forward ? at[i] : target[i])];
+            d += forward ? (int) -gone : (int) gone;
+            if (!JR_REACHES(d))
+                continue;
+            fits[i] = 1;
+            add[nadd++] = at[i] + 1;
+        }
+        if (!nadd)
+            break;
+        /* Merged in from the back: both rise. */
+        k = ncuts - 1;
+        w = ncuts + nadd - 1;
+        for (i = nadd - 1; i >= 0; i--) {
+            while (k >= 0 && (unsigned) cuts[k].at > (unsigned) add[i])
+                cuts[w--] = cuts[k--];
+            cuts[w].at = add[i];
+            cuts[w].len = 2;
+            w--;
+        }
+        ncuts += nadd;
+    }
+    free(sum);
+    free(add);
+
+    return ncuts;
+}
+#endif
+
 void relax_function(const Mark *from, int frame_at)
 {
     Cut *cuts;
@@ -804,6 +879,12 @@ void relax_function(const Mark *from, int frame_at)
             ncuts++;
         }
     }
+
+#ifdef OPT_ACC
+    if (n)
+        ncuts = relax_again(cuts, ncuts, jump_at + from->jump, jump_cc + from->jump,
+                            target, shrink, n);
+#endif
 
     /* The frame is cut even alone, when there is no jump to shorten: it is
      * a pass over the function's relocations and fixups, for six bytes, and
