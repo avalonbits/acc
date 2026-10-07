@@ -1400,5 +1400,46 @@ else
     fail=$((fail + 1))
 fi
 
+# A divide whose dividend's top byte is zero runs eight rounds fewer: 1000
+# remainders of 50000 by 7, 556 thousand cycles taking all twenty-four
+# rounds, 433 thousand taking sixteen. Under 500 thousand is the shorter.
+cat > "$tmp/div.c" <<'C'
+#include <ez80f92.h>
+
+int main(void) {
+    volatile unsigned n = 50000, d = 7;
+    unsigned sum = 0;
+    int i;
+
+    io_out(0x40, 0);
+    for (i = 0; i < 1000; i++)
+        sum += n % d;
+    io_out(0x41, 0);
+    return sum == 1000u * (50000u % 7u) ? 42 : 1;
+}
+C
+if "$ACC" -c "$tmp/div.c" -o "$tmp/div.o" -Iinclude >/dev/null 2>&1 &&
+   "$ACC" "$tmp/div.o" "$LIB" -o "$tmp/div.bin" -x >/dev/null 2>&1; then
+    if emu_available >/dev/null 2>&1; then
+        sd=$(emu_card)
+        cp "$tmp/div.bin" "$sd/bin/p.bin"
+        printf 'bin/p\r\n' > "$sd/autoexec.txt"
+        cycles=$(ACC_EMU_TIMEOUT=60 emu_run "$sd" -z -u 2>&1 |
+                 sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
+        rm -rf "$sd"
+        if [ -n "$cycles" ] && [ "$cycles" -lt 500000 ]; then
+            pass=$((pass + 1))
+        else
+            printf '  FAIL %-36s %s cycles\n' "a divide of two bytes, 16 rounds" "${cycles:-no count of}"
+            fail=$((fail + 1))
+        fi
+    else
+        pass=$((pass + 1))
+    fi
+else
+    printf '  FAIL %-36s %s\n' "a divide of two bytes, 16 rounds" "did not build"
+    fail=$((fail + 1))
+fi
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
