@@ -759,6 +759,10 @@ mirs "and memset, memchr and memmove"              yes \
     'void *memset(void *, int, unsigned); void *memchr(const void *, int, unsigned); void *memmove(void *, const void *, unsigned); char *f(char *p, int n) { memset(p, 0, n); memmove(p + 1, p, n); return memchr(p, 1, n); }'
 mir "$OPT" "the count in BC before the call"           010a0000cd    yes \
     'void *memset(void *, int, unsigned); struct s { char a[10]; int n; }; void f(struct s *p, int k) { memset(p->a, k, sizeof p->a); p->n = k; }'
+# A block static that starts at zero: its room in the bss reserved again
+# where the code starts, and the function made by it (test/cases/392).
+mirs "a block static at zero, made by it"            yes \
+    'int f(void) { static int n; return ++n; }'
 # Bytes C widens and the code cuts back, made as bytes: (char) (ch + 32)
 # an add a, 32, and the ?: of two chars returned as a char joined as the
 # byte -- not widened by rlc l / sbc hl, hl and cut again
