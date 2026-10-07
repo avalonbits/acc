@@ -538,6 +538,10 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
         hot_add(name);
         attr_hot = 0;
     }
+    if (attr_inline) {
+        inline_said(name, attr_inline);
+        attr_inline = 0;
+    }
 #endif
     if (tok != TK_LBRACE || in_body) {
         sym_scope_end(mark);

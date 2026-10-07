@@ -574,6 +574,17 @@ static int suffix_bit(const char *t, int n, int adl, unsigned char *out) { const
  return 0; }
 const char *f(const char *s, int n, unsigned char *suffix) { int i = 1; while (i < n && s[i] != 46) i++; if (i == n) return 0; if (!suffix_bit(&s[i + 1], n - i - 1, state.adl, suffix)) return 0; return mnemonic_of(s, i); }'
 inlined "one that makes its caller bigger, called" suffix_bit no "$sfx"
+# What the source says decides over those: always_inline read in place
+# however many call it and whatever it makes its caller -- zap asks it of
+# its encoder's helpers -- and noinline never, called once or not. (Each
+# call a statement of its own: one made while a value waits, as the second
+# of pick(x, y) - pick(y, x), is a call however it is said.)
+inlined "always_inline called twice, read in place"  pick yes \
+    "${pick/static/static __attribute__((always_inline))} int f(int x, int y) { int a = pick(x, y); int b = pick(y, x); return a - b; }"
+inlined "always_inline, its caller bigger, read in place" suffix_bit yes \
+    "${sfx/static int suffix_bit/static __attribute__((always_inline)) int suffix_bit}"
+inlined "noinline called once, called"               pick no \
+    "${pick/static/static __attribute__((noinline))} int f(int x, int y) { return pick(x, y) + 1; }"
 # Called in a loop, the same body makes its caller 72 bytes bigger, and is
 # read in place where a caller with a call in a loop may grow that much
 # (OPTACC_INLINE_LOOP): the call is made each time round. Called outside

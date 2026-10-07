@@ -186,6 +186,7 @@ __attribute__((noinline)) void local_redeclared(NameRef name, int line, const ch
 #ifdef OPT_ACC
 extern int attr_hot;            /* lex.c: `hot` said, not yet taken */
 void hot_add(NameRef name);     /* func.c: a function said hot */
+void inline_said(NameRef name, int said);   /* inline.c: attr_inline taken */
 #endif
 extern int base_ext;
 const char *record_name(int x);

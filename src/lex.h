@@ -182,6 +182,10 @@ char *lex_record_take_paren(void);   /* to this `)`: its end, or NULL */
 #ifdef OPT_ACC
 void  lex_body_record_from(void);    /* a function's body, from after the `{` */
 char *lex_body_record_take(void);    /* to this `}`: the text, or NULL */
+
+/* always_inline and noinline, said of a function and not yet taken. */
+enum { INLINE_ALWAYS = 1, INLINE_NEVER = 2 };
+extern int attr_inline;
 #endif
 
 /* The current token, as lex_token_save sets it aside. */
