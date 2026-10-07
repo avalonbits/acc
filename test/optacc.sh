@@ -759,6 +759,13 @@ mirs "and memset, memchr and memmove"              yes \
     'void *memset(void *, int, unsigned); void *memchr(const void *, int, unsigned); void *memmove(void *, const void *, unsigned); char *f(char *p, int n) { memset(p, 0, n); memmove(p + 1, p, n); return memchr(p, 1, n); }'
 mir "$OPT" "the count in BC before the call"           010a0000cd    yes \
     'void *memset(void *, int, unsigned); struct s { char a[10]; int n; }; void f(struct s *p, int k) { memset(p->a, k, sizeof p->a); p->n = k; }'
+# Bytes C widens and the code cuts back, made as bytes: (char) (ch + 32)
+# an add a, 32, and the ?: of two chars returned as a char joined as the
+# byte -- not widened by rlc l / sbc hl, hl and cut again
+# (test/cases/391 runs them).
+fold='char f(char ch) { return (ch >= 65 && ch <= 90) ? (char) (ch + 32) : ch; }'
+mir "$OPT" "(char) (ch + 32) as add a, 32"         c620       yes "$fold"
+mir "$OPT" "the ?: joined as the byte"              cb05ed62   no  "$fold"
 # A pair free for any: HL first, whose ld hl, (nn) and ld (nn), hl are a
 # byte shorter than BC's.
 mir "$OPT" "a static copied through HL"              '^2a00000022000000c9$' yes \
