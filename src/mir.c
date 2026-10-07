@@ -110,7 +110,6 @@ enum {
     M_LDSYM,        /* d = &sym + imm (24) */
     M_LDA,          /* d = an address in the image or the bss, imm, as the
                      * constant's kind imm2 (VAL_ADDR, VAL_BSS) has it */
-    M_DATA,         /* a string's bytes, jumped over: the SSA instruction ssa */
     M_LDF,          /* d = (ix+imm) */
     M_STF,          /* (ix+imm) = a */
     M_STFI,         /* (ix+imm) = imm2, a byte */
@@ -769,8 +768,6 @@ static int mir_ok(void)
             }
             if (!frame_of_value(insn))
                 return mir_why = "a local in memory", 0;
-            continue;
-        case GL_gen_data:
             continue;
         case GL_vdrop: case GL_gen_stmt_end: case GL_gen_value_end:
         case GL_vpush_const: case I_BR: case I_JMP: case I_SET: case I_CONV:
@@ -2988,10 +2985,6 @@ static void sel_insn(const Ins *insn, int at)
         return;
     case GL_gen_call:
         sel_call(insn);
-        return;
-    case GL_gen_data:
-        mi = mi3(M_DATA, -1, -1, -1);
-        mi->ssa = at;
         return;
     case I_BR:
         if (insn->target < 0)
@@ -6312,7 +6305,7 @@ static void dump_vr(int v)
 static void dump_mir(const char *when)
 {
     static const char *const ops[NMOPS] = {
-        "copy", "ldi", "ldsym", "lda", "data", "ldf", "stf", "stfi", "stepf", "leaf", "ldp", "stp",
+        "copy", "ldi", "ldsym", "lda", "ldf", "stf", "stfi", "stepf", "leaf", "ldp", "stp",
         "stpi", "stepp", "array", "ldg", "stg", "add24", "sub24", "step24", "bytes24", "neg24", "not24",
         "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "case24", "cmp8", "cmp8i", "bool",
         "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
@@ -7137,13 +7130,6 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         out_byte(pair_op(d, 0x01, 0x11, 0x21, 0x21));
         addrc_nn(mi->imm, mi->imm2);
         return;
-    case M_DATA: {
-        const GenRec *rec = insns[mi->ssa].rec;
-        int bytes = (int) rec->arg[1];
-
-        ssa_moved_add((int) rec->ret, bytes, gen_data(gl_kept(rec->arg[0]), bytes));
-        return;
-    }
     case M_LDF:
         if (mi->width == 4) {                           /* a long: pair, top */
             int disp = disp_of(mi);

@@ -52,14 +52,12 @@
 
 
 
-/* A block's statics: the records of their bytes -- strings among them, and
- * the slots in them that the link or the bss fills -- and the symbols
+/* A block's statics and the function's strings: the records of their bytes
+ * and the slots in them that the link or the bss fills -- and the symbols
  * settled after them; and the symbols moved with them, to be put back where
- * a function made here is gone back from (ssa_restore). in_data: within a
- * static's initial value, whose strings are its bytes, not code. */
+ * a function made here is gone back from (ssa_restore). */
 static const GenRec **raws;
 int nraws;
-static int in_data;
 /* A block static that starts at zero: its room in the bss, reserved again
  * where the function's code starts, as the first pass reserved it -- the
  * bss given back to where it was with the rest of the function. */
@@ -620,7 +618,7 @@ static int pushes(int op)
     case GL_gen_stmt_end: case GL_gen_value_end: case GL_gen_jump:
     case GL_gen_jump_to: case GL_gen_label: case GL_gen_here:
     case GL_gen_switch_load: case GL_gen_switch_case:
-    case GL_gen_zero_array: case GL_gen_copy_to_array: case GL_gen_data:
+    case GL_gen_zero_array: case GL_gen_copy_to_array:
     case GL_gen_cond_same: case GL_gen_func_begin:
         return 0;
     }
@@ -757,9 +755,10 @@ static void build_one(const GenRec *rec)
         raws[nraws++] = rec;
         return;
     case GL_gen_data:
-        /* A string in a static's initial value: laid with its bytes. */
-        if (!in_data)
-            break;
+        /* A string: laid with the block's statics where the code starts,
+         * all of them behind one jump (emit_raws), where the first pass
+         * jumps over each where it is read. Its address is a constant,
+         * read through moved_at from there on. */
         GROW(raws, nraws, raws_cap);
         raws[nraws++] = rec;
         return;
@@ -796,7 +795,6 @@ static void build_one(const GenRec *rec)
         /* A block static's initial value being read: the parser's state,
          * nothing in the code. Its bytes are the records emit_raws lays
          * down again. */
-        in_data = op == GL_gen_data_begin;
         return;
     case GL_gen_pending_clear:
         return;
@@ -1428,7 +1426,7 @@ static int writes_no_memory(int op)
     case GL_gen_logic_right: case GL_vtruth: case GL_vdup: case GL_vswap:
     case GL_gen_cond_begin: case GL_gen_cond_middle: case GL_gen_cond_end:
     case GL_gen_cond_middle_void: case GL_gen_cond_end_void: case GL_gen_label:
-    case GL_gen_return: case GL_gen_data: case GL_gen_func_begin:
+    case GL_gen_return: case GL_gen_func_begin:
     case I_BR: case I_JMP: case I_FRAME:
         return 1;
     }
@@ -2692,10 +2690,6 @@ int ssa_moved_at(int at)
     return moved_at(at);
 }
 
-void ssa_moved_add(int old_at, int len, int new_at)
-{
-    moved_add(old_at, len, new_at);
-}
 
 /* Whether the three bytes at `at` are among the statics' bytes: `spans`,
  * their GL_RAW records with bytes in them, in the order written -- which
@@ -2763,8 +2757,10 @@ static void raws_check(void)
     free(spans);
 }
 
-/* The block's statics' bytes, jumped over where the code starts, as the
- * first pass had them where they were declared; their addresses moved
+/* The block's statics' bytes and the function's strings, all jumped over
+ * where the code starts -- one jump, where the first pass has one for each
+ * string where it is read, two bytes each over 1700 strings in the five
+ * programs test/apps.sh builds; their addresses moved
  * with them -- moved_at for the constants that are them, and each symbol
  * among them before it is settled. And the room of those that start at
  * zero, in the bss: AED declares a dozen, and every function with one was
@@ -3023,12 +3019,6 @@ void call(const Ins *insn)
         gen_copy_to_array(ARG(0, int), ARG(1, int), moved_at(ARG(2, int)),
                           ARG(3, int));
         break;
-    case GL_gen_data: {
-        int at = gen_data(gl_kept(arg[0]), ARG(1, int));
-
-        moved_add((int) rec->ret, ARG(1, int), at);
-        break;
-    }
     case GL_gen_return:
         gen_return(ARG(0, int), (const char *) (intptr_t) arg[1]);
         break;
@@ -6351,8 +6341,6 @@ static int leaf_ok(void)
                 return leaf_why = "a read or write not of a scalar", 0;
             }
             continue;
-        case GL_gen_data:
-            continue;                   /* a string's bytes, jumped over */
         case GL_vapply:
             arith = (int) insn->rec->arg[0];
             /* Narrowed to a short: the first pass's code makes it. */
@@ -8112,7 +8100,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
      * nothing. */
     if (!(op == I_BR && at == skip_branch) && op != I_FRAME
         && op != GL_gen_stmt_end && op != GL_gen_value_end
-        && op != GL_vpush_const && op != GL_vpush_bss && op != GL_gen_data
+        && op != GL_vpush_const && op != GL_vpush_bss
         && !(op == GL_vdrop && insn->nin == 0))
         leaf_free_hl(insn);
     if (insn->wide) {
@@ -8141,14 +8129,6 @@ static void leaf_insn(const Ins *insn, int blk, int at)
         return;
     case GL_vpush_const: case GL_vpush_bss:
         return;                         /* made again where read */
-    case GL_gen_data: {
-        /* A string's bytes, jumped over, as the first pass wrote them; its
-         * address, a constant, read through moved_at from here on. */
-        int bytes = (int) insn->rec->arg[1], put = gen_data(gl_kept(insn->rec->arg[0]), bytes);
-
-        moved_add((int) insn->rec->ret, bytes, put);
-        return;
-    }
     case GL_vpush_global_addr:
         if (insn->res >= 0 && vals[insn->res].reg == HOME_GLOBAL)
             return;                     /* loaded where it is read */
@@ -9877,7 +9857,7 @@ int ssa_generate(const char **why)
         acc_error("out of memory for the SSA form");
     ninsns = nvals = nblocks = nholes = nstk = ninlined = nmerged = 0;
     holes_start();
-    nraws = nsettles = nbss_recs = in_data = 0;
+    nraws = nsettles = nbss_recs = 0;
     fail = NULL;
     ssa_cost_made = ssa_cost_first = 0;
     leaf_mode = ssa_made_leaf = ssa_cached_refused = ssa_cached_used = 0;
