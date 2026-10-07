@@ -663,10 +663,24 @@ void gen_func_end(void)
     if (return_chain && out_here() == return_chain + ACC_INT_SIZE
         && out_rewinds == return_epoch) {
         int next = get24(out_img + (return_chain - out_base));
+#ifdef OPT_ACC
+        int end = out_here(), from = return_chain - 1;
+        const int *j;
+#endif
 
         out_rewind(return_chain - 1);
         jumps_forget(return_chain - 1);
         return_chain = next;
+#ifdef OPT_ACC
+        /* And whatever jumps to just past it -- where the machine-level
+         * backend put an empty last block, a body read in place that came
+         * to nothing -- is made to land there too, not past the end
+         * (test/cases/390). A link of a chain of holes is never that: it
+         * is a jump's own hole, before it. */
+        for (j = jump_at + func_mark.jump; j != jump_put; j++)
+            if (get24(out_img + (*j + 1 - out_base)) == end)
+                put24(out_img + (*j + 1 - out_base), from);
+#endif
     }
     patch_to_here(return_chain);
     return_chain = 0;
