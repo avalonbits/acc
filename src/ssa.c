@@ -4804,12 +4804,37 @@ static void settle(int val)
     settle_as(val, 0);
 }
 
+/* A value left on the stack for the instruction that reads it, which is
+ * still the slot of the value it was made from -- a conversion that
+ * changes nothing leaves the slot it read on the classic stack -- loaded
+ * now: that value is dead once the reading is made, and its slot another
+ * value's, as the homes are planned. `int n = f(); int ok = 0;` gave ok
+ * n's slot, and n == 16 then read ok (test/cases/395). An int's or a
+ * pointer's only, read from its operand's own slot. */
+static void forwarded_slot_read(int val)
+{
+    const Ins *insn;
+    int src;
+
+    if (!def_at || def_at[val] < 0 || (vsp - 1)->kind != VAL_LOCAL
+        || type_size(vals[val].type) != ACC_INT_SIZE || type_wide(vals[val].type)
+        || type_is_struct(vals[val].type) || type_is_array(vals[val].type))
+        return;
+    insn = &insns[def_at[val]];
+    if (insn->nin != 1 || (src = insn->in[0].val) < 0 || vals[src].fwd
+        || vals[src].reg != HOME_SLOT || vals[src].slot != (vsp - 1)->val)
+        return;
+    force_reg(vsp - 1);
+}
+
 static void settle_as(int val, int converted)
 {
     int pin;
 
-    if (vals[val].fwd)
+    if (vals[val].fwd) {
+        forwarded_slot_read(val);
         return;
+    }
     if (!vals[val].used) {
         gen_discard();
         return;
