@@ -417,7 +417,20 @@ read:
  * an object like any other, reached the same way. */
 void vmember(int offset, Type type, int ext, int quals)
 {
-    quals |= (vsp - 1)->quals;          /* a const struct's members are */
+    Type elem = type;
+    int elem_x = ext;
+
+    /* A const struct's members are const -- but for a pointer, or an array
+     * of them, that is the pointer's own const, a level the quals cannot
+     * hold: they say what the bottom of a pointer chain is, and what the
+     * pointer points at is only as const as its type says. Given the
+     * struct's, `p->next->n = 1` was refused through a `const T *p`. */
+    while (type_is_array(elem)) {
+        elem = ext_elem(elem_x);
+        elem_x = ext_elem_x(elem_x);
+    }
+    if (!type_pointer(elem))
+        quals |= (vsp - 1)->quals;
     if (type_ptr_depth(type) == TY_PTR_MAX)
         acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                      TY_PTR_MAX);
