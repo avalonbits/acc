@@ -434,6 +434,36 @@ int main(void)
     is("A loaded before a call into the runtime: kept", gone(1), 0);
     nrt_fixups = 0;
 
+    /* A routine of the runtime reads and changes what its code does
+     * (rt_regs): acc_rt_mul reads HL and BC and keeps DE, so DE loaded
+     * before it and not read after is dead -- and read after, is the
+     * value it was; acc_rt_memcpy reads DE. Each after a nop: ld de, 5 /
+     * call / [ex de, hl] / ret, in a function answering in HL. */
+    {
+        static const unsigned char de_call[] = {
+            0x00, 0x11, 0x05, 0x00, 0x00, 0xcd, 0x00, 0x00, 0x00, 0xc9
+        };
+        static const unsigned char de_call_read[] = {
+            0x00, 0x11, 0x05, 0x00, 0x00, 0xcd, 0x00, 0x00, 0x00, 0xeb, 0xc9
+        };
+
+        peep_answer = PEEP_PAIR;
+        rts[0].at = BASE + 6;
+        rt_fixups = rts;
+        nrt_fixups = 1;
+        rts[0].which = RT_MUL;
+        run(de_call, sizeof de_call);
+        is("DE before acc_rt_mul, unread after: gone", gone(1), 1);
+        run(de_call_read, sizeof de_call_read);
+        is("DE before acc_rt_mul, which keeps it, read after: kept", gone(1), 0);
+        rts[0].which = RT_MEMCPY;
+        run(de_call, sizeof de_call);
+        is("DE before acc_rt_memcpy, which reads it: kept", gone(1), 0);
+        rts[0].which = 0;
+        nrt_fixups = 0;
+        peep_answer = PEEP_ANY;
+    }
+
     run(reload, sizeof reload);
     is("a frame slot loaded after its store: gone", gone(4), 1);
     is("the store kept", gone(1), 0);
