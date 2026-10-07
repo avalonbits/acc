@@ -1,6 +1,6 @@
 #!/bin/bash
 # The real programs, against agondev -Oz: how big acc makes them and how
-# fast they run, each built both ways -- acc, vi, AED and zap.
+# fast they run, each built both ways -- acc, vi, AED, zap and ez80asm.
 #
 #   test/apps.sh                 # ACC=bin/opt-acc for opt-acc's builds
 #
@@ -12,8 +12,16 @@
 # benchmark -- test/bench/bench.c, searching, walking lines, copying a range
 # and typing with undo -- a fixed number of times; and zap, the assembler,
 # from a checkout at a tag (ZAP, ZAP_REV) as test/perf.sh takes it,
-# assembling BBC BASIC for the Agon -- perf.sh's zap-basic. None of vi, AED
-# or zap is committed here: all three are GPL.
+# assembling BBC BASIC for the Agon -- perf.sh's zap-basic; and ez80asm, the
+# Agon's other assembler, at a tag (EZ80ASM_REV, fetched into test/perf/cache
+# as vi is), assembling the same BBC BASIC with -m, its smaller tables. None
+# of them is committed here: vi, AED and zap are GPL, and ez80asm, MIT, is
+# fetched as vi is.
+#
+# ez80asm is written for agondev. Its two assembly helpers are GNU as, made
+# zap's for acc's build; and acc's build renames its remove(), which
+# agondev's libc lacks and acc's has, and FILE's handle, which agondev's
+# calls fhandle and acc's fh.
 #
 # `code` is the program's own objects, what each compiler made of its C, as
 # size.sh counts it. `cycles` is the emulator's count from the command
@@ -62,6 +70,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 export ASAN_OPTIONS=detect_leaks=0
 names=
+
+EZ80ASM_URL=https://github.com/AgonPlatform/agon-ez80asm.git
+EZ80ASM_REV=${EZ80ASM_REV:-v2.3}
 
 # The two that start and stop the count.
 for port in 40 41; do
@@ -136,30 +147,62 @@ fi
 
 # zap, and the BBC BASIC it assembles, as perf.sh takes them.
 if git -C "$ZAP" rev-parse -q --verify "$ZAP_REV^{commit}" >/dev/null 2>&1; then
-    mkdir -p "$work/zap/src" "$work/zap/basic"
+    mkdir -p "$work/zap/src" "$work/basic"
     git -C "$ZAP" archive "$ZAP_REV" src | tar -x -C "$work/zap/src" --strip-components=1
     rm -f "$work/zap/src/zmalloc.c"     # zap's measuring shim, a link
-    git -C "$ZAP" archive "$ZAP_REV" "$BASIC" | tar -x -C "$work/zap/basic" --strip-components=4
+    git -C "$ZAP" archive "$ZAP_REV" "$BASIC" | tar -x -C "$work/basic" --strip-components=4
     names="$names zap"
 else
-    echo "note: no zap at $ZAP ($ZAP_REV) -- left out" >&2
+    echo "note: no zap at $ZAP ($ZAP_REV) -- left out, and ez80asm, which assembles its BASIC" >&2
+fi
+
+# ez80asm, at its tag, as vi is fetched.
+ezcache=$CACHE/ez80asm-$EZ80ASM_REV
+if [ -d "$work/basic" ] && [ ! -d "$ezcache/.git" ]; then
+    rm -rf "$ezcache"
+    git init -q "$ezcache" && git -C "$ezcache" remote add origin "$EZ80ASM_URL" &&
+        git -C "$ezcache" sparse-checkout set src >/dev/null 2>&1 &&
+        git -C "$ezcache" fetch -q --depth 1 --filter=blob:none origin \
+            "refs/tags/$EZ80ASM_REV" &&
+        git -C "$ezcache" checkout -q FETCH_HEAD ||
+        { echo "note: ez80asm could not be fetched -- left out" >&2; rm -rf "$ezcache"; }
+fi
+if [ -d "$work/basic" ] && [ -d "$ezcache/src" ]; then
+    mkdir -p "$work/ez80asm/src"
+    cp "$ezcache/src"/*.[ch] "$ezcache/src"/*.asm "$work/ez80asm/src/"
+    names="$names ez80asm"
 fi
 
 # build <name> <acc|Oz>: objects into $work/<name>/<how>/, the image as
-# $work/<name>/<how>.bin.
+# $work/<name>/<how>.bin. An .asm among the sources is agondev's GNU as:
+# made zap's for acc's build.
 build() {
-    local name=$1 how=$2 dir=$work/$1 f o objs= inc
+    local name=$1 how=$2 dir=$work/$1 f o objs= inc defs=
 
     inc="-I$dir/src"
     [ "$name" = aed ] && inc="$inc -I$dir/inc"
+    [ "$name" = ez80asm ] && defs="-Dfhandle=fh -Dremove=asm_remove"
     mkdir -p "$dir/$how"
     for f in "$dir/src"/*.c; do
         o="$dir/$how/$(basename "$f" .c).o"
         if [ "$how" = acc ]; then
-            "$ACC" -c "$f" -o "$o" -Iinclude $inc -DAGONDEV >/dev/null 2>&1
+            "$ACC" -c "$f" -o "$o" -Iinclude $inc -DAGONDEV $defs >/dev/null 2>&1
         else
             $CC $CFLAGS $inc -c "$f" -o "$o" 2>/dev/null
         fi || { echo "$name: $(basename "$f") did not compile ($how)" >&2; return 1; }
+        objs="$objs $o"
+    done
+    for f in "$dir/src"/*.asm; do
+        [ -f "$f" ] || continue
+        o="$dir/$how/$(basename "$f" .asm).o"
+        if [ "$how" = acc ]; then
+            sed -e 's/^\.section[[:space:]].*/\tSEGMENT CODE/' \
+                -e 's/^\.global[[:space:]]*\(.*\)/\tXDEF\t\1/' "$f" > "${o%.o}.s" &&
+                bin/zap "${o%.o}.s" "$o" -f acc >/dev/null 2>&1
+        else
+            "$AGONDEV/bin/ez80-none-elf-as" -march=ez80+full -I "$AGONDEV/include" \
+                "$f" -o "$o" 2>/dev/null
+        fi || { echo "$name: $(basename "$f") did not assemble ($how)" >&2; return 1; }
         objs="$objs $o"
     done
     if [ "$how" = acc ]; then
@@ -214,8 +257,12 @@ run() {
             > "$sd/autoexec.txt" ;;
       zap)
         cp "$dir/$how.bin" "$sd/bin/zap.bin"
-        cp "$dir/basic"/* "$sd/"
+        cp "$work/basic"/* "$sd/"
         printf 'tstart\r\nzap bbcbasicvez.s out.bin\r\ntstop\r\n' > "$sd/autoexec.txt" ;;
+      ez80asm)
+        cp "$dir/$how.bin" "$sd/bin/ez80asm.bin"
+        cp "$work/basic"/* "$sd/"
+        printf 'tstart\r\nez80asm bbcbasicvez.s out.bin -c -m\r\ntstop\r\n' > "$sd/autoexec.txt" ;;
       aed)
         cp "$dir/$how.bin" "$sd/bin/aedbench.bin"
         cp "$dir/bench.txt" "$sd/bench.txt"
@@ -227,7 +274,8 @@ run() {
       acc) check=$(cat "$sd/in"/*.o 2>/dev/null | md5sum | cut -c1-8)
            [ -n "$(ls "$sd/in"/*.o 2>/dev/null)" ] || check= ;;
       vi)  check=$([ -f "$sd/text.txt" ] && md5sum < "$sd/text.txt" | cut -c1-8) ;;
-      zap) check=$([ -f "$sd/out.bin" ] && md5sum < "$sd/out.bin" | cut -c1-8) ;;
+      zap|ez80asm)
+           check=$([ -f "$sd/out.bin" ] && md5sum < "$sd/out.bin" | cut -c1-8) ;;
       aed) # Each case's line but the hundredths it took.
            check=$([ -f "$sd/bench.out" ] && tr -d '\r' < "$sd/bench.out" |
                    awk 'NF == 3 && $3 ~ /^x/ { print $1, $3; next } { print }' |
@@ -251,7 +299,8 @@ one() {
     echo "$r $(code "$name" "$how")" > "$work/$name.$how.res"
 }
 
-# APPS_ONLY: the names of the ones to measure, of acc, vi, aed and zap.
+# APPS_ONLY: the names of the ones to measure, of acc, vi, aed, zap and
+# ez80asm.
 if [ -n "${APPS_ONLY:-}" ]; then
     only=
     for name in $names; do
