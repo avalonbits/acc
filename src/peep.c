@@ -878,6 +878,59 @@ static int read_function(void)
     return 1;
 }
 
+/* What a routine of the runtime reads and what it may change, as each one's
+ * code in lib/rt/ has it: the operands in HL and BC of the int operators,
+ * the addresses in HL and DE of the longs in the frame, a long in E:UHL
+ * and A:UBC, and what each pushes and pops round itself kept. Any routine
+ * not here is taken to read everything and change all but IX, IY and SP,
+ * as decode has every call. A conditional call reads the flags as well. */
+static void rt_regs(MInsn *m, int which)
+{
+    Regs use, def;
+
+    switch (which) {
+    case RT_MEMCPY: case RT_MEMMOVE:
+        use = M_HL | M_DE | M_BC, def = M_HL | M_DE | M_BC | M_F;
+        break;
+    case RT_MEMSET:
+        use = M_HL | M_A | M_BC, def = M_HL | M_DE | M_BC | M_F;
+        break;
+    case RT_MEMCHR:
+        use = M_HL | M_A | M_BC, def = M_HL | M_BC | M_F;
+        break;
+    case RT_AND: case RT_OR: case RT_XOR: case RT_SHL: case RT_SHRU:
+    case RT_SHRS: case RT_MUL: case RT_DIVU: case RT_REMU:
+        use = M_HL | M_BC, def = M_HL | M_A | M_F;
+        break;
+    case RT_DIVS: case RT_REMS:         /* the divisor made positive in BC */
+        use = M_HL | M_BC, def = M_HL | M_BC | M_A | M_F;
+        break;
+    case RT_SHR: case RT_SDIV:          /* A the byte shifted in above HL */
+        use = M_HL | M_A, def = M_HL | M_A | M_F;
+        break;
+    case RT_LADD: case RT_LSUB: case RT_LAND: case RT_LOR: case RT_LXOR:
+    case RT_LCMPEQ: case RT_LCMPORD:
+        use = M_HL | M_DE, def = M_A | M_F;
+        break;
+    case RT_LRSUB: case RT_LRAND: case RT_LROR: case RT_LRXOR:
+        use = M_HL | BIT(RE) | M_A | M_BC, def = M_HL | BIT(RE) | M_A | M_F;
+        break;
+    case RT_LRCMPU: case RT_LRCMPS:     /* the answer in the flags */
+        use = M_HL | BIT(RE) | M_A | M_BC, def = M_A | M_F;
+        break;
+    case RT_LRSHL: case RT_LRSHRU: case RT_LRSHRS:  /* the count in A */
+        use = M_HL | BIT(RE) | M_A, def = M_HL | BIT(RE) | M_A | M_F;
+        break;
+    case RT_LRNEG: case RT_LRNOT:
+        use = M_HL | BIT(RE), def = M_HL | BIT(RE) | M_A | M_F;
+        break;
+    default:
+        return;
+    }
+    m->use = use | M_SP | (img(m->at)[0] == 0xcd ? 0 : M_F);
+    m->def = def;
+}
+
 /* The constant pool's uses, each marked on its instruction, which is then
  * never taken out: relax.c holds that the pool's list keeps its length.
  * (A relocation or a fixup in an instruction taken out goes with it.) And
@@ -958,18 +1011,24 @@ static int mark_slots(const Mark *from)
         LINKED(pool_site_at[i], LINK_POOL + i);
 #undef LINKED
 
-    /* A call into the runtime takes its operands in registers; a call to
-     * a C function, on the stack -- it reads none of them, and leaves IX
-     * and SP as they were. */
+    /* A call into the runtime takes its operands in registers -- the ones
+     * rt_regs says, for the routines it knows; a call to a C function, on
+     * the stack -- it reads none of them, and leaves IX and SP as they
+     * were. */
     for (i = from->rt; i != nrt_fixups; i++) {
         int k = rt_fixups[i].at - fn_from;
+        MInsn *m;
 
         if (k <= 0 || k >= fn_to - fn_from)
             continue;
         while (k > 0 && at_byte[k] == -2)
             k--;
-        if (at_byte[k] >= 0)
-            ins[at_byte[k]].runtime = 1;
+        if (at_byte[k] < 0)
+            continue;
+        m = &ins[at_byte[k]];
+        m->runtime = 1;
+        if (m->kind == K_CALL && (img(m->at)[0] & 0xc7) != 0xc7)   /* not rst */
+            rt_regs(m, rt_fixups[i].which);
     }
     for (i = 0; i != nins; i++)
         if (ins[i].kind == K_CALL && !ins[i].runtime
