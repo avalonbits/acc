@@ -57,6 +57,11 @@
  * function made here is gone back from (ssa_restore). */
 static const GenRec **raws;
 int nraws;
+/* A block static that starts at zero: its room in the bss, reserved again
+ * where the function's code starts, as the first pass reserved it -- the
+ * bss given back to where it was with the rest of the function. */
+static const GenRec **bss_recs;
+static int nbss_recs, bss_recs_cap;
 static int raws_cap;
 static int *settles, nsettles, settles_cap;
 static struct { int sym, val; } *moved_syms;
@@ -776,9 +781,12 @@ static void build_one(const GenRec *rec)
     case GL_gen_stack_take: case GL_gen_stack_mark: case GL_gen_stack_back:
         fail = "an array whose length is known when it runs";
         return;
+    case GL_gen_bss_symbol: case GL_gen_bss_reserve: case GL_gen_bss_reserve_aligned:
+        GROW(bss_recs, nbss_recs, bss_recs_cap);
+        bss_recs[nbss_recs++] = rec;
+        return;
     case GL_gen_data_begin: case GL_gen_data_end: case GL_gen_pending_clear:
-    case GL_gen_data_fixup: case GL_gen_bss_symbol: case GL_gen_bss_reserve:
-    case GL_gen_bss_reserve_aligned: case GL_gen_bss_move:
+    case GL_gen_data_fixup: case GL_gen_bss_move:
     case GL_gen_bss_forget: case GL_gen_bss_fixup:
     case GL_gen_late_fixup: case GL_gen_slot: case GL_gen_link_fixup:
     case GL_out_rewind: case GL_out_seek:
@@ -2679,11 +2687,32 @@ void ssa_moved_add(int old_at, int len, int new_at)
 /* The block's statics' bytes, jumped over where the code starts, as the
  * first pass had them where they were declared; their addresses moved
  * with them -- moved_at for the constants that are them, and each symbol
- * among them before it is settled. */
+ * among them before it is settled. And the room of those that start at
+ * zero, in the bss: AED declares a dozen, and every function with one was
+ * left to the first pass. */
 static void emit_raws(void)
 {
     int over, at, settle;
 
+    for (at = 0; at != nbss_recs; at++) {
+        const GenRec *rec = bss_recs[at];
+        long got;
+
+        switch (rec->op) {
+        case GL_gen_bss_reserve:
+            got = gen_bss_reserve((int) rec->arg[0]);
+            break;
+        case GL_gen_bss_reserve_aligned:
+            got = gen_bss_reserve_aligned((int) rec->arg[0], (int) rec->arg[1]);
+            break;
+        default:
+            gen_bss_symbol((int) rec->arg[0], (int) rec->arg[1]);
+            continue;
+        }
+        if (got != rec->ret)
+            acc_error("internal: a block static's bss came out at %ld, not %ld",
+                      got, (long) rec->ret);
+    }
     if (!nraws)
         return;
     over = gen_jump();
@@ -9703,7 +9732,7 @@ int ssa_generate(const char **why)
         acc_error("out of memory for the SSA form");
     ninsns = nvals = nblocks = nholes = nstk = ninlined = nmerged = 0;
     holes_start();
-    nraws = nsettles = 0;
+    nraws = nsettles = nbss_recs = 0;
     fail = NULL;
     ssa_cost_made = ssa_cost_first = 0;
     leaf_mode = ssa_made_leaf = ssa_cached_refused = ssa_cached_used = 0;
