@@ -205,6 +205,11 @@ typedef struct {
 #define SYM_SPILL (-2)
 #define SYM_LOCAL (-3)
 #define SYM_ARRAY (-4)
+#define SYM_TEMP  (-5)          /* obj: a struct a call answers into */
+
+/* The room each call answering a struct is given for its answer, laid out
+ * with the frame, and where. */
+static int *temp_size, *temp_off, ntemps, temps_cap;
 
 /* Whether the local arrays are laid out with the other locals, where they
  * can be reached by (ix+d): when the whole of the first pass's frame is in
@@ -435,13 +440,39 @@ static int mem_routine(const Ins *insn)
     return which;
 }
 
+/* A struct argument pushed here: three-byte words read from where it is
+ * -- a local's slot, a global, or the address a struct read through a
+ * pointer or answered by a call is held as -- no more than three of them,
+ * past which ldir, as gen_call makes it, is the shorter. */
+#define STRUCT_ARG_WORDS 3
+static unsigned char *struct_read;      /* see below */
+
+/* A struct whose address is known here: a local's, a global's, or one
+ * read through a pointer or answered by a call, held as its address. */
+static int struct_value_ok(const Ent *ent)
+{
+    if (!type_is_struct(ent->attr.type) || ent->attr.bits)
+        return 0;
+
+    return is_addr(ent) || ent->attr.kind == VAL_LOCAL
+           || (ent->val >= 0 && struct_read[ent->val]);
+}
+
+static int struct_arg_ok(const Ent *ent)
+{
+    return struct_value_ok(ent)
+           && ext_bytes(ent->attr.ext) <= STRUCT_ARG_WORDS * ACC_INT_SIZE;
+}
+
 /* Whether a call is one made here: of a function named directly, not
  * setjmp -- whose second return finds the registers pushed around it long
  * gone -- nor longjmp, nor one gen_call makes in place of a call, memcpy
  * and the rest with ldir and exit, which would be the library's slower
- * C here; answering void or a type held here, its arguments each one held
- * here and, where it has a parameter, of a type held here too -- a _Bool's
- * made 0 or 1 by its truth, where it is not a _Bool already (sel_call). */
+ * C here; answering void, a type held here or a struct -- into room of
+ * its own in the frame, whose address is pushed ahead of the arguments --
+ * its arguments each one held here and, where it has a parameter, of a
+ * type held here too -- a _Bool's made 0 or 1 by its truth, where it is not
+ * a _Bool already, and a struct pushed as words (sel_call). */
 static int call_ok(const Ins *insn)
 {
     static NameRef setjmp_name;
@@ -460,13 +491,16 @@ static int call_ok(const Ins *insn)
             return mir_why = "a call gen_call makes in place", 0;
     if (mem_routine(insn) < 0 && mem_name(callee))
         return mir_why = "a call gen_call makes in place", 0;
-    if (callee->type != TY_VOID && !mir_type(callee->type) && !long_type(callee->type))
+    if (callee->type != TY_VOID && !mir_type(callee->type) && !long_type(callee->type)
+        && !type_is_struct(callee->type))
         return mir_why = "a call answering a type not held here", 0;
     for (arg = 0; arg != insn->nin; arg++) {
         Type param = arg < nparams ? sym_param_type(first, arg)
                      : long_type(insn->in[arg].attr.type) ? insn->in[arg].attr.type
                      : TY_INT;
 
+        if (type_is_struct(param) && struct_arg_ok(&insn->in[arg]))
+            continue;
         if (!mir_type(param) && !long_type(param))
             return mir_why = "an argument of a type not held here", 0;
         /* A long made a _Bool: tested whole, which zero_test does not. */
@@ -656,7 +690,7 @@ static int mir_ok(void)
         if (insns[at].op == GL_vpush_function && insns[at].res >= 0)
             fn_address[insns[at].res] = 1;
     for (at = 1; at != ninsns; at++)
-        if (insns[at].op == GL_vderef && insns[at].res >= 0
+        if ((insns[at].op == GL_vderef || insns[at].op == GL_gen_call) && insns[at].res >= 0
             && type_is_struct(vals[insns[at].res].type))
             struct_read[insns[at].res] = 1;
     for (phi = 0; phi != nphis; phi++)
@@ -696,6 +730,11 @@ static int mir_ok(void)
                 continue;
             /* Nothing -- a void call's answer -- let go, or cast to void. */
             if (ent->val == S_VOID && (insn->op == GL_vdrop || void_cast(insn)))
+                continue;
+            if (insn->op == GL_gen_call && struct_arg_ok(ent))
+                continue;
+            if (insn->op == GL_gen_return && type_is_struct(return_type)
+                && struct_value_ok(ent))
                 continue;
             if (!mir_operand_ok(ent))
                 return mir_why = "an operand not of an int, a pointer or a char", 0;
@@ -2315,6 +2354,33 @@ static void sel_mem(const Ins *insn, int which)
         to_val(insn->res, d);
 }
 
+/* Three bytes at offset `off` into the struct `ent` is: from its slot, a
+ * global, or through IY. */
+static int word_at(const Ent *ent, int off)
+{
+    Addr addr = address_of(ent);
+    int d = new_vr(3, C_R24);
+    MIns *mi;
+
+    if (addr.frame) {
+        frame_obj_mi(M_LDF, d, -1, addr.obj, addr.off + off, 3);
+        return d;
+    }
+    if (addr.sym >= 0 || addr.kind) {
+        mi = mi3(M_LDG, d, -1, -1);
+        mi->sym = addr.sym;
+        mi->imm = addr.off + off;
+        mi->imm2 = addr.kind;
+        mi->width = 3;
+        return d;
+    }
+    mi = mi3(M_LDP, d, in_class(addr.base, C_IY), -1);
+    mi->imm = addr.off + off;
+    mi->width = 3;
+
+    return d;
+}
+
 static void sel_call(const Ins *insn)
 {
     const Sym *callee = sym_at((int) insn->rec->arg[0]);
@@ -2348,13 +2414,51 @@ static void sel_call(const Ins *insn)
             slots++;
             continue;
         }
+        if (type_is_struct(ent->attr.type)) {
+            args[arg] = -1;             /* its words, read as it is pushed */
+            slots += (ext_bytes(ent->attr.ext) + ACC_INT_SIZE - 1) / ACC_INT_SIZE;
+            continue;
+        }
         args[arg] = operand_vr(ent, long_type(param) ? 4 : 3);
         slots += vr[args[arg]].width == 4 ? 2 : 1;
     }
     mi3(M_SAVE, -1, -1, -1);
-    for (arg = insn->nin - 1; arg >= 0; arg--)
+    for (arg = insn->nin - 1; arg >= 0; arg--) {
+        if (args[arg] < 0) {
+            const Ent *ent = &insn->in[arg];
+            int words = (ext_bytes(ent->attr.ext) + ACC_INT_SIZE - 1) / ACC_INT_SIZE, w;
+
+            for (w = words - 1; w >= 0; w--)
+                mi3(M_PUSH, -1, in_class(word_at(ent, w * ACC_INT_SIZE), C_R24), -1);
+            continue;
+        }
         mi3(M_PUSH, -1, in_class(args[arg], vr[args[arg]].width == 4 ? C_EHL : C_R24), -1);
+    }
     free(args);
+    if (type_is_struct(callee->type)) {
+        /* Its answer's room, whose address goes ahead of the arguments:
+         * HL is that address again when it comes back. */
+        int t = new_vr(3, C_R24);
+
+        GROW(temp_size, ntemps, temps_cap);
+        temp_off = realloc(temp_off, (size_t) temps_cap * sizeof *temp_off);
+        if (!temp_off)
+            acc_error("out of memory for the machine IR");
+        temp_size[ntemps] = ext_bytes(callee->ext);
+        mi = frame_obj_mi(M_LEAF, t, -1, -1, 0, 3);
+        mi->sym = SYM_TEMP;
+        mi->obj = ntemps++;
+        mi3(M_PUSH, -1, in_class(t, C_R24), -1);
+        slots++;
+        if (insn->res >= 0 && val_vr[insn->res] >= 0)
+            d = new_vr(3, C_HL);
+        mi = mi3(M_CALL, d, -1, -1);
+        mi->sym = (int) insn->rec->arg[0];
+        mi->imm = slots;
+        if (d >= 0)
+            to_val(insn->res, d);
+        return;
+    }
     if (callee->type != TY_VOID && insn->res >= 0 && val_vr[insn->res] >= 0)
         d = width_of(callee->type) == 1 ? new_vr(1, C_A)
             : width_of(callee->type) == 4 ? new_vr(4, C_EHL) : new_vr(3, C_HL);
@@ -2911,6 +3015,16 @@ static void sel_insn(const Ins *insn, int at)
         return;
     case GL_gen_return: {
         int v = -1;
+
+        /* A struct: copied to where the caller asked for it, the hidden
+         * argument ahead of the others, whose address is the answer in
+         * HL -- as gen_return makes it. */
+        if (insn->nin && type_is_struct(return_type)) {
+            mi = mi3(M_RET, -1, in_class(operand_vr(&insn->in[0], 3), C_HL), -1);
+            mi->ssa = at;
+            mi->type = return_type;
+            return;
+        }
 
         /* The answer in HL, widened as its own type, as the leaf backend
          * hands it to gen_return -- or a constant as the constant, which
@@ -6753,7 +6867,8 @@ static int disp_of(const MIns *mi)
 {
     int disp = mi->sym == SYM_SPILL ? spill_off[mi->imm - 1]
                : mi->sym == SYM_LOCAL ? inline_moved(mi->imm)
-               : mi->sym == SYM_ARRAY ? array_moved(mi->obj) + mi->imm : mi->imm;
+               : mi->sym == SYM_ARRAY ? array_moved(mi->obj) + mi->imm
+               : mi->sym == SYM_TEMP ? temp_off[mi->obj] + mi->imm : mi->imm;
 
     /* A local's place, which mir_ok saw in reach as the first pass had it,
      * only comes nearer when the frame is laid out again. */
@@ -7380,6 +7495,8 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
                 return;
             }
             vpush(VAL_REG, mi->type, R_HL);
+            if (type_is_struct(mi->type))
+                (vsp - 1)->ext = (unsigned char) return_ext;
         }
         call(&insns[mi->ssa]);
         return;
@@ -7466,6 +7583,7 @@ int mir_build(void)
         return 0;
     find_loops();
     nspills = 0;
+    ntemps = 0;
     sel_fail = NULL;
     setup();
     known_bits();
@@ -7560,6 +7678,8 @@ int mir_build(void)
          * and the spills -- none of the first pass's scratch, which
          * gen_local_fits keeps a third of the reach for. So the same
          * reach as mir_ok holds the rest to. */
+        for (v = 0; v != ntemps; v++)
+            bytes += temp_size[v];
         if (bytes && ssa_locals_kept() + (arrays_here ? array_bytes : 0) + inline_bytes
                      + bytes + ACC_INT_SIZE > 128) {
             mir_why = "more spills than the frame can reach";
@@ -7617,6 +7737,9 @@ static int uses_frame(void)
             case M_LDF: case M_STF: case M_STFI: case M_LEAF:
             case M_STEPF: case M_ARRAY:
                 return 1;
+            case M_RET:                 /* a struct's: to the pointer at (ix+6) */
+                if (type_is_struct(mb[blk].ins[at].type))
+                    return 1;
             }
 
     return 0;
@@ -7642,6 +7765,8 @@ void mir_emit(void)
     call(&insns[0]);
     frame_again_all(arrays_here);       /* the locals left in memory */
     ssa_inline_slots();                 /* an inlined body's room */
+    for (k = 0; k != ntemps; k++)       /* a struct answer's room */
+        temp_off[k] = gen_local(temp_size[k]);
     gen_local_settle();
     for (k = 0; k != nspills; k++)
         if (spill_rep[k] == k)
