@@ -179,8 +179,10 @@ int main(void) {
     if (end == c && c[0] == 'a') r++;
     /* '@' and '[' are next to the letters, and not lowered */
     if (strcasecmp("@", "`") < 0 && strcasecmp("[", "a") < 0) r++;
+    if (strcasecmp("LdIr", "lDiR") == 0 && strcasecmp("ab", "ABc") < 0
+        && strcasecmp("abD", "ABc") > 0 && strcasecmp("{", "[") > 0) r++;
 
-    return r + 29;                      /* 13 checks */
+    return r + 28;                      /* 14 checks */
 }
 EOF2
 runs_file "POSIX's strnlen, stpcpy, stpncpy, strcasecmp" "$tmp/posix_str.c"
@@ -1486,6 +1488,50 @@ if "$ACC" -c "$tmp/mem.c" -o "$tmp/mem.o" -Iinclude >/dev/null 2>&1 &&
     fi
 else
     printf '  FAIL %-36s %s\n' "seven-byte fills and copies" "did not build"
+    fail=$((fail + 1))
+fi
+
+# strcasecmp compares the bytes as they are and lowers only those that
+# differ: a thousand rounds of an assembler's lookups -- a word against
+# itself, against itself in capitals, and against one that differs at once
+# -- are 1426 thousand cycles lowering every byte through calls and 1063
+# thousand lowering only those that differ.
+cat > "$tmp/case.c" <<'C'
+#include <ez80f92.h>
+#include <string.h>
+
+int main(void) {
+    static const char *const words[] = { "ldir", "LDIR", "push", "Ld" };
+    int i, w, sum = 0;
+
+    io_out(0x40, 0);
+    for (i = 0; i < 1000; i++)
+        for (w = 0; w < 4; w++)
+            sum += strcasecmp("ldir", words[w]) == 0;
+    io_out(0x41, 0);
+    return sum == 2000 ? 42 : 1;
+}
+C
+if "$ACC" -c "$tmp/case.c" -o "$tmp/case.o" -Iinclude >/dev/null 2>&1 &&
+   "$ACC" "$tmp/case.o" "$LIB" -o "$tmp/case.bin" -x >/dev/null 2>&1; then
+    if emu_available >/dev/null 2>&1; then
+        sd=$(emu_card)
+        cp "$tmp/case.bin" "$sd/bin/p.bin"
+        printf 'bin/p\r\n' > "$sd/autoexec.txt"
+        cycles=$(ACC_EMU_TIMEOUT=60 emu_run "$sd" -z -u 2>&1 |
+                 sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
+        rm -rf "$sd"
+        if [ -n "$cycles" ] && [ "$cycles" -lt 1245000 ]; then
+            pass=$((pass + 1))
+        else
+            printf '  FAIL %-36s %s cycles\n' "strcasecmp of an assembler's words" "${cycles:-no count of}"
+            fail=$((fail + 1))
+        fi
+    else
+        pass=$((pass + 1))
+    fi
+else
+    printf '  FAIL %-36s %s\n' "strcasecmp of an assembler's words" "did not build"
     fail=$((fail + 1))
 fi
 
