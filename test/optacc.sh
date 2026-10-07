@@ -355,6 +355,12 @@ void f(void) { unsigned limit = 16000 - (unsigned) (seed & 1); unsigned long sum
 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
     ssa "a smaller way a tenth costlier, not kept" \
     "ssa f made, not by the leaf backend" "$sieve"
+# And lists' insert_sorted: the machine-level backend's 9 bytes smaller and
+# 9.5% costlier than the leaf backend's, which is kept.
+sorted_insert='struct node { int key; struct node *next; }; void f(struct node **head, struct node *n) { while (*head && (*head)->key < n->key) head = &(*head)->next; n->next = *head; *head = n; }'
+OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 OPTACC_INLINE=1 \
+    OPTACC_PEEP=1 OPTACC_MIR=1 \
+    ssa "a smaller way a twelfth costlier, not kept" "ssa f made" "$sorted_insert"
 # A list walked with its node in IY across a call: IY kept around the call
 # it lives across, and not around the one before it is made -- push iy
 # once, under the arguments; p = p->next as ld iy, (iy+0); the _Bool answer
@@ -747,6 +753,10 @@ mirs "and memset, memchr and memmove"              yes \
     'void *memset(void *, int, unsigned); void *memchr(const void *, int, unsigned); void *memmove(void *, const void *, unsigned); char *f(char *p, int n) { memset(p, 0, n); memmove(p + 1, p, n); return memchr(p, 1, n); }'
 mir "$OPT" "the count in BC before the call"           010a0000cd    yes \
     'void *memset(void *, int, unsigned); struct s { char a[10]; int n; }; void f(struct s *p, int k) { memset(p->a, k, sizeof p->a); p->n = k; }'
+# A pair free for any: HL first, whose ld hl, (nn) and ld (nn), hl are a
+# byte shorter than BC's.
+mir "$OPT" "a static copied through HL"              '^2a00000022000000c9$' yes \
+    'extern int a, b; void f(void) { b = a; }'
 # A struct assigned through a pointer: its bytes copied with ldir, from a
 # global's or another pointer's, one after another in a loop -- but not
 # assigned twice over, where the first copy is a value read again
@@ -763,7 +773,7 @@ mirs "but not assigned twice over"                 no \
 # returned is made as the constant, not tested against zero again: where
 # the function answers in A, a _Bool's 0 is ld a, 0 and on to the return.
 members='struct s { int a, b; }; int g(int); int f(struct s *p) { return g(p->a) + p->b; }'
-mir "$OPT" "a pointer in IY, read through"           fd0700     yes "$members"
+mir "$OPT" "a pointer in IY, read through"           fd2700     yes "$members"
 mir "$OPT" "not copied there from HL"                fde5e1ed07 no  "$members"
 truth='_Bool f(int *p) { if (!p) return 0; if (*p == 3) return 1; return 0; }'
 mir "$OPT" "a _Bool's constant returned as it is"     3e00         yes "$truth"
@@ -803,9 +813,9 @@ mirs "but not on a long"                             no \
 mir "$OPT" "a case: HL kept for the next"          11010000b7ed5219 yes "$swint"
 
 # A value made before a run of calls and read once after them: kept in
-# its slot -- ld (ix-3), bc once -- not pushed and popped round each call.
+# its slot -- ld (ix-3), hl once -- not pushed and popped round each call.
 across='void g(int); int f(int *p) { int k = *p; g(1); g(2); g(3); g(4); return k; }'
-mir "$OPT" "a value across four calls, in its slot"    dd0ffd        yes "$across"
+mir "$OPT" "a value across four calls, in its slot"    dd2ffd        yes "$across"
 mir "$OPT" "not pushed and popped round them"         cd000000d1c1  no  "$across"
 
 # A join whose copies come from values in their slots: each read after
@@ -959,7 +969,7 @@ mir "$OPT" "x < 0 by its sign"                dd270629      yes 'int f(int x) { 
 mir "$OPT" "x < 5 through DE"           110000801911050080 yes 'int f(int x) { if (x < 5) return 3; return 4; }'
 mir "$OPT" "not through BC"             0100008009eb09eb   no  'int f(int x) { if (x < 5) return 3; return 4; }'
 mir "$OPT" "x | 0x80 on its low byte"          7df6806f      yes 'unsigned f(unsigned x) { return x | 0x80; }'
-mir "$OPT" "p[i] scaled by adds"               e5d12919      yes 'int f(int *p, int i) { return p[i]; }'
+mir "$OPT" "p[i] scaled by adds"               e5c12909      yes 'int f(int *p, int i) { return p[i]; }'
 mir "$OPT" "not by the multiply"               01030000      no  'int f(int *p, int i) { return p[i]; }'
 # A loop's counter and pointer kept in registers where the scan spills
 # what holds one longest for its uses -- the weight over the length --
@@ -969,11 +979,11 @@ mir "$OPT" "the loop's values in registers"   030303fd2b yes "$sum"
 # Signed, of two variables: the sign of the difference into the carry, and
 # the carry turned over where it overflowed -- or a / sbc hl, de / add
 # hl, hl / jp po -- with no bias through BC. And a pointer stepped by a
-# constant number of elements, the product made: ld bc, 13 / add hl, bc.
+# constant number of elements, the product made: ld de, 13 / add hl, de.
 sless='int f(int a, int b) { if (a < b) return 3; return 4; }'
 mir "$OPT" "a < b by the sign and overflow"  b7ed5229e2   yes "$sless"
 mir "$OPT" "not moved by a bias in BC"       01000080     no  "$sless"
-mir "$OPT" "p + 1 of 13 bytes, the product"  010d000009   yes 'struct t { char n[10]; int v; }; struct t *f(struct t *p) { return p + 1; }'
+mir "$OPT" "p + 1 of 13 bytes, the product"  110d000019   yes 'struct t { char n[10]; int v; }; struct t *f(struct t *p) { return p + 1; }'
 # The same signed comparison where the leaf backend makes it, and where
 # the code here selects it for the first pass's: the carry turned over on
 # overflow, and no bias -- which took BC, pushed and popped where a value
@@ -1007,19 +1017,19 @@ mir "$OPT" "a byte answered from A, as read"  fd7efcc9 yes "$vprev"
 mir "$OPT" "not widened twice"                7d6fcb05 no  "$vprev"
 mir "$OPT" "p[3] by (iy+9), then pop ix"      fd2709dde1c9 yes 'int f(int *p) { return p[3]; }'
 mir "$OPT" "no ld sp, ix"                     ddf9     no  'int f(int *p) { return p[3]; }'
-# A byte widened, tested as the byte: ld a, (bc) / or a. A byte &'d with a
+# A byte widened, tested as the byte: ld a, (hl) / or a. A byte &'d with a
 # constant branched on by the flags the and made, no or a after. A loop's
-# pointer stepped in its own register, inc bc, not copied out and back.
-# And a byte written through a pointer in BC as ld (bc), a.
-mir "$OPT" "*p tested as a byte, read through BC" 0ab728 yes 'int f(const char *p) { if (*p) return 3; return 4; }'
+# pointer stepped in its own register, inc hl, not copied out and back.
+# And a byte written through a pointer in HL as ld (hl), a.
+mir "$OPT" "*p tested as a byte, read through HL" 7eb728 yes 'int f(const char *p) { if (*p) return 3; return 4; }'
 mir "$OPT" "not widened and tested at 24 bits"    09b7ed42 no 'int f(const char *p) { if (*p) return 3; return 4; }'
 mask='extern unsigned char t[]; int f(int c) { if (t[c] & 4) return 3; return 4; }'
 mir "$OPT" "t[c] & 4 branched on as it is"     e60428   yes "$mask"
 mir "$OPT" "not tested again"                  e604b7   no  "$mask"
 count='int f(const char *s) { int n = 0; while (*s++) n++; return n; }'
-mir "$OPT" "s++ in its own register"           0318     yes "$count"
+mir "$OPT" "s++ in its own register"           2318     yes "$count"
 mir "$OPT" "not copied out and back"           c5d1     no  "$count"
-mir "$OPT" "*d = c by ld (bc), a"              02dde1c9 yes 'void f(char *d, char c) { *d = c; }'
+mir "$OPT" "*d = c by ld (hl), a"              77dde1c9 yes 'void f(char *d, char c) { *d = c; }'
 # ++ and -- through a pointer: made here, a byte stepped where it is --
 # inc (iy+3), read after it for ++x; a global's byte read before dec (hl)
 # for x--; an int global's through (nn); a member pointer written back
@@ -1032,7 +1042,7 @@ mir "$OPT" "not read, stepped and written"    fd7703   no  "$stepc"
 mir "$OPT" "g-- read before dec (hl)"         210000007e35 yes 'char g; int f(void) { return g--; }'
 mir "$OPT" "++gi through (nn)"                2a0000002322000000 yes 'int gi; int f(void) { return ++gi; }'
 mir "$OPT" "*x->p++ written back by (iy+3)"   fd1f03   yes 'struct s { int n; char *p; }; int f(struct s *x) { return *x->p++; }'
-mir "$OPT" "(*pp)++ by the struct's 13 bytes" 110d000019 yes 'struct b { char pad[13]; }; struct b *f(struct b **pp) { return (*pp)++; }'
+mir "$OPT" "(*pp)++ by the struct's 13 bytes" 010d000009 yes 'struct b { char pad[13]; }; struct b *f(struct b **pp) { return (*pp)++; }'
 # Locals whose address is taken, in memory: made here where no way caches
 # them (OPTACC_CACHE_NONE) -- but not where the type is a VLA's, whose steps
 # are sizes read as it runs. A char set and stepped in its slot, ld (ix-1),
@@ -1079,12 +1089,12 @@ picked() {
 }
 picked "$OPT" "no frame, chosen for it"         '^2a000000c9$' yes 'static int counter; int f(void) { return counter; }'
 nametext='char arena[100]; const char *f(int ref) { return arena + ref; }'
-picked "$OPT" "no ld sp, ix, chosen for it"     '09dde1c9$'    yes "$nametext"
+picked "$OPT" "no ld sp, ix, chosen for it"     '19dde1c9$'    yes "$nametext"
 picked "$OPT" "not the first pass's"            ddf9           no  "$nametext"
 # Smaller code costlier to run by no more than an eighth is chosen: a
-# static set to 1 is ld bc, 1 / ld (nn), bc / ret, ten bytes for the first
+# static set to 1 is ld hl, 1 / ld (nn), hl / ret, nine bytes for the first
 # pass's twenty-one, framed.
-picked "$OPT" "smaller, an eighth costlier, chosen" '^01010000ed43000000c9$' yes \
+picked "$OPT" "smaller, an eighth costlier, chosen" '^2101000022000000c9$' yes \
     'static int flag; void f(void) { flag = 1; }'
 # Through IY or HL, a byte read straight into the register it goes to --
 # ld d, (iy+0) -- not into A and copied.

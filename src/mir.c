@@ -4417,6 +4417,8 @@ static int call_spills(void)
     return n;
 }
 
+static const int pair_order[3] = { P_HL, P_DE, P_BC };
+
 /* One scan: each interval a register, or marked to be spilled. Answers
  * how many were, or -1 where one that no spill helps could have none. */
 static int linear_scan(void)
@@ -4457,6 +4459,15 @@ static int linear_scan(void)
             }
             if (p < 0)
                 p = partner_reg(v, reg_ok, 1);
+            /* Any, a pair HL first and then DE: HL's loads and stores of a
+             * static are a byte shorter than the others' -- ld hl, (nn)
+             * against ld bc, (nn) -- and an address in it is read through
+             * with no copy. BC first, as the order of the registers has
+             * it, cost acc 779 bytes and zap 271, with the pick taking the
+             * cheapest way a twelfth cheaper (genlog.c). */
+            for (j = 0; p < 0 && vr[v].width == 3 && j != 3; j++)
+                if (reg_ok(v, pair_order[j]))
+                    p = pair_order[j];
             if (p < 0)
                 for (p = 0; p != NPREGS && !reg_ok(v, p); p++)
                     ;
