@@ -455,14 +455,95 @@ int inline_moved(int offset)
     return offset;
 }
 
-/* The merged regions, each a slot of this frame. */
+/* The merged regions, each a slot of this frame -- those frame_compact
+ * has not given one already. */
 static void inline_slots(void)
 {
     int region;
 
     for (region = 0; region != nmerged; region++)
-        local_move(inlined[region].from, inlined[region].size,
-                   gen_local(inlined[region].size));
+        if (inline_moved(inlined[region].from) == inlined[region].from)
+            local_move(inlined[region].from, inlined[region].size,
+                       gen_local(inlined[region].size));
+}
+
+static int local_gone(int from, int size);
+int frame_of_value(const Ins *insn);
+
+/* The first pass's frame laid out again, as one block: every byte that a
+ * local still in memory or an inlined call's scratch takes, in the first
+ * pass's order, and none that only values took. The first pass gives a
+ * byte to one local and, once its scope is over, to another; so does this,
+ * the same two -- each first-pass byte has one place here, whichever
+ * local's it is. Laid out one local at a time instead, two that shared a
+ * byte had two, and a read of the second found the first's: in acc's own
+ * declaration, a body read in place took an offset its caller's `type`
+ * had later, and `type` was then read from where its neighbour `count` was
+ * written (test/cases/389). A local's bytes are all taken, so they stay in
+ * a row. Linear in the frame. */
+static void frame_compact(void)
+{
+    int at, lo = 0, hi = 0, used = 0, base, b, region;
+    int *place;
+
+    for (at = 1; at != ninsns; at++) {
+        const GenRec *rec = insns[at].rec;
+
+        if (insns[at].op != I_FRAME || rec->op != GL_gen_local || frame_of_value(&insns[at])
+            || local_gone((int) rec->ret, (int) rec->arg[0]) || (int) rec->ret >= 0)
+            continue;
+        if ((int) rec->ret < lo)
+            lo = (int) rec->ret;
+        if ((int) rec->ret + (int) rec->arg[0] > hi)
+            hi = (int) rec->ret + (int) rec->arg[0];
+    }
+    for (region = 0; region != nmerged; region++)
+        if (inlined[region].from < 0) {
+            if (inlined[region].from < lo)
+                lo = inlined[region].from;
+            if (inlined[region].from + inlined[region].size > hi)
+                hi = inlined[region].from + inlined[region].size;
+        }
+    if (lo == 0)
+        return;
+    place = calloc((size_t) (hi - lo) + 1, sizeof *place);
+    if (!place)
+        acc_error("out of memory for the SSA form");
+    /* Marked, by byte from lo: 1 for one something takes. */
+    for (at = 1; at != ninsns; at++) {
+        const GenRec *rec = insns[at].rec;
+
+        if (insns[at].op != I_FRAME || rec->op != GL_gen_local || frame_of_value(&insns[at])
+            || local_gone((int) rec->ret, (int) rec->arg[0]) || (int) rec->ret >= 0)
+            continue;
+        for (b = 0; b != (int) rec->arg[0]; b++)
+            place[(int) rec->ret + b - lo] = 1;
+    }
+    for (region = 0; region != nmerged; region++)
+        if (inlined[region].from < 0)
+            for (b = 0; b != inlined[region].size; b++)
+                place[inlined[region].from + b - lo] = 1;
+    for (b = 0; b != hi - lo; b++)
+        used += place[b];
+    /* The block, and each byte's place in it: the one nearest IX first,
+     * nearest, as the first pass had it. */
+    base = gen_local(used);
+    for (b = hi - lo - 1, at = used - 1; b >= 0; b--)
+        if (place[b])
+            place[b] = base + at--;
+    for (at = 1; at != ninsns; at++) {
+        const GenRec *rec = insns[at].rec;
+
+        if (insns[at].op != I_FRAME || rec->op != GL_gen_local || frame_of_value(&insns[at])
+            || local_gone((int) rec->ret, (int) rec->arg[0]) || (int) rec->ret >= 0)
+            continue;
+        local_move((int) rec->ret, (int) rec->arg[0], place[(int) rec->ret - lo]);
+    }
+    for (region = 0; region != nmerged; region++)
+        if (inlined[region].from < 0)
+            local_move(inlined[region].from, inlined[region].size,
+                       place[inlined[region].from - lo]);
+    free(place);
 }
 
 /* Whether a call is a query or a check, which changes nothing. */
@@ -1957,6 +2038,7 @@ void frame_again_all(int arrays_here)
     int at;
 
     nlocal_moves = 0;
+    frame_compact();
     for (at = 1; at != ninsns; at++) {
         const GenRec *rec = insns[at].rec;
         int array;
@@ -1996,8 +2078,9 @@ void frame_again(const Ins *insn)
     if (insn->rec->op == GL_gen_local) {
         int from = (int) insn->rec->ret, size = (int) insn->rec->arg[0];
 
-        if (!local_gone(from, size))
-            local_move(from, size, gen_local(size));
+        /* Its room is frame_compact's. */
+        (void) from;
+        (void) size;
         return;
     }
     frame_call.op = frame_call.rec->op;
@@ -3501,6 +3584,7 @@ static void emit(void)
      * for the local in IY, if it is values now. */
     call(&insns[0]);
     nlocal_moves = 0;
+    frame_compact();
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
@@ -9026,6 +9110,7 @@ static void emit_leaf(void)
     blocks_from = out_here();
     call(&insns[0]);
     nlocal_moves = 0;
+    frame_compact();
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
@@ -9438,6 +9523,7 @@ static void emit_regs(void)
     blocks_from = out_here();
     call(&insns[0]);
     nlocal_moves = 0;
+    frame_compact();
     for (at = 1; at != ninsns; at++)
         if (insns[at].op == I_FRAME && !frame_of_value(&insns[at]))
             frame_again(&insns[at]);
