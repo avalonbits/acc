@@ -759,6 +759,10 @@ mirs "and memset, memchr and memmove"              yes \
     'void *memset(void *, int, unsigned); void *memchr(const void *, int, unsigned); void *memmove(void *, const void *, unsigned); char *f(char *p, int n) { memset(p, 0, n); memmove(p + 1, p, n); return memchr(p, 1, n); }'
 mir "$OPT" "the count in BC before the call"           010a0000cd    yes \
     'void *memset(void *, int, unsigned); struct s { char a[10]; int n; }; void f(struct s *p, int k) { memset(p->a, k, sizeof p->a); p->n = k; }'
+# And one with an initial value: its bytes laid down where the code
+# starts and jumped over (test/cases/394).
+mirs "a block static with a value, made by it"       yes \
+    'int f(int k) { static const int t[3] = { 5, 6, 7 }; return t[k]; }'
 # A block static that starts at zero: its room in the bss reserved again
 # where the code starts, and the function made by it (test/cases/392).
 mirs "a block static at zero, made by it"            yes \

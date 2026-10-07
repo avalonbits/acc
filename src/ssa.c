@@ -786,6 +786,11 @@ static void build_one(const GenRec *rec)
         bss_recs[nbss_recs++] = rec;
         return;
     case GL_gen_data_begin: case GL_gen_data_end: case GL_gen_pending_clear:
+        /* A block static's initial value being read: the parser's state,
+         * nothing in the code. Its bytes are the GL_RAW records after,
+         * which emit_raws lays down again; one with an address among them
+         * is still refused there. */
+        return;
     case GL_gen_data_fixup: case GL_gen_bss_move:
     case GL_gen_bss_forget: case GL_gen_bss_fixup:
     case GL_gen_late_fixup: case GL_gen_slot: case GL_gen_link_fixup:
