@@ -85,12 +85,13 @@ regloop='int f(const char *p, int n) { register int s = 0; while (n--) s += *p++
 
 prologue=dde5dd21000000dd39         # push ix; ld ix, 0; add ix, sp
 wants "$ACC" "a frame: acc calls the prologue"     acc_rt_frameset yes "$framed"
-wants "$OPT" "a frame: opt-acc calls it too"       acc_rt_frameset yes "$framed"
+wants "$OPT" "a frame: opt-acc writes it out"      acc_rt_frameset no  "$framed"
+OPTACC_FRAME_CALL=1 wants "$OPT" "with OPTACC_FRAME_CALL, calls it" acc_rt_frameset yes "$framed"
 # A function said hot has it written out, which is faster -- lea hl,
 # ix-frame / ld sp, hl, where the frame is in its reach, and ld hl, -frame
 # / add hl, sp / ld sp, hl where it is not.
 hot='__attribute__((hot)) '
-wants "$OPT" "a hot frame: opt-acc does not call" acc_rt_frameset no  "$hot$framed"
+OPTACC_FRAME_CALL=1 wants "$OPT" "a hot frame: opt-acc does not call" acc_rt_frameset no  "$hot$framed"
 emits "$OPT" "a hot frame: opt-acc writes it out" "${prologue}ed22..f9" yes "$hot$framed"
 bigframe='int f(int x) { int a[60]; a[x & 63] = x; return a[0]; }'
 emits "$OPT" "a big hot frame: ld hl, -frame"      "${prologue}21......39f9" yes "$hot$bigframe"
@@ -275,8 +276,9 @@ OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_PICK=0 \
     ssa "a struct read for a member" "ssa f made" \
     'struct s { int a, b; }; int f(struct s *p, int i) { return p[i].b + (*p).a; }'
 frame='int f(int a) { int x = a + 1, y = x * 2, z = y - 3; return z; }'
-all "$OPT" "the frame without the locals made values"  21fdffffcd yes "$frame"
-emits "$OPT" "which the first pass's has"              21f7ffffcd yes "$frame"
+# (Read by the call's ld hl, -frame: OPTACC_FRAME_CALL.)
+OPTACC_FRAME_CALL=1 all "$OPT" "the frame without the locals made values"  21fdffffcd yes "$frame"
+OPTACC_FRAME_CALL=1 emits "$OPT" "which the first pass's has"              21f7ffffcd yes "$frame"
 
 # With OPTACC_LEAF, a function is made by a backend of opt-acc's own, every
 # instruction selected in ssa.c. OPTACC_SSA_STATS says which: `leaf f`.
@@ -663,11 +665,11 @@ inlined "one into a caller a worse backend makes, called" insert_sorted no "$sor
 # the stack for the next call to spill: three locals and the answer, and
 # no more, in the frame.
 args='int g(int); static int mix(int a, int b, int c) { if (a > b) return a - c; return b + c; } int f(int k) { return mix(g(k), g(k + 1), g(k + 2)); }'
-OPTACC_INLINE=1 emits "$OPT" "arguments stored as they are made"  21f4ffffcd yes "$args"
+OPTACC_FRAME_CALL=1 OPTACC_INLINE=1 emits "$OPT" "arguments stored as they are made"  21f4ffffcd yes "$args"
 # A body's locals give their room back where it ends: the second body's
 # take the first's, and the frame is 18 bytes, not 30.
 twobodies='void touch(int *, int *); static int a(int k) { int x, y; touch(&x, &y); return x + y + k; } static int b(int k) { int u, v; touch(&u, &v); return u - v + k; } int f(int k) { int s = a(k); int t = b(k); return s + t; }'
-OPTACC_INLINE=1 all "$OPT" "two bodies' locals in the same room"  21eeffffcd yes "$twobodies"
+OPTACC_FRAME_CALL=1 OPTACC_INLINE=1 all "$OPT" "two bodies' locals in the same room"  21eeffffcd yes "$twobodies"
 # A slot one body gave back and another takes as another type is not
 # shared as a VLA's length is: neither reads the other's, and the function
 # is made from its SSA form.
@@ -940,7 +942,7 @@ void f(int k)
         h(p, q, r, s, t, u);
     }
 }'
-mir "$OPT" "three runs' spills in a frame of nine bytes"  21f7ffff  yes "$runs"
+OPTACC_FRAME_CALL=1 mir "$OPT" "three runs' spills in a frame of nine bytes"  21f7ffff  yes "$runs"
 mir "$OPT" "not eighteen"                                21eeffff  no  "$runs"
 many='int g(int); __attribute__((always_inline)) static inline int sq(int v) { int t[2]; t[0] = v; t[1] = g(v); return t[0] * t[1]; } int f(int k) { int v1 = g(1); int v2 = g(2); int v3 = g(3); int v4 = g(4); int v5 = g(5); int v6 = g(6); int v7 = g(7); int v8 = g(8); int v9 = g(9); int v10 = g(10); int v11 = g(11); int v12 = g(12); int v13 = g(13); int v14 = g(14); int v15 = g(15); int v16 = g(16); int v17 = g(17); int v18 = g(18); int v19 = g(19); int v20 = g(20); int v21 = g(21); int v22 = g(22); int v23 = g(23); int v24 = g(24); int v25 = g(25); int v26 = g(26); int v27 = g(27); int v28 = g(28); int v29 = g(29); int v30 = g(30); int v31 = g(31); int v32 = g(32); int v33 = g(33); int v34 = g(34); int v35 = g(35); int v36 = g(36); int v37 = g(37); int v38 = g(38); int v39 = g(39); int v40 = g(40); int v41 = g(41); int v42 = g(42); int v43 = g(43); int v44 = g(44); int v45 = g(45);  return v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10 + v11 + v12 + v13 + v14 + v15 + v16 + v17 + v18 + v19 + v20 + v21 + v22 + v23 + v24 + v25 + v26 + v27 + v28 + v29 + v30 + v31 + v32 + v33 + v34 + v35 + v36 + v37 + v38 + v39 + v40 + v41 + v42 + v43 + v44 + v45 +  sq(k); }'
 mirs "45 locals that are values, an inlined array"  yes "$many"
@@ -1038,12 +1040,14 @@ OPTACC_LEAF=1 all "$OPT" "a < b in the leaf backend, by the carry" ed5229e2 yes 
 OPTACC_LEAF=1 all "$OPT" "with no bias"                        01000080 no  "$callless"
 all "$OPT" "a < b in the first pass's code, by the carry"     ed5229e2 yes "$callless"
 all "$OPT" "with no bias there either"                        11000080 no  "$callless"
-# The prologue a call to acc_rt_frameset, as acc's: call nn first, four
-# bytes where writing it out is nine -- and written out, the faster one,
-# for a function said hot, before it or after its parameters.
-mir "$OPT" "a prologue by the call"            '^cd000000'    yes 'int f(int a) { return a + 2; }'
-mir "$OPT" "said hot, written out"             dde5dd21000000dd39 yes '__attribute__((hot)) int f(int a) { return a + 1; }'
-mir "$OPT" "said hot after, written out"       dde5dd21000000dd39 yes 'int f(int a) __attribute__((hot)); int f(int a) { return a + 1; }'
+# The prologue written out, the faster -- or with OPTACC_FRAME_CALL a call
+# to acc_rt_frameset, as acc's: call nn first, four bytes where writing it
+# out is nine -- but written out still for a function said hot, before it
+# or after its parameters.
+mir "$OPT" "a prologue written out"            dde5dd21000000dd39 yes 'int f(int a) { return a + 2; }'
+OPTACC_FRAME_CALL=1 mir "$OPT" "a prologue by the call" '^cd000000' yes 'int f(int a) { return a + 2; }'
+OPTACC_FRAME_CALL=1 mir "$OPT" "said hot, written out"             dde5dd21000000dd39 yes '__attribute__((hot)) int f(int a) { return a + 1; }'
+OPTACC_FRAME_CALL=1 mir "$OPT" "said hot after, written out"       dde5dd21000000dd39 yes 'int f(int a) __attribute__((hot)); int f(int a) { return a + 1; }'
 boolread='extern _Bool b; int f(int *p) { *p = 1; if (b) return 3; return 4; }'
 mir "$OPT" "a _Bool read tested as a byte"   3a000000b7      yes "$boolread"
 mir "$OPT" "not widened and tested"        b7ed626f09b7ed42 no "$boolread"
