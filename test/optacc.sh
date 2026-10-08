@@ -1284,6 +1284,13 @@ mir "$OPT" "not through A"                        fd7e0057 no "$cmploop"
 # The steps there in place too, made in the block of the edge back: dec bc
 # for n--, inc iy for a++.
 mir "$OPT" "steps in place on a branch's edge"   0bfd23   yes "$cmploop"
+# A loop's phi dead from its last read to the step's copy at the end: with
+# lifetime holes the step has the phi's register, so len is no frame slot
+# (ld (ix-1), a) and src no copy through the stack (push hl; pop de).
+tokscan='typedef struct { const char *start; char term; } tok_t;
+unsigned char f(tok_t *t, const char *src) { unsigned char len = 0; t->start = src; for (;;) { char c = *src; if (c == 0 || c == 44 || c == 59) break; src++; len++; if (c != 39) continue; while (*src && *src != 39) { src++; len++; } } t->term = *src; return len; }'
+mir "$OPT" "a phi's hole holds its step: no slot"   dd77ff   no "$tokscan"
+mir "$OPT" "nor a copy through the stack"           e5d1     no "$tokscan"
 
 big=$(python3 -c "
 print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')

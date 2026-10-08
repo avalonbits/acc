@@ -4807,6 +4807,176 @@ static void live_through(void)
     free(work);
 }
 
+/* By register: where it is live, as ranges of positions, in order -- an
+ * interval with its holes. A loop's phi is written where the loop starts
+ * and again at its end, and is dead from its last read to there: the
+ * value it is made from on the way round can have its register, and the
+ * copy at the end comes to nothing. rg_s and rg_e from rg_off[v] for
+ * rg_n[v]; rg_last[v] the end of the last. */
+static int *rg_off, *rg_n, *rg_last, *rg_s, *rg_e, nrg, rg_cap;
+
+/* The ranges as they are found, latest first: by register, where. */
+static int *tr_v, *tr_s, *tr_e, ntr, tr_cap;
+
+static void range_found(int v, int from, int to)
+{
+    if (ntr == tr_cap) {
+        tr_cap = tr_cap ? tr_cap * 2 : 256;
+        tr_v = realloc(tr_v, (size_t) tr_cap * sizeof *tr_v);
+        tr_s = realloc(tr_s, (size_t) tr_cap * sizeof *tr_s);
+        tr_e = realloc(tr_e, (size_t) tr_cap * sizeof *tr_e);
+        if (!tr_v || !tr_s || !tr_e)
+            acc_error("out of memory for the machine IR");
+    }
+    tr_v[ntr] = v;
+    tr_s[ntr] = from;
+    tr_e[ntr] = to;
+    ntr++;
+}
+
+/* The ranges, from the blocks laid out last to first: in each, what its
+ * successors take in is live to its end, and each instruction from the
+ * last back starts a range where it reads and ends one where it writes.
+ * Found latest first, so each register's are reversed into order, and
+ * those that touch made one. Linear in the code and the live-ins. */
+static void build_ranges(void)
+{
+    int *in_off = calloc((size_t) nmb + 2, sizeof *in_off), *in_v;
+    int *open = malloc(((size_t) nvr + 1) * sizeof *open);
+    int *open_end = malloc(((size_t) nvr + 1) * sizeof *open_end);
+    int *list = malloc(((size_t) nvr + 1) * sizeof *list), nlist;
+    int *cnt = calloc((size_t) nvr + 1, sizeof *cnt);
+    int k, b, at, n, v, stamp = 0;
+
+    if (!in_off || !open || !open_end || !list || !cnt)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != nlivein; k++)
+        in_off[livein_blk[k] + 2]++;
+    for (b = 0; b != nmb; b++)
+        in_off[b + 2] += in_off[b + 1];
+    in_v = malloc(((size_t) nlivein + 1) * sizeof *in_v);
+    if (!in_v)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != nlivein; k++)
+        in_v[in_off[livein_blk[k] + 1]++] = livein_v[k];
+    for (v = 0; v != nvr; v++)
+        open[v] = 0;
+    ntr = 0;
+
+    for (k = nlayout - 1; k >= 0; k--) {
+        const MBlock *blk = &mb[layout[k]];
+        int bs = blk_pos[layout[k]], be = blk_end[layout[k]], j, m;
+
+        stamp++;
+        nlist = 0;
+        for (j = 0; j != blk->nsucc; j++)
+            for (m = in_off[blk->succ[j]]; m != in_off[blk->succ[j] + 1]; m++)
+                if (open[in_v[m]] != stamp) {
+                    open[in_v[m]] = stamp;
+                    open_end[in_v[m]] = be;
+                    list[nlist++] = in_v[m];
+                }
+        for (at = blk->n - 1; at >= 0; at--) {
+            const MIns *mi = &blk->ins[at];
+            int pos = bs + 2 * at;
+
+            opbuf_fit(mi_nops(mi));
+            n = mi_defs(mi, opbuf);
+            while (n--) {
+                int d = opbuf[n], dp = d == mi->t ? pos : pos + 1;
+
+                if (open[d] == stamp) {         /* live from here */
+                    range_found(d, dp, open_end[d] > dp ? open_end[d] : dp);
+                    open[d] = 0;
+                } else {
+                    range_found(d, dp, dp);     /* written, not read */
+                }
+            }
+            n = mi_uses(mi, opbuf);
+            while (n--) {
+                int u = opbuf[n];
+
+                if (open[u] != stamp) {
+                    open[u] = stamp;
+                    open_end[u] = pos;
+                    list[nlist++] = u;
+                }
+            }
+        }
+        for (j = 0; j != nlist; j++)
+            if (open[list[j]] == stamp) {       /* live into the block */
+                range_found(list[j], bs, open_end[list[j]]);
+                open[list[j]] = 0;
+            }
+    }
+
+    rg_off = realloc(rg_off, ((size_t) nvr + 1) * sizeof *rg_off);
+    rg_n = realloc(rg_n, ((size_t) nvr + 1) * sizeof *rg_n);
+    rg_last = realloc(rg_last, ((size_t) nvr + 1) * sizeof *rg_last);
+    if (!rg_off || !rg_n || !rg_last)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != ntr; k++)
+        cnt[tr_v[k]]++;
+    for (v = 0, n = 0; v != nvr; v++) {
+        rg_off[v] = n;
+        n += cnt[v];
+    }
+    if (n > rg_cap) {
+        rg_cap = n;
+        rg_s = realloc(rg_s, ((size_t) rg_cap + 1) * sizeof *rg_s);
+        rg_e = realloc(rg_e, ((size_t) rg_cap + 1) * sizeof *rg_e);
+        if (!rg_s || !rg_e)
+            acc_error("out of memory for the machine IR");
+    }
+    nrg = n;
+    for (k = 0; k != ntr; k++) {        /* latest first: in from the end */
+        v = tr_v[k];
+        cnt[v]--;
+        rg_s[rg_off[v] + cnt[v]] = tr_s[k];
+        rg_e[rg_off[v] + cnt[v]] = tr_e[k];
+    }
+    for (v = 0; v != nvr; v++) {
+        int base = rg_off[v], len = (v + 1 < nvr ? rg_off[v + 1] : nrg) - base;
+        int i, m = 0;
+
+        for (i = 0; i != len; i++) {
+            if (m && rg_s[base + i] <= rg_e[base + m - 1] + 1) {
+                if (rg_e[base + i] > rg_e[base + m - 1])
+                    rg_e[base + m - 1] = rg_e[base + i];
+                continue;
+            }
+            rg_s[base + m] = rg_s[base + i];
+            rg_e[base + m] = rg_e[base + i];
+            m++;
+        }
+        rg_n[v] = m;
+        rg_last[v] = m ? rg_e[base + m - 1] : -1;
+    }
+    free(cnt);
+    free(in_off);
+    free(in_v);
+    free(open);
+    free(open_end);
+    free(list);
+}
+
+/* Whether two registers' ranges meet: one pass over both, in order. */
+static int ranges_meet(int a, int b)
+{
+    int i = rg_off[a], ie = i + rg_n[a], j = rg_off[b], je = j + rg_n[b];
+
+    while (i < ie && j < je) {
+        if (rg_e[i] < rg_s[j])
+            i++;
+        else if (rg_e[j] < rg_s[i])
+            j++;
+        else
+            return 1;
+    }
+
+    return 0;
+}
+
 /* The intervals and what goes with them, from the code as it is now. */
 static void intervals(void)
 {
@@ -4889,6 +5059,7 @@ static void intervals(void)
     }
     npos = pos + 2;
     live_through();
+    build_ranges();
 
     /* The copies that make one value: each side written once, of a width,
      * and the source no copy itself -- so that copies of one share it. And
@@ -5176,11 +5347,36 @@ static void groups_build(void)
 
 static unsigned scan_busy;              /* the units of the intervals live */
 
+/* Whether linear_scan sees the ranges, two values sharing a register
+ * where one's holes take the other: the split allocator, whose pieces
+ * are one stretch each, keeps to the intervals. A loop's phi with its
+ * step in another register cost ez80asm's getOperandToken a frame and a
+ * copy each time round; with the ranges ez80asm is 3% faster, acc 0.6%
+ * and zap 0.7%, the pick taking a way a sixteenth cheaper (genlog.c). */
+static int holes_on;
+
+/* Whether a clobber in any of `v`'s ranges takes a unit of `units`: a
+ * clobber in a hole of its takes nothing it holds. */
+static int ranges_clobbered(int v, unsigned units)
+{
+    int i;
+
+    for (i = rg_off[v]; i != rg_off[v] + rg_n[v]; i++)
+        if (units & clob_or(rg_s[i], rg_e[i] - 1))
+            return 1;
+
+    return 0;
+}
+
 static int reg_ok(int v, int p)
 {
-    return (vr[v].cls & PB(p)) && !(preg_units[p] & scan_busy)
-           && !(preg_units[p] & clob_or(iv_s[v], iv_e[v] - 1))
-           && !fixed_clash(preg_units[p], iv_s[v], iv_e[v], v);
+    if (!(vr[v].cls & PB(p)) || (preg_units[p] & scan_busy))
+        return 0;
+    if (holes_on ? ranges_clobbered(v, preg_units[p])
+                 : (preg_units[p] & clob_or(iv_s[v], iv_e[v] - 1)) != 0)
+        return 0;
+
+    return !fixed_clash(preg_units[p], iv_s[v], iv_e[v], v);
 }
 
 static int *spilled;            /* by register: to be spilled, this round */
@@ -5192,6 +5388,18 @@ static int *spilled;            /* by register: to be spilled, this round */
 static long spill_cost(int v)
 {
     long length = iv_e[v] - iv_s[v] + 1;
+
+    /* With holes, what it holds a register for: the ranges, not the
+     * stretch from its first to its last. */
+    if (holes_on) {
+        int i;
+
+        length = 0;
+        for (i = rg_off[v]; i != rg_off[v] + rg_n[v]; i++)
+            length += rg_e[i] - rg_s[i] + 1;
+        if (length < 1)
+            length = 1;
+    }
 
     return vr[v].weight * (vr[v].remat || vr[v].param ? 1 : 2) * 4096 / length;
 }
@@ -5270,10 +5478,19 @@ static const int pair_order[3] = { P_HL, P_DE, P_BC };
 
 /* One scan: each interval a register, or marked to be spilled. Answers
  * how many were, or -1 where one that no spill helps could have none. */
+static int *scan_active, scan_active_cap;
+
 static int linear_scan(void)
 {
-    int k, n = 0, nactive = 0, active[NPREGS + 8];
+    int k, n = 0, nactive = 0, *active;
 
+    if (scan_active_cap < nvr + 1) {
+        scan_active_cap = nvr + 1;
+        scan_active = realloc(scan_active, (size_t) scan_active_cap * sizeof *scan_active);
+        if (!scan_active)
+            acc_error("out of memory for the machine IR");
+    }
+    active = scan_active;
     iv_order = realloc(iv_order, ((size_t) nvr + 1) * sizeof *iv_order);
     spilled = realloc(spilled, ((size_t) nvr + 1) * sizeof *spilled);
     if (!iv_order || !spilled)
@@ -5296,7 +5513,8 @@ static int linear_scan(void)
         for (;;) {
             scan_busy = 0;
             for (j = 0; j != nactive; j++)
-                if (!same_value(active[j], v))
+                if (!same_value(active[j], v)
+                    && (!holes_on || ranges_meet(active[j], v)))
                     scan_busy |= preg_units[vr[active[j]].preg];
             /* A copy partner's register, where it has one; the group's;
              * a partner's that must be one register; any. The group's
@@ -5350,7 +5568,8 @@ static int linear_scan(void)
                 for (j = 0; j != nactive; j++) {
                     int a = active[j];
 
-                    if (vr[a].short_lived || !(want & preg_units[vr[a].preg]))
+                    if (vr[a].short_lived || !(want & preg_units[vr[a].preg])
+                        || (holes_on && !ranges_meet(a, v)))
                         continue;
                     cost = spill_cost(a);
                     if (victim < 0 || cost < best) {
@@ -6813,7 +7032,15 @@ static void dump_mir(const char *when)
  * unit: run after allocation, over the allocation itself. */
 static const char *verify(void)
 {
-    int k, j, n = 0, nactive = 0, active[NPREGS + 8], blk, at;
+    int k, j, n = 0, nactive = 0, *active, blk, at;
+
+    if (scan_active_cap < nvr + 1) {
+        scan_active_cap = nvr + 1;
+        scan_active = realloc(scan_active, (size_t) scan_active_cap * sizeof *scan_active);
+        if (!scan_active)
+            acc_error("out of memory for the machine IR");
+    }
+    active = scan_active;
 
     for (blk = 0; blk != nmb; blk++)
         for (at = 0; at != mb[blk].n; at++) {
@@ -6839,7 +7066,8 @@ static const char *verify(void)
             clob_free();
             return "internal: a register outside its class";
         }
-        if (preg_units[vr[v].preg] & clob_or(iv_s[v], iv_e[v] - 1)) {
+        if (holes_on ? ranges_clobbered(v, preg_units[vr[v].preg])
+                     : (preg_units[vr[v].preg] & clob_or(iv_s[v], iv_e[v] - 1)) != 0) {
             clob_free();
             return "internal: a register a clobber takes";
         }
@@ -6848,14 +7076,11 @@ static const char *verify(void)
                 active[j--] = active[--nactive];
         for (j = 0; j != nactive; j++)
             if ((preg_units[vr[active[j]].preg] & preg_units[vr[v].preg])
-                && !(same_value(active[j], v) && vr[active[j]].preg == vr[v].preg)) {
+                && !(same_value(active[j], v) && vr[active[j]].preg == vr[v].preg)
+                && (!holes_on || ranges_meet(active[j], v))) {
                 clob_free();
                 return "internal: two values sharing a register";
             }
-        if (nactive == NPREGS + 8) {
-            clob_free();
-            return "internal: more live than registers";
-        }
         active[nactive++] = v;
     }
     clob_free();
@@ -7342,10 +7567,17 @@ static void calls_live(void)
  * round: the intervals live across it, recorded in the copy. */
 static void pcopy_busy(void)
 {
-    int k, n = 0, j, nactive = 0, active[NPREGS + 8], next = 0, b, at, pos = 0;
+    int k, n = 0, j, nactive = 0, *active, next = 0, b, at, pos = 0;
     int save_pos = 0, call = 0;
     MIns *save = NULL;
 
+    if (scan_active_cap < nvr + 1) {
+        scan_active_cap = nvr + 1;
+        scan_active = realloc(scan_active, (size_t) scan_active_cap * sizeof *scan_active);
+        if (!scan_active)
+            acc_error("out of memory for the machine IR");
+    }
+    active = scan_active;
     calls_live();
     for (k = 0; k != nvr; k++)
         if (iv_s[k] >= 0)
@@ -7357,11 +7589,8 @@ static void pcopy_busy(void)
         for (at = 0; at != blk->n; at++, pos += 2) {
             unsigned busy = 0;
 
-            while (next < n && iv_s[iv_order[next]] <= pos) {
-                if (nactive < NPREGS + 8)
-                    active[nactive++] = iv_order[next];
-                next++;
-            }
+            while (next < n && iv_s[iv_order[next]] <= pos)
+                active[nactive++] = iv_order[next++];
             for (j = 0; j < nactive; j++)
                 if (iv_e[active[j]] < pos)
                     active[j--] = active[--nactive];
@@ -8165,6 +8394,7 @@ int mir_build(void)
     free_fixed_bytes();
     lay_out();
     splitting = ssa_mir_want == 2;
+    holes_on = !splitting;
     nparts_made = 0;
     if (splitting) {
         intervals();

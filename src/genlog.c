@@ -543,11 +543,13 @@ static void gl_function_end(void)
          * time, where the pick had kept it in memory. Of those no
          * costlier and no bigger than the first pass's, the smallest, and
          * of two the same size the cheaper, is made again -- unless the
-         * cheapest of them costs a twelfth less than it: sieve's main, the
+         * cheapest of them costs a sixteenth less than it: sieve's main, the
          * leaf backend's 13 bytes smaller and its loops a quarter slower,
          * once it could hold the long the program checks; and lists'
          * insert_sorted, the machine-level backend's 9 bytes smaller and
-         * 9.5% costlier than the leaf backend's, lists then 8.5% slower. */
+         * 9.5% costlier than the leaf backend's, lists then 8.5% slower.
+         * A twelfth, until the machine-level allocator had lifetime holes:
+         * with them a sixteenth made zap 1.9% faster, the rest the same. */
         if (made > 0 && picking && !mir_alone) {
             static const struct { int leaf_off, cache_off, mir; } ways[] = {
                 { 0, CACHE_ALL, 0 }, { 0, CACHE_NONE, 0 }, { 1, CACHE_NONE, 0 },
@@ -604,12 +606,12 @@ static void gl_function_end(void)
                 gl_back();
             }
             /* The splitting allocator's code an eighth cheaper, where the
-             * rest's need only be a twelfth: its estimate is the most
+             * rest's need only be a sixteenth: its estimate is the most
              * flattering of them. ez80asm's getExpressionValue made by it
              * a twelfth cheaper was 15% slower. */
-            if (best >= 0 && cheap_cost * 12 < best_cost * 11
+            if (best >= 0 && cheap_cost * 16 < best_cost * 15
                 && (cheap != 5 || cheap_cost * 8 < best_cost * 7))
-                best = cheap;           /* a twelfth cheaper: see above */
+                best = cheap;           /* a sixteenth cheaper: see above */
             made = 0;
             why = lost ? lost : why;
             if (best >= 0) {
