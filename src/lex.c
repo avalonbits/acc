@@ -969,6 +969,7 @@ static void lex_digraph(int c)
  * macro that expands to more of them. */
 #ifdef OPT_ACC
 int attr_hot;                   /* opt-acc: `hot` said, for function_declarator */
+int attr_inline;                /* opt-acc: INLINE_ALWAYS or INLINE_NEVER said */
 #endif
 
 __attribute__((noinline))
@@ -976,11 +977,15 @@ static void skip_attribute(void)
 {
     int depth = 1;
 #ifdef OPT_ACC
-    static NameRef hot, hot_long;
+    static NameRef hot, hot_long, always, always_long, never, never_long;
 
     if (!hot) {
         hot = name_intern("hot", 3);
         hot_long = name_intern("__hot__", 7);
+        always = name_intern("always_inline", 13);
+        always_long = name_intern("__always_inline__", 17);
+        never = name_intern("noinline", 8);
+        never_long = name_intern("__noinline__", 12);
     }
 #endif
 
@@ -995,6 +1000,12 @@ static void skip_attribute(void)
          * written out, the fast one (see frame_wants_call). */
         if (tok == TK_IDENT && (tok_name == hot || tok_name == hot_long))
             attr_hot = 1;
+        /* And whether its body is to be read in place of its calls -- every
+         * one of them, or none: see body_wanted. */
+        if (tok == TK_IDENT && (tok_name == always || tok_name == always_long))
+            attr_inline |= INLINE_ALWAYS;
+        if (tok == TK_IDENT && (tok_name == never || tok_name == never_long))
+            attr_inline |= INLINE_NEVER;
 #endif
         if (tok == TK_LPAREN)
             depth++;

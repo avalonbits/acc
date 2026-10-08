@@ -384,6 +384,7 @@ char inline_count_out[64];
 struct InlineCount {
     NameRef name;
     int     calls, address;
+    int     said;                       /* INLINE_ALWAYS, INLINE_NEVER */
 };
 
 static struct InlineCount *counts;
@@ -407,7 +408,7 @@ static struct InlineCount *count_of(NameRef name, int add)
             acc_error(no_room);
     }
     counts[ncounts].name = name;
-    counts[ncounts].calls = counts[ncounts].address = 0;
+    counts[ncounts].calls = counts[ncounts].address = counts[ncounts].said = 0;
 
     return &counts[ncounts++];
 }
@@ -422,6 +423,24 @@ void inline_count_address(int fn)
 {
     if (inline_count_mode == CHILD_COUNT && (sym_flags(fn) & SYMF_STATIC))
         count_of(sym_at(fn)->name, 1)->address = 1;
+}
+
+/* A function declared always_inline or noinline: noted by the count, which
+ * reports it with the calls, since this process decides before it reads
+ * the file itself. */
+void inline_said(NameRef name, int said)
+{
+    if (inline_count_mode == CHILD_COUNT)
+        count_of(name, 1)->said |= said;
+}
+
+/* Whether a count is of a body that can be read in place: called from one
+ * place, or said always_inline and called from any number; its address
+ * never taken, and not said noinline. */
+static int count_wanted(const struct InlineCount *c)
+{
+    return c && !c->address && !(c->said & INLINE_NEVER)
+           && (c->calls == 1 || (c->calls && (c->said & INLINE_ALWAYS)));
 }
 
 /* What the children said of each function: its bytes made with no body
@@ -582,7 +601,7 @@ static int inline_child(int mode)
     }
     text[len] = '\0';
     for (line = text; *line; line = next_line) {
-        int calls, address, size, backend, in_loop, used = 0;
+        int calls, address, said, size, backend, in_loop, used = 0;
         char caller[128];
 
         next_line = strchr(line, '\n');
@@ -590,12 +609,14 @@ static int inline_child(int mode)
             break;
         *next_line++ = '\0';
         if (mode == CHILD_COUNT
-            && sscanf(line, "C %d %d %n", &calls, &address, &used) == 2 && used) {
+            && sscanf(line, "C %d %d %d %n", &calls, &address, &said, &used) == 3
+            && used) {
             struct InlineCount *c = count_of(name_intern(line + used,
                                                          (int) strlen(line + used)), 1);
 
             c->calls = calls;
             c->address = address;
+            c->said = said;
         } else if (sscanf(line, "S %d %d %n", &size, &backend, &used) == 2
                    && used) {
             size_note(name_intern(line + used, (int) strlen(line + used)),
@@ -636,7 +657,7 @@ static void inline_decide(void)
         NameRef caller = pairs[at].caller;
         const struct InlineSize *whole = size_of(caller, 0);
         long grow;
-        int looped = 0, worse = 0;
+        int looped = 0, worse = 0, told = 0;
 
         if (is_refused(caller))
             continue;
@@ -647,31 +668,38 @@ static void inline_decide(void)
         grow = whole->merged - whole->alone;
         for (other = 0; other != npairs; other++) {
             const struct InlineSize *part;
+            const struct InlineCount *c;
 
             if (pairs[other].caller != caller)
                 continue;
+            c = count_of(pairs[other].callee, 0);
+            told |= c && (c->said & INLINE_ALWAYS);
             part = size_of(pairs[other].callee, 0);
             if (!part || part->alone < 0
                 || part->alone_backend > whole->merged_backend) {
                 worse = 1;
-                break;
+                continue;
             }
             grow -= part->alone;
             looped |= pairs[other].in_loop;
         }
-        if (worse || grow > (looped ? loop_bytes : 0))
+        /* A caller that took a body said always_inline keeps every body it
+         * took: what the programmer asked for is not weighed. zap's encoder
+         * asks it of parse_operand, match_row and emit_row, which agondev
+         * reads into assemble_line and opt-acc called. */
+        if (!told && (worse || grow > (looped ? loop_bytes : 0)))
             refuse(caller);
     }
 }
 
-/* Whether some static is called from one place and its address not taken:
- * a body the trial could read in place. */
+/* Whether some static's body could be read in place (count_wanted): one
+ * the trial could read. */
 static int any_candidate(void)
 {
     int at;
 
     for (at = 0; at != ncounts; at++)
-        if (counts[at].calls == 1 && !counts[at].address)
+        if (count_wanted(&counts[at]))
             return 1;
 
     return 0;
@@ -724,8 +752,8 @@ void inline_counts_report(void)
             _exit(1);                                                    \
     } while (0)
     for (at = 0; at != ncounts; at++)
-        REPORT("C %d %d %s\n", counts[at].calls, counts[at].address,
-               name_text(counts[at].name));
+        REPORT("C %d %d %d %s\n", counts[at].calls, counts[at].address,
+               counts[at].said, name_text(counts[at].name));
     for (at = 0; at != nfsizes; at++) {
         int sizes = inline_count_mode == CHILD_SIZES;
 
@@ -753,8 +781,8 @@ static NameRef body_params[INLINE_PARAMS_MAX];
 static int body_nparams;
 
 /* Whether a call to fn may have its whole body read in place: on, static,
- * called once in the file, its address never taken, and with parameters
- * and an answer a slot holds. */
+ * a body count_wanted takes, and with parameters and an answer a slot
+ * holds. */
 static int body_wanted(int fn, Type ret)
 {
     const struct InlineCount *c;
@@ -762,7 +790,7 @@ static int body_wanted(int fn, Type ret)
     if (!getenv("OPTACC_INLINE") || !counts_had || !(sym_flags(fn) & SYMF_STATIC))
         return 0;
     c = count_of(sym_at(fn)->name, 0);
-    if (!c || c->calls != 1 || c->address)
+    if (!count_wanted(c))
         return 0;
     if (ret != TY_VOID && (type_wide(ret) || type_is_struct(ret) || type_float(ret)))
         return 0;
