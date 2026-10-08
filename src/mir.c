@@ -4913,6 +4913,24 @@ static int partner_reg(int v, int p_ok(int, int), int fixed_too)
  * colouring's coalescing did by merging, as a preference, in near-linear
  * time. */
 static int *grp, *grp_pref;
+static long *grp_w;             /* by group: the weight of those wanting grp_pref */
+
+/* The weight of `v`'s copy partners in register `p`: the copies giving
+ * `v` another register would leave in front of them. */
+static long partner_weight(int v, int p)
+{
+    long w = 0;
+    int e;
+
+    for (e = part_head[v]; e >= 0; e = part_next[e]) {
+        int o = part_now(part_of[e]);
+
+        if (vr[o].preg == p && vr[o].width == vr[v].width)
+            w += vr[o].weight;
+    }
+
+    return w;
+}
 
 static int grp_find(int v)
 {
@@ -4925,11 +4943,14 @@ static int grp_find(int v)
 static void groups_build(void)
 {
     int v, k, *count;
+    long *wcount;
 
     grp = realloc(grp, ((size_t) nvr + 1) * sizeof *grp);
     grp_pref = realloc(grp_pref, ((size_t) nvr + 1) * sizeof *grp_pref);
+    grp_w = realloc(grp_w, ((size_t) nvr + 1) * sizeof *grp_w);
     count = calloc(((size_t) nvr + 1) * NPREGS, sizeof *count);
-    if (!grp || !grp_pref || !count)
+    wcount = calloc(((size_t) nvr + 1) * NPREGS, sizeof *wcount);
+    if (!grp || !grp_pref || !grp_w || !count || !wcount)
         acc_error("out of memory for the machine IR");
     for (v = 0; v != nvr; v++)
         grp[v] = v;
@@ -4953,6 +4974,7 @@ static void groups_build(void)
         for (p = 0; !(vr[v].cls & PB(p)); p++)
             ;
         count[(size_t) grp_find(v) * NPREGS + p] += 1;
+        wcount[(size_t) grp_find(v) * NPREGS + p] += vr[v].weight;
     }
     for (v = 0; v != nvr; v++) {
         int r = grp_find(v), p, best = -1;
@@ -4964,8 +4986,10 @@ static void groups_build(void)
                 || count[(size_t) r * NPREGS + p] > count[(size_t) r * NPREGS + best]))
                 best = p;
         grp_pref[r] = best;
+        grp_w[r] = best >= 0 ? wcount[(size_t) r * NPREGS + best] : 0;
     }
     free(count);
+    free(wcount);
 }
 
 static unsigned scan_busy;              /* the units of the intervals live */
@@ -5093,8 +5117,21 @@ static int linear_scan(void)
                 if (!same_value(active[j], v))
                     scan_busy |= preg_units[vr[active[j]].preg];
             /* A copy partner's register, where it has one; the group's;
-             * a partner's that must be one register; any. */
+             * a partner's that must be one register; any. The group's
+             * before the partner's, where those wanting it outweigh the
+             * partners in the other many times over: a loop's pointer,
+             * copied in from DE once before the loop and into IY for
+             * each of a dozen reads inside it, is IY. 16 times: at once
+             * or four times, zap was 0.14% slower; at 256 times, ez80asm
+             * lost what it gains. */
             p = partner_reg(v, reg_ok, 0);
+            if (p >= 0) {
+                int r = grp_find(v), g = grp_pref[r];
+
+                if (g >= 0 && g != p && reg_ok(v, g)
+                    && grp_w[r] > 16 * partner_weight(v, p))
+                    p = g;
+            }
             if (p < 0) {
                 p = grp_pref[grp_find(v)];
                 if (p >= 0 && !reg_ok(v, p))
