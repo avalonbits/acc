@@ -873,6 +873,12 @@ int f(const unsigned char *p, int n) { int hits = 0; while (n--) { if ((p[0] & 0
 mir "$OPT" "a masked byte not stored to the frame"   e60fdd77     no  "$masked"
 mir "$OPT" "nor a static's byte read"                3a000000dd77 no  "$masked"
 mir "$OPT" "but kept in a register, ld h, a"         e60f67       yes "$masked"
+# An && kept in a _Bool -- ez80asm's condmatch -- is a 0 or a 1, which is
+# all its sets give it: made a _Bool it is its low byte, with no test of
+# all three bytes and the truth made again (sbc hl, bc / ld a, 0 / jr z).
+both='unsigned char m1, m2; int hits;
+void f(const unsigned char *p, int n) { while (n--) { _Bool both = p[0] == m1 && p[1] == m2; if (p[2] & 4) { if (both || m1) hits++; } else if (both) hits += 2; p += 3; } }'
+mir "$OPT" "an && kept as a _Bool, not tested again"  ed423e0028   no  "$both"
 mir "$OPT" "not tested again"                   2100000009b7ed42 no "$truth"
 # A struct's bytes copied by ldir, BC their count.
 mir "$OPT" "the copy: ld bc, 7 / ldir"            01070000edb0 yes \

@@ -1186,12 +1186,39 @@ static void known_bits(void)
     int blk, at, phi, pred;
     int *head = malloc(((size_t) nblocks + 1) * sizeof *head);
     int *next = malloc(((size_t) nphis + 1) * sizeof *next);
+    unsigned *set_zero = malloc(((size_t) nvals + 1) * sizeof *set_zero);
+    unsigned char *is_set = calloc((size_t) nvals + 1, 1);
 
     known_zero = realloc(known_zero, ((size_t) nvals + 1) * sizeof *known_zero);
     known_done = realloc(known_done, (size_t) nvals + 1);
-    if (!known_zero || !known_done || !head || !next)
+    if (!known_zero || !known_done || !head || !next || !set_zero || !is_set)
         acc_error("out of memory for the machine IR");
     memset(known_done, 0, (size_t) nvals + 1);
+
+    /* A value set in more than one place -- the 0 and the 1 that && and ||
+     * set, the two sides of a ?: -- known by what every set gives it: a
+     * constant's bits, or nothing known of anything else. `c = a && b`
+     * made a _Bool is then its low byte, not tested again. */
+    for (at = 0; at != ninsns; at++) {
+        const Ins *insn = &insns[at];
+        int val = insn->target;
+
+        if (insn->op != I_SET || val < 0 || insn->nin < 1)
+            continue;
+        if (!is_set[val])
+            set_zero[val] = ALL24;
+        is_set[val] = 1;
+        set_zero[val] &= is_num(&insn->in[0])
+                         ? ~(unsigned) insn->in[0].attr.val & ALL24 : 0;
+    }
+    for (at = 0; at != ninsns; at++)
+        if (insns[at].res >= 0 && is_set[insns[at].res])
+            set_zero[insns[at].res] = 0;        /* made some other way too */
+    for (at = 0; at != nvals; at++)
+        if (is_set[at]) {
+            known_zero[at] = as_type(set_zero[at], vals[at].type);
+            known_done[at] = 1;
+        }
     for (blk = 0; blk != nblocks; blk++)
         head[blk] = -1;
     for (phi = nphis - 1; phi >= 0; phi--)
@@ -1210,6 +1237,8 @@ static void known_bits(void)
 
                 kz &= in >= 0 && known_done[in] ? known_zero[in] : 0;
             }
+            if (is_set[phis[phi].val])
+                kz &= set_zero[phis[phi].val];
             known_zero[phis[phi].val] = as_type(kz, vals[phis[phi].val].type);
             known_done[phis[phi].val] = 1;
         }
@@ -1224,6 +1253,8 @@ static void known_bits(void)
     }
     free(head);
     free(next);
+    free(set_zero);
+    free(is_set);
 }
 
 /* Whether an operand is known to be a byte widened by zeros, or known not
