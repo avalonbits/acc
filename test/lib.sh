@@ -389,6 +389,40 @@ int main(void) {
 }
 '
 
+# A block split where it is in the middle of the free list -- a free one
+# too small before it, the room at the heap's end after it -- what is left
+# takes its place there: the next request that fits it is handed out from
+# that rest, just past the first, and the small one in front is still in
+# the list to be handed out again.
+runs "malloc splitting in the middle of the free list" \
+'#include <stdlib.h>
+
+int main(void) {
+    char *small, *gap, *keep1, *keep2, *first, *second, *again;
+    int r = 0;
+
+    small = malloc(6);
+    keep1 = malloc(6);
+    gap = malloc(120);
+    keep2 = malloc(6);
+    free(gap);                          /* the list: gap, end */
+    free(small);                        /* small, gap, end */
+    first = malloc(50);                 /* past small, gap split: 52 + 10 */
+    if (first == gap) r++;
+    second = malloc(30);                /* from the rest, where gap was */
+    if (second == gap + 62) r++;
+    again = malloc(6);                  /* small, in front all along */
+    if (again == small) r++;
+    free(first);
+    free(second);
+    first = malloc(120);                /* the two and the rest made one */
+    if (first == gap) r++;
+    if (keep1 && keep2) r++;
+
+    return r + 37;                      /* 5 checks */
+}
+'
+
 runs "qsort, in <stdlib.h>" \
 '#include <stdlib.h>
 #include <string.h>
@@ -1533,6 +1567,47 @@ if "$ACC" -c "$tmp/case.c" -o "$tmp/case.o" -Iinclude >/dev/null 2>&1 &&
     fi
 else
     printf '  FAIL %-36s %s\n' "strcasecmp of an assembler's words" "did not build"
+    fail=$((fail + 1))
+fi
+
+# malloc splits what it hands out from the free block it finds in place:
+# a thousand small requests, an assembler's labels, each from the room at
+# the heap's end, are 895 thousand cycles through C's three calls and
+# 372 thousand in lib/malloc.s.
+cat > "$tmp/alloc.c" <<'C'
+#include <ez80f92.h>
+#include <stdlib.h>
+
+int main(void) {
+    int i, sum = 0;
+
+    io_out(0x40, 0);
+    for (i = 0; i < 1000; i++)
+        sum += malloc(16) != 0;
+    io_out(0x41, 0);
+    return sum == 1000 ? 42 : 1;
+}
+C
+if "$ACC" -c "$tmp/alloc.c" -o "$tmp/alloc.o" -Iinclude >/dev/null 2>&1 &&
+   "$ACC" "$tmp/alloc.o" "$LIB" -o "$tmp/alloc.bin" -x >/dev/null 2>&1; then
+    if emu_available >/dev/null 2>&1; then
+        sd=$(emu_card)
+        cp "$tmp/alloc.bin" "$sd/bin/p.bin"
+        printf 'bin/p\r\n' > "$sd/autoexec.txt"
+        cycles=$(ACC_EMU_TIMEOUT=60 emu_run "$sd" -z -u 2>&1 |
+                 sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
+        rm -rf "$sd"
+        if [ -n "$cycles" ] && [ "$cycles" -lt 500000 ]; then
+            pass=$((pass + 1))
+        else
+            printf '  FAIL %-36s %s cycles\n' "malloc of an assembler's labels" "${cycles:-no count of}"
+            fail=$((fail + 1))
+        fi
+    else
+        pass=$((pass + 1))
+    fi
+else
+    printf '  FAIL %-36s %s\n' "malloc of an assembler's labels" "did not build"
     fail=$((fail + 1))
 fi
 
