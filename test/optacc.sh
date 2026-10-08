@@ -850,6 +850,14 @@ mir "$OPT" "a pointer in IY, read through"           fd2700     yes "$members"
 mir "$OPT" "not copied there from HL"                fde5e1ed07 no  "$members"
 truth='_Bool f(int *p) { if (!p) return 0; if (*p == 3) return 1; return 0; }'
 mir "$OPT" "a _Bool's constant returned as it is"     3e00         yes "$truth"
+# A byte made in A -- masked, or read from a static -- and wanted there
+# again before it is read: moved to another byte register, ld h, a, not
+# stored to the frame and read back from it.
+masked='unsigned char m1, m2;
+int f(const unsigned char *p, int n) { int hits = 0; while (n--) { if ((p[0] & 0x0f) == m1 && (p[1] & 0x0f) == m2) hits++; p += 2; } return hits; }'
+mir "$OPT" "a masked byte not stored to the frame"   e60fdd77     no  "$masked"
+mir "$OPT" "nor a static's byte read"                3a000000dd77 no  "$masked"
+mir "$OPT" "but kept in a register, ld h, a"         e60f67       yes "$masked"
 mir "$OPT" "not tested again"                   2100000009b7ed42 no "$truth"
 # A struct's bytes copied by ldir, BC their count.
 mir "$OPT" "the copy: ld bc, 7 / ldir"            01070000edb0 yes \
