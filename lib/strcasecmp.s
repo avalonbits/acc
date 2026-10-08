@@ -18,7 +18,10 @@
 ; place, to see whether they are the same letter -- an assembler looking a
 ; word up in its tables compares mostly bytes that are equal or differ at
 ; once, and lowering every one of them through a call each cost seven times
-; agondev's strcasecmp.
+; agondev's strcasecmp. And first, the difference most often found where
+; they differ -- the same letter in the other case, ez80asm's source in
+; capitals against its tables in small letters: the bytes 0x20 apart, and
+; the one with that bit set a small letter.
 _strcasecmp:
 	ld	iy, 0
 	add	iy, sp
@@ -36,6 +39,15 @@ _strcasecmp:
 	jr	.case_loop
 .case_fold:
 	ld	b, a			; a's
+	xor	a, (hl)
+	cp	a, 0x20
+	jr	nz, .case_lower		; more than the case between them
+	ld	a, b
+	or	a, 0x20
+	sub	a, 'a'
+	cp	a, 26
+	jr	c, .case_next		; one letter, in two cases
+.case_lower:
 	ld	a, (hl)			; b's, lowered into c
 	cp	a, 'A'
 	jr	c, .case_b_low
