@@ -3906,6 +3906,104 @@ static void narrow_bytes(void)
     }
 }
 
+/* Whether the byte `mi` writes is made in one register only and is read
+ * by nothing that cares which it is in, nor only by a copy to a register
+ * that may be any already: see free_fixed_bytes. */
+static int fixed_byte_freed(const MIns *mi, const unsigned char *copied_only,
+                            const int *defs, int nv)
+{
+    int v = mi->d;
+
+    return v >= 0 && v < nv && mi->op != M_COPY && mi->op != M_PCOPY
+           && vr[v].width == 1 && popcount(vr[v].cls) == 1
+           && !vr[v].short_lived && !vr[v].remat && copied_only[v] == 2
+           && defs[v] == 1 && mi->t != v && !((mi->kills & 1) && mi->a == v)
+           && !((mi->kills & 2) && mi->b == v);
+}
+
+/* A byte an instruction can make only in A -- an AND with a constant, a
+ * read of a static -- given A for as long as it lived, and spilled to the
+ * frame wherever something else wanted A first: `ld a, (nn)` with the byte
+ * before it still to be compared. Where nothing that reads it needs it in
+ * A -- a copy, or the second operand of a byte's operator or comparison,
+ * A being the first -- it is made in A by a register of its own, for that
+ * instruction alone, and copied to one that may be any byte: the
+ * allocator puts the two together where A is free, and the copy comes to
+ * nothing. zap and ez80asm 1% fewer cycles, zap 1,900 bytes fewer. */
+static void free_fixed_bytes(void)
+{
+    unsigned char *copied_only = malloc((size_t) nvr + 1);
+    int *defs = calloc((size_t) nvr + 1, sizeof *defs);
+    int blk, at, k, n, nv = nvr;
+
+    if (!copied_only || !defs)
+        acc_error("out of memory for the machine IR");
+    memset(copied_only, 1, (size_t) nvr + 1);
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++) {
+            const MIns *mi = &mb[blk].ins[at];
+
+            opbuf_fit(mi_nops(mi));
+            n = mi_uses(mi, opbuf);
+            for (k = 0; k != n; k++) {
+                int u = opbuf[k];
+
+                /* 0: a use that needs it where it is made; 2: one that
+                 * takes any register and is helped by its not holding A;
+                 * a copy to a register free to be any byte, neither. */
+                if (mi->op == M_COPY && popcount(vr[mi->d].cls) > 1)
+                    continue;
+                if (mi->op == M_COPY || mi->op == M_PCOPY
+                    || ((mi->op == M_ALU8 || mi->op == M_CMP8) && u == mi->b
+                        && mi->a != mi->b))
+                    copied_only[u] = copied_only[u] ? 2 : 0;
+                else
+                    copied_only[u] = 0;
+            }
+            n = mi_defs(mi, opbuf);
+            for (k = 0; k != n; k++)
+                defs[opbuf[k]]++;
+        }
+    for (blk = 0; blk != nmb; blk++) {
+        int grow = 0, put;
+        MIns *ins;
+
+        for (at = 0; at != mb[blk].n; at++)
+            grow += fixed_byte_freed(&mb[blk].ins[at], copied_only, defs, nv);
+        if (!grow)
+            continue;
+        ins = malloc(((size_t) mb[blk].n + grow) * sizeof *ins);
+        if (!ins)
+            acc_error("out of memory for the machine IR");
+        for (at = put = 0; at != mb[blk].n; at++) {
+            const MIns *mi = &mb[blk].ins[at];
+            int v = mi->d, t;
+
+            ins[put++] = *mi;
+            if (!fixed_byte_freed(mi, copied_only, defs, nv))
+                continue;
+            t = new_vr(1, vr[v].cls);
+            vr[t].short_lived = 1;
+            vr[t].ext = vr[v].ext;
+            vr[t].ext_signed = vr[v].ext_signed;
+            vr[v].cls = C_R8;
+            ins[put - 1].d = t;
+            memset(&ins[put], 0, sizeof ins[put]);
+            ins[put].op = M_COPY;
+            ins[put].d = v;
+            ins[put].a = t;
+            ins[put].b = ins[put].c = ins[put].t = ins[put].sym = -1;
+            ins[put].width = 1;
+            put++;
+        }
+        free(mb[blk].ins);
+        mb[blk].ins = ins;
+        mb[blk].n = mb[blk].cap = put;
+    }
+    free(copied_only);
+    free(defs);
+}
+
 static void dead_code(void)
 {
     int *uses = calloc((size_t) nvr + 1, sizeof *uses);
@@ -7591,6 +7689,7 @@ int mir_build(void)
     if (!place_phis())
         return 0;
     dead_code();
+    free_fixed_bytes();
     lay_out();
     splitting = ssa_mir_want == 2;
     nparts_made = 0;
