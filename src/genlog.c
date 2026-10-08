@@ -603,7 +603,12 @@ static void gl_function_end(void)
                 }
                 gl_back();
             }
-            if (best >= 0 && cheap_cost * 12 < best_cost * 11)
+            /* The splitting allocator's code an eighth cheaper, where the
+             * rest's need only be a twelfth: its estimate is the most
+             * flattering of them. ez80asm's getExpressionValue made by it
+             * a twelfth cheaper was 15% slower. */
+            if (best >= 0 && cheap_cost * 12 < best_cost * 11
+                && (cheap != 5 || cheap_cost * 8 < best_cost * 7))
                 best = cheap;           /* a twelfth cheaper: see above */
             made = 0;
             why = lost ? lost : why;

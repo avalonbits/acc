@@ -7057,14 +7057,114 @@ static const char *check_joined(int prune)
     return bad;
 }
 
+/* By call, in the order the blocks are laid out: the registers live just
+ * after it, which it is made across -- cl_v from cl_off[c] to cl_end[c].
+ * Each block with a call walked from its end back, from its successors'
+ * live-ins. An interval that reaches past a call in the order the blocks
+ * are laid out is not always live across it: a call on a path that
+ * leaves, error() and then return 0, is across nothing the loop it is in
+ * still reads, and pushing what that loop keeps around it was work for
+ * nothing. Linear in the code and the live-ins. */
+static int *cl_off, *cl_end, *cl_v, ncl;
+
+static void calls_live(void)
+{
+    int k, at, b, stamp = 0, total = 0, cap = 64, first;
+    int *in_off = calloc((size_t) nmb + 2, sizeof *in_off), *in_v;
+    int *mark = malloc(((size_t) nvr + 1) * sizeof *mark);
+    int *listed = malloc(((size_t) nvr + 1) * sizeof *listed);
+    int *live = malloc(((size_t) nvr + 1) * sizeof *live), nlive;
+
+    if (!in_off || !mark || !listed || !live)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != nvr; k++)
+        mark[k] = listed[k] = -1;
+    for (k = 0; k != nlivein; k++)
+        in_off[livein_blk[k] + 2]++;
+    for (b = 0; b != nmb; b++)
+        in_off[b + 2] += in_off[b + 1];
+    in_v = malloc(((size_t) nlivein + 1) * sizeof *in_v);
+    if (!in_v)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k != nlivein; k++)
+        in_v[in_off[livein_blk[k] + 1]++] = livein_v[k];
+
+    ncl = 0;
+    for (k = 0; k != nlayout; k++)
+        for (at = 0; at != mb[layout[k]].n; at++)
+            ncl += mb[layout[k]].ins[at].op == M_CALL;
+    cl_off = realloc(cl_off, ((size_t) ncl + 2) * sizeof *cl_off);
+    cl_v = realloc(cl_v, (size_t) cap * sizeof *cl_v);
+    if (!cl_off || !cl_v)
+        acc_error("out of memory for the machine IR");
+
+    /* Each block's calls numbered from its first, though found from its
+     * last back; each one's list where it was found, from cl_off[c] to
+     * cl_end[c]. */
+    cl_end = realloc(cl_end, ((size_t) ncl + 1) * sizeof *cl_end);
+    if (!cl_end)
+        acc_error("out of memory for the machine IR");
+    for (k = 0, first = 0; k != nlayout; k++) {
+        const MBlock *blk = &mb[layout[k]];
+        int calls = 0, c, j, m;
+
+        for (at = 0; at != blk->n; at++)
+            calls += blk->ins[at].op == M_CALL;
+        if (!calls)
+            continue;
+        stamp++;
+        nlive = 0;
+        for (j = 0; j != blk->nsucc; j++)
+            for (m = in_off[blk->succ[j]]; m != in_off[blk->succ[j] + 1]; m++)
+                if (listed[in_v[m]] != stamp) {
+                    mark[in_v[m]] = listed[in_v[m]] = stamp;
+                    live[nlive++] = in_v[m];
+                }
+        c = first + calls;
+        for (at = blk->n - 1; at >= 0; at--) {
+            const MIns *mi = &blk->ins[at];
+
+            opbuf_fit(mi_nops(mi));
+            m = mi_defs(mi, opbuf);
+            while (m--)
+                mark[opbuf[m]] = -1;
+            if (mi->op == M_CALL) {
+                c--;
+                cl_off[c] = total;
+                for (j = 0; j != nlive; j++)
+                    if (mark[live[j]] == stamp) {
+                        GROW(cl_v, total, cap);
+                        cl_v[total++] = live[j];
+                    }
+                cl_end[c] = total;
+            }
+            m = mi_uses(mi, opbuf);
+            while (m--) {
+                mark[opbuf[m]] = stamp;
+                if (listed[opbuf[m]] != stamp) {
+                    listed[opbuf[m]] = stamp;
+                    live[nlive++] = opbuf[m];
+                }
+            }
+        }
+        first += calls;
+    }
+    free(in_off);
+    free(in_v);
+    free(mark);
+    free(listed);
+    free(live);
+}
+
 /* The units busy at each parallel copy, for a cycle of its bytes to go
  * round: the intervals live across it, recorded in the copy. */
 static void pcopy_busy(void)
 {
     int k, n = 0, j, nactive = 0, active[NPREGS + 8], next = 0, b, at, pos = 0;
-    int save_pos = 0;
+    int save_pos = 0, call = 0;
     MIns *save = NULL;
 
+    calls_live();
     for (k = 0; k != nvr; k++)
         if (iv_s[k] >= 0)
             iv_order[n++] = k;
@@ -7087,11 +7187,13 @@ static void pcopy_busy(void)
                 save = &blk->ins[at];
                 save_pos = pos;
             }
+            /* A call pushes and pops what is live across it: live just
+             * after it, and made before its arguments began. */
             if (blk->ins[at].op == M_CALL) {
-                for (j = 0; j != nactive; j++)
-                    if (vr[active[j]].preg >= 0 && iv_s[active[j]] < save_pos
-                        && iv_e[active[j]] > pos + 1)
-                        busy |= preg_units[vr[active[j]].preg];
+                for (j = cl_off[call]; j != cl_end[call]; j++)
+                    if (vr[cl_v[j]].preg >= 0 && iv_s[cl_v[j]] < save_pos)
+                        busy |= preg_units[vr[cl_v[j]].preg];
+                call++;
                 blk->ins[at].imm2 = (busy & preg_units[P_BC] ? 1 : 0)
                                     | (busy & preg_units[P_DE] ? 2 : 0)
                                     | (busy & preg_units[P_IY] ? 4 : 0);

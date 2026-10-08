@@ -873,6 +873,14 @@ ins *cur; unsigned char want, other; int hits;
 void f(void) { ent *l = cur->list; unsigned char k = cur->n; for (; k; k--, l++) if ((l->a & 15) == want && (l->b & 15) == other && (l->c | l->d)) { hits++; break; } }'
 mir "$OPT" "a pointer entering in HL, IY in the loop" fd23fd23fd23fd23 yes "$entered"
 mir "$OPT" "not copied there for each read"          e5fde1       no  "$entered"
+# A call on a loop's way out -- error() and then return 0 -- is across
+# nothing the loop still reads: its argument pushed and no more, not the
+# pointer, the count and the sum pushed and popped around it because
+# their intervals reach past it in the order the blocks are laid out.
+leaving='void error(int);
+int f(const char *p, int n) { int t = 0; while (n--) { if (*p == 0) { error(t); return 0; } t += *p++; } return t; }'
+mir "$OPT" "nothing pushed around a call on the way out" fde5c5d5 no  "$leaving"
+mir "$OPT" "but its argument"                         c5cd         yes "$leaving"
 # A member's byte through a cast of its address and a constant index --
 # ez80asm's REGSETBYTE -- read where the member is, (iy+2), the cast and
 # the index in the displacement: no address made with ld bc, 1 / add hl, bc.
