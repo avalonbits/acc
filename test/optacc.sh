@@ -864,6 +864,15 @@ looped='typedef struct { unsigned char tag, a, b; } item;
 int f(const item *p, int n) { int t = 0; while (n--) { if (p->a & 1) t += p->b; else t -= p->tag; p++; } return t; }'
 mir "$OPT" "a loop's pointer kept in IY, inc iy"     fd23fd23fd23 yes "$looped"
 mir "$OPT" "not loaded into IY for each read"        dd31f7       no  "$looped"
+# And where the pointer comes into the loop through another register --
+# IY wanted for another read just then, as processInstructions reads its
+# instruction's count -- it is still IY in the loop, which its reads
+# outweigh the one copy at the start by far: not copied in for each.
+entered='typedef struct { unsigned char a, b, c, d; } ent; typedef struct { int pad; ent *list; unsigned char n; } ins;
+ins *cur; unsigned char want, other; int hits;
+void f(void) { ent *l = cur->list; unsigned char k = cur->n; for (; k; k--, l++) if ((l->a & 15) == want && (l->b & 15) == other && (l->c | l->d)) { hits++; break; } }'
+mir "$OPT" "a pointer entering in HL, IY in the loop" fd23fd23fd23fd23 yes "$entered"
+mir "$OPT" "not copied there for each read"          e5fde1       no  "$entered"
 # A member's byte through a cast of its address and a constant index --
 # ez80asm's REGSETBYTE -- read where the member is, (iy+2), the cast and
 # the index in the displacement: no address made with ld bc, 1 / add hl, bc.
