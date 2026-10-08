@@ -6771,6 +6771,47 @@ static int leaf_in_iy(const Ent *ent)
            && iy_web >= 0 && vals[ent->val].slot == fixed_slot[iy_web];
 }
 
+/* What the member address made at `at` comes to, past the drops after it,
+ * through what only relabels it or moves it on by a constant -- a cast to
+ * another pointer, and `+ k` stepping by bytes: `((char *) &p->m)[1]`. The
+ * value reached goes in *val and its displacement in *disp; the answer is
+ * where the instruction using it is. Nothing is taken that would carry the
+ * displacement past what (iy+d) holds. */
+static int leaf_member_reach(int at, int *val, int *disp)
+{
+    int next = at + 1, number;
+
+    for (;;) {
+        const Ins *insn;
+
+        while (next < ninsns && insns[next].op == GL_vdrop && insns[next].nin == 0)
+            next++;
+        if (next >= ninsns || *val < 0 || !vals[*val].fwd)
+            return next;
+        insn = &insns[next];
+        if (insn->nin < 1 || insn->in[0].val != *val || insn->res < 0
+            || !vals[insn->res].fwd)
+            return next;
+        if (insn->op == GL_vcast && insn->nin == 1
+            && type_pointer(insn->in[0].attr.type)
+            && type_pointer((Type) insn->rec->arg[0])) {
+            *val = insn->res;
+        } else if (insn->op == GL_vapply && insn->nin == 2 && !insn->rec->arg[1]
+                   && ((int) insn->rec->arg[0] == TK_PLUS
+                       || (int) insn->rec->arg[0] == TK_MINUS)
+                   && type_pointer(insn->in[0].attr.type) && plain_sum(insn)
+                   && const_number(&insn->in[1], &number)
+                   && disp_fits(*disp + ((int) insn->rec->arg[0] == TK_PLUS
+                                         ? number : -number))) {
+            *disp += (int) insn->rec->arg[0] == TK_PLUS ? number : -number;
+            *val = insn->res;
+        } else {
+            return next;
+        }
+        next++;
+    }
+}
+
 /* The branch that the truth value `val`, made at `at`, reaches through
  * nothing but conversions and truth tests of it -- `(x & 4) != 0` made a
  * _Bool, and `!` of that -- or -1. `*cc` is turned about by each `!`: a
@@ -8445,14 +8486,13 @@ static void leaf_insn(const Ins *insn, int blk, int at)
          * write is the vderef or vstore_indirect after it. */
         number = (int) insn->rec->arg[0];
         if (leaf_in_iy(&insn->in[0]) && disp_fits(number)) {
-            int next = at + 1;
+            int base = number, reach = insn->res;
+            int next = leaf_member_reach(at, &reach, &number);
 
             /* Read straight away: ld a, (iy+d) or ld hl, (iy+d), the
              * address never made. */
-            while (next < ninsns && insns[next].op == GL_vdrop && insns[next].nin == 0)
-                next++;
             if (next < ninsns && insns[next].op == GL_vderef
-                && insns[next].in[0].val == insn->res && insn->res >= 0
+                && insns[next].in[0].val == reach && insn->res >= 0
                 && vals[insn->res].fwd && !insns[next].delegated
                 && !(insns[next].wide && !disp_fits(number + 3))) {
                 Type read = type_deref(insns[next].in[0].attr.type);
@@ -8487,7 +8527,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
             /* A constant written there straight away: ld (iy+d), n, or
              * ld hl, n / ld (iy+d), hl -- the address never made. */
             if (next < ninsns && insns[next].op == GL_vstore_indirect
-                && insns[next].in[0].val == insn->res && insn->res >= 0
+                && insns[next].in[0].val == reach && insn->res >= 0
                 && vals[insn->res].fwd && !insns[next].delegated
                 && leaf_const(&insns[next].in[1], &value)) {
                 Type to = type_deref(insns[next].in[0].attr.type);
@@ -8523,7 +8563,7 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                     return;
                 }
             }
-            lea_rr_iy(R_HL, number);
+            lea_rr_iy(R_HL, base);
         } else {
             leaf_operand_hl(insn, 0);
             if (number > 0 && number <= 4)
