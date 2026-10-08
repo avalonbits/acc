@@ -879,6 +879,12 @@ mir "$OPT" "but kept in a register, ld h, a"         e60f67       yes "$masked"
 both='unsigned char m1, m2; int hits;
 void f(const unsigned char *p, int n) { while (n--) { _Bool both = p[0] == m1 && p[1] == m2; if (p[2] & 4) { if (both || m1) hits++; } else if (both) hits += 2; p += 3; } }'
 mir "$OPT" "an && kept as a _Bool, not tested again"  ed423e0028   no  "$both"
+# A byte's & with a static's byte, the static read last: the static's
+# byte, made in A by ld a, (nn), is the side in A -- and a, h straight
+# after it -- not moved out for the other side to be brought in.
+anded='unsigned char g0, g1, g2;
+int f(const unsigned char *p, int n) { int hits = 0; while (n--) { if ((p[0] & g0) | (p[1] & g1) | (p[2] & g2)) hits++; p += 3; } return hits; }'
+mir "$OPT" "a static's byte and'ed where it is read"   '3a000000a[0-5]' yes "$anded"
 mir "$OPT" "not tested again"                   2100000009b7ed42 no "$truth"
 # A struct's bytes copied by ldir, BC their count.
 mir "$OPT" "the copy: ld bc, 7 / ldir"            01070000edb0 yes \
