@@ -4447,6 +4447,23 @@ static void partner(int x, int y)
  * none. */
 static int *copy_src, *ndefs;
 
+/* Whether `v` is written in block `b` after its instruction `at`, up to
+ * position `until`; the block's first instruction is at `first`. */
+static int written_until(const MBlock *b, int at, int v, int until, int first)
+{
+    int k, n;
+
+    for (k = at + 1; k < b->n && first + 2 * k <= until; k++) {
+        opbuf_fit(mi_nops(&b->ins[k]));
+        n = mi_defs(&b->ins[k], opbuf);
+        while (n--)
+            if (opbuf[n] == v)
+                return 1;
+    }
+
+    return 0;
+}
+
 static int value_of(int v)
 {
     return copy_src[v] >= 0 ? copy_src[v] : v;
@@ -4692,15 +4709,25 @@ static void intervals(void)
     live_through();
 
     /* The copies that make one value: each side written once, of a width,
-     * and the source no copy itself -- so that copies of one share it. */
+     * and the source no copy itself -- so that copies of one share it. And
+     * a copy made for one instruction, read before its source is written
+     * again in the block: a loop's pointer, written where the loop starts
+     * and again on its way round, copied into IY for each member read --
+     * which clashed with it there, so that it could never be in IY
+     * itself, and was copied in for every read. */
     for (k = 0; k != nlayout; k++) {
         MBlock *b = &mb[layout[k]];
 
         for (at = 0; at != b->n; at++) {
             const MIns *mi = &b->ins[at];
 
-            if (mi->op == M_COPY && ndefs[mi->d] == 1 && ndefs[mi->a] == 1
-                && vr[mi->d].width == vr[mi->a].width && iv_def[mi->a] >= 0)
+            if (mi->op == M_COPY && ndefs[mi->d] == 1
+                && vr[mi->d].width == vr[mi->a].width && iv_def[mi->a] >= 0
+                && (ndefs[mi->a] == 1
+                    || (vr[mi->d].short_lived
+                        && iv_e[mi->d] <= blk_end[layout[k]]
+                        && !written_until(b, at, mi->a, iv_e[mi->d],
+                                          blk_pos[layout[k]]))))
                 copy_src[mi->d] = mi->a;
         }
     }
