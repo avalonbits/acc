@@ -488,6 +488,7 @@ static void gl_function_end(void)
         const char *why = NULL;
         int picking = !(getenv("OPTACC_PICK") && *getenv("OPTACC_PICK") == '0');
         int made, ssa_leaf_tried = 0, first_leaf, first_cached, first_refused;
+        int mir_alone = 0;
 
         /* OPTACC_MIR: the machine-level backend is two more ways, its
          * allocator splitting intervals or not -- the first, where nothing
@@ -503,6 +504,22 @@ static void gl_function_end(void)
             ssa_leaf_off = 1;           /* the hybrid path's, uncached */
             made = ssa_generate(&why);
             ssa_leaf_off = 0;
+        }
+
+        /* A phi a switch's case jumps to, which only the machine-level
+         * backend's code can copy into: that way alone, kept where it
+         * does not lose to the first pass's. ez80asm's parse_operand,
+         * nested switches over a pointer stepped in each, 0.5% of its
+         * time and 596 bytes. */
+        if (made == 0 && ssa_case_phi && picking && getenv("OPTACC_MIR")) {
+            ssa_mir_want = 1;
+            made = ssa_generate(&why);
+            ssa_mir_want = 0;
+            if (made > 0 && (!ssa_made_mir || ssa_loses(&why))) {
+                gl_back();
+                made = 0;
+            }
+            mir_alone = made > 0;
         }
 
         if (made < 0)
@@ -531,7 +548,7 @@ static void gl_function_end(void)
          * once it could hold the long the program checks; and lists'
          * insert_sorted, the machine-level backend's 9 bytes smaller and
          * 9.5% costlier than the leaf backend's, lists then 8.5% slower. */
-        if (made > 0 && picking) {
+        if (made > 0 && picking && !mir_alone) {
             static const struct { int leaf_off, cache_off, mir; } ways[] = {
                 { 0, CACHE_ALL, 0 }, { 0, CACHE_NONE, 0 }, { 1, CACHE_NONE, 0 },
                 { 0, CACHE_LOOPS, 0 }, { 0, CACHE_NONE, 1 }, { 0, CACHE_NONE, 2 },

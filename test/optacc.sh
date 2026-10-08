@@ -1171,6 +1171,27 @@ picked "$OPT" "not the first pass's"            ddf9           no  "$nametext"
 # pass's twenty-one, framed.
 picked "$OPT" "smaller, an eighth costlier, chosen" '^2101000022000000c9$' yes \
     'static int flag; void f(void) { flag = 1; }'
+# A phi in a block a switch's case jumps to -- the pointer stepped in one
+# case and the next fallen into, as ez80asm's parse_operand has it -- is
+# the machine-level backend's to copy into, its cases being branches: made
+# by it, where every other way is refused, and chosen over the first pass.
+casephi='typedef struct { unsigned char reg, mode, idx; } operand; void error(int);
+void f(char *s, operand *op) { char *p = s; op->reg = 0; if (*p == 40) { op->mode = 1; p++; }
+switch (*p++) { case 97: case 65: switch (*p++) { case 0: op->reg = 1; return; case 102: case 70: switch (*p++) { case 0: case 39: op->reg = 2; return; } break; } break;
+case 98: case 66: switch (*p++) { case 0: op->reg = 3; return; case 99: case 67: if (*p == 0) { op->reg = 4; return; } break; } break;
+case 105: p++; case 73: switch (*p++) { case 120: op->reg = 5; op->idx = *p; return; case 121: op->reg = 6; op->idx = *p; return; } break; }
+error(*p); }'
+mirs "a switch's case where paths join, made by it" yes "$casephi"
+printf '%s\n' "$casephi" > "$tmp/c.c"
+rm -f "$tmp/c.o"
+if OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+    OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_SSA_STATS=1 \
+    "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 | grep -q '^ssa f made$'; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s\n' "and chosen over the first pass's code"
+    fail=$((fail + 1))
+fi
 # Through IY or HL, a byte read straight into the register it goes to --
 # ld d, (iy+0) -- not into A and copied.
 cmploop='int f(const char *a, const char *b, int n) { while (n-- > 0) if (*a++ != *b++) return 0; return 1; }'

@@ -47,7 +47,7 @@ extern int ssa_made_leaf, ssa_leaf_off, ssa_cached_refused;
 
 /* The machine-level backend (mir.c): the way being made is its, and the
  * code just made was. */
-extern int ssa_mir_want, ssa_made_mir;
+extern int ssa_mir_want, ssa_made_mir, ssa_case_phi;
 extern int ssa_cache_off, ssa_cached_used;
 /* ssa_cache_off's values: which locals whose address is taken are cached */
 enum { CACHE_ALL, CACHE_NONE, CACHE_LOOPS };
