@@ -532,7 +532,9 @@ static void default_label(void)
  * The value is compared at its promoted type, as C says, and each case is
  * converted to that type. A char is kept as the byte it is and compared in
  * A: the int it becomes holds nothing more, and a case outside the char's
- * range, which it can never equal, has no test. */
+ * range, which it can never equal, has no test. So is a char just read
+ * through a pointer, which comes here widened already: `switch (*p++)`,
+ * a lexer's every switch. */
 __attribute__((noinline))
 static void switch_statement(void)
 {
@@ -554,7 +556,9 @@ static void switch_statement(void)
         acc_error_spot(line, spot, "a switch needs an integer, and this is %s",
                        type_pointer(type) ? "a pointer"
                                           : "a floating-point value");
-    held = type_size(type) == 1 ? type : type_promote(type);
+    held = type_size(type) == 1 ? type : vbyte_held();
+    if (held == TY_VOID)
+        held = type_promote(type);
     type = type_promote(type);
     vconvert(held);
     slot = gen_local(type_scalar_bytes(held));

@@ -211,6 +211,12 @@ emits "switch (char), no ld de, 'a'"    "11610000" no \
     'int f(char c) { switch (c) { case 97: return 1; case 300: return 2; } return 0; }'
 emits "switch (char), no test of 300"   "fe2c" no \
     'int f(char c) { switch (c) { case 97: return 1; case 300: return 2; } return 0; }'
+# And a char just read through a pointer, which reaches the switch widened
+# to an int already: switch (*p++), a lexer's every switch.
+emits "switch (*p++), cp 'a'"           "fe61" yes \
+    'int f(const char *p) { switch (*p++) { case 97: return 1; case 98: return *p; } return 0; }'
+emits "switch (*p++), no ld de, 'a'"    "11610000" no \
+    'int f(const char *p) { switch (*p++) { case 97: return 1; case 98: return *p; } return 0; }'
 
 # And `!` straight after such an AND, or after a comparison, reads the same
 # flags the other way round, rather than comparing the value with zero with

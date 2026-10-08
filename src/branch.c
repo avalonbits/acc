@@ -316,23 +316,27 @@ static void widen_back(void)
  * -- for a caller about to make all of HL itself from A. */
 int widen_undo(const Value *v)
 {
-    Type type;
-
-    if (!widen_holds(v, &type))
+    if (widen_held(v) == TY_VOID)
         return 0;
     widen_back();
 
     return 1;
 }
 
-/* Whether widen_undo would: and if so, the byte's type in *type. */
-int widen_holds(const Value *v, Type *type)
+/* The top, if a byte just read and widened: its type -- `switch (*p++)` is
+ * on the char, not the int it was made. TY_VOID if not. */
+Type vbyte_held(void)
+{
+    return widen_held(vsp - 1);
+}
+
+/* Whether widen_undo would: the byte's type if so, TY_VOID if not. */
+Type widen_held(const Value *v)
 {
     if (!widen_live() || v->kind != VAL_REG || v->val != R_HL || type_size(widen_type) != 1)
-        return 0;
-    *type = widen_type;
+        return TY_VOID;
 
-    return 1;
+    return widen_type;
 }
 
 /* `v`, a byte just read and widened, | or ^ a constant byte `c` -- `op`
@@ -344,7 +348,8 @@ int widen_byte_op(const Value *v, int op, int c)
 {
     Type type;
 
-    if (!widen_holds(v, &type) || (!type_unsigned(type) && (c & 0x80)))
+    type = widen_held(v);
+    if (type == TY_VOID || (!type_unsigned(type) && (c & 0x80)))
         return 0;
     widen_back();
     out_byte2(op, c);

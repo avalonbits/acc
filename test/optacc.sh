@@ -881,6 +881,12 @@ leaving='void error(int);
 int f(const char *p, int n) { int t = 0; while (n--) { if (*p == 0) { error(t); return 0; } t += *p++; } return t; }'
 mir "$OPT" "nothing pushed around a call on the way out" fde5c5d5 no  "$leaving"
 mir "$OPT" "but its argument"                         c5cd         yes "$leaving"
+# A switch on a char, which C makes an int: its cases compared as the
+# byte it is, cp n, not ld de, n / or a / sbc hl, de / add hl, de of the
+# int read back from the switch's slot.
+switched='int f(const char *p) { switch (*p++) { case 97: return 1; case 98: return 2; case 99: return *p; case 65: return 4; } return 0; }'
+mir "$OPT" "a char's switch, cp n for its cases"     fe61         yes "$switched"
+mir "$OPT" "not ld de, n and a compare of the int"  116100       no  "$switched"
 # A member's byte through a cast of its address and a constant index --
 # ez80asm's REGSETBYTE -- read where the member is, (iy+2), the cast and
 # the index in the displacement: no address made with ld bc, 1 / add hl, bc.

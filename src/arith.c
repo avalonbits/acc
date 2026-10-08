@@ -1154,7 +1154,7 @@ static int cmp_byte_const(int op)
         return 0;
     if (lhs->kind == VAL_LOCAL && !lhs->bits && type_size(lhs->type) == 1)
         type = lhs->type;
-    else if (!widen_holds(lhs, &type))
+    else if ((type = widen_held(lhs)) == TY_VOID)
         return 0;
 
     c = rhs->val;
