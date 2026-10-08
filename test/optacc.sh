@@ -856,6 +856,13 @@ mirs "but not assigned twice over"                 no \
 members='struct s { int a, b; }; int g(int); int f(struct s *p) { return g(p->a) + p->b; }'
 mir "$OPT" "a pointer in IY, read through"           fd2700     yes "$members"
 mir "$OPT" "not copied there from HL"                fde5e1ed07 no  "$members"
+# A member's byte through a cast of its address and a constant index --
+# ez80asm's REGSETBYTE -- read where the member is, (iy+2), the cast and
+# the index in the displacement: no address made with ld bc, 1 / add hl, bc.
+regbyte='typedef struct { unsigned char tag; unsigned set; } entry; unsigned want;
+int f(const entry *e, int n) { int hits = 0; while (n--) { if (((const unsigned char *) &e->set)[1] & ((const unsigned char *) &want)[2]) hits++; e++; } return hits; }'
+mir "$OPT" "a member's byte by index, at (iy+2)"     'fd[4-7][6e]02' yes "$regbyte"
+mir "$OPT" "its address not made, no add of 1"       0101000009   no  "$regbyte"
 truth='_Bool f(int *p) { if (!p) return 0; if (*p == 3) return 1; return 0; }'
 mir "$OPT" "a _Bool's constant returned as it is"     3e00         yes "$truth"
 # A byte made in A -- masked, or read from a static -- and wanted there
