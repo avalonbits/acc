@@ -189,6 +189,8 @@ void vset_bits(int bits);             /* it is a bit-field's address */
 int  vbits(void);
 int  vquals(void);
 Type vtype_at(int depth);             /* 0 is the top, 1 the one below */
+Type vbyte_held(void);                /* the top a byte just read and widened:
+                                       * the byte's type, or TY_VOID */
 void vpush_local(int offset, Type type);
 void vpush_reg(int reg);
 void vstore_local(int offset, Type type); /* pop the top into a local */

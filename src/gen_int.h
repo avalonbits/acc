@@ -267,7 +267,7 @@ void widen_local(int disp, Type to);
 void widen_made(int from, Type to);
 int  widen_byte_op(const Value *v, int op, int c);
 int widen_undo(const Value *v);
-int widen_holds(const Value *v, Type *type);
+Type widen_held(const Value *v);
 int widen_undo_left(void);
 int store_byte_widened(int offset, Type type);
 int widen_again(Type to);

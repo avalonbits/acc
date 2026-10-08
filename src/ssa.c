@@ -560,7 +560,7 @@ static int query(int op)
     case GL_vbits: case GL_vquals: case GL_vtype_at: case GL_vconst_addr:
     case GL_vconst_bss: case GL_gen_nwants: case GL_gen_want_name:
     case GL_gen_local_fits: case GL_gen_iy_pick: case GL_vpop_reg:
-    case GL_gen_cond_same:
+    case GL_gen_cond_same: case GL_vbyte_held:
         return 1;
     }
 
