@@ -568,7 +568,10 @@ static int frame_lea(void)
 
 /* Whether opt-acc's prologue is made a call to acc_rt_frameset, as acc's
  * is: four or five bytes smaller -- seven with a frame past (ix+d)'s
- * reach -- and some fifteen cycles more on every entry. */
+ * reach -- and some fifteen cycles more on every entry. Written out, as it
+ * is unless OPTACC_FRAME_CALL asks for the call, acc compiling its own
+ * inputs ran 5.4% faster, AED 4.8%, ez80asm 3.4% and zap 2.3%, for 1-2%
+ * more code. A function said hot is written out either way. */
 #ifdef OPT_ACC
 /* The functions said hot, by name: a set, open addressing over a table
  * twice as big as it is full. */
@@ -625,7 +628,7 @@ static int frame_none(void)
 
 static int frame_wants_call(void)
 {
-    return !hot_has(sym_at(func_sym)->name);
+    return getenv("OPTACC_FRAME_CALL") && !hot_has(sym_at(func_sym)->name);
 }
 
 /* The prologue made a call: ld hl, -frame / call acc_rt_frameset, or call
