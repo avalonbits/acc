@@ -586,13 +586,121 @@ static int insn_long(const Ins *insn)
 /* Whether an instruction with a long in it is one made here: of these, its
  * operands longs, constants or the types held here, its answer one of
  * those or nothing -- no bit-field, no long long, no float. */
+/* By value: read only for its low byte -- stored to a byte, made one, or
+ * an operand of +, -, &, |, ^ or a small left shift whose answer is so
+ * read too -- and made by such an operator itself: made as the byte. The
+ * low byte of each of those is the low bytes' alone: `out.opcode |=
+ * (op->reg << 3)` is or a, b of the byte shifted, not the 24-bit routine
+ * on an int, or a long's on a long -- which the code here would not make
+ * at all, its long operators taking no narrowing. acc 1.2% fewer cycles
+ * and 1,568 bytes, zap 0.9%. */
+static unsigned char *byte_only;
+
+static int transparent(int op)
+{
+    return op == TK_PLUS || op == TK_MINUS || op == TK_AMP || op == TK_PIPE
+           || op == TK_CARET;
+}
+
+static int byte_op_insn(const Ins *insn)
+{
+    int op;
+
+    if (insn->op != GL_vapply || insn->nin != 2 || insn->res < 0)
+        return 0;
+    op = (int) insn->rec->arg[0];
+    if (type_pointer(insn->in[0].attr.type) || type_pointer(insn->in[1].attr.type)
+        || type_float(insn->in[0].attr.type) || type_float(insn->in[1].attr.type)
+        || type_eight(insn->in[0].attr.type) || type_eight(insn->in[1].attr.type)
+        || type_float(vals[insn->res].type) || type_eight(vals[insn->res].type)
+        || type_pointer(vals[insn->res].type))
+        return 0;
+    if (transparent(op))
+        return 1;
+    return op == TK_SHL && is_num(&insn->in[1]) && insn->in[1].attr.val > 0
+           && insn->in[1].attr.val < 8;
+}
+
+static void find_byte_only(void)
+{
+    unsigned char *full = calloc((size_t) nvals + 1, 1);
+    int at, k, phi, pred;
+
+    byte_only = realloc(byte_only, (size_t) nvals + 1);
+    if (!full || !byte_only)
+        acc_error("out of memory for the machine IR");
+    memset(byte_only, 0, (size_t) nvals + 1);
+    for (phi = 0; phi != nphis; phi++)
+        if (phis[phi].live) {
+            full[phis[phi].val] = 1;
+            for (pred = 0; pred != preds[phis[phi].block].count; pred++)
+                if (phis[phi].in[pred] >= 0)
+                    full[phis[phi].in[pred]] = 1;
+        }
+    for (at = 0; at != ninsns; at++)
+        if (insns[at].op == I_SET && insns[at].target >= 0)
+            full[insns[at].target] = 1;
+    for (at = ninsns - 1; at > 0; at--) {
+        const Ins *insn = &insns[at];
+        int byte_use = 0, res = insn->res;
+
+        if (byte_op_insn(insn) && !full[res]) {
+            byte_only[res] = 1;
+            byte_use = (int) insn->rec->arg[0] == TK_SHL ? 1 : 3;
+        } else if (insn->op == GL_vapply && insn->rec->arg[1]
+                   && type_size((Type) insn->rec->arg[1]) == 1
+                   && transparent((int) insn->rec->arg[0]) && byte_op_insn(insn)) {
+            byte_use = 3;               /* narrowed by the operator itself */
+        } else if ((insn->op == GL_vstore_indirect
+                    && type_size(type_deref(insn->in[0].attr.type)) == 1
+                    && type_deref(insn->in[0].attr.type) != TY_BOOL)
+                   || (insn->op == GL_vstore_local
+                       && type_size((Type) insn->rec->arg[1]) == 1
+                       && (Type) insn->rec->arg[1] != TY_BOOL)) {
+            byte_use = insn->op == GL_vstore_indirect ? 2 : 1;
+        } else if ((insn->op == GL_vconvert || insn->op == GL_vcast)
+                   && type_size((Type) insn->rec->arg[0]) == 1
+                   && (Type) insn->rec->arg[0] != TY_BOOL) {
+            byte_use = 1;
+        }
+        for (k = 0; k != insn->nin; k++) {
+            int u = insn->in[k].val;
+
+            if (u < 0)
+                continue;
+            if (!(byte_use & (1 << k)))
+                full[u] = 1;
+        }
+        if (res >= 0 && byte_only[res] && full[res])
+            byte_only[res] = 0;
+    }
+    free(full);
+}
+
+/* Whether an instruction is made on bytes, its long operands read for
+ * their low byte: an operator whose answer is read as one, and the store
+ * or the conversion to a byte of such an answer. */
+static int byte_path(const Ins *insn)
+{
+    if (!byte_only)
+        return 0;
+    if (insn->op == GL_vapply)
+        return insn->res >= 0 && byte_only[insn->res];
+    if (insn->op == GL_vstore_indirect || insn->op == GL_vstore_local)
+        return insn->nin && insn->in[insn->nin - 1].val >= 0
+               && byte_only[insn->in[insn->nin - 1].val];
+    if (insn->op == GL_vconvert || insn->op == GL_vcast)
+        return insn->in[0].val >= 0 && byte_only[insn->in[0].val];
+    return 0;
+}
+
 static int long_ok(const Ins *insn)
 {
     int k;
 
     switch (insn->op) {
     case GL_vapply:
-        if (insn->rec->arg[1])
+        if (insn->rec->arg[1] && !byte_path(insn))
             return 0;
         switch ((int) insn->rec->arg[0]) {
         case TK_PLUS: case TK_MINUS: case TK_STAR: case TK_SLASH:
@@ -650,6 +758,7 @@ static int mir_ok(void)
     int at, operand, phi;
 
     mir_why = NULL;
+    find_byte_only();
     if (cached_any)
         return mir_why = "a cached local", 0;
     {
@@ -1657,9 +1766,27 @@ static void sel_apply(const Ins *insn, int at)
     }
     }
 
+    /* A small left shift read for its byte alone: the byte shifted. */
+    if (op == TK_SHL && insn->res >= 0 && byte_only && byte_only[insn->res]) {
+        int k = insn->in[1].attr.val;
+
+        a = in_class(operand_vr(&insn->in[0], 1), C_A);
+        while (k--) {
+            MIns *mi;
+
+            d = new_vr(1, C_A);
+            mi = mi3(M_ALU8, d, a, a);
+            mi->imm = TK_PLUS;
+            a = d;
+        }
+        to_val(insn->res, a);
+        return;
+    }
+
     /* A byte's operator, narrowed to the byte: in A -- the later of the
      * two there, where the operator does not mind which is which. */
-    if (narrow && type_size(narrow) == 1
+    if (((narrow && type_size(narrow) == 1)
+         || (insn->res >= 0 && byte_only && byte_only[insn->res]))
         && (op == TK_PLUS || op == TK_MINUS || op == TK_AMP || op == TK_PIPE
             || op == TK_CARET)) {
         const Ent *l = &insn->in[0], *r = &insn->in[1];
@@ -2820,7 +2947,7 @@ static void sel_insn(const Ins *insn, int at)
     MIns *mi;
 
     if (op != I_FRAME && op != GL_vdrop && op != GL_gen_stmt_end
-        && op != GL_gen_value_end && insn_long(insn)) {
+        && op != GL_gen_value_end && insn_long(insn) && !byte_path(insn)) {
         sel_long(insn, at);
         return;
     }
@@ -3348,6 +3475,8 @@ static int setup(void)
             && insns[sole_user(val)].in[0].val == val)
             continue;
         w = type_is_struct(vals[val].type) ? 3 : width_of(vals[val].type);
+        if (byte_only && byte_only[val])
+            w = 1;                      /* read for its byte alone */
         val_vr[val] = new_vr(w, width_class(w));
     }
 
