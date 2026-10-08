@@ -1553,6 +1553,18 @@ static int bitwise_kind(int op, int left, int right)
     return 0;
 }
 
+/* Whether the right of a byte's operator was made after the left and goes
+ * no further, so is likely in A just now -- ld a, (nn) of a static, the
+ * last operator's answer -- where the left would have to be moved in
+ * its place and the right out of it: `e & g` with g a static's byte was
+ * ld b, a / ld a, (nn) / ld c, a / ld a, b / and a, c. */
+static int byte_newer(const Ins *insn)
+{
+    int l = insn->in[0].val, r = insn->in[1].val;
+
+    return l >= 0 && r >= 0 && use_n[r] == 1 && vals[r].def > vals[l].def;
+}
+
 /* What a byte of &, | or ^ with `c` costs made in place: nothing where
  * it changes nothing, two where it is ld r, 0 or ld r, 0xff, four
  * through A. */
@@ -1645,19 +1657,26 @@ static void sel_apply(const Ins *insn, int at)
     }
     }
 
-    /* A byte's operator, narrowed to the byte: in A. */
+    /* A byte's operator, narrowed to the byte: in A -- the later of the
+     * two there, where the operator does not mind which is which. */
     if (narrow && type_size(narrow) == 1
         && (op == TK_PLUS || op == TK_MINUS || op == TK_AMP || op == TK_PIPE
             || op == TK_CARET)) {
-        a = in_class(operand_vr(&insn->in[0], 1), C_A);
+        const Ent *l = &insn->in[0], *r = &insn->in[1];
+
+        if (op != TK_MINUS && byte_newer(insn)) {
+            l = &insn->in[1];
+            r = &insn->in[0];
+        }
+        a = in_class(operand_vr(l, 1), C_A);
         d = new_vr(1, C_A);
-        if (is_num(&insn->in[1])) {
+        if (is_num(r)) {
             MIns *mi = mi3(M_ALU8I, d, a, -1);
 
             mi->imm = op;
-            mi->imm2 = insn->in[1].attr.val & 0xff;
+            mi->imm2 = r->attr.val & 0xff;
         } else {
-            MIns *mi = mi3(M_ALU8, d, a, operand_vr(&insn->in[1], 1));
+            MIns *mi = mi3(M_ALU8, d, a, operand_vr(r, 1));
 
             mi->imm = op;
         }
@@ -1675,7 +1694,7 @@ static void sel_apply(const Ins *insn, int at)
         int kind = bitwise_kind(op, byte_kind(l), byte_kind(r));
         MIns *mi;
 
-        if (is_num(l)) {
+        if (is_num(l) || (!is_num(r) && byte_newer(insn))) {
             const Ent *t = l;
 
             l = r;
