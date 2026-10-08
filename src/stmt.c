@@ -429,23 +429,28 @@ static long case_constant(uint32_t *high)
             binary_rest(PREC_LOWEST);
             narrow_dest = outer;
             value = constant_folded("a case label", line, spot, before);
-            *high = (uint32_t) (value < 0 ? -1 : 0);
+            goto widen;
         }
     } else {
         value = constant_int("a case label", line);
+widen:
+        /* An unsigned int's widened by zeros: `case 0xffffff:` of a switch
+         * on an unsigned long was 0xffffffff, and minus 0x800000 -- an
+         * unsigned int on the Agon, so 0x800000 again -- was -8388608.
+         * As a long: built for the Agon, where an int is these 24 bits, a
+         * mask of the int would change nothing. */
+        if (type_unsigned(folded_type))
+            value &= 0xffffffL;
         *high = (uint32_t) (value < 0 ? -1 : 0);
     }
 
-    if (type_eight(in_switch.type))
-        return (long) (uint32_t) value;
-    if (type_wide(in_switch.type)) {
+    if (!type_eight(in_switch.type)) {
         *high = 0;
-
-        return (long) (uint32_t) value;
+        if (!type_wide(in_switch.type))
+            value &= 0xffffff;
     }
-    *high = 0;
 
-    return value & 0xffffff;
+    return (long) (uint32_t) value;
 }
 
 /* `case constant:` -- where the code for it starts, noted for the tests at

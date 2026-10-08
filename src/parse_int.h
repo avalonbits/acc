@@ -197,6 +197,7 @@ __attribute__((noinline)) int is_typedef_name(NameRef name);
 extern unsigned char stars_const;
 __attribute__((noinline)) unsigned char star_qualifiers(void);
 int constant_folded(const char *what, int line, const char *spot, int before);
+extern Type folded_type;
 int constant_int(const char *what, int line);
 extern int vla_length;
 extern int vla_mark;

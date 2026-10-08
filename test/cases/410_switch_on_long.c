@@ -3,9 +3,8 @@
  * fit and match, and values whose low 24 bits match a case but whose top
  * byte does not only widen them -- 0x1000001 against case 1, -16777215 --
  * which must go to the default; negative cases; and one switch with a case
- * wider than 24 bits, made the long way. The constants at the edges are
- * written as longs: an unsigned int's 0xffffff, as acc reads it, is
- * widened to a long by its sign. */
+ * wider than 24 bits, made the long way. (test/cases/411 has the unsigned
+ * int constants at the edges.) */
 static int pick(long v)
 {
     switch (v) {

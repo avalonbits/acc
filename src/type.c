@@ -824,6 +824,9 @@ static int constant_wide(const char *what, int line, const char *spot)
     return (int) v;
 }
 
+/* The type of the constant constant_folded read last. */
+Type folded_type;
+
 /* The constant that was read from `at`, on `line`. */
 int constant_folded(const char *what, int line, const char *spot,
                            int before)
@@ -838,6 +841,7 @@ int constant_folded(const char *what, int line, const char *spot,
     if (out_here() != before || type_pointer(type) || type_float(type))
         acc_error_spot(line, spot, "%s has to be a constant integer", what);
     vdrop();
+    folded_type = type;
 
     return val;
 }
