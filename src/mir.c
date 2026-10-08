@@ -7427,7 +7427,10 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         int slot;
 
         if (mi->sym < 0) {                              /* the runtime's: mem*() */
-            rt_call(mi->obj);
+            /* A count known: done in place, as mem_builtin does it. */
+            if (mi->c < 0 || vr[mi->c].remat != M_LDI
+                || !mem_in_place(mi->obj, vr[mi->c].remat_imm))
+                rt_call(mi->obj);
         } else if (sym_flags(mi->sym) & SYMF_DEFINED) {
             want(mi->sym);
             out_reloc(out_here() + 1);

@@ -1031,6 +1031,36 @@ static int exit_builtin(const Sym *f, int nargs)
     return 1;
 }
 
+#ifdef OPT_ACC
+/* A memset of two bytes or more, or a memcpy of one or more, a count known
+ * as it is compiled, made where it is called -- the routine's own work
+ * without the call, the return and the tests for none: ten bytes for a
+ * fill, four for a copy, where the call is four. Its registers in and out
+ * are the routine's: HL where, A the byte or HL from, DE to, BC how many;
+ * HL the answer, and DE, BC and the flags changed. ez80asm clears a
+ * struct with one for every line and token it reads, and ran 1.15% faster.
+ * Returns 0, having made nothing, for any other. */
+int mem_in_place(int which, int count)
+{
+    if (which == RT_MEMSET && count >= 2) {
+        out_byte2(0xe5, 0x77);          /* push hl / ld (hl), a */
+        out_byte2(0xe5, 0xd1);          /* push hl / pop de */
+        out_byte2(0x13, 0x0b);          /* inc de / dec bc */
+        out_byte2(0xed, 0xb0);          /* ldir */
+        out_byte(0xe1);                 /* pop hl: the answer */
+        return 1;
+    }
+    if (which == RT_MEMCPY && count >= 1) {
+        out_byte(0xd5);                 /* push de: the answer */
+        out_byte2(0xed, 0xb0);          /* ldir */
+        out_byte(0xe1);                 /* pop hl */
+        return 1;
+    }
+
+    return 0;
+}
+#endif
+
 /* memcpy, memmove, memset and memchr, done by the instructions that do them.
  *
  * The eZ80 copies a block with ldir and fills one with ldir reading its own
@@ -1051,6 +1081,9 @@ static int mem_builtin(const Sym *f, int nargs)
 {
     const char *name;
     int which;
+#ifdef OPT_ACC
+    int count;
+#endif
 
     if (nargs != 3 || !type_pointer(f->type))
         return 0;
@@ -1071,6 +1104,10 @@ static int mem_builtin(const Sym *f, int nargs)
      * would be. */
     save_regs_below(nargs);
 
+#ifdef OPT_ACC
+    count = val_number((vsp - 1)->kind) ? (vsp - 1)->val : 0;
+#endif
+
     /* How many, first: it is the last argument and the top of the stack, so
      * taking it now leaves the other two where force_into expects them. */
     force_into(vsp - 1, R_BC);
@@ -1084,7 +1121,14 @@ static int mem_builtin(const Sym *f, int nargs)
         force_into(vsp - 3, R_DE);      /* and the destination it writes */
     }
 
-    rt_call(which);
+#ifdef OPT_ACC
+    /* A count known past the routines' tests for none: what the routine
+     * does, done here, with no call -- see mem_in_place. */
+    if (mem_in_place(which, count))
+        ;
+    else
+#endif
+        rt_call(which);
     vdrop();
     vdrop();
     vdrop();

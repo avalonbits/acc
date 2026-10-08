@@ -757,12 +757,27 @@ mirs "but memcpy, made in place"                   yes \
     'void *memcpy(void *, const void *, unsigned); void f(char *d, char *s) { memcpy(d, s, 4); }'
 mirs "and memset, memchr and memmove"              yes \
     'void *memset(void *, int, unsigned); void *memchr(const void *, int, unsigned); void *memmove(void *, const void *, unsigned); char *f(char *p, int n) { memset(p, 0, n); memmove(p + 1, p, n); return memchr(p, 1, n); }'
-mir "$OPT" "the count in BC before the call"           010a0000cd    yes \
+mir "$OPT" "the count in BC before the fill"           010a0000e577  yes \
     'void *memset(void *, int, unsigned); struct s { char a[10]; int n; }; void f(struct s *p, int k) { memset(p->a, k, sizeof p->a); p->n = k; }'
 # And one with an initial value: its bytes laid down where the code
 # starts and jumped over (test/cases/394).
 mirs "a block static with a value, made by it"       yes \
     'int f(int k) { static const int t[3] = { 5, 6, 7 }; return t[k]; }'
+# memset of two or more and memcpy of one or more, a count known, made in
+# place -- ldir with no call (mem_in_place) -- by the first pass and the
+# machine IR; a count not known, or a fill of one, still a call
+# (test/cases/399 runs them).
+memdecl='void *memset(void *, int, unsigned); void *memcpy(void *, const void *, unsigned);'
+memfill="$memdecl struct t { char *a, *b; char c; }; void f(struct t *p) { memset(p, 0, sizeof *p); }"
+emits "$OPT" "a fill of a known count in place"     e577e5d1130bedb0e1 yes "$memfill"
+wants "$OPT" "and no call to acc_rt_memset"          _acc_rt_memset no "$memfill"
+mir "$OPT" "in place in the machine IR too"          e577e5d1130bedb0e1 yes "$memfill"
+emits "$OPT" "a copy of a known count in place"      d5edb0e1 yes \
+    "$memdecl void f(char *p, const char *q) { memcpy(p, q, 5); }"
+wants "$OPT" "a fill of a count not known: a call"   _acc_rt_memset yes \
+    "$memdecl void f(char *p, unsigned n) { memset(p, 0, n); }"
+wants "$OPT" "a fill of one: a call"                 _acc_rt_memset yes \
+    "$memdecl void f(char *p) { memset(p, 0, 1); }"
 # A function's strings, all laid down where its code starts behind one
 # jump -- jr past "ab" and "cd" -- not each jumped over where it is read
 # (test/cases/401).
