@@ -46,7 +46,18 @@ typedef struct {
 
 #define LINKS(b) ((links *) ((b) + 1))
 
-static block *heap, *free_list;
+/* malloc is lib/malloc.s, which reads these and calls the two below: their
+ * names are the library's, not a program's. It takes the block's and the
+ * links' layout as they are here. */
+#define heap        acc_heap
+#define free_list   acc_free_list
+#define heap_start  acc_heap_begin
+#define free_take   acc_free_take
+
+typedef char block_is_ten_bytes[sizeof(block) == 10 ? 1 : -1];
+typedef char links_are_six_bytes[sizeof(links) == 6 ? 1 : -1];
+
+block *heap, *free_list;
 
 /* `b` into the free list, in front, or in `at`'s place. */
 static void free_put(block *b, block *before, block *after)
@@ -61,7 +72,7 @@ static void free_put(block *b, block *before, block *after)
         LINKS(after)->prev = b;
 }
 
-static void free_take(block *b)
+void free_take(block *b)
 {
     block *before = LINKS(b)->prev, *after = LINKS(b)->next;
 
@@ -73,7 +84,7 @@ static void free_take(block *b)
         LINKS(after)->prev = before;
 }
 
-static void heap_start(void)
+void heap_start(void)
 {
     heap = (block *) acc_heap_start;
     heap->next = NULL;
@@ -119,27 +130,6 @@ static size_t rounded(size_t n)
     n = (n + 2) & ~(size_t) 2;
 
     return n < sizeof(links) ? sizeof(links) : n;
-}
-
-void *malloc(size_t n)
-{
-    block *b;
-
-    if (!n)
-        return NULL;
-    if (!heap)
-        heap_start();
-    n = rounded(n);
-    for (b = free_list; b; b = LINKS(b)->next) {
-        if (b->size < n)
-            continue;
-        split(b, n, 1);
-        b->used = 1;
-
-        return b + 1;
-    }
-
-    return NULL;
 }
 
 /* A block and the free block after it, made one: the second out of the
