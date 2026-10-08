@@ -1494,8 +1494,9 @@ fi
 # strcasecmp compares the bytes as they are and lowers only those that
 # differ: a thousand rounds of an assembler's lookups -- a word against
 # itself, against itself in capitals, and against one that differs at once
-# -- are 1426 thousand cycles lowering every byte through calls and 1063
-# thousand lowering only those that differ.
+# -- are 1426 thousand cycles lowering every byte through calls, 1063
+# thousand lowering only those that differ, and 1019 thousand taking two
+# that are 0x20 apart, a small letter and its capital, as the same.
 cat > "$tmp/case.c" <<'C'
 #include <ez80f92.h>
 #include <string.h>
@@ -1521,7 +1522,7 @@ if "$ACC" -c "$tmp/case.c" -o "$tmp/case.o" -Iinclude >/dev/null 2>&1 &&
         cycles=$(ACC_EMU_TIMEOUT=60 emu_run "$sd" -z -u 2>&1 |
                  sed -n 's/.*Debug OUT(0x41): \([0-9]*\) CPU cycles.*/\1/p' | head -1)
         rm -rf "$sd"
-        if [ -n "$cycles" ] && [ "$cycles" -lt 1245000 ]; then
+        if [ -n "$cycles" ] && [ "$cycles" -lt 1040000 ]; then
             pass=$((pass + 1))
         else
             printf '  FAIL %-36s %s cycles\n' "strcasecmp of an assembler's words" "${cycles:-no count of}"
