@@ -458,6 +458,14 @@ OPTACC_LEAF=1 all "$OPT" "an int member, ld (iy+3), hl"     21fefffffd2f03 yes "
 OPTACC_LEAF=1 all "$OPT" "no address pushed and popped"     e5e1       no  "$members"
 OPTACC_LEAF=1 all "$OPT" "op++ in IY, lea iy, iy+6"         ed3306     yes "$members"
 OPTACC_LEAF=1 all "$OPT" "op into IY at entry, ld iy, (ix+6)" dd3106   yes "$members"
+# A member's bytes read through a cast and a constant index -- ez80asm's
+# REGSETBYTE -- read at (iy+d) too, the index in the displacement, and no
+# address made in HL first.
+bytes='typedef struct { unsigned char r0; int i; } dop;
+int f(dop *op, int n) { int s = 0; while (n--) { s += ((const unsigned char *) &op->i)[2] & ((const unsigned char *) &op->i)[-1]; op++; } return s; }'
+OPTACC_LEAF=1 all "$OPT" "a member's byte by index, ld a, (iy+3)" fd7e03 yes "$bytes"
+OPTACC_LEAF=1 all "$OPT" "and by a negative one, ld a, (iy+0)"   fd7e00 yes "$bytes"
+OPTACC_LEAF=1 all "$OPT" "no lea hl, iy+1 for it"                 ed2301 no  "$bytes"
 # A branch on a constant is no test in the leaf backend either: `while
 # (1)` falls into its body, a macro's `do ... while (0)` out of it.
 consts='int f(int x) { do x += 2; while (0); while (1) { if (x > 9) break; x++; } return x; }'
