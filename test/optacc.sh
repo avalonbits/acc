@@ -856,6 +856,14 @@ mirs "but not assigned twice over"                 no \
 members='struct s { int a, b; }; int g(int); int f(struct s *p) { return g(p->a) + p->b; }'
 mir "$OPT" "a pointer in IY, read through"           fd2700     yes "$members"
 mir "$OPT" "not copied there from HL"                fde5e1ed07 no  "$members"
+# A loop's pointer -- written where the loop starts and again on its way
+# round -- copied into IY for each member read: those copies are the
+# pointer, so it can be in IY itself, stepped there by inc iy, not kept
+# in the frame and loaded into IY again for every read.
+looped='typedef struct { unsigned char tag, a, b; } item;
+int f(const item *p, int n) { int t = 0; while (n--) { if (p->a & 1) t += p->b; else t -= p->tag; p++; } return t; }'
+mir "$OPT" "a loop's pointer kept in IY, inc iy"     fd23fd23fd23 yes "$looped"
+mir "$OPT" "not loaded into IY for each read"        dd31f7       no  "$looped"
 # A member's byte through a cast of its address and a constant index --
 # ez80asm's REGSETBYTE -- read where the member is, (iy+2), the cast and
 # the index in the displacement: no address made with ld bc, 1 / add hl, bc.
@@ -866,13 +874,13 @@ mir "$OPT" "its address not made, no add of 1"       0101000009   no  "$regbyte"
 truth='_Bool f(int *p) { if (!p) return 0; if (*p == 3) return 1; return 0; }'
 mir "$OPT" "a _Bool's constant returned as it is"     3e00         yes "$truth"
 # A byte made in A -- masked, or read from a static -- and wanted there
-# again before it is read: moved to another byte register, ld h, a, not
+# again before it is read: moved to another byte register, ld r, a, not
 # stored to the frame and read back from it.
 masked='unsigned char m1, m2;
 int f(const unsigned char *p, int n) { int hits = 0; while (n--) { if ((p[0] & 0x0f) == m1 && (p[1] & 0x0f) == m2) hits++; p += 2; } return hits; }'
 mir "$OPT" "a masked byte not stored to the frame"   e60fdd77     no  "$masked"
 mir "$OPT" "nor a static's byte read"                3a000000dd77 no  "$masked"
-mir "$OPT" "but kept in a register, ld h, a"         e60f67       yes "$masked"
+mir "$OPT" "but kept in a register, ld r, a"         'e60f[4-6][7f]' yes "$masked"
 # An && kept in a _Bool -- ez80asm's condmatch -- is a 0 or a 1, which is
 # all its sets give it: made a _Bool it is its low byte, with no test of
 # all three bytes and the truth made again (sbc hl, bc / ld a, 0 / jr z).
