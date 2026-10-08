@@ -1940,6 +1940,12 @@ static void live_phis(void)
     free(work);
 }
 
+/* A phi in a block a switch's case jumps to: the copies into it on that
+ * edge are the machine-level backend's alone to make, its cases being
+ * branches like any other. Said here for genlog.c, which then tries that
+ * backend by itself. */
+int ssa_case_phi;
+
 static void to_values(void)
 {
     int local, at;
@@ -1994,8 +2000,9 @@ static void to_values(void)
         }
 
     /* What the copies into phis cannot do yet: a phi wider than an int,
-     * which a register cannot hold across them, and one a switch's case
-     * jumps to, which leaves no place for its copies. */
+     * which a register cannot hold across them; and, but in the machine-
+     * level backend, one a switch's case jumps to, which leaves no place
+     * for its copies. */
     case_into = calloc((size_t) nblocks + 1, 1);
     if (!case_into)
         acc_error("out of memory for the SSA form");
@@ -2009,7 +2016,7 @@ static void to_values(void)
         if (type_wide(vals[phi->val].type) && !(leaf_on() && regs_on()))
             fail = wide_phi;            /* the leaf backend copies them */
         if (!fail && case_into[phi->block])
-            fail = "a switch's case where paths join";
+            ssa_case_phi = 1;
     }
     free(case_into);
     free(cur_top);
@@ -9899,6 +9906,7 @@ int ssa_generate(const char **why)
     holes_start();
     nraws = nsettles = nbss_recs = 0;
     fail = NULL;
+    ssa_case_phi = 0;
     ssa_cost_made = ssa_cost_first = 0;
     leaf_mode = ssa_made_leaf = ssa_cached_refused = ssa_cached_used = 0;
     leaf_low_said = NULL;               /* the last function's */
@@ -9957,6 +9965,8 @@ int ssa_generate(const char **why)
             return 1;
         }
     }
+    if (!fail && ssa_case_phi)
+        fail = "a switch's case where paths join";
     if (!fail && regs_on()) {
         leaf_why = NULL;
         leaf_mode = leaf_on() && leaf_ok();
