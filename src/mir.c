@@ -1984,6 +1984,19 @@ static int through(int op)
            || op == GL_vprefix_indirect || op == GL_vpostfix_indirect;
 }
 
+/* A cast of a pointer to another pointer: the same address, relabelled. */
+static int pointer_relabel(const Ins *insn)
+{
+    return insn->op == GL_vcast && insn->nin == 1 && insn->in[0].val >= 0
+           && type_pointer(insn->in[0].attr.type)
+           && type_pointer((Type) insn->rec->arg[0]);
+}
+
+/* By value: whether its one use reads or writes through it, or passes it
+ * on -- a member's, a cast's, a constant added -- to what in the end does:
+ * `((const char *) &p->m)[1]`, ez80asm's REGSETBYTE, all one (iy+d). */
+static unsigned char *reaches;
+
 /* The one instruction that uses `val`, or -1. */
 static int sole_user(int val)
 {
@@ -2978,7 +2991,9 @@ static void sel_insn(const Ins *insn, int at)
         return;
     case GL_vapply:
         if (insn->res >= 0 && (member_base[insn->res] >= 0
-                               || (frame_at[insn->res] != NO_FRAME
+                               || addrc_of[insn->res]
+                               || ((frame_at[insn->res] != NO_FRAME
+                                    || global_of[insn->res] >= 0)
                                    && val_vr[insn->res] < 0)))
             return;                     /* in its reader's displacement */
         sel_apply(insn, at);
@@ -3140,6 +3155,27 @@ static int setup(void)
                 }
         }
 
+    /* Which addresses reach a read or a write, from the last instruction
+     * back: a user is after what it uses, so its answer is known first. */
+    reaches = realloc(reaches, (size_t) nvals + 1);
+    if (!reaches)
+        acc_error("out of memory for the machine IR");
+    memset(reaches, 0, (size_t) nvals + 1);
+    for (at = ninsns - 1; at > 0; at--) {
+        int res = insns[at].res, user;
+        const Ins *use;
+
+        if (res < 0 || (user = sole_user(res)) < 0)
+            continue;
+        use = &insns[user];
+        if (use->nin < 1 || use->in[0].val != res)
+            continue;
+        reaches[res] = through(use->op)
+                       || ((use->op == GL_vmember || pointer_relabel(use)
+                            || const_step(use) != INT_MIN)
+                           && use->res >= 0 && reaches[use->res]);
+    }
+
     /* A global's address, or a member's -- of a pointer, or of a global --
      * read or written in one place: (nn), or (iy+d), there. */
     for (at = 1; at != ninsns; at++) {
@@ -3162,26 +3198,49 @@ static int setup(void)
             frame_arr[res] = (int) insn->rec->arg[0];
             continue;
         }
-        if (user >= 0 && (off = const_step(insn)) != INT_MIN
-            && insns[user].in[0].val == res
-            && (through(insns[user].op) || insns[user].op == GL_vmember)) {
+        if (user >= 0 && (off = const_step(insn)) != INT_MIN && reaches[res]) {
             /* A pointer and a constant, read or written through or a
              * member's pointer: the constant in the displacement -- a
-             * local's offset with it, where the pointer is its address. */
-            int at_frame = frame_at[insn->in[0].val];
+             * local's offset with it, where the pointer is its address;
+             * a folded address's own, where it is one. */
+            int in = insn->in[0].val, at_frame = frame_at[in];
 
             if (at_frame != NO_FRAME && disp_fits(at_frame + off)
                 && disp_fits(at_frame + off + 2)) {
                 frame_at[res] = at_frame + off;
-                frame_arr[res] = frame_arr[insn->in[0].val];
+                frame_arr[res] = frame_arr[in];
+            } else if (addrc_of[in]) {
+                addrc_of[res] = addrc_of[in];
+                member_off[res] = member_off[in] + off;
+            } else if (global_of[in] >= 0) {
+                global_of[res] = global_of[in];
+                member_off[res] = member_off[in] + off;
+            } else if (member_base[in] >= 0) {
+                off += member_off[in];
+                if (off >= -128 && off + 2 <= 127) {
+                    member_base[res] = member_base[in];
+                    member_off[res] = off;
+                }
             } else if (off >= -128 && off + 2 <= 127) {
-                member_base[res] = insn->in[0].val;
+                member_base[res] = in;
                 member_off[res] = off;
             }
             continue;
         }
-        if (insn->op != GL_vmember || user < 0 || !through(insns[user].op)
-            || insns[user].in[0].val != res)
+
+        /* A pointer cast on its way to a read: the address it was. */
+        if (pointer_relabel(insn) && reaches[res]) {
+            int in = insn->in[0].val;
+
+            frame_at[res] = frame_at[in];
+            frame_arr[res] = frame_arr[in];
+            member_base[res] = member_base[in];
+            member_off[res] = member_off[in];
+            global_of[res] = global_of[in];
+            addrc_of[res] = addrc_of[in];
+            continue;
+        }
+        if (insn->op != GL_vmember || user < 0 || !reaches[res])
             continue;
         if (is_addr(&insn->in[0])) {
             addrc_of[res] = insn->in[0].attr.kind;
@@ -3224,13 +3283,17 @@ static int setup(void)
             && insns[sole_user(val)].in[0].val == val
             && (through(insns[sole_user(val)].op)
                 || ((insns[sole_user(val)].op == GL_vmember
+                     || pointer_relabel(&insns[sole_user(val)])
                      || const_step(&insns[sole_user(val)]) != INT_MIN)
                     && insns[sole_user(val)].res >= 0
                     && frame_at[insns[sole_user(val)].res] != NO_FRAME)))
             continue;                   /* a local's, in (ix+d) there */
         if (global_of[val] >= 0 && sole_user(val) >= 0
             && (through(insns[sole_user(val)].op)
-                || (insns[sole_user(val)].op == GL_vmember
+                || ((insns[sole_user(val)].op == GL_vmember
+                     || pointer_relabel(&insns[sole_user(val)])
+                     || const_step(&insns[sole_user(val)]) != INT_MIN)
+                    && insns[sole_user(val)].res >= 0
                     && global_of[insns[sole_user(val)].res] >= 0))
             && insns[sole_user(val)].in[0].val == val)
             continue;
