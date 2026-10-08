@@ -170,6 +170,9 @@ enum {
     M_SEXTL,        /* d (E:UHL) = a (HL), widened by its sign; A clobbered */
     M_ZEXTL,        /* d (E:UHL) = a (HL), widened by zeros */
     M_LTRUNC,       /* d (a pair) = a long's low three bytes */
+    M_FIT24,        /* d (HL) = a long's (E:UHL) low three bytes where its top
+                     * one only widens them -- by their sign where imm -- or
+                     * imm2 where not; A, `t`, clobbered */
     M_CALL,         /* d = sym (imm slots pushed), in HL or A; then the slots
                      * popped, and the pairs imm2 says -- BC 1, DE 2, IY 4,
                      * those live across it -- popped back. A, F and HL
@@ -693,6 +696,8 @@ static int byte_path(const Ins *insn)
         return insn->in[0].val >= 0 && byte_only[insn->in[0].val];
     return 0;
 }
+static int long_switch_none(int load);
+
 
 static int long_ok(const Ins *insn)
 {
@@ -912,8 +917,13 @@ static int mir_ok(void)
             Type type = (Type) insn->rec->arg[insn->op == GL_gen_switch_load ? 1 : 2];
             int slot = (int) insn->rec->arg[insn->op == GL_gen_switch_load ? 0 : 4];
 
-            if (type_wide(type) || type_float(type))
+            if (type_float(type) || type_eight(type)
+                || (type_wide(type) && (!long_type(type)
+                                        || (insn->op == GL_gen_switch_load
+                                            && long_switch_none(at) < 0))))
+            {
                 return mir_why = "a switch on a long", 0;
+            }
             if (!disp_fits(slot) || !disp_fits(slot + width_of(type) - 1))
                 return mir_why = "a local past (ix+d)'s reach", 0;
             continue;
@@ -1452,6 +1462,37 @@ static void zero_test(const Ent *ent)
         return;
     }
     mi3(M_TST24, -1, in_class(operand_vr(ent, 3), C_HL), -1);
+}
+
+/* A switch on a long whose cases are all within 24 bits -- as its type
+ * widens them, by sign or by zeros -- compared as 24 bits: the value's low
+ * three where its top byte only widens them, and where not one no case
+ * is. That value, or -1 where a case is wider or the cases leave none.
+ * ez80asm's transform_instruction switches on an int32_t, and was refused
+ * this backend for it: 0.7% of its time and 432 bytes, with the bytes'
+ * operators it could not take before. */
+static int long_switch_none(int load)
+{
+    Type type = (Type) insns[load].rec->arg[1];
+    int at, none = 0x7fffff, signed_ = !type_unsigned(type);
+
+    for (at = load + 1; at < ninsns && insns[at].op == GL_gen_switch_case; at++) {
+        uint32_t bits = (uint32_t) insns[at].rec->arg[0];
+        long v = signed_ ? (long) (int32_t) bits : (long) bits;
+
+        if (signed_ ? v < -0x800000L || v > 0x7fffffL : v < 0 || v > 0xffffffL)
+            return -1;
+    }
+    for (; none > 0x7fff00; none--) {
+        int used = 0;
+
+        for (at = load + 1; at < ninsns && insns[at].op == GL_gen_switch_case; at++)
+            used |= ((int) insns[at].rec->arg[0] & 0xffffff) == none;
+        if (!used)
+            return none;
+    }
+
+    return -1;
 }
 
 static int sel_compare(const Ins *insn, int op)
@@ -3093,6 +3134,18 @@ static void sel_insn(const Ins *insn, int at)
     case GL_gen_switch_load: {
         int w = width_of((Type) insn->rec->arg[1]);
 
+        if (w == 4) {                   /* a long's, as 24 bits */
+            int q = new_vr(4, C_EHL);
+            MIns *fit;
+
+            frame_mi(M_LDF, q, -1, (int) insn->rec->arg[0], 4);
+            switch_vr = new_vr(3, C_HL);
+            fit = mi3(M_FIT24, switch_vr, q, -1);
+            fit->t = new_vr(1, C_A);
+            fit->imm = !type_unsigned((Type) insn->rec->arg[1]);
+            fit->imm2 = long_switch_none((int) (insn - insns));
+            return;
+        }
         switch_vr = new_vr(w, w == 1 ? C_A : C_HL);
         frame_mi(M_LDF, switch_vr, -1, (int) insn->rec->arg[0], w);
         return;
@@ -7928,6 +7981,18 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         return;
     case M_LTRUNC:
         move24(d, quad_pair(a));
+        return;
+    case M_FIT24:
+        if (mi->imm) {
+            out_byte3(0xe5, 0x29, 0xe1);                /* push hl / add hl, hl / pop hl */
+            out_byte(0x9f);                             /* sbc a, a: bit 23's */
+            out_byte(0xbb);                             /* cp e */
+        } else {
+            out_byte2(0x7b, 0xb7);                      /* ld a, e / or a */
+        }
+        out_byte2(0x28, 4);                             /* jr z, past */
+        out_byte(0x21);
+        out_word24(mi->imm2);                           /* ld hl, none's */
         return;
     case M_CALL: {
         int slot;

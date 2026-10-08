@@ -896,6 +896,14 @@ void put(outp *);
 void f(const opnd *op) { outp output; output.opcode = 0x40; output.opcode |= op->immediate; output.x = 3; output.opcode |= (op->immediate << 3); put(&output); }'
 mirs "a long narrowed to a byte, made by it"       yes "$narrowed"
 mir "$OPT" "the shift made on the byte, add a, a"    878787       yes "$narrowed"
+# A switch on a long whose cases all fit in 24 bits, made by this backend:
+# its value narrowed to 24 bits where its top byte only widens them --
+# push hl / add hl, hl / pop hl / sbc a, a / cp e / jr z -- and its cases
+# compared as 24 bits.
+longsw='typedef struct { long immediate; } opnd;
+int f(const opnd *op) { int y; switch (op->immediate) { case 0: y = 0; break; case 1: y = 2; break; case 2: y = 3; break; case -5: y = 9; break; default: y = 7; } return y << 3; }'
+mirs "a switch on a long, made by it"             yes "$longsw"
+mir "$OPT" "its value narrowed to 24 bits"           e529e19fbb2804 yes "$longsw"
 # A member's byte through a cast of its address and a constant index --
 # ez80asm's REGSETBYTE -- read where the member is, (iy+2), the cast and
 # the index in the displacement: no address made with ld bc, 1 / add hl, bc.
@@ -951,13 +959,14 @@ mir "$OPT" "a long's E kept over DE popped back"        7bd15f    yes "$kept_de"
 
 # A switch on an int or a char: its value read once, each case compared
 # and branched on -- ld de, n / or a / sbc hl, de / add hl, de, HL kept for
-# the next case -- but not on a long (test/cases/383 runs them).
+# the next case -- but not on a long with a case wider than 24 bits
+# (test/cases/383 runs them).
 swint='int f(int x) { switch (x) { case 1: return 10; case 2: return 20; case 0: return 5; } return 0; }'
 mirs "a switch on an int, made by it"                yes "$swint"
 mirs "and on a char"                                 yes \
     'int f(signed char c) { switch (c) { case 1: return 10; case -2: return 20; case 300: return 7; default: return 1; } }'
-mirs "but not on a long"                             no \
-    'int f(long x) { switch (x) { case 1: return 10; } return 0; }'
+mirs "but not on a long with a wider case"           no \
+    'int f(long x) { switch (x) { case 1: return 10; case 0x1000000: return 3; } return 0; }'
 mir "$OPT" "a case: HL kept for the next"          11010000b7ed5219 yes "$swint"
 
 # A value made before a run of calls and read once after them: kept in
