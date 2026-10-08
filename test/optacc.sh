@@ -887,6 +887,15 @@ mir "$OPT" "but its argument"                         c5cd         yes "$leaving
 switched='int f(const char *p) { switch (*p++) { case 97: return 1; case 98: return 2; case 99: return *p; case 65: return 4; } return 0; }'
 mir "$OPT" "a char's switch, cp n for its cases"     fe61         yes "$switched"
 mir "$OPT" "not ld de, n and a compare of the int"  116100       no  "$switched"
+# An operator whose answer is read for its low byte alone -- stored to a
+# byte -- made on the bytes: a long's | and an int's << 3 into a byte
+# member, or a, b and add a, a three times, with no runtime routine, and
+# by this backend at all, which takes no long operator narrowed.
+narrowed='typedef struct { unsigned char opcode, x; } outp; typedef struct { unsigned char reg_index; long immediate; } opnd;
+void put(outp *);
+void f(const opnd *op) { outp output; output.opcode = 0x40; output.opcode |= op->immediate; output.x = 3; output.opcode |= (op->immediate << 3); put(&output); }'
+mirs "a long narrowed to a byte, made by it"       yes "$narrowed"
+mir "$OPT" "the shift made on the byte, add a, a"    878787       yes "$narrowed"
 # A member's byte through a cast of its address and a constant index --
 # ez80asm's REGSETBYTE -- read where the member is, (iy+2), the cast and
 # the index in the displacement: no address made with ld bc, 1 / add hl, bc.
