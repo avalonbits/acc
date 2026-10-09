@@ -1348,6 +1348,11 @@ mir "$OPT" "an address in a loop that calls"       2919010000000 yes \
 # Two members of one element read: one pointer, stepped once.
 mir "$OPT" "one pointer for an element's members"  ed3306.*ed3306 no \
     'struct s { char a; int b; short c; }; struct s t[10]; int f(void) { int s = 0; for (int k = 0; k < 10; k++) s += t[k].b + t[k].c; return s; }'
+# An int compared with a long constant it can be: at 24 bits, no routine;
+# one it cannot be, as a long.
+mirwants "$OPT" "w > 65520UL at 24 bits"          acc_rt_lrcmpu no 'unsigned w; int f(void) { return w > 65520UL; }'
+mirwants "$OPT" "x < 100000L at 24 bits"          acc_rt_lrcmps no 'int f(int x) { return x < 100000L; }'
+mirwants "$OPT" "x < 0x1000000L as a long"        acc_rt_lrcmps yes 'int f(int x) { return x < 0x1000000L; }'
 
 # The pick weighs the ways by how often each block is estimated to run:
 # scan's machine-level code, a ninth cheaper by 8^depth -- its loop's
