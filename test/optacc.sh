@@ -1291,6 +1291,12 @@ tokscan='typedef struct { const char *start; char term; } tok_t;
 unsigned char f(tok_t *t, const char *src) { unsigned char len = 0; t->start = src; for (;;) { char c = *src; if (c == 0 || c == 44 || c == 59) break; src++; len++; if (c != 39) continue; while (*src && *src != 39) { src++; len++; } } t->term = *src; return len; }'
 mir "$OPT" "a phi's hole holds its step: no slot"   dd77ff   no "$tokscan"
 mir "$OPT" "nor a copy through the stack"           e5d1     no "$tokscan"
+# A table's address copied for the add that wants HL for itself: made in
+# BC, the register the copy takes it to, not in HL and pushed across.
+tblscan='extern const unsigned char tbl[256];
+unsigned char f(char *src) { unsigned char n = 0; while (!tbl[(unsigned char) *src]) { n++; src++; } *src = 0; return n; }'
+mir "$OPT" "an address made where its copy goes"    010000001a yes "$tblscan"
+mir "$OPT" "not made in HL and pushed to BC"        21000000e5c1 no "$tblscan"
 
 big=$(python3 -c "
 print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')

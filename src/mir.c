@@ -5480,6 +5480,29 @@ static const int pair_order[3] = { P_HL, P_DE, P_BC };
  * how many were, or -1 where one that no spill helps could have none. */
 static int *scan_active, scan_active_cap;
 
+/* Whether `v`'s copy partners with no register yet -- one at least --
+ * could each have `p` for the whole of their lives: in their class, and
+ * not clobbered or held fixed anywhere they live. */
+static int partners_could(int v, int p)
+{
+    unsigned units = preg_units[p];
+    int e, seen = 0;
+
+    for (e = part_head[v]; e >= 0; e = part_next[e]) {
+        int o = part_of[e];
+
+        if (vr[o].preg >= 0 || iv_s[o] < 0 || vr[o].width != vr[v].width)
+            continue;
+        if (++seen > 8 || rg_n[o] > 64 || !(vr[o].cls & PB(p))
+            || (holes_on ? ranges_clobbered(o, units)
+                         : (units & clob_or(iv_s[o], iv_e[o] - 1)) != 0)
+            || fixed_clash(units, iv_s[o], iv_e[o], o))
+            return 0;
+    }
+
+    return seen > 0;
+}
+
 static int linear_scan(void)
 {
     int k, n = 0, nactive = 0, *active;
@@ -5545,6 +5568,20 @@ static int linear_scan(void)
              * with no copy. BC first, as the order of the registers has
              * it, cost acc 779 bytes and zap 271, with the pick taking the
              * cheapest way a twelfth cheaper (genlog.c). */
+            /* Any, a register its copy partners still to come could
+             * have through the whole of their lives, where there is
+             * one: the copy between them then comes to nothing. A
+             * table's address made in HL each time round ez80asm's
+             * getMnemonicToken loop and copied to BC for the add, which
+             * wants HL for itself, was 17% of that function's time and
+             * 1.8% of ez80asm's. Eight partners looked at, of 64 ranges
+             * at most, so the look stays linear. */
+            for (j = 0; p < 0 && j != NPREGS; j++) {
+                int q = j < 3 && vr[v].width == 3 ? pair_order[j] : j;
+
+                if (reg_ok(v, q) && partners_could(v, q))
+                    p = q;
+            }
             for (j = 0; p < 0 && vr[v].width == 3 && j != 3; j++)
                 if (reg_ok(v, pair_order[j]))
                     p = pair_order[j];
