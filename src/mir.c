@@ -3023,7 +3023,7 @@ static void sel_long(const Ins *insn, int at)
 
     switch (insn->op) {
     case GL_vapply: {
-        Type lt = insn->in[0].attr.type;
+        Type lt = insn->in[0].attr.type, rt = insn->in[1].attr.type;
         int is_signed = !type_unsigned(lt);
 
         op = (int) insn->rec->arg[0];
@@ -3034,6 +3034,15 @@ static void sel_long(const Ins *insn, int at)
             int cc = op == TK_EQ ? JP_Z : op == TK_NE ? JP_NZ
                      : op == TK_LT || op == TK_GT ? JP_C : JP_NC;
 
+            /* Signed as C's conversions make the pair: a long and an int
+             * as the long is, which holds all an int can be -- `x <
+             * 0x900000UL`, x a negative int, is an unsigned comparison,
+             * where it was made signed by x -- and two longs unsigned
+             * where either is. */
+            if (long_type(lt) != long_type(rt))
+                is_signed = !type_unsigned(long_type(lt) ? lt : rt);
+            else
+                is_signed = !type_unsigned(lt) && !type_unsigned(rt);
             long_compare(&insn->in[swap], &insn->in[!swap], is_signed);
             n = fused_branch(at);
             if (n >= 0) {
