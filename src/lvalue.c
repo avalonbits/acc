@@ -174,6 +174,39 @@ static int same_rows(int a, int b)
     ((unsigned) (step) > 0x7fffffu ? (void) ((vsp - 1)->kind = VAL_LOCAL) \
                                    : (void) 0)
 
+/* Two pointers into one array are a whole number of elements apart, so
+ * their difference divides by the element's width exactly: an arithmetic
+ * shift for the twos in the width, and for the odd rest a multiply by its
+ * inverse modulo 2^24, which undoes multiplying by it. ints and pointers
+ * are three bytes wide here, so `p - q` on either was a signed divide
+ * every time: aed's line index, a gap buffer of ints, spent 15% of its
+ * time in it. */
+static void exact_divide(unsigned step)
+{
+    unsigned inverse;
+    int shift = 0, round;
+
+    while (!(step & 1u)) {
+        step >>= 1;
+        shift++;
+    }
+    if (shift) {
+        vpush_const(shift, TY_INT);
+        vbinop(TK_SHR);
+    }
+    if (step == 1u)
+        return;
+
+    /* Right in three bits, as every odd number is its own inverse modulo
+     * 8; each round doubles that. */
+    inverse = step;
+    for (round = 0; round != 3; round++)
+        inverse *= 2u - step * inverse;
+    vpush_const((int) (inverse & 0xffffffu), TY_UINT);
+    vbinop(TK_STAR);
+    (vsp - 1)->type = TY_INT;
+}
+
 void vbinop_pointer(int op, Type left, Type right)
 {
     int both = type_pointer(left) && type_pointer(right);
@@ -209,11 +242,13 @@ void vbinop_pointer(int op, Type left, Type right)
          * when it is not. */
         vbinop(TK_MINUS);
         (vsp - 1)->type = TY_INT;
-        if ((unsigned) step > 1u) {
+        if ((unsigned) step > 0x7fffffu) {
             vpush_const(step, TY_INT);
             vla_step_fix(step);
             vbinop(TK_SLASH);
             (vsp - 1)->type = TY_INT;
+        } else if ((unsigned) step > 1u) {
+            exact_divide(step);
         }
 
         return;
