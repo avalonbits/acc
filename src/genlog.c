@@ -616,7 +616,7 @@ static void gl_function_end(void)
             const char *lost = NULL;
             int way, best = -1, best_size = 0, made_way = first_refused ? 2 : 0;
             int cheap = -1;
-            long best_cost = 0, cheap_cost = 0;
+            long best_cost = 0, cheap_cost = 0, best_freq = 0, split_cost = 0;
 
             /* The first is made already: way 0, or the hybrid path's where
              * that was refused. */
@@ -655,19 +655,31 @@ static void gl_function_end(void)
                         best_size = ssa_size_made;
                         best_cost = ssa_cost_made;
                     }
-                    if (cheap < 0 || ssa_cost_made < cheap_cost) {
+                    if (best == way)
+                        best_freq = ssa_freq_made;
+                    if (way == 5)
+                        split_cost = ssa_cost_made;
+                    if (cheap < 0 || ssa_freq_made < cheap_cost) {
                         cheap = way;
-                        cheap_cost = ssa_cost_made;
+                        cheap_cost = ssa_freq_made;
                     }
                 }
                 gl_back();
             }
-            /* The splitting allocator's code an eighth cheaper, where the
-             * rest's need only be a sixteenth: its estimate is the most
-             * flattering of them. ez80asm's getExpressionValue made by it
-             * a twelfth cheaper was 15% slower. */
-            if (best >= 0 && cheap_cost * 16 < best_cost * 15
-                && (cheap != 5 || cheap_cost * 8 < best_cost * 7))
+            /* Cheaper by the estimate of how often each block runs
+             * (ssa.c's block_freqs) rather than by 8^depth alone, which
+             * counts a loop's error paths as hot as the rest of it: zap's
+             * run_lines, the leaf backend's code a sixteenth cheaper so,
+             * was 1.9% of zap's time faster than the machine-level
+             * backend's, smaller and 2% cheaper by 8^depth. The splitting
+             * allocator's code an eighth cheaper by both, where the rest's
+             * need only be a sixteenth by the one: its estimate is the
+             * most flattering of them. ez80asm's getExpressionValue made
+             * by it, a third cheaper by block frequency and 4% by 8^depth,
+             * was 17% slower. */
+            if (best >= 0 && cheap_cost * 16 < best_freq * 15
+                && (cheap != 5 || (cheap_cost * 8 < best_freq * 7
+                                   && split_cost * 8 < best_cost * 7)))
                 best = cheap;           /* a sixteenth cheaper: see above */
             made = 0;
             why = lost ? lost : why;

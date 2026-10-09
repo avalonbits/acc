@@ -1298,6 +1298,51 @@ unsigned char f(char *src) { unsigned char n = 0; while (!tbl[(unsigned char) *s
 mir "$OPT" "an address made where its copy goes"    010000001a yes "$tblscan"
 mir "$OPT" "not made in HL and pushed to BC"        21000000e5c1 no "$tblscan"
 
+# The pick weighs the ways by how often each block is estimated to run:
+# scan's machine-level code, a ninth cheaper by 8^depth -- its loop's
+# branches all counted as hot as the loop -- is 2% cheaper by block
+# frequency, short of the sixteenth that outweighs the leaf backend's
+# being smaller. The machine IR makes it twice, for its two ways, and not
+# a third time as the way kept.
+scansrc='const char *scan(const char *p)
+{
+    const char *end;
+    int len = 1;
+
+    for (;;) {
+        int c = *p;
+
+        c = c >= '\''a'\'' && c <= '\''z'\'' ? c - '\''a'\'' + '\''A'\'' : c;
+        if (c == '\''B'\'') {
+            end = p;
+        } else if (c == '\''A'\'') {
+            end = p;
+            do
+                p++;
+            while (*p == '\''+'\'');
+        } else {
+            break;
+        }
+        p++;
+        len++;
+    }
+    if (len > 2 && *p == '\'':'\'')
+        p = end;
+
+    return p;
+}'
+printf '%s\n' "$scansrc" > "$tmp/c.c"
+rm -f "$tmp/c.o"
+got=$(OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+      OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_SSA_STATS=1 \
+      "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 | grep -c '^mir scan')
+if [ "$got" = 2 ]; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s mir made it %s times, want 2\n' "the pick weighs blocks by frequency" "$got"
+    fail=$((fail + 1))
+fi
+
 big=$(python3 -c "
 print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')
 for n in range(600): print('d = a + b[%d]; if (d < a) c++; a = d;' % n)

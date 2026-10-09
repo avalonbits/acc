@@ -9518,15 +9518,86 @@ static void emit_insn_regs(const Ins *insn, int blk, int at)
         pins_restore();
 }
 
-long ssa_cost_made, ssa_cost_first;
+long ssa_cost_made, ssa_cost_first, ssa_freq_made;
 int ssa_size_made, ssa_size_first;
 
+
+/* How often each block runs, as estimated: 64 for the entry, eight times
+ * what comes in for a loop's head, and at a branch, what the block before
+ * had shared out -- an eighth to a way out of the loop or to a return, the
+ * rest to the other, and half each where neither is -- the blocks taken in
+ * reverse postorder, the edges back left out. What ssa_freq_made weighs
+ * the code by, for the pick among the ways (genlog.c); 8^depth, which
+ * counts every block of a loop alike, for everything else, whose choices
+ * it was measured with: weighed by this, acc's own code was 1% bigger. */
+static long *bfreq;
+static int bf_on;                       /* block_weight answers bfreq's */
 
 static long block_weight(int blk)
 {
     int depth = loop_depth[blk];
 
+    if (bf_on)
+        return bfreq[blk];
+
     return 1L << (3 * (depth > 5 ? 5 : depth));
+}
+
+static int bf_exits(int from, int to)
+{
+    return succs[to].count == 0 || loop_depth[to] < loop_depth[from];
+}
+
+static void block_freqs(void)
+{
+    int *order = malloc(((size_t) nblocks + 1) * sizeof *order);
+    int blk, k, i;
+
+    bfreq = realloc(bfreq, ((size_t) nblocks + 1) * sizeof *bfreq);
+    if (!order || !bfreq)
+        acc_error("out of memory for the SSA form");
+    for (blk = 0; blk != nblocks; blk++) {
+        bfreq[blk] = 0;
+        order[blk] = -1;
+    }
+    for (blk = 0; blk != nblocks; blk++)
+        if (rpo_num[blk] >= 0 && rpo_num[blk] < nblocks)
+            order[rpo_num[blk]] = blk;
+    for (k = 0; k != nblocks; k++) {
+        int b = order[k], head = 0, n2;
+        long in = k == 0 ? 64 : 0;
+
+        if (b < 0)
+            continue;
+        for (i = 0; i != preds[b].count; i++) {
+            int p = preds[b].at[i], j, nex = 0;
+            long share;
+
+            if (rpo_num[p] < 0)
+                continue;
+            if (rpo_num[p] >= rpo_num[b]) {
+                head = 1;               /* an edge back: b heads a loop */
+                continue;
+            }
+            n2 = succs[p].count;
+            for (j = 0; j != n2; j++)
+                nex += bf_exits(p, succs[p].at[j]);
+            if (n2 == 2 && nex == 1)
+                share = bf_exits(p, b) ? bfreq[p] / 8 : bfreq[p] - bfreq[p] / 8;
+            else
+                share = n2 ? bfreq[p] / n2 : bfreq[p];
+            in += share;
+        }
+        if (head)
+            in *= 8;
+        if (in > 64L << 15)
+            in = 64L << 15;             /* 8^5, as deep as depth went */
+        bfreq[b] = in ? in : 1;
+    }
+    for (blk = 0; blk != nblocks; blk++)
+        if (!bfreq[blk])
+            bfreq[blk] = 64;            /* not reached from the entry */
+    free(order);
 }
 
 /* An eZ80 instruction at `code`, in ADL mode: its length, and in *cycles
@@ -9643,6 +9714,7 @@ void costs(const int *block_start, int end)
 
     if (!rec_block)
         acc_error("out of memory for the SSA form");
+    block_freqs();
     for (at = 0; at != gl_n; at++)
         rec_block[at] = -1;
     for (at = 0; at != ninsns; at++)
@@ -9692,6 +9764,9 @@ void costs(const int *block_start, int end)
             byte_block[at - from] = blk;
     }
     ssa_cost_made = code_cost(out_img + (from - out_base), end - from, byte_block);
+    bf_on = 1;
+    ssa_freq_made = code_cost(out_img + (from - out_base), end - from, byte_block);
+    bf_on = 0;
     /* With no frame, call acc_rt_frameset0 and ld sp, ix / pop ix are
      * not made either: the first pass's eight bytes, not counted in its;
      * with SP kept and no frame, the ld sp, ix. */
