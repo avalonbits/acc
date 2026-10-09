@@ -858,11 +858,11 @@ mir "$OPT" "a pointer in IY, read through"           fd2700     yes "$members"
 mir "$OPT" "not copied there from HL"                fde5e1ed07 no  "$members"
 # A loop's pointer -- written where the loop starts and again on its way
 # round -- copied into IY for each member read: those copies are the
-# pointer, so it can be in IY itself, stepped there by inc iy, not kept
+# pointer, so it can be in IY itself, stepped there by lea iy, iy+3, not kept
 # in the frame and loaded into IY again for every read.
 looped='typedef struct { unsigned char tag, a, b; } item;
 int f(const item *p, int n) { int t = 0; while (n--) { if (p->a & 1) t += p->b; else t -= p->tag; p++; } return t; }'
-mir "$OPT" "a loop's pointer kept in IY, inc iy"     fd23fd23fd23 yes "$looped"
+mir "$OPT" "a loop's pointer kept in IY, lea iy, iy+3" ed3303    yes "$looped"
 mir "$OPT" "not loaded into IY for each read"        dd31f7       no  "$looped"
 # And where the pointer comes into the loop through another register --
 # IY wanted for another read just then, as processInstructions reads its
@@ -871,7 +871,7 @@ mir "$OPT" "not loaded into IY for each read"        dd31f7       no  "$looped"
 entered='typedef struct { unsigned char a, b, c, d; } ent; typedef struct { int pad; ent *list; unsigned char n; } ins;
 ins *cur; unsigned char want, other; int hits;
 void f(void) { ent *l = cur->list; unsigned char k = cur->n; for (; k; k--, l++) if ((l->a & 15) == want && (l->b & 15) == other && (l->c | l->d)) { hits++; break; } }'
-mir "$OPT" "a pointer entering in HL, IY in the loop" fd23fd23fd23fd23 yes "$entered"
+mir "$OPT" "a pointer entering in HL, IY in the loop" ed3304    yes "$entered"
 mir "$OPT" "not copied there for each read"          e5fde1       no  "$entered"
 # A call on a loop's way out -- error() and then return 0 -- is across
 # nothing the loop still reads: its argument pushed and no more, not the
@@ -1320,6 +1320,26 @@ mirwants() {
 mirwants "$OPT" "x * 60 by adds"                  acc_rt_mul no  'int f(int x) { return x * 60; }'
 mirwants "$OPT" "x * 255 by the routine"          acc_rt_mul yes 'int f(int x) { return x * 255; }'
 mirwants "$OPT" "x & 511 in place"                acc_rt_and no  'unsigned f(unsigned x) { return (x + 1) & 511; }'
+
+# A loop that counts: from 0 by one while below 20, its counter stays in a
+# byte -- compared as one, not as a signed int moved by 0x800000 -- and a
+# column's address down a matrix is a pointer of its own, in IY, stepped by
+# its row: lea iy, iy+30.
+counter='int g(int); int f(void) { int s = 0; for (int i = 0; i < 20; i++) s += g(i); return s; }'
+mir "$OPT" "a counter compared as a byte"          fe14     yes "$counter"
+mir "$OPT" "not as a signed int"                   11000080 no  "$counter"
+mir "$OPT" "a column's pointer stepped by its row" ed331e   yes \
+    'int m[10][10]; int f(int j) { int s = 0; for (int k = 0; k < 10; k++) s += m[k][j]; return s; }'
+# But a byte array's address stays k added to it, one add, and an address
+# in a loop that calls stays made from k: the pointer would cost a
+# register, pushed and popped round every call.
+mir "$OPT" "a byte array's address: k added"       011e0000097e yes \
+    'char pad[30], buf[100]; int f(void) { int s = 0; for (int k = 0; k < 100; k++) s += buf[k]; return s; }'
+mir "$OPT" "an address in a loop that calls"       2919010000000 yes \
+    'int m3[10]; int g(int); int f(void) { int s = 0; for (int k = 0; k < 10; k++) s += g(m3[k]); return s; }'
+# Two members of one element read: one pointer, stepped once.
+mir "$OPT" "one pointer for an element's members"  ed3306.*ed3306 no \
+    'struct s { char a; int b; short c; }; struct s t[10]; int f(void) { int s = 0; for (int k = 0; k < 10; k++) s += t[k].b + t[k].c; return s; }'
 
 # The pick weighs the ways by how often each block is estimated to run:
 # scan's machine-level code, a ninth cheaper by 8^depth -- its loop's
