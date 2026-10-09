@@ -1009,6 +1009,7 @@ static int mir_ok(void)
 
 static int sel_at;              /* the SSA instruction being selected */
 static void select_all(void);
+static void order_copies(void);
 static void find_counted(void);
 static void loops_start(void);
 static void find_counters(void);
@@ -6625,7 +6626,8 @@ static int limit_until(int v, int p)
     if (f >= 0) {
         if (f <= s)
             return -1;
-        fu = f - 1;
+        if (f - 1 < fu)
+            fu = f - 1;                 /* not past the call's, above */
     }
     q = clob_first(units, s);
     if (q >= 0 && q < fu)
@@ -6754,6 +6756,7 @@ static void assign(int v, int p)
 }
 
 static int cur_fu[NPREGS];
+static unsigned scan_exclude;   /* units a value placed again may not take */
 
 static int fu_whole(int v, int p)
 {
@@ -6768,7 +6771,8 @@ static int assign_free(int v)
     int best = -1, p;
 
     for (p = 0; p != NPREGS; p++)
-        cur_fu[p] = vr[v].cls & PB(p) ? free_until(v, p) : -1;
+        cur_fu[p] = (vr[v].cls & PB(p)) && !(preg_units[p] & scan_exclude)
+                    ? free_until(v, p) : -1;
 
     /* A later part of a value: where its first part is, so that the moves
      * joining them come to nothing where they meet -- round a loop, above
@@ -6817,7 +6821,7 @@ static int assign_blocked(int v)
         unsigned units = preg_units[p];
         int nu = INT_MAX, ok = 1, f;
 
-        if (!(vr[v].cls & PB(p)))
+        if (!(vr[v].cls & PB(p)) || (preg_units[p] & scan_exclude))
             continue;
         f = limit_until(v, p);
         if (f < 0 || !long_enough(v, f))
@@ -6867,6 +6871,40 @@ static int assign_blocked(int v)
     assign(v, best);
 
     return 1;
+}
+
+/* None to be had for `v`, where one made at the same instruction holds
+ * what it could have -- a pair in HL, where a byte is wanted beside it and
+ * IY would have done for the pair: that one placed again, its register
+ * kept from it, and `v` tried once more. What it takes the second time is
+ * as any placing takes, a holder cut where it is not wanted soon. */
+static int assign_moved(int v)
+{
+    unsigned want = 0;
+    int j, p, ev = iv_s[v] & ~1;
+
+    for (p = 0; p != NPREGS; p++)
+        if (vr[v].cls & PB(p))
+            want |= preg_units[p];
+    for (j = 0; j < nact; j++) {
+        int a = act[j], held = vr[a].preg, placed;
+
+        if (held < 0 || !(preg_units[held] & want) || iv_s[a] < ev || iv_def[a] < 0)
+            continue;
+        act[j] = act[--nact];
+        vr[a].preg = -1;
+        scan_exclude = preg_units[held];
+        placed = assign_free(a) || assign_blocked(a);
+        scan_exclude = 0;
+        if (placed && vr[a].preg >= 0)
+            return assign_free(v) || assign_blocked(v);
+        if (placed)
+            return 0;                   /* in memory now: no way back */
+        vr[a].preg = held;
+        act[nact++] = a;
+    }
+
+    return 0;
 }
 
 /* The scan. -1 where a register cannot be had for one that must have
@@ -6979,7 +7017,7 @@ static int split_scan(void)
         for (k = 0; k < nact; k++)
             if (iv_e[act[k]] < iv_s[cur])
                 act[k--] = act[--nact];
-        if (!assign_free(cur) && !assign_blocked(cur)) {
+        if (!assign_free(cur) && !assign_blocked(cur) && !assign_moved(cur)) {
             split_on = 0;
             return -1;
         }
@@ -8867,6 +8905,30 @@ static void narrow_long_compares(void)
     }
 }
 
+/* Two copies side by side, an operator's operands put where it wants
+ * them, the first into the one register that a value the second reads is
+ * in: `a - b`, b the sum just made in HL and a wanted there, b's copy out
+ * of HL after a's into it. The second made first: what HL held moved out
+ * before HL is filled. The allocator that splits could not have both in HL
+ * at once and gave up. */
+static void order_copies(void)
+{
+    int blk, at;
+
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at + 1 < mb[blk].n; at++) {
+            MIns *x = &mb[blk].ins[at], *y = x + 1, swap;
+
+            if (x->op != M_COPY || y->op != M_COPY || popcount(vr[x->d].cls) != 1
+                || vr[y->a].cls != vr[x->d].cls || y->a == x->d
+                || y->d == x->a || y->d == x->d)
+                continue;
+            swap = *x;
+            *x = *y;
+            *y = swap;
+        }
+}
+
 /* Bounds on the work: rounds of spilling, and the size of function taken
  * at all. */
 #define MAX_ROUNDS 16
@@ -8906,6 +8968,7 @@ int mir_build(void)
     if (!place_phis())
         return 0;
     dead_code();
+    order_copies();
     free_fixed_bytes();
     lay_out();
     splitting = ssa_mir_want == 2;
