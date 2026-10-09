@@ -4289,7 +4289,7 @@ static void dom_number(void)
     free(next_kid);
 }
 
-static int dominates(int over, int blk)
+int block_dominates(int over, int blk)
 {
     return dom_pre[over] <= dom_pre[blk] && dom_post[blk] <= dom_post[over];
 }
@@ -4313,7 +4313,7 @@ void find_loops(void)
         for (succ = 0; succ != succs[blk].count; succ++) {
             int head = succs[blk].at[succ], nwork = 0, nbody = 0, at;
 
-            if (rpo_num[head] < 0 || !dominates(head, blk))
+            if (rpo_num[head] < 0 || !block_dominates(head, blk))
                 continue;
             in_loop[head] = 1;
             body_list[nbody++] = head;

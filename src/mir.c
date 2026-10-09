@@ -133,7 +133,8 @@ enum {
     M_STG,          /* (sym+imm) = a */
     M_ADD24,        /* d = a + b: d and a HL, b HL, DE or BC */
     M_SUB24,        /* d = a - b: or a / sbc hl, rr */
-    M_STEP24,       /* d = a + imm, -4..4, inc or dec, d and a the same */
+    M_STEP24,       /* d = a + imm, -4..4, inc or dec, d and a the same --
+                     * or any byte's, a IY: lea d, iy+imm */
     M_BYTES24,      /* d = a op imm2 (&, | or ^, imm), its low two bytes
                      * worked on where in place: d and a BC, DE or HL, the
                      * same; A, `t`, clobbered where a byte goes through it */
@@ -1008,6 +1009,9 @@ static int mir_ok(void)
 
 static int sel_at;              /* the SSA instruction being selected */
 static void select_all(void);
+static void find_counted(void);
+static void loops_start(void);
+static void find_counters(void);
 static int in_class(int v, unsigned cls);
 static int addr_vr(const Ent *ent);
 static int skip_to;             /* a branch fused into the comparison before */
@@ -1203,6 +1207,8 @@ enum { K_ZEXT = 1, K_SEXT = 2 };
  * knowing what all of what comes into it knows -- nothing of what comes
  * round a loop, not worked out yet -- so that it takes one pass. */
 static unsigned *known_zero;
+static unsigned *range_zero;            /* by value: a counter's bits known
+                                         * 0 by its loop (find_counters) */
 static unsigned char *known_done;
 
 #define ALL24 0xffffffu
@@ -1377,7 +1383,8 @@ static void known_bits(void)
             }
             if (is_set[phis[phi].val])
                 kz &= set_zero[phis[phi].val];
-            known_zero[phis[phi].val] = as_type(kz, vals[phis[phi].val].type);
+            known_zero[phis[phi].val] = as_type(kz, vals[phis[phi].val].type)
+                                        | range_zero[phis[phi].val];
             known_done[phis[phi].val] = 1;
         }
         for (at = blocks[blk].first; at != end; at++) {
@@ -1385,7 +1392,8 @@ static void known_bits(void)
 
             if (insn->res < 0 || multi_def[insn->res])
                 continue;
-            known_zero[insn->res] = as_type(insn_zero(insn), vals[insn->res].type);
+            known_zero[insn->res] = as_type(insn_zero(insn), vals[insn->res].type)
+                                    | range_zero[insn->res];
             known_done[insn->res] = 1;
         }
     }
@@ -3936,7 +3944,7 @@ static void step_in_place(MBlock *f, int which, const unsigned char *once)
                 continue;
         }
         step = &mb[def_blk[t]].ins[def_at[t]];
-        if (step->op != M_STEP24 || step->a != dst)
+        if (step->op != M_STEP24 || step->a != dst || step->imm > 4 || step->imm < -4)
             continue;
         cur = (int) (f - mb);
         mi = mi3(M_STEP24, dst, dst, -1);
@@ -8404,6 +8412,10 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         out_byte2(0xed, 0x42);                          /* sbc hl, bc */
         return;
     case M_STEP24:
+        if (a == P_IY && (d != a || mi->imm > 1 || mi->imm < -1)) {
+            out_byte3(0xed, pair_op(d, 0x03, 0x13, 0x23, 0x33), mi->imm & 0xff);
+            return;                                     /* lea d, iy+imm */
+        }
         if (d != a)
             move24(d, a);
         for (k = 0; k != (mi->imm < 0 ? -mi->imm : mi->imm); k++) {
@@ -8727,7 +8739,10 @@ int mir_build(void)
     ntemps = 0;
     sel_fail = NULL;
     setup();
+    loops_start();
+    find_counters();
     known_bits();
+    find_counted();
     select_all();
     if (sel_fail) {
         mir_why = sel_fail;
@@ -8848,12 +8863,654 @@ int mir_build(void)
     return 1;
 }
 
+/* ------------------------------------------------------------------ */
+/* counted loops' addresses                                            */
+
+/* A loop that counts -- k, an int, stepped by one where each trip ends,
+ * its header entered from one block that goes nowhere else -- whose
+ * addresses are k times a stride from what the loop does not change:
+ * `&left[i][k]`, `&right[k][j]`. Each such address is a pointer of its
+ * own, set where the loop is entered to what it is for k's first value,
+ * and stepped by the stride where k is: matmul's innermost loop made both
+ * addresses from the counters again on every trip. What the address is
+ * made from and the loop does not change -- `left + i` -- is made where
+ * the loop is entered too.
+ *
+ * The address must be made before k is stepped, where its pointer is. */
+typedef struct {
+    int entry, latch, k, k_init, step_at, dir;
+    int k_const, k_value;       /* k's first value a constant: it */
+    int hoist, nhoist;          /* in sr_list: made where it is entered */
+    int chain, nchain;          /* its chains, in chains */
+    int next_entered;           /* another entered from the same block, or -1 */
+} Counted;
+
+typedef struct {
+    int final, stride, q;
+    int first, n;               /* in sr_list: the chain, its root first */
+} Chain;
+
+static Counted *counted;
+static Chain *chains;
+static int ncounted, nchains, counted_cap, chains_cap;
+static int *sr_list, nsr_list, sr_list_cap;
+static unsigned char *sr_skip;          /* by instruction: 1 made where its
+                                         * loop is entered, 2 a chain's end,
+                                         * its pointer copied, 3 a counter's
+                                         * step, its pointers stepped after */
+static int *entered_first;              /* by block: the first counted loop
+                                         * entered from it, or -1 */
+static int *sr_chain_of;                /* by instruction: a chain's end's
+                                         * chain; a counter's step's loop */
+static int *def_at, *def_blk;           /* by value: its instruction, or
+                                         * -1 for a phi; its block */
+static int *in_body, body_stamp;        /* by block */
+static int *stride_of;                  /* by value: as an address of the
+                                         * loop being looked at, or 0 */
+static unsigned char *inv_memo;         /* by value: 0, 1 invariant, 2 not */
+static int *touched, ntouched;
+static int *body_work;                  /* a loop body's blocks to look at */
+static int *body_list, nbody;           /* and all of them, in order */
+static int *use_first, *use_next, *use_at;   /* by value: the instructions
+                                         * that read it, a list */
+static unsigned char *phi_read;         /* by value: read by a phi */
+static int *sr_saved;                   /* a chain's links' own registers,
+                                         * while it is made for k's first
+                                         * value */
+
+static void sr_push(int at)
+{
+    if (nsr_list == sr_list_cap) {
+        sr_list_cap = sr_list_cap ? 2 * sr_list_cap : 64;
+        sr_list = realloc(sr_list, (size_t) sr_list_cap * sizeof *sr_list);
+        if (!sr_list)
+            acc_error("out of memory for the machine IR");
+    }
+    sr_list[nsr_list++] = at;
+}
+
+static int ent_invariant(const Ent *ent, int depth);
+
+/* Whether a value is the same on every trip of the loop being looked at:
+ * made outside it, or made in it by an address's arithmetic on such
+ * values -- which is then made where the loop is entered (sr_push). */
+static int val_invariant(int val, int depth)
+{
+    int at;
+    const Ins *insn;
+
+    if (inv_memo[val])
+        return inv_memo[val] == 1;
+    touched[ntouched++] = val;
+    inv_memo[val] = 2;
+    if (multi_def[val] && def_at[val] >= 0)
+        return 0;
+    if (def_blk[val] < 0 || in_body[def_blk[val]] != body_stamp) {
+        /* Made outside it -- or by nothing, a parameter as it came. */
+        inv_memo[val] = 1;
+        return 1;
+    }
+    at = def_at[val];
+    if (at < 0 || depth > 8 || sr_skip[at] || val_vr[val] < 0)
+        return 0;
+    insn = &insns[at];
+    if (insn->op == GL_vapply && insn->nin == 2
+        && ((int) insn->rec->arg[0] == TK_PLUS || (int) insn->rec->arg[0] == TK_MINUS)
+        && !insn->rec->arg[1]
+        && ent_invariant(&insn->in[0], depth + 1) && ent_invariant(&insn->in[1], depth + 1)) {
+        sr_push(at);
+        inv_memo[val] = 1;
+        return 1;
+    }
+    if (insn->op == GL_vderef && type_pointer(insn->in[0].attr.type)
+        && type_is_array(type_deref(insn->in[0].attr.type))
+        && ent_invariant(&insn->in[0], depth + 1)) {
+        sr_push(at);
+        inv_memo[val] = 1;
+        return 1;
+    }
+
+    return 0;
+}
+
+static int ent_invariant(const Ent *ent, int depth)
+{
+    if (ent->val == S_CONST)
+        return 1;
+
+    return ent->val >= 0 && val_invariant(ent->val, depth);
+}
+
+/* Whether an address of the loop is read other than by its chain's next
+ * link: an end of a chain, whose value is its pointer, copied where it is
+ * made -- read as that copy wherever it is read after. */
+static int read_alone(int val)
+{
+    int use;
+
+    if (phi_read[val])
+        return 1;
+    for (use = use_first[val]; use >= 0; use = use_next[use])
+        if (insns[use_at[use]].res < 0 || !stride_of[insns[use_at[use]].res])
+            return 1;
+
+    return 0;
+}
+
+/* A chain ending at `final`: its links from the root, which reads k, to
+ * it, listed in that order. */
+/* Whether two links are the same arithmetic on the same values -- each
+ * reading its chain's last link, or k, where the other does. */
+static int same_link(int a, int b, int a_prev, int b_prev, int k)
+{
+    const Ins *x = &insns[a], *y = &insns[b];
+    int n;
+
+    if (x->op != y->op || x->nin != y->nin
+        || (x->op == GL_vapply && (x->rec->arg[0] != y->rec->arg[0]
+                                   || x->rec->arg[1] != y->rec->arg[1])))
+        return 0;
+    for (n = 0; n != x->nin; n++) {
+        const Ent *p = &x->in[n], *q = &y->in[n];
+
+        if (p->attr.type != q->attr.type || p->attr.ext != q->attr.ext)
+            return 0;
+        if ((a_prev >= 0 && p->val == a_prev && q->val == b_prev)
+            || (p->val == k && q->val == k))
+            continue;
+        if (p->val != q->val || (p->val == S_CONST && (p->attr.kind != q->attr.kind
+                                                       || p->attr.val != q->attr.val)))
+            return 0;
+    }
+
+    return 1;
+}
+
+/* A chain the same as one before it in the loop -- `ext_types[i].elem`,
+ * `ext_types[i].count`, each read of a member its own address -- or -1:
+ * the one pointer for both. Eight looked at, so that it stays linear. */
+static int same_chain(int first, int n, int first_chain, int k)
+{
+    int c;
+
+    for (c = nchains - 1; c >= first_chain && c >= nchains - 8; c--) {
+        int t, a_prev = -1, b_prev = -1;
+
+        if (chains[c].n != n)
+            continue;
+        for (t = 0; t != n; t++) {
+            int a = sr_list[chains[c].first + t], b = sr_list[first + t];
+
+            if (!same_link(a, b, a_prev, b_prev, k))
+                break;
+            a_prev = insns[a].res;
+            b_prev = insns[b].res;
+        }
+        if (t == n)
+            return c;
+    }
+
+    return -1;
+}
+
+static void add_chain(int final, const Counted *loop, int first_chain)
+{
+    Chain *chain;
+    int link, n, t, same;
+
+    if (nchains == chains_cap) {
+        chains_cap = chains_cap ? 2 * chains_cap : 8;
+        chains = realloc(chains, (size_t) chains_cap * sizeof *chains);
+        if (!chains)
+            acc_error("out of memory for the machine IR");
+    }
+    chain = &chains[nchains];
+    chain->final = final;
+    chain->stride = stride_of[final] * loop->dir;
+    chain->q = -1;
+    chain->first = nsr_list;
+    for (link = final; ; ) {
+        const Ins *insn = &insns[def_at[link]];
+
+        sr_push(def_at[link]);
+        if (insn->op == GL_vderef)
+            link = insn->in[0].val;
+        else if (insn->in[0].val == loop->k || insn->in[1].val == loop->k)
+            break;
+        else
+            link = type_pointer(insn->in[0].attr.type) ? insn->in[0].val : insn->in[1].val;
+    }
+    n = nsr_list - chain->first;
+    chain->n = n;
+    for (t = 0; t < n / 2; t++) {
+        int swap = sr_list[chain->first + t];
+
+        sr_list[chain->first + t] = sr_list[chain->first + n - 1 - t];
+        sr_list[chain->first + n - 1 - t] = swap;
+    }
+    sr_skip[def_at[final]] = 2;
+    same = same_chain(chain->first, n, first_chain, loop->k);
+    if (same >= 0) {
+        nsr_list = chain->first;
+        sr_chain_of[def_at[final]] = same;
+        return;
+    }
+    sr_chain_of[def_at[final]] = nchains;
+    nchains++;
+}
+
+/* The tables the loops below are found from: where each value is made,
+ * and which are read by a phi. */
+static void loops_start(void)
+{
+    int at, phi, blk, val, nuses, k;
+
+    ncounted = nchains = nsr_list = 0;
+    sr_skip = realloc(sr_skip, (size_t) ninsns + 1);
+    sr_chain_of = realloc(sr_chain_of, ((size_t) ninsns + 1) * sizeof *sr_chain_of);
+    def_at = realloc(def_at, ((size_t) nvals + 1) * sizeof *def_at);
+    def_blk = realloc(def_blk, ((size_t) nvals + 1) * sizeof *def_blk);
+    in_body = realloc(in_body, ((size_t) nblocks + 1) * sizeof *in_body);
+    stride_of = realloc(stride_of, ((size_t) nvals + 1) * sizeof *stride_of);
+    inv_memo = realloc(inv_memo, (size_t) nvals + 1);
+    touched = realloc(touched, ((size_t) nvals + 1) * sizeof *touched);
+    sr_saved = realloc(sr_saved, ((size_t) ninsns + 1) * sizeof *sr_saved);
+    range_zero = realloc(range_zero, ((size_t) nvals + 1) * sizeof *range_zero);
+    body_work = realloc(body_work, ((size_t) nblocks + 1) * sizeof *body_work);
+    body_list = realloc(body_list, ((size_t) nblocks + 1) * sizeof *body_list);
+    entered_first = realloc(entered_first, ((size_t) nblocks + 1) * sizeof *entered_first);
+    use_first = realloc(use_first, ((size_t) nvals + 1) * sizeof *use_first);
+    phi_read = realloc(phi_read, (size_t) nvals + 1);
+    nuses = 0;
+    for (at = 1; at != ninsns; at++)
+        nuses += insns[at].nin;
+    use_next = realloc(use_next, ((size_t) nuses + 1) * sizeof *use_next);
+    use_at = realloc(use_at, ((size_t) nuses + 1) * sizeof *use_at);
+    if (!body_list || !entered_first || !use_first || !phi_read || !use_next || !use_at)
+        acc_error("out of memory for the machine IR");
+    if (!sr_saved || !body_work || !sr_skip || !sr_chain_of || !def_at || !def_blk
+        || !in_body || !stride_of || !inv_memo || !touched || !range_zero)
+        acc_error("out of memory for the machine IR");
+    memset(sr_skip, 0, (size_t) ninsns + 1);
+    memset(inv_memo, 0, (size_t) nvals + 1);
+    memset(phi_read, 0, (size_t) nvals + 1);
+    for (val = 0; val != nvals; val++) {
+        def_at[val] = def_blk[val] = use_first[val] = -1;
+        stride_of[val] = 0;
+        range_zero[val] = 0;
+    }
+    nuses = 0;
+    for (at = ninsns - 1; at > 0; at--)
+        for (k = 0; k != insns[at].nin; k++)
+            if (insns[at].in[k].val >= 0) {
+                use_at[nuses] = at;
+                use_next[nuses] = use_first[insns[at].in[k].val];
+                use_first[insns[at].in[k].val] = nuses++;
+            }
+    for (blk = 0; blk != nblocks; blk++) {
+        in_body[blk] = 0;
+        entered_first[blk] = -1;
+    }
+    body_stamp = 0;
+    for (at = 1; at != ninsns; at++)
+        if (insns[at].res >= 0) {
+            def_at[insns[at].res] = at;
+            def_blk[insns[at].res] = insns[at].block;
+        }
+    for (phi = 0; phi != nphis; phi++) {
+        int pred;
+
+        if (!phis[phi].live)
+            continue;
+        def_blk[phis[phi].val] = phis[phi].block;
+        for (pred = 0; pred != preds[phis[phi].block].count; pred++)
+            if (phis[phi].in[pred] >= 0)
+                phi_read[phis[phi].in[pred]] = 1;
+    }
+}
+
+static int by_int_asc(const void *a, const void *b)
+{
+    return *(const int *) a - *(const int *) b;
+}
+
+/* Whether a phi is a loop's counter: an int, its header entered from one
+ * block and from the loop's one latch, which brings it back stepped by
+ * one. Its loop's body marked with a new body_stamp. */
+static int loop_of(int phi, Counted *loop)
+{
+    int head = phis[phi].block, entry = -1, latch = -1, pred, nwork = 0;
+    int k = phis[phi].val, w, step;
+
+    if (!phis[phi].live || preds[head].count != 2 || rpo_num[head] < 0)
+        return 0;
+    for (pred = 0; pred != 2; pred++) {
+        int from = preds[head].at[pred];
+
+        if (rpo_num[from] >= 0 && block_dominates(head, from))
+            latch = pred;
+        else
+            entry = pred;
+    }
+    if (latch < 0 || entry < 0 || val_vr[k] < 0
+        || type_size(vals[k].type) != ACC_INT_SIZE || type_pointer(vals[k].type))
+        return 0;
+    w = phis[phi].in[latch];
+    loop->k_init = phis[phi].in[entry];
+    loop->entry = preds[head].at[entry];
+    loop->latch = preds[head].at[latch];
+    loop->k = k;
+    if (w < 0 || def_at[w] < 0 || loop->k_init < 0)
+        return 0;
+    loop->step_at = step = def_at[w];
+    if (insns[step].op != I_STEP || insns[step].in[0].val != k
+        || type_pointer(insns[step].local_type)
+        || type_size(insns[step].local_type) != ACC_INT_SIZE)
+        return 0;
+    loop->dir = insns[step].step_op == TK_MINUS ? -1 : 1;
+    loop->k_const = 0;
+    loop->k_value = 0;
+    if (def_at[loop->k_init] >= 0) {
+        const Ins *init = &insns[def_at[loop->k_init]];
+
+        if ((init->op == I_CONV || init->op == GL_vconvert || init->op == GL_vcast)
+            && init->nin == 1 && is_num(&init->in[0])) {
+            loop->k_const = 1;
+            loop->k_value = init->in[0].attr.val;
+        }
+    }
+
+    /* The body: what reaches the latch without passing the header --
+     * listed, then in order. */
+    body_stamp++;
+    in_body[head] = body_stamp;
+    nbody = 0;
+    body_list[nbody++] = head;
+    if (in_body[loop->latch] != body_stamp) {
+        in_body[loop->latch] = body_stamp;
+        body_work[nwork++] = loop->latch;
+        body_list[nbody++] = loop->latch;
+    }
+    while (nwork) {
+        int b = body_work[--nwork];
+
+        for (pred = 0; pred != preds[b].count; pred++) {
+            int from = preds[b].at[pred];
+
+            if (rpo_num[from] >= 0 && in_body[from] != body_stamp) {
+                in_body[from] = body_stamp;
+                body_work[nwork++] = from;
+                body_list[nbody++] = from;
+            }
+        }
+    }
+    qsort(body_list, (size_t) nbody, sizeof *body_list, by_int_asc);
+
+    return 1;
+}
+
+/* A counter's range, where its loop's header goes on only while it is
+ * below a constant: from a first value no less than 0, stepped up by one,
+ * k stays within 0 and that constant -- or its first value, where that is
+ * the more -- and so does k + 1, which comes back only from inside. Its
+ * bits above it are known 0, to known_bits: `k < 20` compared as a byte,
+ * not as a signed int moved by 0x800000. */
+static void find_counters(void)
+{
+    int phi;
+
+    for (phi = 0; phi != nphis; phi++) {
+        Counted loop;
+        int head, last, cmp, op, bound, top, into;
+        const Ins *br, *test;
+        const Ent *other;
+
+        if (!loop_of(phi, &loop) || !loop.k_const || loop.k_value < 0 || loop.dir != 1)
+            continue;
+        head = phis[phi].block;
+        last = (head + 1 < nblocks ? blocks[head + 1].first : ninsns) - 1;
+        br = &insns[last];
+        if (br->op != I_BR || br->nin != 1 || br->in[0].val < 0 || succs[head].count != 2)
+            continue;
+        cmp = def_at[br->in[0].val];
+        if (cmp < 0 || insns[cmp].block != head)
+            continue;
+        test = &insns[cmp];
+        if (test->op != GL_vapply || test->nin != 2)
+            continue;
+        op = (int) test->rec->arg[0];
+        if (test->in[0].val == loop.k && is_num(&test->in[1])) {
+            other = &test->in[1];
+        } else if (test->in[1].val == loop.k && is_num(&test->in[0])) {
+            other = &test->in[0];
+            op = op == TK_LT ? TK_GT : op == TK_GT ? TK_LT : op == TK_LE ? TK_GE
+                 : op == TK_GE ? TK_LE : op;
+        } else {
+            continue;
+        }
+        /* Out of the loop where the test fails, into its body where not. */
+        into = succs[head].at[0] == br->target ? succs[head].at[1] : succs[head].at[0];
+        if (br->sense || in_body[br->target] == body_stamp || in_body[into] != body_stamp)
+            continue;
+        bound = other->attr.val;
+        if (bound < 0 || bound > 0x7ffffe)
+            continue;
+        if (op == TK_LE)
+            bound++;
+        else if (op == TK_NE && loop.k_value > bound)
+            continue;
+        else if (op != TK_LT && op != TK_NE)
+            continue;
+        if (loop.k_value > bound)
+            bound = loop.k_value;
+        for (top = 1; top <= bound; top <<= 1)
+            ;
+        range_zero[loop.k] |= ~(unsigned) (top - 1) & ALL24;
+        range_zero[insns[loop.step_at].res] |= ~(unsigned) (top - 1) & ALL24;
+    }
+}
+
+/* The loops, and the chains of their addresses. */
+/* The loops, and the chains of their addresses. */
+static void find_counted(void)
+{
+    int at, phi, b, loop_calls;
+
+    for (phi = 0; phi != nphis; phi++) {
+        int head = phis[phi].block, k = phis[phi].val, step, last;
+        Counted loop;
+
+        if (!loop_of(phi, &loop))
+            continue;
+        step = loop.step_at;
+        if (val_vr[loop.k_init] < 0 || succs[loop.entry].count != 1
+            || insns[step].block != loop.latch)
+            continue;
+        last = (loop.entry + 1 < nblocks ? blocks[loop.entry + 1].first : ninsns) - 1;
+        if (insns[last].op == I_BR)
+            continue;
+
+        /* Its addresses: k times a stride from an invariant pointer, and
+         * those with an invariant int added after. */
+        loop.hoist = nsr_list;
+        loop.nhoist = 0;
+        ntouched = 0;
+        loop_calls = 0;
+        for (b = 0; b != nbody; b++) {
+            int end = body_list[b] + 1 < nblocks ? blocks[body_list[b] + 1].first : ninsns;
+
+            for (at = blocks[body_list[b]].first; at != end; at++) {
+                const Ins *insn = &insns[at];
+                int side;
+
+                loop_calls |= insn->op == GL_gen_call;
+
+                /* Its own: not in a loop inside it, which has its own. */
+                if (insn->res < 0 || val_vr[insn->res] < 0 || sr_skip[at] || at > step
+                    || loop_depth[insn->block] != loop_depth[head])
+                    continue;
+                if (insn->op == GL_vderef && insn->in[0].val >= 0 && stride_of[insn->in[0].val]
+                    && type_is_array(type_deref(insn->in[0].attr.type))) {
+                    stride_of[insn->res] = stride_of[insn->in[0].val];
+                    touched[ntouched++] = insn->res;
+                    continue;
+                }
+                if (insn->op != GL_vapply || insn->nin != 2 || insn->rec->arg[1]
+                    || (int) insn->rec->arg[0] != TK_PLUS)
+                    continue;
+                for (side = 0; side != 2; side++) {
+                    const Ent *ptr = &insn->in[side], *by = &insn->in[1 - side];
+                    int saved = nsr_list;
+
+                    if (!type_pointer(ptr->attr.type) || type_pointer(by->attr.type))
+                        continue;
+                    if (by->val == k && ent_invariant(ptr, 0)) {
+                        int stride = type_step(ptr->attr.type, ptr->attr.ext);
+
+                        if (stride > 0) {
+                            stride_of[insn->res] = stride;
+                            touched[ntouched++] = insn->res;
+                            break;
+                        }
+                    } else if (ptr->val >= 0 && stride_of[ptr->val] && ent_invariant(by, 0)) {
+                        stride_of[insn->res] = stride_of[ptr->val];
+                        touched[ntouched++] = insn->res;
+                        break;
+                    }
+                    nsr_list = saved;       /* nothing hoisted for it */
+                }
+            }
+        }
+        loop.nhoist = nsr_list - loop.hoist;
+
+        /* Each address read other than by its chain's next link: a chain
+         * of its own, ending there -- but not one that steps by a byte,
+         * whose address was one add, nor in a loop that calls, around
+         * which its pointer would be pushed and popped: aed's scan_line,
+         * a byte search calling fold() and match_at(), was 24% slower so,
+         * and zap 1.3%. */
+        {
+            int found = 0, t, first_chain = nchains;
+
+            for (t = 0; t != ntouched; t++) {
+                int v = touched[t];
+
+                if (!stride_of[v] || !read_alone(v) || stride_of[v] == 1 || loop_calls)
+                    continue;
+                add_chain(v, &loop, first_chain);
+                found = 1;
+            }
+            for (t = 0; t != ntouched; t++) {
+                stride_of[touched[t]] = 0;
+                inv_memo[touched[t]] = 0;
+            }
+            if (!found) {
+                nsr_list = loop.hoist;
+                continue;
+            }
+            for (t = 0; t != loop.nhoist; t++)
+                sr_skip[sr_list[loop.hoist + t]] = 1;
+            sr_skip[loop.step_at] = 3;
+            sr_chain_of[loop.step_at] = ncounted;       /* its loop, here */
+            loop.chain = first_chain;
+            loop.nchain = nchains - first_chain;
+            loop.next_entered = entered_first[loop.entry];
+            entered_first[loop.entry] = ncounted;
+            if (ncounted == counted_cap) {
+                counted_cap = counted_cap ? 2 * counted_cap : 8;
+                counted = realloc(counted, (size_t) counted_cap * sizeof *counted);
+                if (!counted)
+                    acc_error("out of memory for the machine IR");
+            }
+            counted[ncounted++] = loop;
+        }
+    }
+}
+
+/* Where a counted loop is entered, at the end of the block it is entered
+ * from: what its addresses are made from, and each pointer set to its
+ * address for k's first value -- its chain made with k's first value read
+ * for k, into registers of its own. */
+static void enter_counted(int blk)
+{
+    int loop, c, t;
+
+    for (loop = entered_first[blk]; loop >= 0; loop = counted[loop].next_entered) {
+        const Counted *l = &counted[loop];
+
+        for (t = 0; t != l->nhoist; t++) {
+            sel_at = sr_list[l->hoist + t];
+            sel_insn(&insns[sel_at], sel_at);
+        }
+        for (c = l->chain; c != l->chain + l->nchain; c++) {
+            Chain *chain = &chains[c];
+            int init;
+
+            for (t = 0; t != chain->n; t++) {
+                int at = sr_list[chain->first + t], res = insns[at].res, k;
+                Ins link = insns[at];
+
+                /* k read as its first value: the constant, where it is one,
+                 * folded as any constant operand is. */
+                for (k = 0; k != link.nin; k++)
+                    if (link.in[k].val == l->k) {
+                        if (l->k_const) {
+                            link.in[k].val = S_CONST;
+                            link.in[k].attr.kind = VAL_CONST;
+                            link.in[k].attr.val = l->k_value;
+                        } else {
+                            link.in[k].val = l->k_init;
+                        }
+                    }
+                sr_saved[t] = val_vr[res];
+                val_vr[res] = new_vr(vr[sr_saved[t]].width, vr[sr_saved[t]].cls);
+                sel_at = at;
+                sel_insn(&link, at);
+            }
+            init = val_vr[chain->final];
+            for (t = 0; t != chain->n; t++)
+                val_vr[insns[sr_list[chain->first + t]].res] = sr_saved[t];
+            chain->q = new_vr(3, C_R24);
+            mi3(M_COPY, chain->q, init, -1);
+        }
+    }
+}
+
+/* Where k is stepped: each of its loop's pointers by its stride. */
+static void step_counted(int at)
+{
+    const Counted *l = &counted[sr_chain_of[at]];
+    int c;
+
+    for (c = l->chain; c != l->chain + l->nchain; c++) {
+        const Chain *chain = &chains[c];
+        int q = chain->q, t;
+
+        if (q < 0)
+            continue;
+        if (chain->stride >= -4 && chain->stride <= 4) {
+            mi3(M_STEP24, q, q, -1)->imm = chain->stride;
+            continue;
+        }
+        /* A byte's stride: lea iy, iy+d, the pointer wanting IY. */
+        if (chain->stride >= -128 && chain->stride <= 127) {
+            t = new_vr(3, C_R24);
+            mi3(M_STEP24, t, in_class(q, C_IY), -1)->imm = chain->stride;
+            mi3(M_COPY, q, t, -1);
+            continue;
+        }
+        t = new_vr(3, C_HL);
+        mi3(M_ADD24, t, in_class(q, C_HL), in_class(const_vr(chain->stride, 3), C_O24));
+        mi3(M_COPY, q, t, -1);
+    }
+}
+
 static void select_all(void)
 {
     int blk, at;
 
     for (blk = 0; blk != nblocks && !sel_fail; blk++) {
-        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns;
+        int end = blk + 1 < nblocks ? blocks[blk + 1].first : ninsns, entered = 0;
 
         if (blk && rpo_num[blk] < 0)
             continue;
@@ -8862,9 +9519,24 @@ static void select_all(void)
         for (at = blocks[blk].first; at != end && !sel_fail; at++) {
             if (at == 0 || at <= skip_to)
                 continue;
+            if (at == end - 1 && entered_first[blk] >= 0
+                && (insns[at].op == I_JMP || insns[at].op == GL_gen_return)) {
+                enter_counted(blk);
+                entered = 1;
+            }
+            if (sr_skip[at] == 1)
+                continue;               /* made where its loop is entered */
+            if (sr_skip[at] == 2 && chains[sr_chain_of[at]].q >= 0) {
+                to_val(insns[at].res, chains[sr_chain_of[at]].q);
+                continue;
+            }
             sel_at = at;
             sel_insn(&insns[at], at);
+            if (sr_skip[at] == 3)
+                step_counted(at);
         }
+        if (!entered && entered_first[blk] >= 0)
+            enter_counted(blk);
     }
 }
 

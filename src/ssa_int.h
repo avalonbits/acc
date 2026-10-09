@@ -155,6 +155,7 @@ int  ssa_locals_kept(void);
 void costs(const int *block_start, int end);
 int  inline_moved(int offset);
 void find_loops(void);
+int  block_dominates(int over, int blk);   /* after find_loops */
 
 /* mir.c's: the machine-level backend (ssa_mir_want, ssa_made_mir: see
  * genlog.h). */
