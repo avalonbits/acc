@@ -194,16 +194,32 @@ emits() {
 
 # A branch on an AND that keeps one byte jumps on the flags the AND left,
 # rather than rebuilding the value and testing it against zero with
-# add hl, bc; or a; sbc hl, bc. A mask of two bytes still tests.
+# add hl, bc; or a; sbc hl, bc. A mask of two bytes is known to be two
+# bytes wide, and tests them in A, ld a, l; or h.
 zero_test=09b7ed42
 emits "if (x & 0x8000)"                 "$zero_test" no \
     'int f(unsigned x) { if (x & 0x8000) return 1; return 2; }'
 emits "if (x & 0xff00)"                 "$zero_test" no \
     'int f(unsigned x) { if (x & 0xff00) return 1; return 2; }'
-emits "if (x & 0x0ff0), two bytes"      "$zero_test" yes \
+emits "if (x & 0x0ff0), two bytes"      "7db4" yes \
     'int f(unsigned x) { if (x & 0x0ff0) return 1; return 2; }'
-emits "if (x & 0x8000) with the value kept" "$zero_test" yes \
+emits "if (x & 0x8000) with the value kept" "7db4" yes \
     'int f(unsigned x) { int y; if (y = x & 0x8000) return y; return 2; }'
+
+# Two values that fit in a byte compare in A, with no 24-bit subtract:
+# a mask of an int against an unsigned char, which the AND says fits. Of
+# two bytes just read, the second is not widened: it is taken back to A,
+# ld a, (hl), and the first compared with it, cp e.
+emits "(int & 15) == uchar, in A"      "b7ed52" no \
+    'unsigned char m; int f(int x) { return (x & 15) == m; }'
+emits "(int & 15) == uchar, no sbc bc"  "b7ed42" no \
+    'unsigned char m; int f(int x) { return (x & 15) == m; }'
+emits "*p == *q, ld a, (hl) / cp e"     "7ebb" yes \
+    'int f(unsigned char *p, unsigned char *q) { return *p == *q; }'
+emits "--w > 0, cp 1 on the byte in A"  "dd7706fe01" yes \
+    'int f(unsigned char w) { if (--w > 0) return 1; return 2; }'
+emits "--w == x, cp (ix+d) on the byte in A" "dd7706ddbe09" yes \
+    'int f(unsigned char w, unsigned char x) { if (--w == x) return 1; return 2; }'
 
 # A constant condition is no test at all: `while (1)` falls into its body,
 # `do ... while (0)` falls out, and `if (0)` jumps over. Each was ld hl, n

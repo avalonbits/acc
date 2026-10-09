@@ -19,6 +19,10 @@
 static int  is_comparison(int op);
 static void flags_say_nonzero(int from);
 
+/* `op` with the constant `value`, HL the left, written out: how many of
+ * the answer's bytes can be other than zero, which vwidth reads -- one
+ * for a mask of the low byte, two for one of the low two, three for the
+ * rest -- or 0 where it cannot be, with nothing emitted. */
 static int bitwise_const(int op, int value)
 {
     int c0 = value & 0xff, c1 = (value >> 8) & 0xff, c2 = (value >> 16) & 0xff;
@@ -79,7 +83,7 @@ static int bitwise_const(int op, int value)
             flags_say_nonzero(at);
         }
 
-        return 1;
+        return 2;
     }
 
     /* Otherwise the third byte has to be left alone, because there is no way
@@ -90,10 +94,10 @@ static int bitwise_const(int op, int value)
     low = c0 != identity;
     high = c1 != identity;
     if (!low && !high)
-        return 1;               /* the operator would change nothing */
+        return 3;               /* the operator would change nothing */
     if (!high && op != TK_AMP
         && widen_byte_op(vsp - 2, op == TK_PIPE ? 0xf6 : 0xee, c0))
-        return 1;               /* on the byte, the widening after */
+        return 3;               /* on the byte, the widening after */
 
     if (low) {
         ld_a_l();
@@ -116,7 +120,7 @@ static int bitwise_const(int op, int value)
         ld_h_a();
     }
 
-    return 1;
+    return 3;
 }
 
 static int mul_const(int value)
@@ -651,15 +655,10 @@ void vbinop(int op)
      * rather than called for: see bitwise_const. */
     if (val_const(rhs->kind)
         && ((op == TK_AMP || op == TK_PIPE || op == TK_CARET)
-            ? bitwise_const(op, rhs->val)
+            ? (narrow = bitwise_const(op, rhs->val))
             : op == TK_STAR && mul_const(rhs->val))) {
         result = either_unsigned(lhs, rhs) ? TY_UINT : TY_INT;
-        vdrop();
-        vdrop();
-        vpush_reg(R_HL);
-        (vsp - 1)->type = result;
-
-        return;
+        goto done;
     }
 
     if (needs_helper(op)) {
@@ -1208,6 +1207,63 @@ static int cmp_byte_const(int op)
     return 1;
 }
 
+/* Two values with nothing above their low byte -- unsigned chars, masks
+ * of them, as vwidth knows, or a byte not loaded yet whose type is
+ * unsigned char -- compared in A. Both are 0 to 255, where an int's order
+ * and an unsigned one's are the byte's: `(x & 15) == mode` is ld a, e and
+ * cp l, not two 24-bit values subtracted with a register moved through the
+ * stack to make room. A byte local is read where it is, and one just read
+ * and widened is taken back to A, as cmp_byte_const does -- for == and !=
+ * from either side. A constant is cmp_byte_const's. Returns 0 if they are
+ * not such a pair, having emitted nothing. */
+static int byte_wide(const Value *v)
+{
+    return (v->quals & VQ_BYTE)
+           || (v->kind != VAL_REG && !val_const(v->kind)
+               && type_size(v->type) == 1 && type_unsigned(v->type));
+}
+
+__attribute__((noinline))
+static int cmp_bytes(int op)
+{
+    Value *lhs = vsp - 2;
+    Value *rhs = vsp - 1;
+    int right = 0;
+
+    if (val_const(lhs->kind) || val_const(rhs->kind)
+        || !byte_wide(lhs) || !byte_wide(rhs))
+        return 0;
+    if (tok_pair(op, TK_GT)) {
+        vswap();
+        op = op == TK_GT ? TK_LT : TK_GE;
+    } else if ((op == TK_EQ || op == TK_NE) && widen_held(rhs) != TY_VOID) {
+        vswap();
+    }
+
+    /* The answer is made in HL: anything else there is moved out first. */
+    if (!((lhs->kind == VAL_REG && lhs->val == R_HL)
+          || (rhs->kind == VAL_REG && rhs->val == R_HL)))
+        evict_reg(R_HL);
+    if (rhs->kind != VAL_LOCAL)
+        right = force_reg(rhs);
+    if (lhs->kind == VAL_LOCAL) {
+        ld_a_ix(lhs->val);
+    } else if (!widen_undo(lhs)) {      /* a byte just widened: in A again */
+        /* Not spilling the right to make room: the oldest goes, and two
+         * registers busy below these two are older. */
+        out_byte(0x7d - 2 * force_reg(lhs));    /* ld a, l, e or c */
+    }
+    if (rhs->kind == VAL_LOCAL)
+        frame_byte(0xbe, rhs->val);     /* cp (ix+d) */
+    else
+        out_byte(0xbd - 2 * right);     /* cp l, e or c */
+    vdrop();
+    vdrop();
+    cmp_value(op, 1);
+
+    return 1;
+}
+
 /* Z set when HL is zero, and HL as it was.
  *
  * There is no "is this register zero" instruction for a 24-bit value. The
@@ -1315,7 +1371,7 @@ static void vcmp(int op)
         return;
     }
 
-    if (cmp_byte_const(op))
+    if (cmp_byte_const(op) || cmp_bytes(op))
         return;
 
     /* A signed order as an unsigned one, the carry the answer: against a
