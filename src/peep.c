@@ -27,6 +27,7 @@
 #include "acc.h"
 #include "gen_int.h"
 #include "out_int.h"
+#include "genlog.h"
 
 /* The registers, a bit each: the 24-bit pairs as their three bytes, U the
  * top one, which only an ADL instruction reaches. */
@@ -2376,10 +2377,14 @@ int peep_gone(int at)
            && ins[at_byte[k]].gone;
 }
 
+/* What the function ended does with volatile (genlog.c's gl_volatile):
+ * where anything, it is left as it is. */
+int gl_fn_volatile;
+
 /* The function from `start` to here, its bookkeeping from `from` on. */
 void peep_function(const Mark *from, int start)
 {
-    if (!getenv("OPTACC_PEEP"))
+    if (!getenv("OPTACC_PEEP") || gl_fn_volatile)
         return;
     if (peep_analyse(from, start, out_here()))
         cut_gone(from);

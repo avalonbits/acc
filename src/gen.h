@@ -102,8 +102,10 @@ enum {
     VQ_WORD  = 0x80,            /* one whose top byte is: see vwidth. Clear
                                  * of the SQ_* bits, which a local's value
                                  * takes as they are */
-    VQ_CONST = 1                /* what the value leads to is const: a store
+    VQ_CONST = 1,               /* what the value leads to is const: a store
                                  * through it is refused */
+    VQ_VOLATILE = 4             /* it, or what it leads to, is volatile: each
+                                 * access made, none known from another */
 };
 
 /* ------------------------------------------------------------------ */

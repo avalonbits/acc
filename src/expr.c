@@ -419,7 +419,9 @@ static void member(void)
         acc_error_at(tok_line, "'%s' has no member '%s'", record_name(x),
                      name_text(name));
     next();
-    vmember(offset, member_type(m), member_ext(m), member_quals(m));
+    /* volatile on an anonymous member is its members' too. */
+    vmember(offset, member_type(m), member_ext(m),
+            member_quals(m) | (member_quals(top) & VQ_VOLATILE));
     if (member_bits(m))
         vset_bits(member_bits(m));
 }
@@ -2238,7 +2240,7 @@ static int address_of_literal(int line, const char *spot)
         return kind;
     }
     type = type_name_elem(&x, &count, &elem, &elem_x);
-    quals = base_const ? VQ_CONST : 0;
+    quals = base_const;
     expect(TK_RPAREN, "')'");
 
     /* `&((struct s *) p)->m`, `&((char *) p)[i]`: a cast, and not a compound
@@ -2279,7 +2281,7 @@ static int cast_rest_as(int statement)
     const char *spot = tok_at;
     Type elem;
     Type to = type_name_elem(&x, &count, &elem, &elem_x), outer = narrow_dest;
-    int quals = base_const ? VQ_CONST : 0;
+    int quals = base_const;
 
     expect(TK_RPAREN, "')'");
 
@@ -2506,7 +2508,7 @@ static int sizeof_unary(void)
                                            "size");
             if (type_is_array(type))
                 acc_error_spot(line, spot, "a cast cannot make an array");
-            cast_operand(type, x, base_const ? VQ_CONST : 0);
+            cast_operand(type, x, base_const & SQ_CONST);
 
             /* A cast's result has the type it names, and that type's size is
              * the answer. What cast_operand leaves is promoted to int for

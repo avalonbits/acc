@@ -195,7 +195,7 @@ Type base_type(void);
 extern unsigned char decl_start[TK_COUNT];
 __attribute__((noinline)) int is_typedef_name(NameRef name);
 extern unsigned char stars_const;
-__attribute__((noinline)) unsigned char star_qualifiers(void);
+__attribute__((noinline)) unsigned char star_qualifiers(unsigned char prev);
 int constant_folded(const char *what, int line, const char *spot, int before);
 extern Type folded_type;
 int constant_int(const char *what, int line);
@@ -294,7 +294,7 @@ Type declarator_stars(Type base)
             acc_error_spot(line, spot, "a pointer can be %d deep and this is "
                                        "deeper", TY_PTR_MAX);
         base = type_ptr_to(base);
-        stars_const = tok_qualifier() ? star_qualifiers() : 0;
+        stars_const = star_qualifiers(stars_const);
     }
 
     return base;
@@ -386,7 +386,7 @@ void declaration(void)
             continue;
         }
         if (tok == TK_LPAREN) {         /* a function declared in a block */
-            decl_bottom_const = bc ? SQ_CONST : 0;
+            decl_bottom_const = bc | (stars_const & SQ_VOLATILE);
             function_declarator(type, ext, name, line, spot);
             if (!accept(TK_COMMA))
                 break;
@@ -395,24 +395,21 @@ void declaration(void)
         local_not_redeclared(name, line, spot);
         if (vla_length) {
             local_vla(type, ext, name, line, spot);
-            if (bc)
-                sym_at(sym_find(name))->quals |= SQ_CONST;
+            sym_at(sym_find(name))->quals |= bc | (stars_const & SQ_VOLATILE);
             if (!accept(TK_COMMA))
                 break;
             continue;
         }
         if (count) {
             local_array(type, ext, name, count, line, spot);
-            if (bc)
-                sym_at(sym_find(name))->quals |= SQ_CONST;
+            sym_at(sym_find(name))->quals |= bc | (stars_const & SQ_VOLATILE);
             if (!accept(TK_COMMA))
                 break;
             continue;
         }
         if (type_is_struct(type)) {
             local_struct(ext, name, line, spot);
-            if (bc)
-                sym_at(sym_find(name))->quals |= SQ_CONST;
+            sym_at(sym_find(name))->quals |= bc | (stars_const & SQ_VOLATILE);
             if (!accept(TK_COMMA))
                 break;
             continue;
@@ -434,14 +431,14 @@ void declaration(void)
         sym_at(sym)->ext = (unsigned char) ext;
         if (ext)
             vm_maybe(ext);              /* `int (*p)[n]` */
-        sym_at(sym)->quals = decl_quals | (bc ? SQ_CONST : 0);
+        sym_at(sym)->quals = decl_quals | bc | (stars_const & SQ_VOLATILE);
         if (!far)
             gen_iy_claim(off, type, decl_quals);
 #ifdef OPT_ACC
         if (!far)
             prescan_claim(off, type, name);
 #endif
-        if (stars != base ? stars_const : bc)
+        if ((stars != base ? stars_const : bc) & SQ_CONST)
             sym_at(sym)->kind = far ? SYM_LOCAL_FAR : SYM_LOCAL_CONST;
         if (accept(TK_ASSIGN)) {
             Type outer = narrow_dest;

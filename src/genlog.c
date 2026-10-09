@@ -451,6 +451,62 @@ static int ssa_loses(const char **why)
  * function made again -- from its SSA form, when OPTACC_SSA asks for that
  * and the form can be built, and otherwise by replaying the log, which has
  * to give the same code again, byte for byte. */
+/* Whether the discard at record `at` throws away a volatile value: one
+ * marked so, or what a read through one gave -- found among the records
+ * just before, through casts, which left it where the discard finds it:
+ * `g;`, `*p;`, `(void) p->m;` -- not a store's value, the read it stored
+ * used. */
+static int gl_discards_volatile(int at)
+{
+    int k;
+
+    for (k = at - 1; k >= 0 && k >= at - 4; k--) {
+        if (gl_log[k].vtop_out != gl_log[at].vtop_in)
+            break;
+        if ((gl_log[k].top.quals & VQ_VOLATILE)
+            || (gl_log[k].op == GL_vderef && k && (gl_log[k - 1].top.quals & VQ_VOLATILE)))
+            return 1;
+        if (gl_log[k].op != GL_vcast && gl_log[k].op != GL_vtype)
+            break;                      /* made by something else: a store's */
+    }
+
+    return 0;
+}
+
+/* What the function does with volatile: nothing (0); reads or writes
+ * through it only where the SSA form's backends make each access as it
+ * is (1) -- loads and stores they neither merge nor drop -- where the
+ * peephole pass alone, which cannot tell such an access from another, is
+ * left out; or
+ * (2) what those backends would get wrong, so the first pass's code is
+ * kept: a volatile local, which they keep in a register; a volatile
+ * value discarded, whose read they drop. perf.h's seed, read
+ * once at the top of main, is the first kind: kept from the first pass,
+ * sieve was 59% slower. */
+static int gl_volatile(void)
+{
+    int at, seen = 0;
+
+    for (at = 0; at != gl_n; at++) {
+        const GenRec *rec = &gl_log[at];
+
+        if (rec->op == GL_gen_discard && gl_discards_volatile(at))
+            return 2;
+        if (!(rec->top.quals & VQ_VOLATILE)
+            && !(rec->op == GL_vset_quals && (rec->arg[0] & VQ_VOLATILE)))
+            continue;
+        seen = 1;
+        /* A local declared so takes the bit as it is pushed; not a wide
+         * value's copy in a scratch slot, which carries it on. */
+        if (rec->op == GL_vset_quals && (rec->top.kind == VAL_LOCAL
+                                         || rec->top.kind == VAL_IY
+                                         || rec->top.kind == VAL_IYADDR))
+            return 2;
+    }
+
+    return seen;
+}
+
 static void gl_function_end(void)
 {
     int from = gl_start.at, to = out_here(), len = to - from, at;
@@ -481,7 +537,8 @@ static void gl_function_end(void)
 
     /* OPTACC_SSA_ONLY: one function's name, the only one made from its SSA
      * form -- for finding which function a difference is in. */
-    if (getenv("OPTACC_SSA")
+    gl_fn_volatile = gl_volatile();
+    if (getenv("OPTACC_SSA") && gl_fn_volatile != 2
         && (!getenv("OPTACC_SSA_ONLY")
             || !strcmp(getenv("OPTACC_SSA_ONLY"),
                        name_text(sym_at(gl_fn)->name)))) {
