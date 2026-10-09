@@ -1454,6 +1454,11 @@ static void zero_test(const Ent *ent)
 {
     int val = ent->val;
 
+    /* A long: all four of its bytes. */
+    if (long_type(ent->attr.type) || (val >= 0 && long_type(vals[val].type))) {
+        mi3(M_LTST, -1, in_class(operand_vr(ent, 4), C_EHL), -1)->t = new_vr(1, C_A);
+        return;
+    }
     if (flags_hold(ent))
         return;
     if (val >= 0 && (val_width(val) == 1 || known_byte(ent)
@@ -2924,7 +2929,13 @@ static void sel_long(const Ins *insn, int at)
             /* At the local's width: a long constant stored to an int,
              * `volatile int b = -INT_MAX`, was its four bytes, the last
              * over the local after it. */
-            v = operand_vr(&insn->in[0], w);
+            if (to == TY_BOOL) {        /* the truth of all four bytes */
+                zero_test(&insn->in[0]);
+                v = new_vr(1, C_R8);
+                mi3(M_BOOL, v, -1, -1)->imm = JP_NZ;
+            } else {
+                v = operand_vr(&insn->in[0], w);
+            }
             frame_mi(M_STF, -1, in_class(v, width_class(w)), offset, w);
             if (res >= 0)
                 to_val(res, v);
@@ -2954,6 +2965,11 @@ static void sel_long(const Ins *insn, int at)
         to_val(res, d);
         return;
     case GL_vstore_indirect:
+        /* To something narrower: at its width, as any store is made. */
+        if (!long_type(type_deref(insn->in[0].attr.type))) {
+            sel_store(insn);
+            return;
+        }
         v = operand_vr(&insn->in[1], 4);
         long_at(&insn->in[0], v, 1);
         if (res >= 0)
