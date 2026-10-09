@@ -196,6 +196,7 @@ extern unsigned char decl_start[TK_COUNT];
 __attribute__((noinline)) int is_typedef_name(NameRef name);
 extern unsigned char stars_const;
 __attribute__((noinline)) unsigned char star_qualifiers(unsigned char prev);
+unsigned char decl_quals_of(Type stars, Type base, unsigned char bc);
 int constant_folded(const char *what, int line, const char *spot, int before);
 extern Type folded_type;
 int constant_int(const char *what, int line);
@@ -431,7 +432,7 @@ void declaration(void)
         sym_at(sym)->ext = (unsigned char) ext;
         if (ext)
             vm_maybe(ext);              /* `int (*p)[n]` */
-        sym_at(sym)->quals = decl_quals | bc | (stars_const & SQ_VOLATILE);
+        sym_at(sym)->quals = decl_quals | decl_quals_of(stars, base, bc);
         if (!far)
             gen_iy_claim(off, type, decl_quals);
 #ifdef OPT_ACC

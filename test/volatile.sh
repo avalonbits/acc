@@ -151,6 +151,26 @@ accesses "a local written and read through a volatile cast" 3 '\(ix-3\)|,\(hl\)|
 accesses "an element's address taken through a volatile cast" 3 '\(ix-3\)|,\(hl\)|\(hl\),' \
     'int f(void) { int x = 1; *&((volatile int *) &x)[0] = 2; return *&((volatile int *) &x)[0]; }'
 
+# A pointer to volatile is not itself volatile: what it leads to is read
+# and written each time, in every way -- and the pointer is a value, in the
+# machine IR's code no slot of its own, where only the volatile short's is
+# read (ez80asm's hashBucket). A pointer whose own type is volatile by a
+# typedef stays in its slot.
+accesses "through a local pointer to volatile, each read" 2 'ld [a-z]+,\((hl|de|bc|iy\+0)\)' \
+    'int f(volatile int *q) { volatile int *p = q; return *p + *p; }'
+accesses "a local of a typedef'd volatile pointer" 3 '\(ix-3\)' \
+    'typedef int *volatile vptr; int f(int *q) { vptr p = q; return *p + *p; }'
+printf '%s\n' 'unsigned g(unsigned char i) { volatile unsigned short off; volatile unsigned char *b = (volatile unsigned char *) &off; b[0] = (unsigned char) (i * 3); b[1] = (unsigned char) (i > 85); return off; }' > "$tmp/c.c"
+rm -f "$tmp/c.o"
+env $FULL OPTACC_PICK=0 "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" >/dev/null 2>&1
+got=$(disasm "$tmp/c.o" | grep -c '(ix-')
+if [ "$got" = 1 ]; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-44s %s frame accesses, want 1\n' "a pointer to volatile, a value" "$got"
+    fail=$((fail + 1))
+fi
+
 # Each kind of object declared volatile: a parameter, a local array, a local
 # struct, a static local and a static at file scope.
 accesses "a volatile parameter read twice" 2 '\(ix\+6\)' \

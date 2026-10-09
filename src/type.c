@@ -36,7 +36,8 @@ typedef char qualifiers_are_adjacent[(TK_KW_VOLATILE == TK_KW_CONST + 1
  * volatile asks that every access the program says be made. It is kept as
  * a bit, SQ_VOLATILE, on what is declared with it anywhere in its type --
  * the object and all it leads to taken as volatile, more than C asks and
- * never less -- and a value read through it takes it as VQ_VOLATILE: such
+ * never less -- with SQ_OWN_VOLATILE beside it where the object itself is
+ * (decl_quals_of), and a value read through it takes it as VQ_VOLATILE: such
  * a local is read from its slot every time, never taken from the register
  * that wrote it, and read though nothing uses it (gen_discard); opt-acc
  * keeps the first pass's code for any function touching one. restrict
@@ -72,7 +73,7 @@ static void qualifiers(void)
         if (tok == TK_KW_CONST) {
             base_const |= SQ_CONST;
         } else if (tok == TK_KW_VOLATILE) {
-            base_const |= SQ_VOLATILE;
+            base_const |= SQ_VOLATILE | SQ_OWN_VOLATILE;
         } else if (!tok_qualifier()) {
             if (!storage_ok)
                 acc_error_at(tok_line, "'%s' belongs at the front of a "
@@ -736,7 +737,7 @@ static Type base_type_other(void)
             break;
         next();
         base_ext = sym_at(sym)->ext;
-        base_const = sym_at(sym)->quals & (SQ_CONST | SQ_VOLATILE);
+        base_const = sym_at(sym)->quals & (SQ_CONST | SQ_VOLATILE | SQ_OWN_VOLATILE);
         qualifiers();
 
         return sym_at(sym)->type;
@@ -799,11 +800,23 @@ unsigned char star_qualifiers(unsigned char prev)
         if (tok == TK_KW_CONST)
             quals |= SQ_CONST;
         if (tok == TK_KW_VOLATILE)
-            quals |= SQ_VOLATILE;
+            quals |= SQ_VOLATILE | SQ_OWN_VOLATILE;
         next();
     }
 
     return quals;
+}
+
+/* The SQ_* a declaration records of what it names: its base type's, the
+ * volatile of any of its stars, and SQ_OWN_VOLATILE where what it names is
+ * itself volatile -- by its last star where it has stars, by its base type
+ * where it has none. A pointer to volatile is not: what it leads to is read
+ * and written each time, the pointer itself is a value like any other. */
+__attribute__((noinline))
+unsigned char decl_quals_of(Type stars, Type base, unsigned char bc)
+{
+    return (bc & ~SQ_OWN_VOLATILE) | (stars_const & SQ_VOLATILE)
+           | ((stars != base ? stars_const : bc) & SQ_OWN_VOLATILE);
 }
 
 /* ------------------------------------------------------------------ */
