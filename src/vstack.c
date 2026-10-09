@@ -470,6 +470,17 @@ void vconvert(Type to)
     vset_width(top, type_unsigned(to) ? type_size(to) : 3);
 }
 
+/* The top, if a byte left in A -- the value of an assignment to a byte,
+ * `--w` -- in a register: the left of an operator, before the right is
+ * read, which may read through A. `--w < g` read g into A and compared it
+ * with itself. Widened as a byte just read is, so that a right that wanted
+ * no code -- a number, a local -- leaves it to be taken back into A. */
+void vacc_out(void)
+{
+    if ((vsp - 1)->kind == VAL_ACC)
+        force_reg(vsp - 1);
+}
+
 Type vtype(void)
 {
     if (vtop == 0)

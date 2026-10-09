@@ -90,6 +90,7 @@ static int call_args_open(void)
         narrow_dest = 0;
         for (;;) {
             expr();
+            vacc_out();                 /* the next may read through A */
             nargs++;
             if (!accept(TK_COMMA))
                 break;
@@ -1472,6 +1473,7 @@ void binary_rest(int min_prec)
             continue;
         }
 
+        vacc_out();
         primary();
         binary_rest(op_prec + 1);       /* everything binding tighter first */
 
