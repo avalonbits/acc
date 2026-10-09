@@ -1012,6 +1012,7 @@ static void select_all(void);
 static void find_counted(void);
 static void loops_start(void);
 static void find_counters(void);
+static void fold_constants(void);
 static int in_class(int v, unsigned cls);
 static int addr_vr(const Ent *ent);
 static int skip_to;             /* a branch fused into the comparison before */
@@ -2074,12 +2075,47 @@ static void sel_apply_int(const Ins *insn, int at)
         }
         sel_helper(insn, RT_MUL, operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
         return;
-    case TK_SLASH:
-        sel_helper(insn, is_unsigned ? RT_DIVU : RT_DIVS,
-                   operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
-        return;
-    case TK_PERCENT:
-        sel_helper(insn, is_unsigned ? RT_REMU : RT_REMS,
+    case TK_SLASH: case TK_PERCENT:
+        /* By a constant, as the first pass makes it (shr_const): by 1, the
+         * value itself, or 0; unsigned by 2^k, a shift right, or the bits
+         * below as an and -- `(size + a - 1) / a * a`, a an offsetof that
+         * is 1 here, called the routine twice. */
+        if (is_num(&insn->in[1])) {
+            unsigned c = (unsigned) insn->in[1].attr.val & 0xffffff;
+            int k = 0;
+
+            while (k != 24 && c != 1u << k)
+                k++;
+            if (k == 0) {
+                d = op == TK_SLASH ? operand_vr(&insn->in[0], 3) : const_vr(0, 3);
+                break;
+            }
+            if (k != 24 && is_unsigned && op == TK_SLASH) {
+                MIns *mi;
+
+                a = in_class(operand_vr(&insn->in[0], 3), C_HL);
+                d = new_vr(3, C_HL);
+                mi = mi3(M_SHRK, d, a, -1);
+                mi->imm = k;
+                mi->imm2 = 1;
+                break;
+            }
+            if (k != 24 && is_unsigned) {
+                Ins masked = *insn;
+
+                masked.in[1].attr.val = (int) (c - 1);
+                d = sel_bitwise_const(&masked, TK_AMP);
+                if (d >= 0) {
+                    if (vr[d].width == 1) {
+                        to_val_as(insn->res, d, TY_UCHAR);
+                        return;
+                    }
+                    break;
+                }
+            }
+        }
+        sel_helper(insn, op == TK_SLASH ? (is_unsigned ? RT_DIVU : RT_DIVS)
+                                        : (is_unsigned ? RT_REMU : RT_REMS),
                    operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
         return;
     case TK_AMP: case TK_PIPE: case TK_CARET:
@@ -3598,6 +3634,55 @@ static void sel_insn(const Ins *insn, int at)
 /* ------------------------------------------------------------------ */
 /* the form into machine blocks                                        */
 
+/* A value that is a constant converted -- a local given one, `const size_t
+ * a = offsetof(...)`, `int i = 0` -- read as the constant where it is an
+ * operand, as it converts: each operator that knows what to do with a
+ * constant then does. ez80asm's `(size + a - 1) / a * a`, a 1, called the
+ * divide routine where it is no divide at all. */
+static void fold_constants(void)
+{
+    int *as_const = malloc(((size_t) nvals + 1) * sizeof *as_const);
+    unsigned char *is_const = calloc((size_t) nvals + 1, 1);
+    int at, k;
+
+    if (!as_const || !is_const)
+        acc_error("out of memory for the machine IR");
+    for (at = 1; at != ninsns; at++) {
+        const Ins *insn = &insns[at];
+        Type to;
+        int value;
+
+        if ((insn->op != I_CONV && insn->op != GL_vconvert && insn->op != GL_vcast)
+            || insn->nin != 1 || !is_num(&insn->in[0]) || insn->res < 0
+            || multi_def[insn->res])
+            continue;
+        to = insn->op == I_CONV ? insn->local_type : (Type) insn->rec->arg[0];
+        if (!mir_type(to) || type_pointer(to))
+            continue;
+        value = insn->in[0].attr.val;
+        if (to == TY_BOOL)
+            value = (value & 0xffffff) != 0;
+        else if (type_size(to) == 1)
+            value = type_unsigned(to) ? value & 0xff : (signed char) (value & 0xff);
+        else if (type_size(to) == 2)
+            value = type_unsigned(to) ? value & 0xffff : (short) (value & 0xffff);
+        as_const[insn->res] = value;
+        is_const[insn->res] = 1;
+    }
+    for (at = 1; at != ninsns; at++)
+        for (k = 0; k != insns[at].nin; k++) {
+            Ent *ent = &insns[at].in[k];
+
+            if (ent->val < 0 || !is_const[ent->val] || ent->attr.bits)
+                continue;
+            ent->attr.val = as_const[ent->val];
+            ent->attr.kind = VAL_CONST;
+            ent->val = S_CONST;
+        }
+    free(as_const);
+    free(is_const);
+}
+
 /* Each SSA value its register; the members and the globals folded into
  * their one read or write; the parameters loaded where the function
  * begins. */
@@ -3634,6 +3719,7 @@ static int setup(void)
     for (at = 0; at != ninsns; at++)
         if (insns[at].op == I_SET && insns[at].target >= 0)
             multi_def[insns[at].target] = 1;
+    fold_constants();
 
     /* What is read at all, by an instruction or a phi, as live_ranges says
      * it -- which has not run yet -- and how often, and by what. */

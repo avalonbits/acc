@@ -1320,6 +1320,14 @@ mirwants() {
 mirwants "$OPT" "x * 60 by adds"                  acc_rt_mul no  'int f(int x) { return x * 60; }'
 mirwants "$OPT" "x * 255 by the routine"          acc_rt_mul yes 'int f(int x) { return x * 255; }'
 mirwants "$OPT" "x & 511 in place"                acc_rt_and no  'unsigned f(unsigned x) { return (x + 1) & 511; }'
+# A divide or a remainder by a constant: by 1 nothing, unsigned by 2^k a
+# shift or an and -- the constant given or a local set to it -- and signed
+# by 2^k, or by anything else, the routine.
+mirwants "$OPT" "x / 8, unsigned, by a shift"     acc_rt_divu no  'unsigned f(unsigned x) { return x / 8; }'
+mirwants "$OPT" "x % 8, unsigned, by an and"      acc_rt_remu no  'unsigned f(unsigned x) { return x % 8; }'
+mirwants "$OPT" "a local's 1, no divide at all"   acc_rt_divu no  'unsigned f(unsigned s) { const unsigned a = 1; return (s + a - 1) / a * a; }'
+mirwants "$OPT" "x / 8, signed, by the routine"   acc_rt_divs yes 'int f(int x) { return x / 8; }'
+mirwants "$OPT" "x / 3 by the routine"            acc_rt_divu yes 'unsigned f(unsigned x) { return x / 3; }'
 
 # A loop that counts: from 0 by one while below 20, its counter stays in a
 # byte -- compared as one, not as a signed int moved by 0x800000 -- and a
