@@ -261,7 +261,12 @@ static int const_fold(int op, int left, int right, int *out, int is_unsigned)
         *out = left >> right;
         return 1;
 
-    case TK_STAR:  *out = trunc_int(left * right); return 1;
+    /* On the bits too: two 24-bit values multiply past an int of the host
+     * that compiles acc, which is undefined in its C -- `&a[1] - &a[17]` on
+     * three-byte elements folds to -48 times 0xAAAAAB. */
+    case TK_STAR:
+        *out = trunc_int((int) ((unsigned) left * (unsigned) right));
+        return 1;
 
     /* Division by zero is undefined, and folding it would make the compiler
      * trap on a program that might never reach the expression. */
