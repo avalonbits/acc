@@ -87,9 +87,32 @@ static int pairs_kept(int at)
     return p == end;                    /* not past it, read as something else */
 }
 
+#ifdef OPT_ACC
+/* The frame slots of the volatile locals the SSA form left in memory
+ * (ssa.c's find_locals): a load of one is made though the last store or
+ * load left it in the register. More than there is room for, and none is
+ * left out. */
+int volatile_slots[8], nvolatile_slots;
+
+static int slot_volatile(int disp)
+{
+    int k;
+
+    if (nvolatile_slots > 8)
+        return 1;
+    for (k = 0; k != nvolatile_slots; k++)
+        if (volatile_slots[k] == disp)
+            return 1;
+
+    return 0;
+}
+#else
+#define slot_volatile(disp) 0
+#endif
+
 void ld_rr_ix(int reg, int disp)    /* ld rr, (ix+d) */
 {
-    if (stored_disp == disp && stored_reg == reg
+    if (stored_disp == disp && stored_reg == reg && !slot_volatile(disp)
         && (unsigned) (out_here() - stored_at) <= STORED_REACH
         && (unsigned) out_rewound_to >= (unsigned) stored_at
         && (unsigned) (join_at - stored_at) > (unsigned) (out_here() - stored_at)

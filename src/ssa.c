@@ -1232,6 +1232,28 @@ static void find_locals(void)
         if (insns[at].rec && runtime_array(insns[at].rec->top.type,
                                            insns[at].rec->top.ext))
             return;
+    /* A volatile local stays in its slot, read and written there each time
+     * the program says, neither a value nor cached: the function's other
+     * locals are values all the same, where it was all kept as the first
+     * pass made it (genlog.c's gl_volatile). */
+    nvolatile_slots = 0;
+    for (at = 0; at != gl_n; at++)
+        if (gl_log[at].op == GL_vset_quals && (gl_log[at].arg[0] & VQ_VOLATILE)
+            && gl_log[at].top.kind == VAL_LOCAL) {
+            int k;
+
+            local_ruled_out(gl_log[at].top.val);
+            local_pinned(gl_log[at].top.val);
+            for (k = 0; k < nvolatile_slots && k < 8
+                        && volatile_slots[k] != gl_log[at].top.val; k++)
+                ;
+            if (k < nvolatile_slots)
+                continue;               /* named already */
+            if (nvolatile_slots < 8)
+                volatile_slots[nvolatile_slots] = gl_log[at].top.val;
+            if (nvolatile_slots <= 8)
+                nvolatile_slots++;
+        }
     for (at = 0; at != ninsns; at++) {
         const Ins *insn = &insns[at];
         const GenRec *rec = insn->rec;
