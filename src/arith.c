@@ -1166,6 +1166,12 @@ static int cmp_byte_const(int op)
     else if ((type = widen_held(lhs)) == TY_VOID)
         return 0;
 
+    /* An order unsigned by the other side -- `c < 10u`, a signed char
+     * converted as C says to a large unsigned where it is negative -- is
+     * not the byte's own: compared at 24 bits, as it is. */
+    if (type_unsigned(rhs->type) && !type_unsigned(type) && op != TK_EQ && op != TK_NE)
+        return 0;
+
     c = rhs->val;
     if (tok_pair(op, TK_GT)) {
         c++;

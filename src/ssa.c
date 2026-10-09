@@ -7441,6 +7441,11 @@ static int leaf_compare(const Ins *insn, int op)
                                         /* equal is equal, either way */
         int want = op == TK_LE || op == TK_GT ? number + 1 : number;
 
+        /* An order made unsigned by either side, of a signed byte -- `c <
+         * 10u`, c a negative char a large unsigned -- is not the byte's. */
+        if (bias && (type_unsigned(insn->in[0].attr.type)
+                     || type_unsigned(insn->in[1].attr.type)))
+            want = high + 1;
         if (number >= low && number <= high && want <= high
             && leaf_byte_to_a(&insn->in[0])) {
             if (bias)
