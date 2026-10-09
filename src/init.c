@@ -1403,7 +1403,7 @@ void global_emit(Type type, int ext, NameRef name, int count, int line,
     for (i = 0; i < size; i++)
         out_byte(bytes[i]);
 
-    sym = push_global(name, decl_const ? SYM_GLOBAL_CONST : SYM_GLOBAL, at);
+    sym = push_global(name, decl_const & SQ_CONST ? SYM_GLOBAL_CONST : SYM_GLOBAL, at);
     sym_at(sym)->type = type;
     sym_at(sym)->ext = (unsigned char) ext;
 }

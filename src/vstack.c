@@ -891,6 +891,8 @@ int force_reg(Value *val)
             load_narrow_into(reg, val->val, val->type);
             val->quals |= NARROW_QUALS(val->type);
         } else {
+            if (val->quals & VQ_VOLATILE)
+                stored_at = -1;         /* read again, not known */
             ld_rr_ix(reg, val->val);
         }
     }
@@ -1024,6 +1026,8 @@ void force_into(Value *target, int want)
             load_narrow_into(want, target->val, target->type);
             target->quals |= NARROW_QUALS(target->type);
         } else {
+            if (target->quals & VQ_VOLATILE)
+                stored_at = -1;
             ld_rr_ix(want, target->val);
         }
     }

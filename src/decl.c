@@ -92,7 +92,7 @@ static void typedef_declarators(Type base, int bx, unsigned char bc)
         sym = push_here(name, SYM_TYPEDEF, 0);
         sym_at(sym)->type = type;
         sym_at(sym)->ext = (unsigned char) ext;
-        sym_at(sym)->quals = bc ? SQ_CONST : 0;
+        sym_at(sym)->quals = bc | (stars_const & SQ_VOLATILE);
         decl_start[TK_IDENT] = 1;
         if (!accept(TK_COMMA))
             break;
@@ -158,7 +158,7 @@ static void storage_declarators(int storage, Type base, int bx,
                                        "to be known as the program is "
                                        "compiled");
         decl_const = stars != base ? stars_const : bc;
-        decl_bottom_const = bc ? SQ_CONST : 0;
+        decl_bottom_const = bc | (stars_const & SQ_VOLATILE);
         if (tok == TK_LPAREN) {
             function_declarator(type, ext, name, line, spot);
         } else if (storage == TK_KW_EXTERN) {
@@ -408,12 +408,12 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
             pbase = base_type();
             pbx = base_ext;
             pconst = base_const;
-            if (pconst)
-                pquals |= SQ_CONST;
+            pquals |= pconst;
             pstars = declarator_stars(pbase);
             pname = direct_declarator(pstars, pbx, &ptype, &pext, &pcount);
             if (pstars != pbase)
                 pconst = stars_const;
+            pquals |= stars_const & SQ_VOLATILE;
             if (!pcount)
                 func_suffix(&ptype, &pext);
             if (type_is_func(ptype))        /* a function is its address */
@@ -442,7 +442,7 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
                 sym_at(psym)->type = ptype;
                 sym_at(psym)->ext = (unsigned char) pext;
                 sym_at(psym)->quals = pquals;
-                if (pconst && !pcount && !type_is_struct(ptype))
+                if ((pconst & SQ_CONST) && !pcount && !type_is_struct(ptype))
                     sym_at(psym)->kind = SYM_LOCAL_CONST;
             } else {
                 unnamed = 1;
@@ -638,7 +638,7 @@ static int global_again(int sym, Type type, int ext, int count, int line,
     if (g->kind == SYM_GLOBAL_ARRAY && sym_count(sym) < 0 && count > 0)
         sym_set_count(sym, count);
     if (g->kind != (count ? SYM_GLOBAL_ARRAY
-                          : decl_const && !type_is_struct(type) ? SYM_GLOBAL_CONST
+                          : (decl_const & SQ_CONST) && !type_is_struct(type) ? SYM_GLOBAL_CONST
                           : SYM_GLOBAL)
         || g->type != type || !ext_compatible(g->ext, ext)
         || (count && count != sym_count(sym)))
@@ -684,7 +684,7 @@ static void global_undefined(Type type, int ext, NameRef name, int count,
                              int line, const char *spot, int is_extern)
 {
     int kind = count ? SYM_GLOBAL_ARRAY
-             : decl_const && !type_is_struct(type) ? SYM_GLOBAL_CONST
+             : (decl_const & SQ_CONST) && !type_is_struct(type) ? SYM_GLOBAL_CONST
              : SYM_GLOBAL;
     int sym;
 
@@ -1066,7 +1066,7 @@ static void external_declaration(void)
         stars = declarator_stars(base);
         name = direct_declarator(stars, bx, &type, &ext, &count);
         decl_const = stars != base ? stars_const : bc;
-        decl_bottom_const = bc ? SQ_CONST : 0;
+        decl_bottom_const = bc | (stars_const & SQ_VOLATILE);
         if (tok == TK_LPAREN) {
             if (count)
                 acc_error_spot(line, spot, "a function cannot return an "

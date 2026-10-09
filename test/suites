@@ -32,6 +32,7 @@ ACC=bin/acc-asan test/dead.sh
 test/scale.sh
 ACC=bin/acc-asan test/branch.sh
 ACC=bin/acc-asan test/codegen.sh
+test/volatile.sh || [ $? -eq 77 ]
 ACC=bin/acc-asan test/relax.sh
 ACC=bin/acc-asan test/mos.sh || [ $? -eq 77 ]
 ACC=bin/acc-asan test/args.sh || [ $? -eq 77 ]

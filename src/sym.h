@@ -87,7 +87,11 @@ enum {
                                  * a pointer's target, an array's elements,
                                  * a struct's members. The same bit as
                                  * VQ_CONST, so a value takes it as it is */
-    SQ_REGISTER = 2             /* `register`: its address cannot be taken */
+    SQ_REGISTER = 2,            /* `register`: its address cannot be taken */
+    SQ_VOLATILE = 4             /* volatile anywhere in its declaration: it,
+                                 * and all it leads to, read and written
+                                 * every time the program says, none taken
+                                 * as known. The same bit as VQ_VOLATILE */
 };
 
 /* A function's parameter types, kept beside the symbols. A call converts each

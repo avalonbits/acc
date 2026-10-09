@@ -748,6 +748,10 @@ unsigned conversion_epoch;
  * converted, the conversion goes too. */
 void gen_discard(void)
 {
+    /* A volatile local read though nothing uses it, as the program says. */
+    if (((vsp - 1)->quals & VQ_VOLATILE) && (vsp - 1)->kind == VAL_LOCAL
+        && !type_wide((vsp - 1)->type))
+        force_reg(vsp - 1);
     if (conversion_from >= 0 && out_here() == conversion_to
         && conversion_epoch == out_rewinds
         && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {

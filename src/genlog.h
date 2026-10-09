@@ -48,6 +48,11 @@ extern int ssa_made_leaf, ssa_leaf_off, ssa_cached_refused;
 /* The machine-level backend (mir.c): the way being made is its, and the
  * code just made was. */
 extern int ssa_mir_want, ssa_made_mir, ssa_case_phi;
+/* What the function just ended does with volatile: 0 nothing, 1 accesses
+ * the SSA form's backends make as they are, 2 what only the first pass's
+ * code makes right (genlog.c's gl_volatile). Kept by peep.c, which leaves
+ * any but the first as it is. */
+extern int gl_fn_volatile;
 extern int ssa_cache_off, ssa_cached_used;
 /* ssa_cache_off's values: which locals whose address is taken are cached */
 enum { CACHE_ALL, CACHE_NONE, CACHE_LOOPS };

@@ -21,21 +21,26 @@
 /* ------------------------------------------------------------------ */
 /* types                                                               */
 
-/* Whether the type base_type last read was const. Kept for the variable a
- * declaration names, which is refused as the target of an assignment; what
- * a pointer points at being const is taken and not checked. */
+/* The qualifiers the type base_type last read had, as SQ_CONST and
+ * SQ_VOLATILE bits. const is kept for the variable a declaration names,
+ * which is refused as the target of an assignment; what a pointer points
+ * at being const is taken and not checked. */
 unsigned char base_const;
 typedef char qualifiers_are_adjacent[(TK_KW_VOLATILE == TK_KW_CONST + 1
                                       && TK_KW_RESTRICT == TK_KW_CONST + 2)
                                      ? 1 : -1];
 
-/* The qualifiers, as many as there are, with the base_type's const marked:
- * see base_const.
+/* The qualifiers, as many as there are, with the base_type's const and
+ * volatile marked: see base_const.
  *
- * volatile asks that every access in the program be made, and acc makes
- * them all: it keeps nothing in a register from one statement to the next,
- * and reads a variable again each time an expression names it. restrict
- * promises something acc makes no use of. So neither changes the code. */
+ * volatile asks that every access the program says be made. It is kept as
+ * a bit, SQ_VOLATILE, on what is declared with it anywhere in its type --
+ * the object and all it leads to taken as volatile, more than C asks and
+ * never less -- and a value read through it takes it as VQ_VOLATILE: such
+ * a local is read from its slot every time, never taken from the register
+ * that wrote it, and read though nothing uses it (gen_discard); opt-acc
+ * keeps the first pass's code for any function touching one. restrict
+ * promises something acc makes no use of, so it changes nothing. */
 /* And the rest of a declaration's specifiers after its first, in any
  * order, as C allows: `const static int`, `int static`, `struct s extern`.
  * The storage classes and inline follow the qualifiers in the token list,
@@ -65,7 +70,9 @@ static void qualifiers(void)
 {
     while (tok_specifier_word()) {
         if (tok == TK_KW_CONST) {
-            base_const = 1;
+            base_const |= SQ_CONST;
+        } else if (tok == TK_KW_VOLATILE) {
+            base_const |= SQ_VOLATILE;
         } else if (!tok_qualifier()) {
             if (!storage_ok)
                 acc_error_at(tok_line, "'%s' belongs at the front of a "
@@ -461,7 +468,7 @@ static void record_members(int x, int is_union, int line, const char *spot)
                 bit = 0;
             }
             m = member_add(NAME_NONE, base, bx, is_union ? 0 : size,
-                           bc ? SQ_CONST : 0);
+                           bc);
             if (is_union) {
                 if (type_bytes(base, bx) > size)
                     size = type_bytes(base, bx);
@@ -569,7 +576,7 @@ static void record_members(int x, int is_union, int line, const char *spot)
                 }
                 if (!name)
                     goto placed;                /* padding, and nothing else */
-                m = member_add(name, type, ext, at, bc ? SQ_CONST : 0);
+                m = member_add(name, type, ext, at, bc | (stars_const & SQ_VOLATILE));
                 member_set_bits(m, bitfield_intern(pos, width,
                                                    !type_unsigned(type)));
             } else {
@@ -579,7 +586,7 @@ static void record_members(int x, int is_union, int line, const char *spot)
                 }
                 bytes = type_bytes(type, ext);
                 m = member_add(name, type, ext, is_union ? 0 : size,
-                               bc ? SQ_CONST : 0);
+                               bc | (stars_const & SQ_VOLATILE));
                 if (is_union) {
                     if (bytes > size)
                         size = bytes;
@@ -729,7 +736,7 @@ static Type base_type_other(void)
             break;
         next();
         base_ext = sym_at(sym)->ext;
-        base_const = sym_at(sym)->quals & SQ_CONST;
+        base_const = sym_at(sym)->quals & (SQ_CONST | SQ_VOLATILE);
         qualifiers();
 
         return sym_at(sym)->type;
@@ -776,22 +783,27 @@ int is_typedef_name(NameRef name)
     return sym != SYM_NONE && sym_at(sym)->kind == SYM_TYPEDEF;
 }
 
-/* Whether the last star read was followed by `const`: `int *const p`, which
- * makes p itself const, where `const int *p` does not. */
+/* The qualifiers after the stars read: SQ_CONST where the last was
+ * followed by `const` -- `int *const p`, which makes p itself const, where
+ * `const int *p` does not -- and SQ_VOLATILE where any was by `volatile`. */
 unsigned char stars_const;
 
+/* The qualifiers after a star, and the volatile of those before it,
+ * `prev`'s. */
 __attribute__((noinline))
-unsigned char star_qualifiers(void)
+unsigned char star_qualifiers(unsigned char prev)
 {
-    unsigned char is_const = 0;
+    unsigned char quals = prev & SQ_VOLATILE;
 
     while (tok_qualifier()) {
         if (tok == TK_KW_CONST)
-            is_const = 1;
+            quals |= SQ_CONST;
+        if (tok == TK_KW_VOLATILE)
+            quals |= SQ_VOLATILE;
         next();
     }
 
-    return is_const;
+    return quals;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1634,7 +1646,7 @@ static NameRef decl_full(void)
 
     while (accept(TK_STAR)) {
         stars++;
-        last_const = tok_qualifier() ? star_qualifiers() : 0;
+        last_const = star_qualifiers(last_const);
     }
     for (n = stars; n > 0; n--)
         decl_push(DECL_PTR, 0, 0, 0);
