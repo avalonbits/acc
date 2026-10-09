@@ -14,6 +14,7 @@
 #include "acc.h"
 #include "runtime.h"
 #include "gen_int.h"
+#include "parse_int.h"
 
 static int  is_comparison(int op);
 static void flags_say_nonzero(int from);
@@ -748,6 +749,10 @@ unsigned conversion_epoch;
  * converted, the conversion goes too. */
 void gen_discard(void)
 {
+    /* A struct whose members were never given, as a value: `var;` and
+     * `(void) (*vp, 0)` for an incomplete `struct S`. */
+    if (type_is_struct((vsp - 1)->type))
+        record_complete((vsp - 1)->ext, tok_line, tok_at);
     /* A volatile local read though nothing uses it, as the program says. */
     if (((vsp - 1)->quals & VQ_VOLATILE) && (vsp - 1)->kind == VAL_LOCAL
         && !type_wide((vsp - 1)->type))

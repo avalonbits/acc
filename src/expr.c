@@ -800,6 +800,8 @@ static void prefix_operand(int op, const char *spelling)
  * parses next continues from the value, exactly as if this had not looked.
  *
  * Returns whether it consumed the whole parenthesis. */
+static void paren_rest(void);
+
 static inline __attribute__((always_inline))
 int paren_deref_step(void)
 {
@@ -831,11 +833,10 @@ int paren_deref_step(void)
 
     /* Not `(*p)` alone: the rest of what is inside the parenthesis is an
      * expression that happens to begin at a pointer -- a store through it,
-     * or a read and then whatever follows. */
+     * or a read and then whatever follows, commas too: `(*p, 0)` was
+     * refused at its comma. */
     deref_rest();
-    if (tok == TK_QUESTION)
-        conditional_rest();
-    expect(TK_RPAREN, "')'");
+    paren_rest();
 
     return 1;
 }
