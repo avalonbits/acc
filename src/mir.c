@@ -86,6 +86,12 @@ static int low_of(int preg)
     return -1;
 }
 
+/* A pair's second byte: a short's top one. */
+static int high_of(int preg)
+{
+    return preg == P_BC ? P_B : preg == P_DE ? P_D : P_H;
+}
+
 /* A long's quad as its two parts: the pair with its low three bytes, and
  * the byte with its top one. */
 static int quad_pair(int q)
@@ -175,6 +181,8 @@ enum {
                      * imm2 where not; A, `t`, clobbered */
     M_SHRK,         /* d = a >> imm, signed unless imm2: d and a HL; A, F
                      * clobbered (shr_hl_const) */
+    M_EXT16,        /* d (HL) = a's (DE or BC) low two bytes, widened by
+                     * zeros where imm2, else by bit 15: A, `t`, clobbered */
     M_CALL,         /* d = sym (imm slots pushed), in HL or A; then the slots
                      * popped, and the pairs imm2 says -- BC 1, DE 2, IY 4,
                      * those live across it -- popped back. A, F and HL
@@ -326,8 +334,10 @@ static MIns *mi3(int op, int d, int a, int b)
 /* ------------------------------------------------------------------ */
 /* what is made here                                                   */
 
-/* The types the code here holds: an int or a pointer in a pair, a char or
- * a _Bool in a byte. Not a short, a long, a float or a struct. */
+/* The types the code here holds: an int, a short or a pointer in a pair --
+ * a short widened to an int from its two bytes, as its type widens it,
+ * wherever it is made -- a char or a _Bool in a byte. Not a long, a float
+ * or a struct. */
 static int mir_type(Type type)
 {
     if (type == TY_BOOL)
@@ -336,7 +346,12 @@ static int mir_type(Type type)
         || type_float(type))
         return 0;
 
-    return type_size(type) == 1 || type_size(type) == ACC_INT_SIZE;
+    return type_size(type) == 1 || type_size(type) == 2 || type_size(type) == ACC_INT_SIZE;
+}
+
+static int short_type(Type type)
+{
+    return type_size(type) == 2 && mir_type(type);
 }
 
 /* The registers a value of width w may be in: a byte, a pair, or a long's
@@ -866,7 +881,7 @@ static int mir_ok(void)
             || ((insn->op == I_CONV || insn->op == I_STEP) && !mir_type(insn->local_type))
             || (insn->op == I_SET && insn->target >= 0 && !mir_type(vals[insn->target].type))
             || (insn->op == GL_vapply && insn->rec->arg[1]
-                && type_size((Type) insn->rec->arg[1]) != 1))
+                && !mir_type((Type) insn->rec->arg[1])))
             return mir_why = "a conversion to a type not held here", 0;
         switch (insn->op) {
         case I_FRAME:
@@ -1198,6 +1213,8 @@ static unsigned type_zero(Type type)
         return ALL24 & ~1u;
     if (type_size(type) == 1 && type_unsigned(type))
         return 0xffff00u;
+    if (type_size(type) == 2 && type_unsigned(type))
+        return 0xff0000u;
 
     return 0;
 }
@@ -1266,7 +1283,7 @@ static unsigned insn_zero(const Ins *insn)
         return type_pointer(insn->in[0].attr.type)
                ? as_type(0, type_deref(insn->in[0].attr.type)) : 0;
     case GL_vapply:
-        if (insn->rec->arg[1] && type_size((Type) insn->rec->arg[1]) == 1)
+        if (insn->rec->arg[1] && type_size((Type) insn->rec->arg[1]) <= 2)
             return type_zero((Type) insn->rec->arg[1]);
         if (type_pointer(insn->in[0].attr.type) || type_pointer(insn->in[1].attr.type))
             return 0;                   /* scaled: nothing carries over */
@@ -1735,12 +1752,29 @@ static int byte_op_cost(int op, int c)
     return 4;
 }
 
+/* `v` op `c` with its top byte left as it is: its two below worked on in
+ * place. */
+static int bytes_in_place(int v, int op, int c)
+{
+    int a = in_class(v, C_P24), d = new_vr(3, C_P24);
+    MIns *mi = mi3(M_BYTES24, d, a, -1);
+
+    mi->imm = op;
+    mi->imm2 = c;
+    if (byte_op_cost(op, c & 0xff) == 4 || byte_op_cost(op, (c >> 8) & 0xff) == 4)
+        mi->t = new_vr(1, C_A);
+
+    return d;
+}
+
+static int ext16(int v, Type type);
+
 /* &, | and ^ of an int and a constant, without the routine where the
  * constant allows: every bit kept, nothing made; a mask of the low byte,
- * the byte and'ed and widened; the top byte left as it is, the two below
- * worked on in place -- where that is no dearer than the call, ld bc, n
- * and call, eight bytes. A byte answered is one to widen by zeros. -1
- * where none of them is. */
+ * the byte and'ed and widened; the top byte left as it is, or cleared by a
+ * mask, the two below worked on in place -- where that is no dearer than
+ * the call, ld bc, n and call, eight bytes. A byte answered is one to
+ * widen by zeros. -1 where none of them is. */
 static int sel_bitwise_const(const Ins *insn, int op)
 {
     const Ent *x = &insn->in[0], *k = &insn->in[1];
@@ -1768,23 +1802,89 @@ static int sel_bitwise_const(const Ins *insn, int op)
         mi->imm2 = c;
         return d;                       /* a byte: widened by zeros */
     }
+    /* A mask that clears the top byte: the two below it worked on, and
+     * then widened by zeros, as an unsigned short is -- `at & 511`. */
+    if (op == TK_AMP && (c >> 16) == 0) {
+        cost = byte_op_cost(op, c & 0xff) + byte_op_cost(op, (c >> 8) & 0xff);
+        if (cost > 8)
+            return -1;
+        d = operand_vr(x, 3);
+        if (cost)
+            d = bytes_in_place(d, op, c | 0xff0000);
+
+        return ext16(d, TY_USHORT);
+    }
     if ((c >> 16) != (op == TK_AMP ? 0xff : 0))
         return -1;
     cost = byte_op_cost(op, c & 0xff) + byte_op_cost(op, (c >> 8) & 0xff);
     if (cost > 8)
         return -1;
-    a = in_class(operand_vr(x, 3), C_P24);
-    d = new_vr(3, C_P24);
-    mi = mi3(M_BYTES24, d, a, -1);
-    mi->imm = op;
-    mi->imm2 = c;
-    if (byte_op_cost(op, c & 0xff) == 4 || byte_op_cost(op, (c >> 8) & 0xff) == 4)
-        mi->t = new_vr(1, C_A);
+
+    return bytes_in_place(operand_vr(x, 3), op, c);
+}
+
+/* A short made from the low two bytes of `v`: widened into HL, by zeros
+ * or by bit 15 as `type` has it, from DE or BC, whose bytes have names. */
+static int ext16(int v, Type type)
+{
+    int d = new_vr(3, C_HL);
+    MIns *mi = mi3(M_EXT16, d, in_class(v, C_O24), -1);
+
+    mi->imm2 = type_unsigned(type) != 0;
+    if (!mi->imm2)
+        mi->t = new_vr(1, C_A);             /* the sign goes through it */
 
     return d;
 }
 
-static void sel_apply(const Ins *insn, int at)
+/* Whether an operand, as it is held, is a value of the short `to` already:
+ * a byte that fits it, a short of its signedness, or an int whose bits say
+ * it cannot be outside it. */
+static int fits_short(const Ent *ent, Type to)
+{
+    Type held = ent->val >= 0 ? vals[ent->val].type : ent->attr.type;
+    unsigned kz = ent_zero(ent);
+
+    if (held == TY_BOOL || (type_size(held) == 1 && type_unsigned(held)))
+        return 1;
+    if (type_size(held) <= 2 && !type_unsigned(held) == !type_unsigned(to))
+        return 1;
+
+    return (kz & (type_unsigned(to) ? 0xff0000u : 0xff8000u))
+           == (type_unsigned(to) ? 0xff0000u : 0xff8000u);
+}
+
+/* `v`, an int's register, made the short `to` where it may not be one. */
+static int to_short(const Ent *ent, int v, Type to)
+{
+    return fits_short(ent, to) ? v : ext16(v, to);
+}
+
+static int sole_user(int val);
+
+/* Whether a short's one use is to be written to a short, as two bytes,
+ * the store's own answer unread: what is above them never read, and the
+ * value not widened at all. `narrow[j][i] = (short) x`. */
+static int stored_short_only(int val)
+{
+    int at = val >= 0 ? sole_user(val) : -1;
+    const Ins *user;
+
+    if (at < 0)
+        return 0;
+    user = &insns[at];
+    if (user->res >= 0 && val_vr[user->res] >= 0)
+        return 0;
+    if (user->op == GL_vstore_indirect)
+        return user->in[1].val == val && user->in[0].val != val
+               && type_pointer(user->in[0].attr.type)
+               && short_type(type_deref(user->in[0].attr.type));
+
+    return user->op == GL_vstore_local && user->in[0].val == val
+           && short_type((Type) user->rec->arg[1]);
+}
+
+static void sel_apply_int(const Ins *insn, int at)
 {
     int op = (int) insn->rec->arg[0], n;
     Type narrow = (Type) insn->rec->arg[1];
@@ -1955,6 +2055,15 @@ static void sel_apply(const Ins *insn, int at)
         mi3(op == TK_PLUS ? M_ADD24 : M_SUB24, d, a, b);
         break;
     case TK_STAR:
+        /* By a constant: adds, as a pointer's step is scaled -- the
+         * routine where that would be more than eight of them. */
+        if (is_num(&insn->in[0]) || is_num(&insn->in[1])) {
+            const Ent *by = is_num(&insn->in[1]) ? &insn->in[1] : &insn->in[0];
+            const Ent *of = by == &insn->in[1] ? &insn->in[0] : &insn->in[1];
+
+            d = scaled(operand_vr(of, 3), by->attr.val);
+            break;
+        }
         sel_helper(insn, RT_MUL, operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
         return;
     case TK_SLASH:
@@ -2025,6 +2134,25 @@ static void sel_apply(const Ins *insn, int at)
         to_val(insn->res, d);
 }
 
+/* An operator narrowed to a short -- `s += x` -- made at 24 bits, into a
+ * register of its own, and the answer widened from its two bytes. */
+static void sel_apply_short(const Ins *insn, int at)
+{
+    Type narrow = (Type) insn->rec->arg[1];
+    int res = insn->res, real, made;
+
+    if (!narrow || !short_type(narrow) || res < 0 || val_vr[res] < 0) {
+        sel_apply_int(insn, at);
+        return;
+    }
+    real = val_vr[res];
+    val_vr[res] = new_vr(3, C_R24);
+    sel_apply_int(insn, at);
+    made = val_vr[res];
+    val_vr[res] = real;
+    to_val_as(res, stored_short_only(res) ? made : ext16(made, narrow), narrow);
+}
+
 /* A conversion of `ent` to `to`, into the value `res`. */
 static void sel_convert(const Ent *ent, Type to, int res)
 {
@@ -2053,10 +2181,14 @@ static void sel_convert(const Ent *ent, Type to, int res)
 
         if (w == 1)
             value = type_unsigned(to) ? value & 0xff : (signed char) (value & 0xff);
+        if (short_type(to))
+            value = type_unsigned(to) ? value & 0xffff : (short) (value & 0xffff);
         to_val_as(res, const_vr(value, w), to);
         return;
     }
     d = operand_vr(ent, w);
+    if (short_type(to) && !stored_short_only(res))
+        d = to_short(ent, d, to);
     /* A byte to another byte keeps its bits: a char made unsigned is read
      * as unsigned from here on -- widened by the type it was made, where
      * the value is held as an int. */
@@ -2253,20 +2385,22 @@ static void sel_load(const Ins *insn)
     }
     w = width_of(read);
     addr = address_of(&insn->in[0]);
+    /* A short: its two bytes and the one past them read as an int, and
+     * widened from the two. */
     if (addr.frame) {                   /* (ix+d), the local's own */
-        d = new_vr(w, width_class(w));
+        d = new_vr(w, short_type(read) ? C_O24 : width_class(w));
         frame_obj_mi(M_LDF, d, -1, addr.obj, addr.off, w);
-        to_val_as(insn->res, d, read);
+        to_val_as(insn->res, short_type(read) ? ext16(d, read) : d, read);
         return;
     }
     if (addr.sym >= 0 || addr.kind) {
-        d = new_vr(w, w == 1 ? C_A : C_R24);
+        d = new_vr(w, w == 1 ? C_A : short_type(read) ? C_O24 : C_R24);
         mi = mi3(M_LDG, d, -1, -1);
         mi->sym = addr.sym;
         mi->imm = addr.off;
         mi->imm2 = addr.kind;
         mi->width = w;
-        to_val_as(insn->res, d, read);
+        to_val_as(insn->res, short_type(read) ? ext16(d, read) : d, read);
         return;
     }
     /* A byte at the pointer itself: into A, through any pair -- ld a, (bc)
@@ -2284,10 +2418,12 @@ static void sel_load(const Ins *insn)
         d = new_vr(1, C_R8);
         mi3(M_COPY, d, t, -1);
     } else {
-        d = new_vr(w, width_class(w));
+        d = new_vr(w, short_type(read) ? C_O24 : width_class(w));
         mi = mi3(M_LDP, d, in_class(addr.base, addr.off ? C_IY : PB(P_HL) | C_IY), -1);
         mi->imm = addr.off;
         mi->width = w;
+        if (short_type(read))
+            d = ext16(d, read);
     }
     to_val_as(insn->res, d, read);
 }
@@ -2302,6 +2438,41 @@ static void sel_copy_struct(const Ins *insn)
     mi->t = new_vr(3, C_BC);            /* clobbered */
     mi->kills = 3;
     mi->imm = ext_bytes(insn->in[0].attr.ext);
+}
+
+/* A short's two bytes written, and no more: a byte at a time, from a pair
+ * whose bytes have names -- through IY, or A for a global's. */
+static void store_short(const Addr *addr, int v)
+{
+    MIns *mi;
+
+    if (addr->frame) {
+        frame_obj_mi(M_STF, -1, in_class(v, C_P24), addr->obj, addr->off, 2);
+    } else if (addr->sym >= 0 || addr->kind) {
+        mi = mi3(M_STG, -1, in_class(v, C_P24), -1);
+        mi->sym = addr->sym;
+        mi->imm = addr->off;
+        mi->imm2 = addr->kind;
+        mi->t = new_vr(1, C_A);
+        mi->width = 2;
+    } else {
+        mi = mi3(M_STP, -1, in_class(addr->base, C_IY), in_class(v, C_P24));
+        mi->imm = addr->off;
+        mi->width = 2;
+    }
+}
+
+/* What a store of `ent`, in `v`, to a short is as an expression: the short
+ * -- made only where it is read. */
+static int short_result(const Ent *ent, int v, Type to, int res)
+{
+    if (res < 0 || val_vr[res] < 0)
+        return v;
+    if (is_num(ent))
+        return const_vr(type_unsigned(to) ? ent->attr.val & 0xffff
+                        : (short) (ent->attr.val & 0xffff), 3);
+
+    return to_short(ent, v, to);
 }
 
 static void sel_store(const Ins *insn)
@@ -2348,6 +2519,11 @@ static void sel_store(const Ins *insn)
     } else {
         v = operand_vr(&insn->in[1], w);
     }
+    if (short_type(to)) {
+        store_short(&addr, v);
+        to_val_as(insn->res, short_result(&insn->in[1], v, to, insn->res), to);
+        return;
+    }
     if (addr.frame) {
         frame_obj_mi(M_STF, -1, in_class(v, width_class(w)), addr.obj, addr.off, w);
     } else if (addr.sym >= 0 || addr.kind) {
@@ -2388,6 +2564,34 @@ static int byte_at(int base, int off)
     return d;
 }
 
+/* ++ and -- of a short where it is in memory: its bytes read as an int's,
+ * stepped, and the two written back; the answer the short before or after,
+ * widened, where it is read. */
+static void step_short(const Addr *addr, int step, int post, int res, Type to)
+{
+    int raw = new_vr(3, C_O24), now;
+    MIns *mi;
+
+    if (addr->frame) {
+        frame_obj_mi(M_LDF, raw, -1, addr->obj, addr->off, 3);
+    } else {
+        if (addr->sym >= 0 || addr->kind) {
+            mi = mi3(M_LDG, raw, -1, -1);
+            mi->sym = addr->sym;
+            mi->imm2 = addr->kind;
+        } else {
+            mi = mi3(M_LDP, raw, in_class(addr->base, C_IY), -1);
+        }
+        mi->imm = addr->off;
+        mi->width = 3;
+    }
+    now = new_vr(3, C_R24);
+    mi3(M_STEP24, now, raw, -1)->imm = step;
+    store_short(addr, now);
+    if (res >= 0)
+        to_val_as(res, ext16(post ? raw : now, to), to);
+}
+
 /* ++ and -- through a pointer. A byte is stepped where it is -- inc (hl),
  * dec (iy+d), a global's through its address -- and read before or after,
  * where what the expression is is wanted. Anything wider is read, stepped
@@ -2405,6 +2609,10 @@ static void sel_step_through(const Ins *insn)
 
     if ((int) insn->rec->arg[0] == TK_MINUS)
         step = -step;
+    if (short_type(to)) {
+        step_short(&addr, step, post, used ? insn->res : -1, to);
+        return;
+    }
     if (addr.frame) {                   /* a local's, in (ix+d) */
         if (width_of(to) == 1) {
             old = -1;
@@ -2502,9 +2710,9 @@ static void sel_local(const Ins *insn)
     case GL_vpush_local:
         if (!used)
             return;
-        d = new_vr(w, width_class(w));
+        d = new_vr(w, short_type(type) ? C_O24 : width_class(w));
         frame_mi(M_LDF, d, -1, offset, w);
-        to_val_as(insn->res, d, type);
+        to_val_as(insn->res, short_type(type) ? ext16(d, type) : d, type);
         return;
     case GL_vstore_local:
         if (is_num(&insn->in[0]) && w == 1) {
@@ -2524,6 +2732,11 @@ static void sel_local(const Ins *insn)
         } else {
             v = operand_vr(&insn->in[0], w);
         }
+        if (short_type(type)) {
+            frame_mi(M_STF, -1, in_class(v, C_P24), offset, 2);
+            to_val_as(insn->res, short_result(&insn->in[0], v, type, insn->res), type);
+            return;
+        }
         frame_mi(M_STF, -1, in_class(v, width_class(w)), offset, w);
         to_val_as(insn->res, v, type);
         return;
@@ -2534,6 +2747,16 @@ static void sel_local(const Ins *insn)
     step = type_pointer(type) ? type_step(type, (int) insn->rec->arg[2]) : 1;
     if ((int) insn->rec->arg[3] == TK_MINUS)
         step = -step;
+    if (short_type(type)) {
+        Addr addr;
+
+        addr.frame = 1;
+        addr.obj = addr.base = addr.sym = -1;
+        addr.kind = 0;
+        addr.off = offset;
+        step_short(&addr, step, post, used ? insn->res : -1, type);
+        return;
+    }
     if (w == 1) {
         int old = -1;
 
@@ -2725,6 +2948,8 @@ static int answer_made(int v, Type type)
         return 0;
     if (to == TY_BOOL)
         return type == TY_BOOL && vr[v].ext >= 0 && !vr[v].ext_signed;
+    if (short_type(to))
+        return short_type(type) && !type_unsigned(type) == !type_unsigned(to);
     if (width_of(to) == 3)
         return width_of(type) == 3;
 
@@ -2910,8 +3135,9 @@ static void sel_long(const Ins *insn, int at)
             return;
         }
         /* To a long, from one or widened; from a long, its low bytes --
-         * operand_vr makes either. */
-        to_val_as(target, operand_vr(&insn->in[0], width_of(to)), to);
+         * operand_vr makes either -- a short's widened from its two. */
+        v = operand_vr(&insn->in[0], width_of(to));
+        to_val_as(target, short_type(to) ? ext16(v, to) : v, to);
         return;
     }
     case GL_vpush_const:
@@ -2935,6 +3161,12 @@ static void sel_long(const Ins *insn, int at)
                 mi3(M_BOOL, v, -1, -1)->imm = JP_NZ;
             } else {
                 v = operand_vr(&insn->in[0], w);
+            }
+            if (short_type(to)) {
+                frame_mi(M_STF, -1, in_class(v, C_P24), offset, 2);
+                if (res >= 0)
+                    to_val(res, ext16(v, to));
+                return;
             }
             frame_mi(M_STF, -1, in_class(v, width_class(w)), offset, w);
             if (res >= 0)
@@ -3114,6 +3346,8 @@ static void sel_insn(const Ins *insn, int at)
             mi3(M_ADD24, d, in_class(operand_vr(&insn->in[0], 3), C_HL),
                 in_class(const_vr(step, 3), C_O24));
         }
+        if (short_type(insn->local_type))
+            d = ext16(d, insn->local_type);
         to_val(insn->res, d);
         return;
     }
@@ -3260,7 +3494,7 @@ static void sel_insn(const Ins *insn, int at)
                                     || global_of[insn->res] >= 0)
                                    && val_vr[insn->res] < 0)))
             return;                     /* in its reader's displacement */
-        sel_apply(insn, at);
+        sel_apply_short(insn, at);
         return;
     case GL_gen_call:
         sel_call(insn);
@@ -3581,6 +3815,17 @@ static int setup(void)
 
             if (v < 0 || val_vr[v] < 0)
                 continue;
+            /* A short: the caller's int, widened from its two bytes again --
+             * an old-style definition's is passed promoted. */
+            if (short_type(vals[v].type)) {
+                int raw = new_vr(3, C_O24);
+
+                mi = mi3(M_LDF, raw, -1, -1);
+                mi->imm = inline_moved(locals[local].offset);
+                mi->width = 3;
+                mi3(M_COPY, val_vr[v], ext16(raw, vals[v].type), -1);
+                continue;
+            }
             mi = mi3(M_LDF, val_vr[v], -1, -1);
             mi->imm = inline_moved(locals[local].offset);
             mi->width = vr[val_vr[v]].width;
@@ -3929,7 +4174,7 @@ static int pure(int op)
     case M_COPY: case M_LDI: case M_LDSYM: case M_LDA: case M_LDF: case M_LEAF:
     case M_ARRAY:
     case M_ZEXT: case M_SEXT: case M_TRUNC: case M_ADD24: case M_SUB24:
-    case M_STEP24: case M_ALU8: case M_ALU8I: case M_BYTES24: case M_BOOL:
+    case M_EXT16: case M_STEP24: case M_ALU8: case M_ALU8I: case M_BYTES24: case M_BOOL:
         return 1;
     }
 
@@ -7057,7 +7302,7 @@ static void dump_mir(const char *when)
         "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "case24", "cmp8", "cmp8i", "bool",
         "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
         "push", "copys", "ladd", "lcall", "lcmp", "ltst", "sextl", "zextl", "ltrunc",
-        "fit24", "shrk", "call"
+        "fit24", "shrk", "ext16", "call"
     };
     int blk, at, k;
 
@@ -8006,10 +8251,14 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
 
             out_byte3(0xdd, pair_op(quad_pair(a), 0x0f, 0x1f, 0x2f, 0x3e), disp & 0xff);
             out_byte3(0xdd, 0x70 | code8(quad_top(a)), (disp + 3) & 0xff);
-        } else if (mi->width == 1)
+        } else if (mi->width == 1) {
             out_byte3(0xdd, 0x70 | code8(a), disp_of(mi) & 0xff);
-        else
+        } else if (mi->width == 2) {                    /* a short: a byte each */
+            out_byte3(0xdd, 0x70 | code8(low_of(a)), disp_of(mi) & 0xff);
+            out_byte3(0xdd, 0x70 | code8(high_of(a)), (disp_of(mi) + 1) & 0xff);
+        } else {
             out_byte3(0xdd, pair_op(a, 0x0f, 0x1f, 0x2f, 0x3e), disp_of(mi) & 0xff);
+        }
         return;
     case M_STFI:
         out_byte3(0xdd, 0x36, disp_of(mi) & 0xff);
@@ -8046,6 +8295,9 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         if (mi->width == 4) {
             out_byte3(0xfd, pair_op(quad_pair(b), 0x0f, 0x1f, 0x2f, 0x3f), mi->imm & 0xff);
             out_byte3(0xfd, 0x70 | code8(quad_top(b)), (mi->imm + 3) & 0xff);
+        } else if (mi->width == 2) {                    /* a short, through IY */
+            out_byte3(0xfd, 0x70 | code8(low_of(b)), mi->imm & 0xff);
+            out_byte3(0xfd, 0x70 | code8(high_of(b)), (mi->imm + 1) & 0xff);
         } else if (a == P_IY) {
             if (mi->width == 1)
                 out_byte3(0xfd, 0x70 | code8(b), mi->imm & 0xff);
@@ -8085,6 +8337,19 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         global_nn(mi);
         return;
     case M_STG:
+        if (mi->width == 2) {                           /* a short: through A */
+            MIns top = *mi;
+
+            move8(P_A, low_of(a));
+            out_byte(0x32);                             /* ld (nn), a */
+            global_nn(mi);
+            move8(P_A, high_of(a));
+            out_byte(0x32);
+            top.imm++;
+            global_nn(&top);
+            flags_of_a = 0;
+            return;
+        }
         if (mi->width == 1)
             out_byte(0x32);                             /* ld (nn), a */
         else if (a == P_HL)
@@ -8239,6 +8504,18 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         return;
     case M_SHRK:
         shr_hl_const(mi->imm, mi->imm2);
+        flags_of_a = 0;
+        return;
+    case M_EXT16:                                       /* HL from DE or BC */
+        if (mi->imm2) {
+            out_byte(0xb7);                             /* or a, a */
+        } else {
+            move8(P_A, high_of(a));
+            out_byte(0x17);                             /* rla: bit 15 */
+        }
+        out_byte2(0xed, 0x62);                          /* sbc hl, hl */
+        move8(P_H, high_of(a));
+        move8(P_L, low_of(a));
         flags_of_a = 0;
         return;
     case M_SAVE:

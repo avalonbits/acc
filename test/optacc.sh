@@ -939,7 +939,9 @@ mir "$OPT" "the copy: ld bc, 7 / ldir"            01070000edb0 yes \
     'struct d { int a, b; char c; }; void f(struct d *p, const struct d *q) { *p = *q; }'
 
 # DE kept across a call that answers a long: D popped back, E the answer's
-# -- ld a, e / pop de / ld e, a (test/cases/382 runs it).
+# -- ld a, e / pop de / ld e, a (test/cases/382 runs it). The mask keeps a
+# bit of the top byte, so it is the routine's call it was written around,
+# not the mask made in place.
 kept_de='unsigned long mix(unsigned long h, int x);
 int g(int);
 unsigned long f(const unsigned *v, int n)
@@ -949,7 +951,7 @@ unsigned long f(const unsigned *v, int n)
     for (int i = 0; i < n; i++) {
         _Bool b = v[i] & 0x80;
 
-        if (v[i] & 0x8000)
+        if (v[i] & 0x18000)
             h = mix(h, 1);
         h = mix(h, b + g(i));
     }
@@ -1297,6 +1299,27 @@ tblscan='extern const unsigned char tbl[256];
 unsigned char f(char *src) { unsigned char n = 0; while (!tbl[(unsigned char) *src]) { n++; src++; } *src = 0; return n; }'
 mir "$OPT" "an address made where its copy goes"    010000001a yes "$tblscan"
 mir "$OPT" "not made in HL and pushed to BC"        21000000e5c1 no "$tblscan"
+
+# A short is held as an int, widened from its two bytes -- rla / sbc hl, hl
+# for a signed one -- where it is made, and written as two bytes. One made
+# only to be written is not widened at all; one whose store is read is.
+mirs "shorts, made by it"                          yes \
+    'short g; int f(short *p, unsigned short u) { g = *p + u; return g + p[1]++; }'
+mir "$OPT" "a short made to be stored: not widened"   17ed62 no \
+    'void f(short *p, int x) { p[1] = (short) (x + 1); }'
+mir "$OPT" "one whose store is read: widened"         17ed62 yes \
+    'int f(short *p, int x) { return p[1] = (short) (x + 1); }'
+
+# A multiply by a constant is adds, as a pointer's step is scaled -- the
+# routine past eight of them; and a mask that clears the top byte, the two
+# below it masked and widened by zeros, with no call.
+mirwants() {
+    OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+        OPTACC_LEAF=1 OPTACC_MIR=1 OPTACC_PICK=0 wants "$@"
+}
+mirwants "$OPT" "x * 60 by adds"                  acc_rt_mul no  'int f(int x) { return x * 60; }'
+mirwants "$OPT" "x * 255 by the routine"          acc_rt_mul yes 'int f(int x) { return x * 255; }'
+mirwants "$OPT" "x & 511 in place"                acc_rt_and no  'unsigned f(unsigned x) { return (x + 1) & 511; }'
 
 # The pick weighs the ways by how often each block is estimated to run:
 # scan's machine-level code, a ninth cheaper by 8^depth -- its loop's
