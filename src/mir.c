@@ -1013,6 +1013,7 @@ static void find_counted(void);
 static void loops_start(void);
 static void find_counters(void);
 static void fold_constants(void);
+static void narrow_long_compares(void);
 static int in_class(int v, unsigned cls);
 static int addr_vr(const Ent *ent);
 static int skip_to;             /* a branch fused into the comparison before */
@@ -8815,6 +8816,57 @@ const char *mir_reason(void)
     return mir_why ? mir_why : "?";
 }
 
+/* A comparison of longs where one is an int or narrower read as a long --
+ * C's conversions -- and the other a constant it can be: made at 24 bits,
+ * unsigned where what is widened is never negative, or the constant below
+ * 2^23 in an unsigned comparison, signed where both are, as clang makes
+ * it. ez80asm's `windowUsed > OUTPUT_BUFFERSIZE - 16`, the size 65536UL,
+ * was a long compared by the routine, its int copied into a frame for it. */
+static void narrow_long_compares(void)
+{
+    int at, k;
+
+    for (at = 1; at != ninsns; at++) {
+        Ins *insn = &insns[at];
+        int op;
+
+        if (insn->op != GL_vapply || insn->nin != 2)
+            continue;
+        op = (int) insn->rec->arg[0];
+        if (op != TK_LT && op != TK_GT && op != TK_LE && op != TK_GE
+            && op != TK_EQ && op != TK_NE)
+            continue;
+        for (k = 0; k != 2; k++) {
+            Ent *x = &insn->in[k], *c = &insn->in[1 - k];
+            Type held = x->attr.type;
+            long value;
+            int is_unsigned, never_negative;
+
+            if (x->val < 0 || x->attr.bits || !mir_type(held) || type_pointer(held)
+                || type_size(vals[x->val].type) != type_size(held)
+                || c->val != S_CONST || c->attr.bits || !long_type(c->attr.type)
+                || (c->attr.kind != VAL_WIDE && c->attr.kind != VAL_CONST))
+                continue;
+            value = c->attr.kind == VAL_WIDE ? (long) (int32_t) (uint32_t) c->wide
+                                             : (long) c->attr.val;
+            /* A long holds every int: the comparison is unsigned only by
+             * the constant's type. */
+            is_unsigned = type_unsigned(c->attr.type);
+            never_negative = held == TY_BOOL || type_unsigned(held);
+            if (never_negative ? value < 0 || value > 0xffffffL
+                : is_unsigned ? value < 0 || value > 0x7fffffL
+                : value < -0x800000L || value > 0x7fffffL)
+                continue;
+            /* As an int constant is held: 0xffffff as -1, which the
+             * comparison's c >= x as x < c + 1 knows has no next. */
+            c->attr.kind = VAL_CONST;
+            c->attr.val = (int) (((unsigned long) value & 0xffffff) ^ 0x800000) - 0x800000;
+            c->attr.type = never_negative || is_unsigned ? TY_UINT : TY_INT;
+            break;
+        }
+    }
+}
+
 /* Bounds on the work: rounds of spilling, and the size of function taken
  * at all. */
 #define MAX_ROUNDS 16
@@ -8827,6 +8879,7 @@ int mir_build(void)
     int round, n, blk, at;
     const char *bad;
 
+    narrow_long_compares();
     if (!mir_ok())
         return 0;
     find_loops();
