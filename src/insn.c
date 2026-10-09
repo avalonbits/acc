@@ -394,6 +394,44 @@ int shr_hl_16(int count, int is_unsigned)
     return is_unsigned;
 }
 
+#ifdef OPT_ACC
+/* HL = HL >> k, a constant, as shr_const makes it for 1 to 8 and 16 to 23
+ * -- the runtime's shr entered for k, or HL's top byte through the stack
+ * -- for the SSA form's backends, which called the routine that loops
+ * over the count: zap's (uint8_t) (v >> 8) for each byte it writes out
+ * was 330 cycles. 9 to 15 is the shr twice; 24 and up, the fill. A and
+ * the flags clobbered, as by a helper. */
+void shr_hl_const(int k, int is_unsigned)
+{
+    if (k <= 0)
+        return;
+    if (k >= 24) {
+        if (!is_unsigned)
+            out_byte2(0x29, 0xed);              /* add hl, hl: the sign */
+        out_byte(is_unsigned ? 0x21 : 0x62);    /* ld hl, 0 / sbc hl, hl */
+        if (is_unsigned)
+            out_word24(0);
+
+        return;
+    }
+    if (k >= 16) {
+        shr_hl_16(k - 16, is_unsigned);
+
+        return;
+    }
+    while (k > 0) {
+        int step = k > 8 ? 8 : k;
+
+        if (!is_unsigned)
+            out_word24(0xe129e5);               /* push hl / add hl, hl / pop hl */
+        out_byte(is_unsigned ? 0xaf : 0x9f);    /* xor a / sbc a, a */
+        rt_call(RT_SHR);
+        out_put[-ACC_INT_SIZE] = (unsigned char) (2 * (step - 1));
+        k -= step;
+    }
+}
+#endif
+
 /* One more than k where v, as 24 bits, is 2^k; 0 where it is not a power
  * of two. The host's int is wider, and a constant that fills 24 bits is
  * held there as a negative number, so its bits above 24 go. */
