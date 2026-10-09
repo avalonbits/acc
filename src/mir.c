@@ -2906,8 +2906,14 @@ static void sel_long(const Ins *insn, int at)
         int offset = (int) insn->rec->arg[0];
 
         if (insn->op == GL_vstore_local) {
-            v = operand_vr(&insn->in[0], 4);
-            frame_mi(M_STF, -1, in_class(v, C_Q), offset, 4);
+            Type to = (Type) insn->rec->arg[1];
+            int w = width_of(to);
+
+            /* At the local's width: a long constant stored to an int,
+             * `volatile int b = -INT_MAX`, was its four bytes, the last
+             * over the local after it. */
+            v = operand_vr(&insn->in[0], w);
+            frame_mi(M_STF, -1, in_class(v, width_class(w)), offset, w);
             if (res >= 0)
                 to_val(res, v);
             return;
