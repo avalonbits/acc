@@ -736,6 +736,21 @@ else
     printf '  FAIL %-50s\n' "more live than registers, split"
     fail=$((fail + 1))
 fi
+# And the three shapes it gave up on, made by it (test/cases/428 runs them):
+# a parameter reloaded among a call's arguments, bytes wanted in A with
+# every register of A's class held, and a copy into HL before the one out.
+rm -f "$tmp/c.o"
+split_made=$(OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+    OPTACC_LEAF=1 OPTACC_MIR=1 OPTACC_MIR_SPLIT=1 OPTACC_PICK=0 OPTACC_SSA_STATS=1 \
+    timeout 20 "$OPT" -c test/cases/428_split_allocator.c -o "$tmp/c.o" 2>&1)
+for fn in scroll hex type_at; do
+    if printf '%s\n' "$split_made" | grep -q "^mir $fn\(,\|$\)"; then
+        pass=$((pass + 1))
+    else
+        printf '  FAIL %-50s\n' "$fn, made by the allocator that splits"
+        fail=$((fail + 1))
+    fi
+done
 mirs "a loop on chars, made by the machine IR"    yes \
     'int f(const char *s) { int n = 0; while (*s) if (*s++ == 32) n++; return n; }'
 mirs "a string's address, made by it"             yes \
