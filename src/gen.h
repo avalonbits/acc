@@ -104,8 +104,10 @@ enum {
                                  * takes as they are */
     VQ_CONST = 1,               /* what the value leads to is const: a store
                                  * through it is refused */
-    VQ_VOLATILE = 4             /* it, or what it leads to, is volatile: each
+    VQ_VOLATILE = 4,            /* it, or what it leads to, is volatile: each
                                  * access made, none known from another */
+    VQ_OWN_VOLATILE = 8         /* a local's value that is itself volatile,
+                                 * not only what it leads to: SQ_OWN_VOLATILE */
 };
 
 /* ------------------------------------------------------------------ */

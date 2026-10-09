@@ -45,9 +45,8 @@ static void typedef_declarators(Type base, int bx, unsigned char bc)
     for (;;) {
         int line = tok_line, count, ext, sym;
         const char *spot = tok_at;
-        Type type;
-        NameRef name = direct_declarator(declarator_stars(base), bx, &type,
-                                         &ext, &count);
+        Type type, stars = declarator_stars(base);
+        NameRef name = direct_declarator(stars, bx, &type, &ext, &count);
 
         if (!count)
             func_suffix(&type, &ext);
@@ -92,7 +91,7 @@ static void typedef_declarators(Type base, int bx, unsigned char bc)
         sym = push_here(name, SYM_TYPEDEF, 0);
         sym_at(sym)->type = type;
         sym_at(sym)->ext = (unsigned char) ext;
-        sym_at(sym)->quals = bc | (stars_const & SQ_VOLATILE);
+        sym_at(sym)->quals = decl_quals_of(stars, base, bc);
         decl_start[TK_IDENT] = 1;
         if (!accept(TK_COMMA))
             break;
@@ -408,12 +407,11 @@ int function_declarator(Type ret_type, int ret_ext, NameRef name,
             pbase = base_type();
             pbx = base_ext;
             pconst = base_const;
-            pquals |= pconst;
             pstars = declarator_stars(pbase);
             pname = direct_declarator(pstars, pbx, &ptype, &pext, &pcount);
+            pquals |= decl_quals_of(pstars, pbase, pconst);
             if (pstars != pbase)
                 pconst = stars_const;
-            pquals |= stars_const & SQ_VOLATILE;
             if (!pcount)
                 func_suffix(&ptype, &pext);
             if (type_is_func(ptype))        /* a function is its address */

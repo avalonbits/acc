@@ -88,10 +88,14 @@ enum {
                                  * a struct's members. The same bit as
                                  * VQ_CONST, so a value takes it as it is */
     SQ_REGISTER = 2,            /* `register`: its address cannot be taken */
-    SQ_VOLATILE = 4             /* volatile anywhere in its declaration: it,
+    SQ_VOLATILE = 4,            /* volatile anywhere in its declaration: it,
                                  * and all it leads to, read and written
                                  * every time the program says, none taken
                                  * as known. The same bit as VQ_VOLATILE */
+    SQ_OWN_VOLATILE = 8         /* and what it names itself volatile -- not
+                                 * only what it points at: `volatile int x`,
+                                 * `char *volatile p`, not `volatile char *p`
+                                 * (decl_quals_of). VQ_OWN_VOLATILE's bit */
 };
 
 /* A function's parameter types, kept beside the symbols. A call converts each

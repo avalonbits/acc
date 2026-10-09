@@ -1235,10 +1235,12 @@ static void find_locals(void)
     /* A volatile local stays in its slot, read and written there each time
      * the program says, neither a value nor cached: the function's other
      * locals are values all the same, where it was all kept as the first
-     * pass made it (genlog.c's gl_volatile). */
+     * pass made it (genlog.c's gl_volatile). Itself volatile, that is: a
+     * pointer to volatile is a value like any other, what it leads to read
+     * and written through it each time. */
     nvolatile_slots = 0;
     for (at = 0; at != gl_n; at++)
-        if (gl_log[at].op == GL_vset_quals && (gl_log[at].arg[0] & VQ_VOLATILE)
+        if (gl_log[at].op == GL_vset_quals && (gl_log[at].arg[0] & VQ_OWN_VOLATILE)
             && gl_log[at].top.kind == VAL_LOCAL) {
             int k;
 
