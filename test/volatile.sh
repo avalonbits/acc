@@ -67,9 +67,10 @@ accesses() {
 # on, does with f -- tries its SSA form (`ssa`) or keeps the first pass's
 # code (`first`) -- and whether the peephole pass looks at it. A function
 # touching volatile keeps the first pass's code where the SSA form's
-# backends would get it wrong (a volatile local, a volatile read thrown
-# away), and the peephole pass, which cannot tell such an access from
-# another, leaves any such function alone.
+# backends would get it wrong (a volatile read thrown away); a volatile
+# local stays in its slot, the rest of the function made as ever; and the
+# peephole pass, which cannot tell such an access from another, leaves any
+# such function alone.
 decided() {
     local what=$1 want_ssa=$2 want_peep=$3 out got_ssa=first got_peep=no
 
@@ -97,8 +98,10 @@ decided "an anonymous volatile struct's member: likewise" ssa no \
     'struct s { int a; volatile struct { int x; }; }; int f(struct s *p) { return p->x; }'
 decided "a volatile seed read once, as perf.h's" ssa no \
     'static volatile unsigned long seed = 5; unsigned long f(int n) { unsigned long s = seed; while (n--) s = s * 3 + 1; return s; }'
-decided "a volatile local: the first pass's code" first no \
+decided "a volatile local: SSA, the local in its slot" ssa no \
     'int f(void) { volatile int x = 1; return x + x; }'
+decided "stores through a volatile pointer: SSA, no peephole" ssa no \
+    'void f(volatile int *p, int v) { *p = v; *p = v + 1; }'
 decided "a volatile read thrown away: the first pass's code" first no \
     'volatile int g; void f(void) { g; }'
 decided "a volatile pointer's read thrown away: likewise" first no \

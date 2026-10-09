@@ -162,6 +162,7 @@ int shr_hl_16(int count, int is_unsigned);
 int shr_const(int op, const Value *lhs, Value *rhs);
 #ifdef OPT_ACC
 void shr_hl_const(int k, int is_unsigned);
+extern int volatile_slots[8], nvolatile_slots;
 #endif
 extern const unsigned powers_of_two[16];
 void load_narrow_into(int reg, int disp, Type type);

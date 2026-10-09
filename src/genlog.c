@@ -451,11 +451,13 @@ static int ssa_loses(const char **why)
  * function made again -- from its SSA form, when OPTACC_SSA asks for that
  * and the form can be built, and otherwise by replaying the log, which has
  * to give the same code again, byte for byte. */
-/* Whether the discard at record `at` throws away a volatile value: one
- * marked so, or what a read through one gave -- found among the records
- * just before, through casts, which left it where the discard finds it:
- * `g;`, `*p;`, `(void) p->m;` -- not a store's value, the read it stored
- * used. */
+/* Whether the discard at record `at` throws away a volatile read: a read
+ * through a volatile pointer, or a volatile object named and never read --
+ * `g;`, `*p;`, `x;`, `(void) p->m;` -- found among the records just
+ * before, through casts, which left it where the discard finds it. Not an
+ * assignment's value or a step's, whose access is made already:
+ * ez80asm's hashBucket, which writes two bytes through a volatile
+ * pointer, was kept as the first pass made it for those. */
 static int gl_discards_volatile(int at)
 {
     int k;
@@ -463,8 +465,9 @@ static int gl_discards_volatile(int at)
     for (k = at - 1; k >= 0 && k >= at - 4; k--) {
         if (gl_log[k].vtop_out != gl_log[at].vtop_in)
             break;
-        if ((gl_log[k].top.quals & VQ_VOLATILE)
-            || (gl_log[k].op == GL_vderef && k && (gl_log[k - 1].top.quals & VQ_VOLATILE)))
+        if (gl_log[k].op == GL_vderef && k && (gl_log[k - 1].top.quals & VQ_VOLATILE))
+            return 1;
+        if (gl_log[k].op == GL_vset_quals && (gl_log[k].arg[0] & VQ_VOLATILE))
             return 1;
         if (gl_log[k].op != GL_vcast && gl_log[k].op != GL_vtype)
             break;                      /* made by something else: a store's */
@@ -497,9 +500,10 @@ static int gl_volatile(void)
             continue;
         seen = 1;
         /* A local declared so takes the bit as it is pushed; not a wide
-         * value's copy in a scratch slot, which carries it on. */
-        if (rec->op == GL_vset_quals && (rec->top.kind == VAL_LOCAL
-                                         || rec->top.kind == VAL_IY
+         * value's copy in a scratch slot, which carries it on. In its slot
+         * the SSA form leaves it (ssa.c's find_locals); in IY, as a
+         * `register` one is, the first pass's code. */
+        if (rec->op == GL_vset_quals && (rec->top.kind == VAL_IY
                                          || rec->top.kind == VAL_IYADDR))
             return 2;
     }
@@ -699,6 +703,7 @@ static void gl_function_end(void)
             fprintf(stderr, "ssa %s %s\n", name_text(sym_at(gl_fn)->name),
                     made <= 0 ? why : ssa_leaf_tried && !ssa_made_leaf
                     ? "made, not by the leaf backend" : "made");
+        nvolatile_slots = 0;            /* the next function's first pass */
         if (made > 0) {
             gl_backend = ssa_made_leaf || ssa_made_mir ? BACKEND_LEAF : BACKEND_SSA;
             free(first);
