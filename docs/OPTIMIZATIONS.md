@@ -410,9 +410,13 @@ There are no jump tables.
 
 ## 11. Functions
 
-**The prologue is a call.** `ld hl,-frame; call acc_rt_frameset`, 8 bytes
-where the sequence it runs is 13 ([`gen_func_begin()`](../src/func.c#L474)). A function
-with no locals calls `acc_rt_frameset0` and has no load.
+**The prologue is written out.** `push ix; ld ix,0; add ix,sp; lea
+hl,ix-frame; ld sp,hl`, 13 bytes, or `ld hl,-frame; add hl,sp; ld sp,hl`
+for a frame past `(ix+d)`'s reach
+([`gen_func_begin()`](../src/func.c#L474)). A function with no locals
+keeps the first nine. A call to `acc_rt_frameset` was 8 bytes, and some 15
+cycles more on every entry: acc compiling its own inputs ran 5.2% slower
+so, AED 4.4%, ez80asm 3.1% and zap 2.7%.
 
 **No frame where none is needed.** A function with no locals has SP where
 its prologue left it at every return, so its epilogue is `pop ix; ret`.

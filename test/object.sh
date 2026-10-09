@@ -562,7 +562,7 @@ for at, size, name, obj, off in rows:
     if name == 'twice':
         body = image[at - 0x40000:at - 0x40000 + size]
         own_body = text(obj)[off:off + size]
-        same = body[:1] == own_body[:1] == b'\xcd' and body[4:] == own_body[4:]
+        same = body == own_body             # nothing in it the link moves
         out.append('twice ' + ('matches' if same else 'differs'))
 names = [r[2] for r in rows if not runtime(r[3])]
 out.append(' '.join(names))
@@ -576,8 +576,8 @@ else
 fi
 
 # The runtime goes in by the library's members a program reaches: one that
-# only multiplies carries acc_rt_mul and the prologue it calls, and none of
-# the floating-point or long long routines.
+# only multiplies carries acc_rt_mul, and none of the floating-point or long
+# long routines.
 cat > "$tmp/rm.c" <<'EOF2'
 int f(int a, int b) { return a * b; }
 int main(void) { return f(6, 7); }
@@ -585,7 +585,7 @@ EOF2
 if "$ACC" -c "$tmp/rm.c" -o "$tmp/rm.o" >/dev/null 2>&1 \
    && "$ACC" "$tmp/rm.o" -o "$tmp/rm.bin" -map "$tmp/rm.map" >/dev/null 2>&1; then
     got=$(awk '$4 ~ /^rt_[a-z0-9_]*\.o$/ { print $3 }' "$tmp/rm.map" | sort | tr '\n' ' ')
-    ok "only the runtime it reaches"    "$got" "acc_rt_frameset0 acc_rt_mul "
+    ok "only the runtime it reaches"    "$got" "acc_rt_mul "
     rt=$(awk '$4 ~ /^rt_[a-z0-9_]*\.o$/ { s += $2 } END { print s + 0 }' "$tmp/rm.map")
     [ "$rt" -lt 400 ] && rt=small
     ok "a small runtime"                "$rt" "small"

@@ -518,9 +518,10 @@ ix-1…   │ locals           │   96 bytes within (ix+d)'s reach
         └──────────────────┘
 ```
 
-[`gen_func_begin()`](../src/func.c#L474) emits `ld hl,-frame; call acc_rt_frameset`, the
-frame size patched in at the end; a function with no frame calls
-`acc_rt_frameset0` and has no load. Every `return` jumps to one epilogue,
+[`gen_func_begin()`](../src/func.c#L474) writes the frame out -- `push ix; ld ix,0; add
+ix,sp; ld hl,-frame; add hl,sp; ld sp,hl` -- the frame size patched in at
+the end, and the last three made `lea hl,ix-frame; ld sp,hl` where it is in
+`(ix+d)`'s reach; a function with no frame keeps the first nine bytes. Every `return` jumps to one epilogue,
 `ld sp,ix; pop ix; ret` -- `pop ix; ret` with no frame, where SP never
 moved -- which [`gen_func_end()`](../src/func.c#L658) lays down, along with
 the frame size, the local arrays' addresses, the function's shortened

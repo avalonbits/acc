@@ -15,9 +15,7 @@
 #include "gen_int.h"
 
 static void call_through(void);
-#ifdef OPT_ACC
 static int func_start;          /* the function's first byte, for peep.c */
-#endif
 
 #ifdef OPT_ACC
 /* The locals as a stack: an inlined call's body gives its room back where
@@ -479,8 +477,8 @@ void gen_func_begin(int fn, int nparams, Type returns)
     (void) nparams;
 
     sym_at(fn)->val = out_here();
-#ifdef OPT_ACC
     func_start = out_here();
+#ifdef OPT_ACC
     func_sym = fn;
     frame_unused = frame_sp_kept = 0;
 #endif
@@ -506,20 +504,17 @@ void gen_func_begin(int fn, int nparams, Type returns)
     iy_local = 0;
     in_function = 1;
 
-    /* ld hl, -frame / call acc_rt_frameset: the frame agondev's __frameset
-     * builds -- IX saved and pointed at, room made below -- and in eight
-     * bytes rather than the thirteen of writing it out, since every
-     * function has one. IX then points at the saved IX, so the first
-     * argument is at ix+6: three bytes of saved IX and three of return
-     * address. The size is not known until the body has been read, so it
-     * is filled in at the end, and a function with no frame has the load
-     * taken out and calls acc_rt_frameset0 instead. */
-#ifdef OPT_ACC
-    /* opt-acc writes the frame out instead -- push ix; ld ix, 0; add ix,
-     * sp; ld hl, -frame; add hl, sp; ld sp, hl -- fifteen bytes and no
-     * call, about 15 cycles less on every entry. With no frame the last
-     * six are cut (frame_cut), leaving nine -- or, where gen_func_end
-     * would rather, made a call as acc's is (frame_wants_call). */
+    /* The frame, written out -- push ix; ld ix, 0; add ix, sp; ld hl,
+     * -frame; add hl, sp; ld sp, hl -- IX saved and pointed at, room made
+     * below it, so that the first argument is at ix+6: three bytes of saved
+     * IX and three of return address. The size is not known until the body
+     * has been read: it is filled in at the end (frame_lea), and a function
+     * with no frame has the last six bytes cut, or all fifteen where
+     * nothing reads IX (frame_none). Fifteen bytes where ld hl, -frame /
+     * call acc_rt_frameset -- agondev's __frameset -- was eight, and some
+     * fifteen cycles less on every entry: acc compiling its own inputs ran
+     * 5.2% faster so, AED 4.4%, ez80asm 3.1% and zap 2.7%, for 1-2% more
+     * code. opt-acc may make it the call again (frame_wants_call). */
     out_word24(0xdde5dd);                       /* push ix; ld ix, */
     out_word24(0x000021);                       /*   0 */
     out_word24(0x39dd00);                       /* ; add ix, sp */
@@ -528,20 +523,12 @@ void gen_func_begin(int fn, int nparams, Type returns)
     out_word24(0);
     out_byte2(0x39, 0xf9);                      /* add hl, sp; ld sp, hl */
     frame_call = -1;
-#else
-    out_byte(0x21);                              /* ld hl, nn */
-    frame_patch = out_here();
-    out_word24(0);
-    frame_call = nrt_fixups;
-    rt_call(RT_FRAMESET);
-#endif
 }
 
 static void gen_forget(void);
 
-#ifdef OPT_ACC
-/* opt-acc's prologue, its frame known: with none, the ld hl and the two
- * after it cut; with up to 128 bytes, ld hl, -frame / add hl, sp made
+/* The prologue, its frame known: with none, the ld hl and the two after
+ * it cut; with up to 128 bytes, ld hl, -frame / add hl, sp made
  * lea hl, ix-frame -- IX is SP there -- three bytes for five, and the two
  * left over cut. Where relax_function cuts, and how much (frame_cut_len),
  * or -1. */
@@ -555,7 +542,7 @@ static int frame_lea(void)
 
         return frame_patch - 1;
     }
-    if (size > 128)
+    if ((unsigned) size > 128)
         return -1;
     op[0] = 0xed;                       /* lea hl, ix-frame */
     op[1] = 0x22;
@@ -564,10 +551,18 @@ static int frame_lea(void)
 
     return frame_patch + 2;
 }
-#endif
+
+/* No frame at all, the code made never reading IX: the whole prologue cut,
+ * and the epilogue only the ret. Where relax_function cuts. */
+static int frame_none(void)
+{
+    frame_cut_len = 15;
+
+    return func_start;
+}
 
 /* Whether opt-acc's prologue is made a call to acc_rt_frameset, as acc's
- * is: four or five bytes smaller -- seven with a frame past (ix+d)'s
+ * once was: four or five bytes smaller -- seven with a frame past (ix+d)'s
  * reach -- and some fifteen cycles more on every entry. Written out, as it
  * is unless OPTACC_FRAME_CALL asks for the call, acc compiling its own
  * inputs ran 5.4% faster, AED 4.8%, ez80asm 3.4% and zap 2.3%, for 1-2%
@@ -615,15 +610,6 @@ void hot_add(NameRef name)
 static int hot_has(NameRef name)
 {
     return hot_cap && hot_names[hot_slot(name, hot_cap)] == name;
-}
-
-/* No frame at all, the code made never reading IX: the whole prologue cut,
- * and the epilogue only the ret. Where relax_function cuts. */
-static int frame_none(void)
-{
-    frame_cut_len = 15;
-
-    return func_start;
 }
 
 static int frame_wants_call(void)
@@ -686,7 +672,7 @@ void gen_func_end(void)
      * call -- so it is IX already, and pop ix is all the epilogue does, as
      * agondev's is. And where nothing reads IX either, there need be no
      * frame at all: the prologue cut whole, and the epilogue a ret. */
-    frame_unused = !frame_size() && !ix_read(frame_patch + 7, out_here());
+    frame_unused = !frame_size() && !ix_read(frame_patch + 5, out_here());
     frame_sp_kept = 1;
 #endif
     if (!frame_unused) {
@@ -735,10 +721,6 @@ void gen_func_end(void)
 
     /* Last, so that everything written into the function is written before
      * any of it moves -- and before static_end measures how long it is. */
-#ifndef OPT_ACC
-    if (!frame_size())
-        rt_fixups[frame_call].which = RT_FRAMESET0;
-#endif
 #ifdef OPT_ACC
     relax_function(&func_mark, frame_unused ? frame_none()
                                : frame_wants_call() ? frame_to_call() : frame_lea());
@@ -750,9 +732,7 @@ void gen_func_end(void)
     peep_function(&func_mark, func_start);
     peep_answer = PEEP_ANY;
 #else
-    /* No frame: the ld hl of its size cut, or the call to make it too. */
-    frame_cut_len = frame_unused ? 8 : 4;
-    relax_function(&func_mark, frame_size() ? -1 : frame_patch - 1);
+    relax_function(&func_mark, frame_unused ? frame_none() : frame_lea());
 #endif
     pool_emit();
     static_end();
