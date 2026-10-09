@@ -160,6 +160,9 @@ void out_iy_d(int op, int disp);
 void lea_rr_iy(int reg, int disp);
 int shr_hl_16(int count, int is_unsigned);
 int shr_const(int op, const Value *lhs, Value *rhs);
+#ifdef OPT_ACC
+void shr_hl_const(int k, int is_unsigned);
+#endif
 extern const unsigned powers_of_two[16];
 void load_narrow_into(int reg, int disp, Type type);
 void store_narrow(int disp, Type type);

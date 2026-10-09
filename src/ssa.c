@@ -8908,6 +8908,13 @@ static void leaf_insn(const Ins *insn, int blk, int at)
                 leaf_result_a(insn->res, TY_UCHAR);
                 return;
             }
+            /* By a constant: as the first pass makes it (shr_hl_const). */
+            if (leaf_const(&insn->in[1], &count) && count > 0) {
+                leaf_operand_hl(insn, 0);
+                shr_hl_const(count, type_unsigned(type_promote(insn->in[0].attr.type)) != 0);
+                leaf_result(insn->res);
+                return;
+            }
             leaf_helper(insn, type_unsigned(type_promote(insn->in[0].attr.type))
                               ? RT_SHRU : RT_SHRS);
             return;

@@ -173,6 +173,8 @@ enum {
     M_FIT24,        /* d (HL) = a long's (E:UHL) low three bytes where its top
                      * one only widens them -- by their sign where imm -- or
                      * imm2 where not; A, `t`, clobbered */
+    M_SHRK,         /* d = a >> imm, signed unless imm2: d and a HL; A, F
+                     * clobbered (shr_hl_const) */
     M_CALL,         /* d = sym (imm slots pushed), in HL or A; then the slots
                      * popped, and the pairs imm2 says -- BC 1, DE 2, IY 4,
                      * those live across it -- popped back. A, F and HL
@@ -1987,6 +1989,16 @@ static void sel_apply(const Ins *insn, int at)
         sel_helper(insn, RT_SHL, operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
         return;
     case TK_SHR:
+        if (is_num(&insn->in[1]) && insn->in[1].attr.val > 0) {
+            MIns *mi;
+
+            a = in_class(operand_vr(&insn->in[0], 3), C_HL);
+            d = new_vr(3, C_HL);
+            mi = mi3(M_SHRK, d, a, -1);
+            mi->imm = insn->in[1].attr.val;
+            mi->imm2 = type_unsigned(lt) != 0;
+            break;
+        }
         sel_helper(insn, type_unsigned(lt) ? RT_SHRU : RT_SHRS,
                    operand_vr(&insn->in[0], 3), operand_vr(&insn->in[1], 3));
         return;
@@ -5042,7 +5054,7 @@ static void intervals(void)
                 vr[v].weight += w;
                 ndefs[v]++;
             }
-            if (mi->op == M_HELPER)
+            if (mi->op == M_HELPER || mi->op == M_SHRK)
                 clob[pos] |= UB(U_A);
             if (mi->op == M_CALL)
                 clob[pos] |= UB(U_A) | preg_units[P_HL];
@@ -7023,7 +7035,7 @@ static void dump_mir(const char *when)
         "alu8", "alu8i", "cmp24", "cmp24s", "cmp24si", "tst24", "case24", "cmp8", "cmp8i", "bool",
         "zext", "sext", "trunc", "helper", "br", "jmp", "ret", "pcopy", "save",
         "push", "copys", "ladd", "lcall", "lcmp", "ltst", "sextl", "zextl", "ltrunc",
-        "call"
+        "fit24", "shrk", "call"
     };
     int blk, at, k;
 
@@ -7423,7 +7435,7 @@ static const char *check_joined(int prune)
                 cl = pos < npos ? clob[pos] : 0;
                 if (mi->op == M_CALL)
                     cl |= UB(U_A) | preg_units[P_HL];
-                if (mi->op == M_HELPER)
+                if (mi->op == M_HELPER || mi->op == M_SHRK)
                     cl |= UB(U_A);
                 for (u = 0; u != nunits; u++)
                     if (cl & UB(u))
@@ -8202,6 +8214,10 @@ static void make_mi(const MIns *mi, int next_blk, int falls_to)
         return;
     case M_HELPER:
         rt_call(mi->imm);
+        return;
+    case M_SHRK:
+        shr_hl_const(mi->imm, mi->imm2);
+        flags_of_a = 0;
         return;
     case M_SAVE:
         if (mi->imm2 & 4)
