@@ -3,8 +3,8 @@
 # the same source (docs/optimizer-plan.md, milestone 0):
 #
 # - the prologue written out, push ix; ld ix, 0; add ix, sp; ld hl, -frame;
-#   add hl, sp; ld sp, hl, where acc calls acc_rt_frameset -- and cut to its
-#   first nine bytes when there is no frame;
+#   add hl, sp; ld sp, hl, as acc writes it too -- and cut to its first nine
+#   bytes when there is no frame, or made a call with OPTACC_FRAME_CALL;
 # - the local a loop uses most kept in IY, chosen by reading the body first
 #   (src/prescan.c), where acc needs it declared register -- in a body with
 #   a long or a float, which the SSA form's code leaves to this;
@@ -84,7 +84,7 @@ loop='int f(const char *p, int n) { int s = 0; while (n--) s += *p++; return s; 
 regloop='int f(const char *p, int n) { register int s = 0; while (n--) s += *p++; return s; }'
 
 prologue=dde5dd21000000dd39         # push ix; ld ix, 0; add ix, sp
-wants "$ACC" "a frame: acc calls the prologue"     acc_rt_frameset yes "$framed"
+wants "$ACC" "a frame: acc writes it out"         acc_rt_frameset no  "$framed"
 wants "$OPT" "a frame: opt-acc writes it out"      acc_rt_frameset no  "$framed"
 OPTACC_FRAME_CALL=1 wants "$OPT" "with OPTACC_FRAME_CALL, calls it" acc_rt_frameset yes "$framed"
 # A function said hot has it written out, which is faster -- lea hl,
@@ -95,7 +95,7 @@ OPTACC_FRAME_CALL=1 wants "$OPT" "a hot frame: opt-acc does not call" acc_rt_fra
 emits "$OPT" "a hot frame: opt-acc writes it out" "${prologue}ed22..f9" yes "$hot$framed"
 bigframe='int f(int x) { int a[60]; a[x & 63] = x; return a[0]; }'
 emits "$OPT" "a big hot frame: ld hl, -frame"      "${prologue}21......39f9" yes "$hot$bigframe"
-emits "$ACC" "a frame: acc does not"               "$prologue" no "$framed"
+emits "$ACC" "a frame: acc writes it out too"      "$prologue" yes "$framed"
 # No frame: the load and the two after it are cut, and the body follows.
 emits "$OPT" "no hot frame: the nine bytes, then the body" "${prologue}21070000" yes "$hot$empty"
 
@@ -1153,7 +1153,7 @@ OPTACC_LEAF=1 all "$OPT" "with no bias"                        01000080 no  "$ca
 all "$OPT" "a < b in the first pass's code, by the carry"     ed5229e2 yes "$callless"
 all "$OPT" "with no bias there either"                        11000080 no  "$callless"
 # The prologue written out, the faster -- or with OPTACC_FRAME_CALL a call
-# to acc_rt_frameset, as acc's: call nn first, four bytes where writing it
+# to acc_rt_frameset, as acc's once was: call nn first, four bytes where writing it
 # out is nine -- but written out still for a function said hot, before it
 # or after its parameters.
 mir "$OPT" "a prologue written out"            dde5dd21000000dd39 yes 'int f(int a) { return a + 2; }'

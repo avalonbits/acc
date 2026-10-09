@@ -15,8 +15,9 @@ still waiting, and `rt.a` again for what the C library's members call.
   divide has nothing. So `&`, `|`, `^`, `<<`, `>>`, `*`, `/` and `%` on ints
   and on the narrower types are calls here, and every operation on a `long`,
   a `long long` and a `float`.
-- **The frame.** `acc_rt_frameset` and `acc_rt_frameset0`, which every
-  function's prologue calls.
+- **The frame.** `acc_rt_frameset` and `acc_rt_frameset0`, a function's
+  prologue as a call, which opt-acc makes with `OPTACC_FRAME_CALL`; acc
+  writes its prologue out.
 - **Block moves.** `memcpy`, `memmove`, `memset` and `memchr`, which acc calls
   in place of the library's where a program names them.
 - **The machine.** MOS calls, the eZ80's I/O ports, printing, `setjmp` and
