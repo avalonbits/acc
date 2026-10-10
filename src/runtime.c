@@ -44,7 +44,7 @@ static const char *const rt_names[RT_COUNT] = {
     "llcmpord", "llneg", "llnot", "llshl", "llshru", "llshrs",
     "llmul", "lldivu", "llremu", "lldivs", "llrems",
     "lltof", "ulltof", "ftoll",
-    "shr", "sdiv",
+    "shr", "sdiv", "mulinv3",
 #ifdef OPT_ACC
     "lrsub", "lrand", "lror", "lrxor", "lrshl", "lrshru", "lrshrs",
     "lrneg", "lrnot", "lrcmpu", "lrcmps", "lrmul", "lrdivu",

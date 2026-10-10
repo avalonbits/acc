@@ -114,8 +114,10 @@ was 605. An unsigned remainder by a power of two is an AND with one less.
 **Pointer differences** divide by the element's width exactly, so
 [`exact_divide()`](../src/lvalue.c) makes the divide a signed shift for the
 twos in the width and a multiply by the inverse of the odd rest modulo
-2^24: `p - q` on `int *` is `call acc_rt_mul` with 0xAAAAAB, the inverse
-of 3, where it was a signed divide by 3. A VLA row's width is known only
+2^24: `p - q` on `int *` is a multiply by 0xAAAAAB, the inverse of 3,
+where it was a signed divide by 3. That multiply has a routine of its own,
+[`acc_rt_mulinv3`](../lib/rt/mulinv3.s): 0xAAAAAB is -0x555555, which is
+5 * 17 * 257 * 65537, so it is four shift-and-adds and a negation. A VLA row's width is known only
 at run time and still divides.
 
 **Multiplies** by a constant from 1 to 65,535 are shifts and adds,
