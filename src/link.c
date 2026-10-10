@@ -92,18 +92,21 @@ typedef struct {
 } Taken;
 
 /* Which item the text offset `at` is in: the last one to start at or
- * before it. */
-static int item_of(const Object *o, int at)
+ * before it, of the `n` that start at `start`, which take_items reads out
+ * of the object once. Read through obj_item, each step of the halving was
+ * a frame and a call to mask the entry's top nibble, and halving was a
+ * fifth of linking zap.
+ *
+ * Unsigned, and halved by a shift: `/ 2` of a signed int is a call to the
+ * runtime's signed divide, which was a third of linking a hello world. */
+static int item_in(const int *start, int n, int at)
 {
-    unsigned low = 0, high = (unsigned) o->nitems - 1;
+    unsigned low = 0, high = (unsigned) n - 1;
 
-    /* Unsigned, and halved by a shift: `/ 2` of a signed int is a call to
-     * the runtime's signed divide, which was a third of linking a hello
-     * world. */
     while (low < high) {
         unsigned mid = (low + high + 1) >> 1;
 
-        if (obj_item(o, (int) mid) <= at)
+        if (start[mid] <= at)
             low = mid;
         else
             high = mid - 1;
@@ -203,11 +206,17 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
     Object o = *op;
     char *want = calloc((size_t) o.nitems + 1, 1);
     int *queue = malloc(((size_t) o.nitems + 1) * sizeof *queue);
+    int *start = malloc(((size_t) o.nitems + 1) * sizeof *start);
     int nqueue = 0, i, r, want_bss = !name, new_bss = 0, want_now = 0, sorted;
-    int nrel = obj_nrelocs(&o);
+    int nrel = obj_nrelocs(&o), item, delta = 0;
 
-    if (!want || !queue)
+    if (!want || !queue || !start)
         acc_error("out of memory for '%s'", path);
+
+    /* Where each item starts, and the text's end after the last. */
+    for (i = 0; i != o.nitems; i++)
+        start[i] = obj_item(&o, i);
+    start[o.nitems] = o.text_len;
 
     /* The item the wanted name is in -- or its bss, if that is where it is.
      * Or every item, for an object placed whole. */
@@ -221,7 +230,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         if (flags & OBJ_BSS) {
             want_bss = 1;
         } else {
-            int item = item_of(&o, obj_sym_value(&o, i));
+            item = item_in(start, o.nitems, obj_sym_value(&o, i));
 
             if (t->placed[item] < 0 && !want[item]) {
                 want[item] = 1;
@@ -236,8 +245,11 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
      * of them all for each item. */
     sorted = relocs_rise(&o, 0, o.nrelocs) && relocs_rise(&o, o.nrelocs, nrel);
     while (nqueue) {
-        int item = queue[--nqueue], from = obj_item(&o, item);
-        int to = item_end(&o, item), run;
+        int from, to, run;
+
+        item = queue[--nqueue];
+        from = start[item];
+        to = start[item + 1];
 
         for (run = 0; run != 2; run++) {
             int end = run ? nrel : o.nrelocs;
@@ -257,7 +269,8 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
                     want_bss = 1;
                 if (which != 0)
                     continue;
-                next = item_of(&o, (int) obj_reloc_addend(&o, r, o.text + at));
+                next = item_in(start, o.nitems,
+                               (int) obj_reloc_addend(&o, r, o.text + at));
                 if (t->placed[next] < 0 && !want[next]) {
                     want[next] = 1;
                     queue[nqueue++] = next;
@@ -275,10 +288,16 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         while (out_here() & (step - 1))
             out_byte(0);
         t->placed[i] = out_here();
-        copy_text(&o, obj_item(&o, i), item_end(&o, i) - obj_item(&o, i));
+        copy_text(&o, start[i], start[i + 1] - start[i]);
         if (obj_link_map_on())
             link_map_item(&o, i, t->placed[i], path);
     }
+    /* An object placed whole is placed as it is: its start rounded up to
+     * the largest alignment in it, and every item's offset a multiple of
+     * its own (place_object), so no padding comes between them, and every
+     * item is as far from where it is in the object as the first. */
+    if (!name && o.nitems)
+        delta = t->placed[0] - start[0];
     if (want_bss && t->bss < 0) {
         t->bss = gen_bss_reserve_aligned(o.bss_len, o.bss_align);
         new_bss = 1;
@@ -286,18 +305,21 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
 
     /* What is new, at the address it now has. */
     for (i = 0; i != o.nsyms; i++) {
-        int flags = obj_sym_flags(&o, i), value, item = 0, sym;
+        int flags = obj_sym_flags(&o, i), value, sym;
 
         if ((flags & OBJ_WANT) && want_now)
             link_want(obj_sym_name(&o, i));
         if (!(flags & OBJ_DEFINED))
             continue;
         value = obj_sym_value(&o, i);
+        item = 0;
         if (flags & OBJ_BSS) {
             if (!new_bss)
                 continue;
+        } else if (!name) {
+            item = -1;                  /* the whole object: delta */
         } else {
-            item = item_of(&o, value);
+            item = item_in(start, o.nitems, value);
             if (!want[item])
                 continue;
         }
@@ -310,7 +332,8 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
 
             continue;
         }
-        sym_at(sym)->val = t->placed[item] + value - obj_item(&o, item);
+        sym_at(sym)->val = item < 0 ? value + delta
+                                    : t->placed[item] + value - start[item];
         sym_set_flags(sym, SYMF_DECLARED | SYMF_DEFINED | SYMF_PARAMS);
     }
 
@@ -318,23 +341,33 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
      * is: see the note on the format in src/obj.c. An address inside the
      * object is taken to where its item went, now or on an earlier look;
      * the bss's and a symbol's are filled when the link ends, since neither
-     * is known before. */
-    for (r = 0; r != nrel; r++) {
-        int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), item, dest;
+     * is known before. The item a slot is in is found by walking along
+     * with the slots, which rise in each table, and by halving in an
+     * object whose do not. */
+    for (r = 0, item = 0; r != nrel; r++) {
+        int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), dest;
         int kind = obj_reloc_kind(&o, r);
         long a;
 
-        item = item_of(&o, at);
-        if (!want[item])
-            continue;
-        dest = t->placed[item] + at - obj_item(&o, item);
+        if (!name) {
+            dest = at + delta;
+        } else {
+            if (!sorted || r == o.nrelocs)      /* or the second table */
+                item = item_in(start, o.nitems, at);
+            while (item + 1 < o.nitems && start[item + 1] <= at)
+                item++;
+            if (!want[item])
+                continue;
+            dest = t->placed[item] + at - start[item];
+        }
         /* Read from where the slot was copied to: an object read with its
          * front only has no text in hand to read it from. */
         a = obj_reloc_addend(&o, r, out_img + (dest - out_base));
         if (which == 0) {
-            int target = item_of(&o, (int) a);
+            int target = name ? item_in(start, o.nitems, (int) a) : -1;
 
-            gen_slot(dest, kind, t->placed[target] + a - obj_item(&o, target));
+            gen_slot(dest, kind, target < 0 ? (int) a + delta
+                                            : t->placed[target] + a - start[target]);
             /* An address in the image, which -r has to name as it does the
              * compiler's own: a jump inside a routine of the runtime, a
              * call to a static function of a member. */
@@ -359,6 +392,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
     }
     free(want);
     free(queue);
+    free(start);
 }
 
 /* One object, placed where the image has got to: all of its items, from a
