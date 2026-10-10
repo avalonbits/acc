@@ -9563,8 +9563,12 @@ int ssa_size_made, ssa_size_first;
  * what comes in for a loop's head, and at a branch, what the block before
  * had shared out -- an eighth to a way out of the loop or to a return, the
  * rest to the other, and half each where neither is -- the blocks taken in
- * reverse postorder, the edges back left out. What ssa_freq_made weighs
- * the code by, for the pick among the ways (genlog.c); 8^depth, which
+ * reverse postorder, the edges back left out. A switch's tests, which
+ * the machine-level backend has a block each for, share it out evenly
+ * among the cases left and the default, not half to each case down the
+ * line: interp's run, eleven cases, had its last ones weighed as if they
+ * all but never ran. What ssa_freq_made weighs the code by, for the pick
+ * among the ways (genlog.c); 8^depth, which
  * counts every block of a loop alike, for everything else, whose choices
  * it was measured with: weighed by this, acc's own code was 1% bigger. */
 static long *bfreq;
@@ -9585,14 +9589,29 @@ static int bf_exits(int from, int to)
     return succs[to].count == 0 || loop_depth[to] < loop_depth[from];
 }
 
+/* By block: one that ends in a switch's test, how many ways its tests
+ * share out -- the cases left, and the default -- or 0. */
+static int *bf_cases;
+
+static int bf_case_test(int blk)
+{
+    int last = (blk + 1 < nblocks ? blocks[blk + 1].first : ninsns) - 1;
+
+    return last >= blocks[blk].first && insns[last].op == GL_gen_switch_case;
+}
+
 static void block_freqs(void)
 {
     int *order = malloc(((size_t) nblocks + 1) * sizeof *order);
     int blk, k, i;
 
     bfreq = realloc(bfreq, ((size_t) nblocks + 1) * sizeof *bfreq);
-    if (!order || !bfreq)
+    bf_cases = realloc(bf_cases, ((size_t) nblocks + 1) * sizeof *bf_cases);
+    if (!order || !bfreq || !bf_cases)
         acc_error("out of memory for the SSA form");
+    for (blk = nblocks - 1; blk >= 0; blk--)
+        bf_cases[blk] = !bf_case_test(blk) ? 0
+                        : blk + 1 < nblocks && bf_cases[blk + 1] ? bf_cases[blk + 1] + 1 : 2;
     for (blk = 0; blk != nblocks; blk++) {
         bfreq[blk] = 0;
         order[blk] = -1;
@@ -9619,7 +9638,11 @@ static void block_freqs(void)
             n2 = succs[p].count;
             for (j = 0; j != n2; j++)
                 nex += bf_exits(p, succs[p].at[j]);
-            if (n2 == 2 && nex == 1)
+            if (n2 == 2 && bf_cases[p] && b != p + 1)
+                share = bfreq[p] / bf_cases[p];
+            else if (n2 == 2 && bf_cases[p])
+                share = bfreq[p] - bfreq[p] / bf_cases[p];
+            else if (n2 == 2 && nex == 1)
                 share = bf_exits(p, b) ? bfreq[p] / 8 : bfreq[p] - bfreq[p] / 8;
             else
                 share = n2 ? bfreq[p] / n2 : bfreq[p];
