@@ -128,6 +128,19 @@ calls "/ 512 signed"                  _acc_rt_divs yes \
     'int f(int x) { return x / 512; }'
 calls "/ 3"                           _acc_rt_divs yes \
     'int f(int x) { return x / 3; }'
+# A pointer difference divides exactly: a multiply by the inverse of the
+# element's odd width, a shift for its twos, and no divide -- but a VLA
+# row's, whose width is not known until it runs.
+calls "int * - int *"                 _acc_rt_divs no \
+    'int f(int *p, int *q) { return p - q; }'
+calls "int * - int *, a multiply"     _acc_rt_mul yes \
+    'int f(int *p, int *q) { return p - q; }'
+calls "a 6-byte element's difference" _acc_rt_divs no \
+    'struct s { short a[3]; }; int f(struct s *p, struct s *q) { return p - q; }'
+calls "a 1024-byte element's difference" _acc_rt_divs no \
+    'struct s { char a[1024]; }; int f(struct s *p, struct s *q) { return p - q; }'
+calls "a VLA row's difference"        _acc_rt_divs yes \
+    'int f(int n, int x) { int m[n][n]; return &m[x] - &m[0]; }'
 calls "% 8 unsigned"                  _acc_rt_remu no \
     'unsigned f(unsigned x) { return x % 8; }'
 calls "% 8 signed"                    _acc_rt_rems yes \

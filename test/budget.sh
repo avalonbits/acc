@@ -13,16 +13,17 @@
 #
 #   __setflag  a signed compare (`i < n` on ints), repaired after the
 #              subtract; `i != n`, or unsigned, needs none.
-#   __imulu    an index scaled by an entry that is not a power of two wide.
+#   __imulu    an index scaled by an entry that is not a power of two wide,
+#              and the two of lvalue.c's exact_divide, which are meant.
 #
 # Needs agondev. Skips (77) without it.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE_MAX=240875        # bytes of acc.bin
-HEAP_MIN=186671         # bytes from ___heapbot to ___heaptop
+IMAGE_MAX=241017        # bytes of acc.bin
+HEAP_MIN=186529         # bytes from ___heapbot to ___heaptop
 SETFLAG_MAX=530
-IMULU_MAX=309
+IMULU_MAX=311
 
 AGONDEV=${AGONDEV:-$HOME/agondev}
 CC=$AGONDEV/bin/ez80-none-elf-clang

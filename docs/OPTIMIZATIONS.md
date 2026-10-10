@@ -111,6 +111,13 @@ the same shift, plus one for a negative value that had bits shifted out,
 since division rounds toward zero. `x / 4` is 59 cycles where the divide
 was 605. An unsigned remainder by a power of two is an AND with one less.
 
+**Pointer differences** divide by the element's width exactly, so
+[`exact_divide()`](../src/lvalue.c) makes the divide a signed shift for the
+twos in the width and a multiply by the inverse of the odd rest modulo
+2^24: `p - q` on `int *` is `call acc_rt_mul` with 0xAAAAAB, the inverse
+of 3, where it was a signed divide by 3. A VLA row's width is known only
+at run time and still divides.
+
 **Multiplies** by a constant from 1 to 65,535 are shifts and adds,
 [`mul_const()`](../src/arith.c#L121): a power of two is only `add hl,hl`s; any other
 constant is `push de; push hl; pop de`, then for each lower bit an `add
