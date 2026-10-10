@@ -73,7 +73,7 @@ int main(void)
 {
     int i, j, dup = 0, stable = 0, roundtrip = 0;
 
-    name_init();
+    name_init(1);
 
     /* A lookup compares against every name its probe passes, and those can be
      * shorter than the name looked up. The comparison has to stop at the

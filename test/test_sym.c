@@ -81,7 +81,7 @@ int main(void)
     long small, large;
     int i, wrong = 0;
 
-    name_init();
+    name_init(1);
     sym_init();
 
     for (i = 0; i < N; i++) {
