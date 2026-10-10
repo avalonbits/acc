@@ -1,6 +1,8 @@
 /*
  * What of <string.h> is not assembly: strtok, strcoll and strxfrm. The
- * rest is lib/strlen.s and the files beside it.
+ * rest is lib/strlen.s and the files beside it. And GNU C's
+ * __builtin_ffs and __builtin_popcount, which the compiler declares in
+ * every file.
  *
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
  * SPDX-License-Identifier: LGPL-2.1-or-later
@@ -50,4 +52,39 @@ size_t strxfrm(char *to, const char *from, size_t n)
         memcpy(to, from, len + 1);
 
     return len;
+}
+
+/* Where the lowest bit set in `value` is, counted from 1, or 0 for none:
+ * a byte at a time, and then a bit at a time in the byte that has it. */
+int __builtin_ffs(int value)
+{
+    unsigned bits = (unsigned) value;
+    int at = 1;
+
+    if (!bits)
+        return 0;
+    while (!(bits & 0xff)) {
+        bits >>= 8;
+        at += 8;
+    }
+    while (!(bits & 1)) {
+        bits >>= 1;
+        at++;
+    }
+
+    return at;
+}
+
+/* How many bits of `value` are set: each one cleared in turn, the lowest
+ * first. */
+int __builtin_popcount(unsigned value)
+{
+    int count = 0;
+
+    while (value) {
+        value &= value - 1;
+        count++;
+    }
+
+    return count;
 }

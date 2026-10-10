@@ -14,6 +14,7 @@
 #include "acc.h"
 #include "ctype.h"
 #include "lex_int.h"
+#include "version.h"
 
 /* ------------------------------------------------------------------ */
 /* macros                                                              */
@@ -806,7 +807,16 @@ static const struct {
     { "__ORDER_LITTLE_ENDIAN__", "1234" },
     { "__ORDER_BIG_ENDIAN__",    "4321" },
     { "__ORDER_PDP_ENDIAN__",    "3412" },
-    { "__BYTE_ORDER__",      "__ORDER_LITTLE_ENDIAN__" }
+    { "__BYTE_ORDER__",      "__ORDER_LITTLE_ENDIAN__" },
+
+    /* GNU C, as agondev's clang says it is: a program asks it before it
+     * says __attribute__, and gets what it asks for. What else a GNU C
+     * program reaches for is here as it is wanted -- __builtin_ffs below,
+     * and __builtin_unreachable -- and the rest refused where it is read. */
+    { "__GNUC__",            "4" },
+    { "__GNUC_MINOR__",      "2" },
+    { "__GNUC_PATCHLEVEL__", "1" },
+    { "__VERSION__",         "\"" ACC_NAME " " ACC_VERSION "\"" }
 };
 
 void predefined_macros_init(void)
@@ -821,6 +831,10 @@ void predefined_macros_init(void)
         macro_define(name_intern(name, (int) strlen(name)),
                      text, (int) strlen(text), NULL, -1, 0);
     }
+
+    /* A place the program says is never reached: nothing to do there. */
+    macro_define(name_intern("__builtin_unreachable", 21), "((void) 0)", 10,
+                 NULL, 0, 0);
 }
 
 /* A macro given on the command line, as though the file had begun with the

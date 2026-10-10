@@ -1094,6 +1094,16 @@ void lex_open(const char *path)
      * an #include of it -- which is what gcc and clang mean by it. */
     if (lex_prelude)
         push_source(lex_prelude);
+
+    /* GNU C's builtins that are functions, declared before the file as
+     * gcc has them declared, and in the library: a declaration nothing
+     * calls costs an object nothing. */
+    {
+        static char builtins[] = "int __builtin_ffs(int);"
+                                 "int __builtin_popcount(unsigned);";
+
+        push_text(NAME_NONE, builtins, (int) sizeof builtins - 1);
+    }
     next();
 }
 
