@@ -223,6 +223,14 @@ emits "--w > 0, cp 1 on the byte in A"  "dd7706fe01" yes \
 emits "--w == x, cp (ix+d) on the byte in A" "dd7706ddbe09" yes \
     'int f(unsigned char w, unsigned char x) { if (--w == x) return 1; return 2; }'
 
+# A comparison as ?:'s condition, with a value live under it, is jumped
+# on where it set the flags; the value is spilled after the compare and
+# before the jump, not the answer made 1 or 0 and tested again.
+emits "x * 3 + (c < 26 ? 1 : 2)"        "$zero_test" no \
+    'int f(int x, unsigned char c) { return x * 3 + (c < 26 ? 1 : 2); }'
+emits "(x - y) + (n >= -5 ? x : y)"     "$zero_test" no \
+    'int f(int x, int y, int n) { return (x - y) + (n >= -5 ? x : y); }'
+
 # A constant condition is no test at all: `while (1)` falls into its body,
 # `do ... while (0)` falls out, and `if (0)` jumps over. Each was ld hl, n
 # and the add hl, bc; or a; sbc hl, bc of any other value.
