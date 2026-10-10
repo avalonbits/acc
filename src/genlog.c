@@ -571,15 +571,18 @@ static void gl_function_end(void)
             ssa_leaf_off = 0;
         }
 
-        /* A phi a switch's case jumps to, which only the machine-level
-         * backend's code can copy into: that way alone, kept where it
-         * does not lose to the first pass's. ez80asm's parse_operand,
-         * nested switches over a pointer stepped in each, 0.5% of its
-         * time and 596 bytes. */
-        if (made == 0 && ssa_case_phi && picking && getenv("OPTACC_MIR")) {
+        /* Refused the first way, the machine-level backend's alone, kept
+         * where it does not lose to the first pass's: a phi a switch's
+         * case jumps to, which only its code can copy into -- ez80asm's
+         * parse_operand, nested switches over a pointer stepped in each,
+         * 0.5% of its time and 596 bytes -- or a frame the classic
+         * backend's homes do not fit, which the machine IR lays out again
+         * -- acc's take_items, 248 bytes. */
+        if (made == 0 && picking && getenv("OPTACC_MIR")) {
             ssa_mir_want = 1;
+            ssa_cache_off = CACHE_NONE;
             made = ssa_generate(&why);
-            ssa_mir_want = 0;
+            ssa_mir_want = ssa_cache_off = 0;
             if (made > 0 && (!ssa_made_mir || ssa_loses(&why))) {
                 gl_back();
                 made = 0;

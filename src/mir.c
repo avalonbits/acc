@@ -797,16 +797,18 @@ static int mir_ok(void)
                 far = 1;
         }
         /* Only the locals left in memory are given room again: those
-         * that are values now take none (frame_again_all). */
-        bytes = ssa_locals_kept();
+         * that are values now take none (frame_again_all) -- each byte
+         * once, however many locals the first pass gave it to in turn. */
+        bytes = ssa_frame_bytes();
         arrays_here = !far && bytes + array_bytes + ACC_INT_SIZE <= 128;
-        /* An inlined body's room is laid out after the rest of the frame,
-         * where the first pass had it among it: all of it in (ix+d)'s
-         * reach, or none of it made here. Arrays not laid out with the
-         * locals are below all of it, and in no one's way. */
+        /* An inlined body's room is laid out with the rest of the frame
+         * (frame_compact, which ssa_frame_bytes counts): all of it in
+         * (ix+d)'s reach, or none of it made here. Arrays not laid out
+         * with the locals are below all of it, and in no one's way -- and
+         * so is a local the first pass put past the reach, an array of
+         * its own. */
         inline_bytes = nmerged ? ssa_inline_bytes() : 0;
-        if (nmerged && (far || bytes + (arrays_here ? array_bytes : 0) + inline_bytes
-                               + ACC_INT_SIZE > 128))
+        if (nmerged && bytes + (arrays_here ? array_bytes : 0) + ACC_INT_SIZE > 128)
             return mir_why = "an inlined body's room past (ix+d)'s reach", 0;
     }
     struct_read = realloc(struct_read, (size_t) nvals + 1);
@@ -9194,7 +9196,7 @@ int mir_build(void)
          * reach as mir_ok holds the rest to. */
         for (v = 0; v != ntemps; v++)
             bytes += temp_size[v];
-        if (bytes && ssa_locals_kept() + (arrays_here ? array_bytes : 0) + inline_bytes
+        if (bytes && ssa_frame_bytes() + (arrays_here ? array_bytes : 0)
                      + bytes + ACC_INT_SIZE > 128) {
             mir_why = "more spills than the frame can reach";
             return 0;
