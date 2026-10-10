@@ -42,8 +42,9 @@ int ssa_generate(const char **why);
  * pass made: bytes, each block's counted eight times over for each loop
  * around it. Both 0 when it did not say. ssa_freq_made: the made code's
  * weighed by how often each block is estimated to run instead (ssa.c's
- * block_freqs), for the pick among the ways. */
-extern long ssa_cost_made, ssa_cost_first, ssa_freq_made;
+ * block_freqs), for the pick among the ways; ssa_freq_first the first
+ * pass's so. */
+extern long ssa_cost_made, ssa_cost_first, ssa_freq_made, ssa_freq_first;
 extern int ssa_size_made, ssa_size_first;
 extern int ssa_made_leaf, ssa_leaf_off, ssa_cached_refused;
 

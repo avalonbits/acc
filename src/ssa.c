@@ -9555,7 +9555,7 @@ static void emit_insn_regs(const Ins *insn, int blk, int at)
         pins_restore();
 }
 
-long ssa_cost_made, ssa_cost_first, ssa_freq_made;
+long ssa_cost_made, ssa_cost_first, ssa_freq_made, ssa_freq_first;
 int ssa_size_made, ssa_size_first;
 
 
@@ -9758,7 +9758,7 @@ void costs(const int *block_start, int end)
         if (insns[at].rec)
             rec_block[insns[at].rec - gl_log] = insns[at].block;
 
-    ssa_cost_first = 0;
+    ssa_cost_first = ssa_freq_first = 0;
     if (gl_first_code && gl_first_len > 0) {
         byte_block = malloc((size_t) gl_first_len * sizeof *byte_block + 1);
         if (!byte_block)
@@ -9777,6 +9777,9 @@ void costs(const int *block_start, int end)
             before = after;
         }
         ssa_cost_first = code_cost(gl_first_code, gl_first_len, byte_block);
+        bf_on = 1;
+        ssa_freq_first = code_cost(gl_first_code, gl_first_len, byte_block);
+        bf_on = 0;
         free(byte_block);
     }
     free(rec_block);
@@ -10019,7 +10022,7 @@ int ssa_generate(const char **why)
     nraws = nsettles = nbss_recs = 0;
     fail = NULL;
     ssa_case_phi = 0;
-    ssa_cost_made = ssa_cost_first = 0;
+    ssa_cost_made = ssa_cost_first = ssa_freq_made = ssa_freq_first = 0;
     leaf_mode = ssa_made_leaf = ssa_cached_refused = ssa_cached_used = 0;
     leaf_low_said = NULL;               /* the last function's */
     lindex_ok = 0;

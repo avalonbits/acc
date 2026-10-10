@@ -1272,6 +1272,28 @@ picked "$OPT" "not the first pass's"            ddf9           no  "$nametext"
 # pass's twenty-one, framed.
 picked "$OPT" "smaller, an eighth costlier, chosen" '^2101000022000000c9$' yes \
     'static int flag; void f(void) { flag = 1; }'
+# An eighth by either estimate: ez80asm's _readMinimumBufferedLine, whose
+# else is a loop a byte at a time that a line of 256 or fewer never runs,
+# is 13% costlier made from SSA by 8^depth, which weighs that loop as it
+# weighs the copy, and 11% by block frequency -- and ran faster.
+rmb='typedef struct { char *readptr; unsigned int bytesinbuffer; unsigned int filepos; unsigned int lastreadlength; } ci_t;
+int fill(ci_t *ci); void error(const char *m, int n); void *memchr(const void *s, int c, unsigned int n); void *memcpy(void *d, const void *s, unsigned int n);
+unsigned int f(char *dst, ci_t *ci) { unsigned int len = 0; char *ptr; char *end; unsigned int run;
+ if (ci->bytesinbuffer == 0 && !fill(ci)) { *dst = 0; ci->lastreadlength = 0; return 0; }
+ ptr = ci->readptr; end = memchr(ptr, 10, ci->bytesinbuffer); run = end ? (unsigned int) (end - ptr) + 1 : ci->bytesinbuffer;
+ if (run <= 256 - (end != 0)) { memcpy(dst, ptr, run); dst += run; ptr += run; len = run; ci->readptr = ptr; ci->bytesinbuffer -= run; }
+ else { unsigned int left = ci->bytesinbuffer; while (left) { char c; if (len++ == 256 && *ptr != 10) { ci->bytesinbuffer = left; error("long", 0); return 0; } left--; c = *ptr++; *dst++ = c; if (c == 10) break; } ci->readptr = ptr; ci->bytesinbuffer = left; }
+ *dst = 0; ci->filepos += len; ci->lastreadlength = len; return len; }'
+printf '%s\n' "$rmb" > "$tmp/c.c"
+rm -f "$tmp/c.o"
+if OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 \
+    OPTACC_LEAF=1 OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_SSA_STATS=1 \
+    "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 | grep -q '^ssa f made$'; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s\n' "smaller, an eighth costlier by frequency, chosen"
+    fail=$((fail + 1))
+fi
 # A phi in a block a switch's case jumps to -- the pointer stepped in one
 # case and the next fallen into, as ez80asm's parse_operand has it -- is
 # the machine-level backend's to copy into, its cases being branches: made
