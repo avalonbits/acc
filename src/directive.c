@@ -86,27 +86,40 @@ static int   body_cap;
 static int logical_line(void)
 {
     int len = 0;
+    char quote = 0;
 
     for (;;) {
         while (*cursor && *cursor != '\n') {
-            int comment = cursor[0] == '/'
-                          && (cursor[1] == '/' || cursor[1] == '*');
+            char c = *cursor;
 
-            if (len == body_cap) {
+            if ((unsigned) (body_cap - len) < 2u) {    /* an escape takes two */
                 body_cap = body_cap ? body_cap * 2 : 256;
                 body = realloc(body, (size_t) body_cap);
                 if (!body)
                     acc_error("out of memory for a macro");
             }
 
-            /* A comment is one space. C takes them out before it reads
-             * directives, so one that opens on a directive's line and closes
-             * on a later one is still part of that directive -- and what
-             * follows the close is still part of it too. Read as text, the
-             * body kept the comment's opening and the lines under it were
-             * compiled as though they were code, which is what a define with
-             * a comment laid out over two lines did to acc's own code generator. */
-            if (comment) {
+            /* Inside a string or a character constant nothing opens a
+             * comment: "https://..." in a define is a string, and was cut
+             * off at its //. An escaped quote does not close it: the escape
+             * and what it escapes are copied together.
+             *
+             * Outside one, a comment is one space. C takes them out before
+             * it reads directives, so one that opens on a directive's line
+             * and closes on a later one is still part of that directive --
+             * and what follows the close is still part of it too. Read as
+             * text, the body kept the comment's opening and the lines under
+             * it were compiled as though they were code, which is what a
+             * define with a comment laid out over two lines did to acc's own
+             * code generator. */
+            if (quote) {
+                if (c == quote)
+                    quote = 0;
+                else if (c == '\\' && cursor[1] != '\n')
+                    body[len++] = *cursor++;
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == '/' && (cursor[1] == '/' || cursor[1] == '*')) {
                 skip_comment();
                 body[len++] = ' ';
 
