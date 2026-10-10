@@ -85,10 +85,14 @@ int __acc_isunordered(double x, double y);
 double __acc_inf(void);
 double __acc_nan(void);
 
-#define HUGE_VAL   __acc_inf()
-#define HUGE_VALF  __acc_inf()
-#define INFINITY   __acc_inf()
-#define NAN        __acc_nan()
+/* Constants, as C99 7.12 asks, which a static may be initialised to, as
+ * Berry's math module's table is: a float literal past the largest float
+ * is an infinity, as Annex F has it, and zero over zero, folded, the
+ * quiet NaN. */
+#define HUGE_VAL   1e39
+#define HUGE_VALF  1e39f
+#define INFINITY   1e39f
+#define NAN        (0.0f / 0.0f)
 
 #define MATH_ERRNO       1
 #define MATH_ERREXCEPT   2
