@@ -796,6 +796,25 @@ int gen_cond_begin(int *slot, int *lock)
      * is about to be parked, because the third operand is compiled over the
      * top of it and the stack will not be saying that the slot is taken. */
     spill_locked = spill_used;
+
+    /* A comparison as the condition, with values live under it: its 1 or
+     * 0 taken back first and the jump made on the flags it left, the
+     * values spilled between -- a spill is ld (ix+d), rr, or lea and
+     * push and pop for a far one, and none of them touches the flags.
+     * Spilled after it, they stood between the comparison and the branch,
+     * which then had only the 1 or 0 to test: `x + (c < 26 ? a : b)` made
+     * the answer and tested it again. */
+    if (cmp_live() && (vsp - 1)->kind == VAL_REG && (vsp - 1)->val == R_HL) {
+        int op = cmp_opposite(cmp_op);
+
+        out_rewind(cmp_from);
+        jumps_forget(cmp_from);
+        cmp_from = -1;
+        vdrop();
+        save_regs_below(0);
+
+        return jump_on_flags(op, cmp_was_unsigned);
+    }
     save_regs_below(1);
 
     return jump_on_truth(0);
