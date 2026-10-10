@@ -711,8 +711,9 @@ static int fold_wide_int(int op, Type type, uint64_t a, uint64_t b,
 /* The same for two floats, in float.c's own arithmetic rather than in the
  * float of whichever compiler built this one: the host's and agondev's do
  * not agree at the edges, and a constant folded here has to come out the
- * same in both builds. Not for a division by zero, which is an infinity the
- * runtime routine makes and which C leaves to it. */
+ * same in both builds. A division by zero too, as Annex F has it and clang
+ * folds it: an infinity, or for zero over zero a NaN -- which is how
+ * <math.h>'s NAN is a constant. */
 static int fold_wide_float(int op, uint64_t a, uint64_t b, uint64_t *out)
 {
     uint32_t x = (uint32_t) a, y = (uint32_t) b, r;
@@ -721,11 +722,7 @@ static int fold_wide_float(int op, uint64_t a, uint64_t b, uint64_t *out)
     case TK_PLUS:  r = float_add(x, y); break;
     case TK_MINUS: r = float_add(x, float_neg(y)); break;
     case TK_STAR:  r = float_mul(x, y); break;
-    case TK_SLASH:
-        if (float_is_zero(y))
-            return 0;
-        r = float_div(x, y);
-        break;
+    case TK_SLASH: r = float_div(x, y); break;
     default:
         return 0;
     }
