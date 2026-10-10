@@ -82,17 +82,17 @@ flowchart TD
     end
 ```
 
-[`main()`](../src/main.c#L358) ·
-[`agon_split()`](../src/main.c#L297) ·
+[`main()`](../src/main.c#L453) ·
+[`agon_split()`](../src/main.c#L330) ·
 [`ar_write()`](../src/archive.c#L116) ·
-[`obj_current()`](../src/obj.c#L963) ·
-[`translation_unit()`](../src/decl.c#L1090) ·
-[`bss_end()`](../src/decl.c#L872) ·
-[`gen_finish()`](../src/finish.c#L760) ·
+[`obj_current()`](../src/obj.c#L1014) ·
+[`translation_unit()`](../src/decl.c#L1092) ·
+[`bss_end()`](../src/decl.c#L874) ·
+[`gen_finish()`](../src/finish.c#L790) ·
 [`obj_write()`](../src/obj.c#L434) ·
-[`gen_startup()`](../src/finish.c#L1055) ·
-[`link_inputs()`](../src/link.c#L567) ·
-[`out_close()`](../src/image.c#L821)
+[`gen_startup()`](../src/finish.c#L1085) ·
+[`link_inputs()`](../src/link.c#L732) ·
+[`out_close()`](../src/image.c#L831)
 
 The one-step build is a compile whose image is then linked in place: the
 program's own code is laid down first, after the entry stub, and the
@@ -146,7 +146,7 @@ size at the moment it grows. acc is written around that:
   says so, rather than writing over its own frames. 127 nested blocks,
   C99's own limit, use under 13 KB of it.
 - **What a function needs only while it is compiled is given back** at its
-  end ([`gen_forget()`](../src/func.c#L777)), and the output image is written to the card
+  end ([`gen_forget()`](../src/func.c#L771)), and the output image is written to the card
   a function at a time (section 14).
 
 On the host the same code runs with malloc and realloc, and the name arena
@@ -155,7 +155,7 @@ and member chunks come from one large reservation.
 ## 4. Names
 
 Every identifier and every macro name is interned once, in
-[`name_intern()`](../src/names.c#L290), into an arena of NUL-terminated strings, and is
+[`name_intern()`](../src/names.c#L292), into an arena of NUL-terminated strings, and is
 referred to from then on by its offset: a `NameRef`, three bytes on the
 Agon. Nothing is ever freed.
 
@@ -164,8 +164,8 @@ so that finding it costs one load rather than a table probe:
 
 | byte | holds | read by |
 |---|---|---|
-| `ref-4` | `NAME_MACRO`, `NAME_WIDE`, `NAME_WEAK`, `NAME_STRONG` | [`name_is_macro`](../src/lex_int.h#L103), [`name_weak()`](../src/names.c#L349) |
-| `ref-3 .. ref-1` | the file-scope symbol for this name, plus one — or, for a keyword, its token code at `ref-3` | [`name_global()`](../src/sym.c#L110), [`next()`](../src/lex.c#L1028) |
+| `ref-4` | `NAME_MACRO`, `NAME_WIDE`, `NAME_WEAK`, `NAME_STRONG` | [`name_is_macro`](../src/lex_int.h#L103), [`name_weak()`](../src/names.c#L351) |
+| `ref-3 .. ref-1` | the file-scope symbol for this name, plus one — or, for a keyword, its token code at `ref-3` | [`name_global()`](../src/sym.c#L110), [`next()`](../src/lex.c#L1039) |
 
 The hash table uses open addressing with linear probing over 4-byte slots,
 kept at most three quarters full. The hash, [`name_home()`](../src/names.c#L124), is two
@@ -210,7 +210,7 @@ flowchart LR
 [`refill()`](../src/source.c#L817) ·
 [`unsplice()`](../src/source.c#L509) ·
 [`dep_bytes()`](../src/source.c#L217) ·
-[`next()`](../src/lex.c#L1028) ·
+[`next()`](../src/lex.c#L1039) ·
 [`push_source()`](../src/source.c#L889) ·
 [`pop_source()`](../src/source.c#L1007)
 
@@ -243,12 +243,12 @@ sum`, as [`refill()`](../src/source.c#L817) reads each window, so nothing is rea
 On the Agon it is eight instructions of hand-written assembly,
 [`src/marks.s`](../src/marks.s). `-D`, `-U` and `-I` are folded into a
 pseudo-file of their own. `acc -c` then answers "up to date" without
-compiling when [`obj_current()`](../src/obj.c#L963) finds the object was made by this
+compiling when [`obj_current()`](../src/obj.c#L1014) finds the object was made by this
 build of acc and every file it names still has the same size and sums.
 
 ## 6. The preprocessor
 
-The preprocessor is not a separate pass: [`next()`](../src/lex.c#L1028) runs it as it
+The preprocessor is not a separate pass: [`next()`](../src/lex.c#L1039) runs it as it
 goes.
 
 **Macros.** A name with the `NAME_MACRO` flag is looked up in a hash table
@@ -286,7 +286,7 @@ comments are looked at.
 
 ## 7. Tokens and symbols
 
-[`next()`](../src/lex.c#L1028) leaves the current token in globals the parser reads
+[`next()`](../src/lex.c#L1039) leaves the current token in globals the parser reads
 directly: `tok`, `tok_name`, `tok_val`, and the string in `str_buf`.
 `accept` and `expect` are macros in [`lex.h`](../src/lex.h), so the common case is a
 compare and no call.
@@ -327,11 +327,11 @@ and every symbol carries both bytes.
 The parser is recursive descent, and emits as it recognises. Its six files
 split by what they read:
 
-- [`decl.c`](../src/decl.c): file scope ([`external_declaration()`](../src/decl.c#L1014)), function
-  definitions ([`function_declarator()`](../src/decl.c#L354)), block-scope storage
+- [`decl.c`](../src/decl.c): file scope ([`external_declaration()`](../src/decl.c#L1016)), function
+  definitions ([`function_declarator()`](../src/decl.c#L353)), block-scope storage
   classes, globals defined twice, tentative definitions.
 - [`type.c`](../src/type.c): specifiers, `struct`/`union`/`enum`, declarators, constant
-  expressions ([`constant_int()`](../src/type.c#L847)), arrays and VLAs, type names.
+  expressions ([`constant_int()`](../src/type.c#L876)), arrays and VLAs, type names.
 - [`init.c`](../src/init.c): initialisers, braces, designators and strings, for a local's
   frame or a global's bytes.
 - [`stmt.c`](../src/stmt.c): statements.
@@ -340,16 +340,16 @@ split by what they read:
 
 ### Expressions
 
-One table-driven loop, [`binary_rest()`](../src/expr.c#L1454), climbs precedence for every
-binary operator; `&&` and `||` go to [`logical_rest()`](../src/expr.c#L1390), `?:` to
-[`conditional_rest()`](../src/expr.c#L2024). Operands come from [`primary()`](../src/expr.c#L1160).
+One table-driven loop, [`binary_rest()`](../src/expr.c#L1458), climbs precedence for every
+binary operator; `&&` and `||` go to [`logical_rest()`](../src/expr.c#L1394), `?:` to
+[`conditional_rest()`](../src/expr.c#L2029). Operands come from [`primary()`](../src/expr.c#L1164).
 
 There is no lvalue node. An object is its address on the value stack, and
 whether it is read or written is decided where the expression starts: the
-statement-level paths ([`name_rest()`](../src/expr.c#L1671), [`deref_rest()`](../src/expr.c#L1937),
-[`object_rest()`](../src/expr.c#L1565)) look for `=` or a compound operator after the
+statement-level paths ([`name_rest()`](../src/expr.c#L1676), [`deref_rest()`](../src/expr.c#L1942),
+[`object_rest()`](../src/expr.c#L1570)) look for `=` or a compound operator after the
 object and either store to it or read it. A file-scope variable's address
-is a constant ([`global_address()`](../src/expr.c#L262)), so reading a global is reading
+is a constant ([`global_address()`](../src/expr.c#L263)), so reading a global is reading
 through a constant pointer, and folds like one.
 
 `a = b + 1;`, with `a` and `b` locals, goes like this:
@@ -371,15 +371,15 @@ sequenceDiagram
     S->>G: gen_discard()
 ```
 
-[`statement()`](../src/stmt.c#L991) ·
-[`comma_expr()`](../src/expr.c#L1995) ·
-[`assignment()`](../src/expr.c#L1893) ·
-[`name_rest()`](../src/expr.c#L1671) ·
+[`statement()`](../src/stmt.c#L1009) ·
+[`comma_expr()`](../src/expr.c#L2000) ·
+[`assignment()`](../src/expr.c#L1898) ·
+[`name_rest()`](../src/expr.c#L1676) ·
 [`vpush_local()`](../src/vstack.c#L221) ·
 [`vpush_const()`](../src/vstack.c#L194) ·
-[`vapply()`](../src/arith.c#L1429) ·
-[`vstore_local()`](../src/lvalue.c#L53) ·
-[`gen_discard()`](../src/arith.c#L749)
+[`vapply()`](../src/arith.c#L1513) ·
+[`vstore_local()`](../src/lvalue.c#L64) ·
+[`gen_discard()`](../src/arith.c#L762)
 
 The parser tells the generator how wide a result may be: `narrow_dest` is
 the width of what the value goes straight into, and an operator whose low
@@ -394,8 +394,8 @@ evaluated, and a `for` step that is compiled after the body. A `GenMark`
 ([`gen.h`](../src/gen.h)) saves the output position and the counts of every table the
 generator appends to -- fixups, runtime wants, bss slots, spill state,
 the wide constants, a copy of the value stack -- and
-[`gen_rollback()`](../src/vstack.c#L1078) restores them all, rewinding the output with
-[`out_rewind()`](../src/image.c#L548).
+[`gen_rollback()`](../src/vstack.c#L1093) restores them all, rewinding the output with
+[`out_rewind()`](../src/image.c#L558).
 
 `sizeof` parses its operand under a mark, reads its type, and rolls back,
 except for a VLA, whose size C99 says is evaluated.
@@ -406,15 +406,15 @@ Loops are laid out with the test where it runs:
 
 - `while`: top, test, jump out if false, body, jump back.
 - `do`: body, test, one conditional jump back.
-- `for`: the step's text is recorded ([`step_kept()`](../src/stmt.c#L758)), compiled
+- `for`: the step's text is recorded ([`step_kept()`](../src/stmt.c#L776)), compiled
   where it stands under a mark and rolled back, then read again after the
-  body ([`step_again()`](../src/stmt.c#L801)), so the loop is test, body, step and one
+  body ([`step_again()`](../src/stmt.c#L819)), so the loop is test, body, step and one
   jump back. A step that cannot be read twice the same way -- one holding
   a string, a `#`, a macro, or a declaration -- keeps the step before the
   body and jumps around it.
-- `switch` ([`switch_statement()`](../src/stmt.c#L528)) stores the value, jumps to tests
+- `switch` ([`switch_statement()`](../src/stmt.c#L544)) stores the value, jumps to tests
   placed after the body, and a `case` only records its address. The tests
-  are a chain of compares ([`gen_switch_case()`](../src/branch.c#L602)). Since a case is
+  are a chain of compares ([`gen_switch_case()`](../src/branch.c#L607)). Since a case is
   just an address, Duff's device works.
 - `break` and `continue` are lists of jump holes filled when the loop
   ends; `goto` is a hole filled when its label is reached, with C99's rule
@@ -429,11 +429,11 @@ zeroed. A `static` in a block is laid down in the code, and jumped over.
 A global's initialiser is parsed with [`global_initializer()`](../src/init.c#L889),
 which requires a constant; a global's bytes are written into the image
 when its declaration ends. A global with no initialiser gets room in the
-**bss** ([`gen_bss_reserve()`](../src/finish.c#L315)), which takes no space in the file
+**bss** ([`gen_bss_reserve()`](../src/finish.c#L342)), which takes no space in the file
 and is zeroed by the entry stub; its uses are offsets into the bss until
 the image's length is known (section 15). A global declared again with a
 value is written over the bytes it already has, reading them back from the
-card if they have gone there ([`out_resident()`](../src/image.c#L436)).
+card if they have gone there ([`out_resident()`](../src/image.c#L446)).
 
 ### Inline functions
 
@@ -452,7 +452,7 @@ The parser pushes **descriptions** of values; code is written only when a
 value is needed in a register. So `1 + 2` never reaches the code generator,
 and `x + 1` loads `x` once.
 
-A `Value` ([`Value`](../src/gen.h#L89)) is a kind, a type, an extension byte, a value
+A `Value` ([`Value`](../src/gen.h#L43)) is a kind, a type, an extension byte, a value
 and qualifier bits. The kinds are:
 
 | kind | what `val` is | example |
@@ -468,10 +468,10 @@ and qualifier bits. The kinds are:
 
 The stack is `vstack[256]`, walked by pointer. Its operations are in
 [`gen.h`](../src/gen.h): push ([`vpush_const()`](../src/vstack.c#L194), [`vpush_local()`](../src/vstack.c#L221),
-[`vpush_bss()`](../src/vstack.c#L215)), apply an operator ([`vapply()`](../src/arith.c#L1429)), convert
-([`vconvert()`](../src/vstack.c#L303)), load through a pointer ([`vderef()`](../src/lvalue.c#L273)),
-select a member ([`vmember()`](../src/lvalue.c#L407)), store ([`vstore_local()`](../src/lvalue.c#L53),
-[`vstore_indirect()`](../src/lvalue.c#L491)), call ([`gen_call()`](../src/func.c#L1080)).
+[`vpush_bss()`](../src/vstack.c#L215)), apply an operator ([`vapply()`](../src/arith.c#L1513)), convert
+([`vconvert()`](../src/vstack.c#L303)), load through a pointer ([`vderef()`](../src/lvalue.c#L319)),
+select a member ([`vmember()`](../src/lvalue.c#L453)), store ([`vstore_local()`](../src/lvalue.c#L64),
+[`vstore_indirect()`](../src/lvalue.c#L550)), call ([`gen_call()`](../src/func.c#L1125)).
 
 ### Registers
 
@@ -480,16 +480,16 @@ in it. **IX** is the frame pointer. **IY** belongs to the generator: far
 frame slots, 2-byte loads, indirect calls. **A** holds a byte
 (`VAL_ACC`) and is scratch otherwise.
 
-[`force_reg()`](../src/vstack.c#L816) loads a value into a register if it is not in one;
-[`force_into()`](../src/vstack.c#L970) loads it into a particular one, moving whatever is
-there to a free register, or to a spill slot. [`reg_alloc()`](../src/vstack.c#L772) takes
+[`force_reg()`](../src/vstack.c#L827) loads a value into a register if it is not in one;
+[`force_into()`](../src/vstack.c#L983) loads it into a particular one, moving whatever is
+there to a free register, or to a spill slot. [`reg_alloc()`](../src/vstack.c#L783) takes
 the first free register or spills the oldest register value -- the one
 deepest on the stack, since the top is what is being worked on.
-[`save_regs_below()`](../src/vstack.c#L752) spills everything but the operands before a
+[`save_regs_below()`](../src/vstack.c#L763) spills everything but the operands before a
 call.
 
 Spill slots are in a scratch area below the locals, reused within a
-statement and reset at its end ([`gen_stmt_end()`](../src/vstack.c#L717)). Its peak, the
+statement and reset at its end ([`gen_stmt_end()`](../src/vstack.c#L728)). Its peak, the
 locals and the local arrays make the frame.
 
 ## 10. Functions and the calling convention
@@ -518,14 +518,14 @@ ix-1…   │ locals           │   96 bytes within (ix+d)'s reach
         └──────────────────┘
 ```
 
-[`gen_func_begin()`](../src/func.c#L474) writes the frame out -- `push ix; ld ix,0; add
+[`gen_func_begin()`](../src/func.c#L472) writes the frame out -- `push ix; ld ix,0; add
 ix,sp; ld hl,-frame; add hl,sp; ld sp,hl` -- the frame size patched in at
 the end, and the last three made `lea hl,ix-frame; ld sp,hl` where it is in
 `(ix+d)`'s reach; a function with no frame keeps the first nine bytes. Every `return` jumps to one epilogue,
 `ld sp,ix; pop ix; ret` -- `pop ix; ret` with no frame, where SP never
-moved -- which [`gen_func_end()`](../src/func.c#L658) lays down, along with
+moved -- which [`gen_func_end()`](../src/func.c#L647) lays down, along with
 the frame size, the local arrays' addresses, the function's shortened
-jumps ([`relax_function()`](../src/relax.c#L716)) and its wide constants
+jumps ([`relax_function()`](../src/relax.c#L791)) and its wide constants
 ([`pool_emit()`](../src/wide.c#L817)).
 
 Where its code never reads IX either -- no `DD` prefix among its bytes, nor
@@ -534,15 +534,15 @@ no frame at all: the prologue is cut and the epilogue is `ret`.
 
 A call to a function already defined is `call nn`; a call to one not yet
 seen is `call 0` and a fixup (section 15). A call through a pointer loads
-IY and goes through [`call_through()`](../src/func.c#L1479). `memcpy`, `memset`,
+IY and goes through [`call_through()`](../src/func.c#L1524). `memcpy`, `memset`,
 `memmove`, `memchr` and `exit` are recognised by
-[`mem_builtin()`](../src/func.c#L1032) and [`exit_builtin()`](../src/func.c#L992) and done in line or with
+[`mem_builtin()`](../src/func.c#L1063) and [`exit_builtin()`](../src/func.c#L993) and done in line or with
 `ldir`.
 
 A frame slot further than `(ix-128)` is reached through IY, set to
-`ix+step` once or twice ([`far_base()`](../src/insn.c#L172)). Locals are kept in the first
+`ix+step` once or twice ([`far_base()`](../src/insn.c#L195)). Locals are kept in the first
 96 bytes so that nearly every function never needs it; a declaration past
-that goes with the arrays ([`gen_local_far()`](../src/func.c#L97)).
+that goes with the arrays ([`gen_local_far()`](../src/func.c#L95)).
 
 ## 11. Wide values
 
@@ -563,7 +563,7 @@ written in eZ80 assembly in [`lib/rt/`](../lib/rt) and assembled by zap
 into acc's object format ([`lib/rt/README.md`](../lib/rt/README.md)). A
 link reads it first, since every program calls it and its index is a few
 names, then the C library only if a name is still waiting, and `rt.a` again
-for what the C library's members call ([`link_inputs()`](../src/link.c#L567)). The helper convention is left
+for what the C library's members call ([`link_inputs()`](../src/link.c#L732)). The helper convention is left
 operand in HL, right in BC, result in HL, everything else kept.
 
 Each file is one object: one routine, or several that share code. A link
@@ -571,15 +571,15 @@ takes an object whole, so the files are cut where the routines stop sharing
 code, and a program carries the ones it calls -- one that multiplies an int
 has the multiply and not the floating point.
 
-[`rt_call()`](../src/runtime.c#L92) emits `call 0` and records which routine and where:
+[`rt_call()`](../src/runtime.c#L97) emits `call 0` and records which routine and where:
 a call is not made a fixup against a symbol as it is emitted, since a
 file-scope symbol pushed while a function is being compiled would move its
-locals. Once the compile is done, [`rt_name_all()`](../src/runtime.c#L139) makes a symbol
+locals. Once the compile is done, [`rt_name_all()`](../src/runtime.c#L144) makes a symbol
 for each routine called, and the link finds them in the library like any
 other name, in the order of their slots among the program's other calls
-([`waits_next()`](../src/link.c#L427)) -- so a program built in one step takes the same
+([`waits_next()`](../src/link.c#L553)) -- so a program built in one step takes the same
 members in the same order as one compiled to an object and then linked.
-[`rt_fill_all()`](../src/runtime.c#L194) then fills the calls in: those still in memory
+[`rt_fill_all()`](../src/runtime.c#L199) then fills the calls in: those still in memory
 now, and those in the image's file as a second list of additions the sweep
 makes as it passes (section 14). A compile to an object leaves each call as
 a reference to the routine's name.
@@ -593,26 +593,26 @@ that each is a routine `lib/rt` exports and that the library lists it.
 Two things remove bytes after they are written:
 
 - **Short jumps.** Every jump is emitted as a 3-byte `jp` and recorded. At
-  the end of each function, [`relax_function()`](../src/relax.c#L716) turns each one whose
+  the end of each function, [`relax_function()`](../src/relax.c#L791) turns each one whose
   target is within reach into a 2-byte `jr`, and a conditional jump over
   an unconditional one into one inverted jump (OPTIMIZATIONS.md, section
   10).
 - **Unused static functions.** [`static_begin()`](../src/relax.c#L71) and
   [`static_end()`](../src/relax.c#L106) record each static function's bytes, and
   [`want()`](../src/relax.c#L53) each reference from one static function to another. At
-  the end of the file, [`drop_unused_statics()`](../src/relax.c#L892) marks everything
+  the end of the file, [`drop_unused_statics()`](../src/relax.c#L973) marks everything
   reachable from what is used outside them, and cuts out the rest.
 
 A cut ([`cut_out()`](../src/relax.c#L387)) moves every address past it: the relocations,
 the fixups, the bss slots, the symbols, and the bytes already on the card
-([`out_slot_get()`](../src/image.c#L485)). So cuts happen only where every table that
+([`out_slot_get()`](../src/image.c#L495)). So cuts happen only where every table that
 names an address can be walked.
 
 ### Marks and epochs
 
 Many of the generator's small improvements look back at code just written
 -- "the last thing emitted was a load of this slot", "this 0/1 value can
-become a jump" -- and take it back with [`out_rewind()`](../src/image.c#L548). Each such
+become a jump" -- and take it back with [`out_rewind()`](../src/image.c#L558). Each such
 mark records where the code ended and `out_rewinds`, a count of every
 rewind and cut. A mark is good only while both still match: after a
 rewind, the image can come back to the same address with different bytes
@@ -628,7 +628,7 @@ needed, and the table is what lets an object be placed anywhere.
 [`out_reloc()`](../src/out.h#L64) records one where the slot is emitted, so the table
 comes out in order.
 
-The image goes to the card as it is made. [`out_flush()`](../src/image.c#L396) writes
+The image goes to the card as it is made. [`out_flush()`](../src/image.c#L400) writes
 what is in memory and starts the buffer again:
 
 - **A compile** flushes after a function once 32 KB is waiting on the Agon
@@ -638,7 +638,7 @@ what is in memory and starts the buffer again:
 - **A link** flushes after every object, into the output itself.
 
 What is written to a byte already on the card becomes a **patch**, kept in
-1 KB blocks ([`patch()`](../src/image.c#L618)). At the end, [`sweep()`](../src/image.c#L696) reads the
+1 KB blocks ([`patch()`](../src/image.c#L628)). At the end, [`sweep()`](../src/image.c#L706) reads the
 file back a piece at a time, applies the patches, the additions the fixups
 became, and the bss base, in the order of their slots, and writes it out.
 
@@ -657,37 +657,37 @@ sequenceDiagram
     F->>F: sweep(): read a piece, apply patches<br/>and additions in slot order, write
 ```
 
-[`out_flush()`](../src/image.c#L396) ·
+[`out_flush()`](../src/image.c#L400) ·
 [`spill_io()`](../src/image.c#L367) ·
-[`out_add24()`](../src/image.c#L671) ·
-[`out_patch24()`](../src/image.c#L664) ·
-[`gen_finish()`](../src/finish.c#L760) ·
-[`out_close()`](../src/image.c#L821) ·
-[`sweep()`](../src/image.c#L696)
+[`out_add24()`](../src/image.c#L681) ·
+[`out_patch24()`](../src/image.c#L674) ·
+[`gen_finish()`](../src/finish.c#L790) ·
+[`out_close()`](../src/image.c#L831) ·
+[`sweep()`](../src/image.c#L706)
 
-If acc stops on an error, [`out_abandon()`](../src/image.c#L848) removes the partial file.
+If acc stops on an error, [`out_abandon()`](../src/image.c#L858) removes the partial file.
 
 ## 15. The end of a file
 
-[`gen_finish()`](../src/finish.c#L760) settles what could not be settled as it was
+[`gen_finish()`](../src/finish.c#L790) settles what could not be settled as it was
 compiled:
 
 1. **Unused statics** are dropped (section 13).
 2. **The runtime**: every call into it is filled in with where the link
-   put the routine ([`rt_fill_all()`](../src/runtime.c#L194), section 12).
-3. **argc and argv**: [`args_emit()`](../src/finish.c#L572) lays down the code that splits
+   put the routine ([`rt_fill_all()`](../src/runtime.c#L199), section 12).
+3. **argc and argv**: [`args_emit()`](../src/finish.c#L601) lays down the code that splits
    MOS's command line into words, as agondev's startup does, up to sixteen.
    It is there whether `main` takes them or not: a link cannot tell.
-4. **The bss**: [`bss_emit()`](../src/finish.c#L428) places it after the image, lays down
+4. **The bss**: [`bss_emit()`](../src/finish.c#L455) places it after the image, lays down
    the routine that clears it, and adds its base to every slot that holds
    an offset into it.
 5. **Fixups**: every call or address that waited on a symbol
-   ([`fixup_add()`](../src/finish.c#L57)) is filled. A fixup is `{symbol, at}`, six
+   ([`fixup_add()`](../src/finish.c#L84)) is filled. A fixup is `{symbol, at}`, six
    bytes, in blocks of 256. In memory it is written directly; on the card
    it is handed to the image as an `OutAdd` for the sweep. In an object,
    one that is still unresolved becomes an external reference.
 
-The **entry stub** is laid down first, by [`gen_startup()`](../src/finish.c#L1055), from
+The **entry stub** is laid down first, by [`gen_startup()`](../src/finish.c#L1085), from
 [`src/rt/startup.s`](../src/rt/startup.s): it saves IY and MOS's stack
 pointer, clears the bss, builds argv, moves to its own stack at the top of
 RAM, calls `main`, and returns its result to MOS. `-x` makes a stub that
@@ -724,21 +724,21 @@ flowchart TD
     lib -->|"no"| fin["gen_finish()"]
 ```
 
-[`gen_startup()`](../src/finish.c#L1055) ·
+[`gen_startup()`](../src/finish.c#L1085) ·
 [`link_object()`](../src/link.c#L77) ·
-[`place_object()`](../src/link.c#L368) ·
-[`copy_text()`](../src/link.c#L159) ·
-[`link_short()`](../src/link.c#L459) ·
-[`link_archive()`](../src/link.c#L495) ·
+[`place_object()`](../src/link.c#L479) ·
+[`copy_text()`](../src/link.c#L221) ·
+[`link_short()`](../src/link.c#L585) ·
+[`link_archive()`](../src/link.c#L719) ·
 [`ar_find()`](../src/archive.c#L250) ·
-[`take_items()`](../src/link.c#L201) ·
-[`gen_finish()`](../src/finish.c#L760)
+[`take_items()`](../src/link.c#L253) ·
+[`gen_finish()`](../src/finish.c#L790)
 
 A library is asked for names in the order of the slots that wait on them
-([`waits_next()`](../src/link.c#L427)), each routine of the runtime once, at its first
+([`waits_next()`](../src/link.c#L553)), each routine of the runtime once, at its first
 call. It is kept open while the link reads it, since opening a file on the
 card is a search of its directory, and a name it does not have is marked
-([`name_set_missed()`](../src/names.c#L364)) so that it is not asked again on the next
+([`name_set_missed()`](../src/names.c#L366)) so that it is not asked again on the next
 pass. An object named on the command line is placed whole. Its text is read
 straight from the file into the image, after only its front (header,
 symbols and relocations) has been read. From a library, a link takes only
@@ -761,7 +761,7 @@ exit code is always 100, for an editor on the Agon to read. Without it, the
 exit code on the Agon is 100 for an error and 19 for a bad command line,
 since MOS turns 1, 4 and 5 into its own messages.
 
-On the Agon, acc splits its own command line ([`agon_split()`](../src/main.c#L297)), with
+On the Agon, acc splits its own command line ([`agon_split()`](../src/main.c#L330)), with
 quotes and no limit on the number of words, and handles `>`, `>>` and `<`.
 
 acc prints through [`fmt.c`](../src/fmt.c), its own small printf: only the formats acc
@@ -841,8 +841,8 @@ agondev's.
   the file of the routines it shares code with, and export it with `XDEF`.
   For the code generator to call it, add it to the enum in [`runtime.h`](../src/runtime.h)
   and to `rt_names` in [`runtime.c`](../src/runtime.c), and call it with
-  [`rt_call()`](../src/runtime.c#L92); `test/rtlib.sh` checks the three agree.
-- **Something kept per function.** Free it in [`gen_forget()`](../src/func.c#L777); if it
+  [`rt_call()`](../src/runtime.c#L97); `test/rtlib.sh` checks the three agree.
+- **Something kept per function.** Free it in [`gen_forget()`](../src/func.c#L771); if it
   holds an address, move it in [`cut_out()`](../src/relax.c#L387); if it is appended to
   under a `GenMark`, save and restore its count there.
 - **A test.** A program in `test/cases` that returns 0 when it is right,
