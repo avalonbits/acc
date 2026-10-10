@@ -384,6 +384,10 @@ int out_flush_at = 32768;
 int out_flush_at = 2048;
 #endif
 
+/* What a link holds before it writes: more than a small program's whole
+ * image, so that it goes to its file once, and little next to the heap. */
+#define LINK_HOLD 8192
+
 /* What memory holds of the image, written to its file and let go of once
  * it is out_flush_at. Called where nothing written
  * so far will be written again but through out_patch and out_add24, or read
@@ -398,10 +402,15 @@ void out_flush(void)
     unsigned char *held = out_img + out_flushed;
     int used = (int) (out_put - held);
 
-    /* A link too, once it holds as much: written after each member, a
+    /* A link too, once it holds LINK_HOLD: written after each member, a
      * hello world's image went to its file a member at a time, and every
-     * slot gen_finish filled in it was a read and a write of the file. */
-    if (!out_may_flush || !used || (unsigned) used < (unsigned) out_flush_at)
+     * slot gen_finish filled in it was a read and a write of the file. Not
+     * out_flush_at, which on the Agon is 32 KB: a link that held that held
+     * it and an object besides, and the heap is the link's limit
+     * (test/linkstream.sh). */
+    if (!out_may_flush || !used
+        || (unsigned) used < (out_may_flush == OUT_FLUSH_IN_PLACE
+                              ? (unsigned) LINK_HOLD : (unsigned) out_flush_at))
         return;
     if (!spill)
         spill_open();

@@ -3,7 +3,8 @@
 #
 # The image of a link is the whole program, and held until the end it was
 # most of what a link of zap needed and more than the Agon had. Between
-# objects the link writes what it has to the file (out_flush); what is
+# objects the link writes what it has to the file (out_flush) once it holds
+# 8 KB, which a small program's whole image fits in; what is
 # filled in after that waits as a patch, made in the file when the link
 # ends. Checked here, with a host acc that reports what it held
 # (test/peak.c, test/linkheap.sh) and one that counts what waited:
