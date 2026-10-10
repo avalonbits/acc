@@ -20,10 +20,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE_MAX=242173        # bytes of acc.bin
-HEAP_MIN=185363         # bytes from ___heapbot to ___heaptop
+IMAGE_MAX=242167        # bytes of acc.bin
+HEAP_MIN=185369         # bytes from ___heapbot to ___heaptop
 SETFLAG_MAX=528
-IMULU_MAX=311
+IMULU_MAX=308
 
 AGONDEV=${AGONDEV:-$HOME/agondev}
 CC=$AGONDEV/bin/ez80-none-elf-clang

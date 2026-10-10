@@ -937,19 +937,28 @@ long obj_reloc_add(const ObjReloc *r, const unsigned char *slot)
     }
 }
 
+/* A symbol's entry, by adds: i * OBJ_SYM is a call to __imulu, and a link
+ * reads every symbol of every object it takes. */
+static const unsigned char *sym_entry(const Object *o, int i)
+{
+    const unsigned char *e = o->syms + i + i + i;
+
+    return e + i + i + i + i;
+}
+
 const char *obj_sym_name(const Object *o, int i)
 {
-    return o->strings + get24(o->syms + i * OBJ_SYM);
+    return o->strings + get24(sym_entry(o, i));
 }
 
 int obj_sym_value(const Object *o, int i)
 {
-    return get24(o->syms + i * OBJ_SYM + 3);
+    return get24(sym_entry(o, i) + 3);
 }
 
 int obj_sym_flags(const Object *o, int i)
 {
-    return o->syms[i * OBJ_SYM + 6];
+    return sym_entry(o, i)[6];
 }
 
 int obj_reloc_at(const Object *o, int i)
