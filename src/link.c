@@ -111,6 +111,35 @@ static int item_start(const int *start, int i)
     return *(const int *) (const void *) ((const char *) start + i + i + i);
 }
 
+/* And start[i] = value, the same way. */
+__attribute__((noinline))
+static void item_set(int *start, int i, int value)
+{
+    if (sizeof (int) != 3)
+        start[i] = value;
+    else
+        *(int *) (void *) ((char *) start + i + i + i) = value;
+}
+
+/* The symbol relocation `which` of an object names: looked up the first
+ * time, through link_symbol and so name_intern, and remembered in
+ * `syms_of` -- one for each of the object's symbols, -1 until then. An
+ * object calls the same few functions from everywhere, and each slot was
+ * a lookup of its name: a twelfth of linking acc. The flags are the
+ * symbol's own, the same for every slot, so the one lookup leaves the
+ * name as weak or not as each would have. */
+static int slot_symbol(const Object *o, int *syms_of, int which)
+{
+    int sym = item_start(syms_of, which - 2);
+
+    if (sym == -1) {
+        sym = link_symbol(obj_sym_name(o, which - 2), obj_sym_flags(o, which - 2));
+        item_set(syms_of, which - 2, sym);
+    }
+
+    return sym;
+}
+
 static int item_in(const int *start, int n, int at)
 {
     unsigned low = 0, high = (unsigned) n - 1;
@@ -220,21 +249,29 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
 {
     Object o = *op;
     char *want = calloc((size_t) o.nitems + 1, 1);
-    int *queue = malloc(((size_t) o.nitems + 1) * sizeof *queue);
-    int *start = malloc(((size_t) o.nitems + 1) * sizeof *start);
+    /* As big as `start`, more than it needs, so the two sizes are one
+     * multiply. */
+    int *queue = malloc(((size_t) o.nitems + 1 + (size_t) o.nsyms) * sizeof *queue);
+    /* Where each item starts, and the text's end after the last; then
+     * the symbol each of the object's symbols is in acc's table, found as
+     * slots ask (slot_symbol). One block, so that its size is one multiply. */
+    int *start = malloc(((size_t) o.nitems + 1 + (size_t) o.nsyms) * sizeof *start);
+    int *syms_of;
     int nqueue = 0, i, r, want_bss = !name, new_bss = 0, want_now = 0;
     int nrel = obj_nrelocs(&o), item, delta = 0;
 
     if (!want || !queue || !start)
         acc_error("out of memory for '%s'", path);
 
-    /* Where each item starts, and the text's end after the last. */
     {
         int *put = start;
 
         for (i = 0; i != o.nitems; i++)
             *put++ = obj_item(&o, i);
-        *put = o.text_len;
+        *put++ = o.text_len;
+        syms_of = put;
+        for (i = 0; i != o.nsyms; i++)
+            *put++ = -1;
     }
 
     /* The item the wanted name is in -- or its bss, if that is where it is.
@@ -421,12 +458,9 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
             /* The symbol is added to what is in the slot: now, or by
              * gen_finish. */
             out_patch24(dest, (int) a);
-            gen_link_fixup(link_symbol(obj_sym_name(&o, which - 2),
-                                       obj_sym_flags(&o, which - 2)), dest);
+            gen_link_fixup(slot_symbol(&o, syms_of, which), dest);
         } else {
-            gen_late_fixup(link_symbol(obj_sym_name(&o, which - 2),
-                                       obj_sym_flags(&o, which - 2)),
-                           dest, kind, a);
+            gen_late_fixup(slot_symbol(&o, syms_of, which), dest, kind, a);
         }
     }
     free(want);
