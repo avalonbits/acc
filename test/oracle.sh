@@ -15,6 +15,9 @@
 # and starts stdio, and it brings its own header. test/oracle/start.s supplies
 # a startup that reports the same way acc's does. libagon is still linked,
 # because agondev's compiler calls it for arithmetic the chip cannot do.
+# Its malloc wants the two ends of the heap its linker script would have
+# given, ___heapbot past bss and ___heaptop at the top of RAM, and they are
+# given here as that script gives them.
 set -u
 
 AGONDEV=${AGONDEV:-$HOME/agondev}
@@ -32,4 +35,5 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
     -target ez80-none-elf -Oz -Wa,-march=ez80+full \
     -c "$src" -o "$tmp/t.o" || exit 1
 "$AGONDEV/bin/ez80-none-elf-ld" --oformat binary -Ttext=0x40000 -e _start \
+    --defsym=___heapbot=_end --defsym=___heaptop=0xb0000 \
     -o "$out" "$tmp/start.o" "$tmp/t.o" -L"$AGONDEV/lib" -lagon || exit 1
