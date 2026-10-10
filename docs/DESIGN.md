@@ -139,7 +139,7 @@ size at the moment it grows. acc is written around that:
   libagon's.
 - **Arenas grow in chunks that never move.** Names
   ([`names_chunk()`](../src/names.c#L206)), struct members ([`members_chunk()`](../src/sym.c#L652)) and
-  macro records ([`macro_new()`](../src/macro.c#L76)) each take a new chunk when the last
+  macro records ([`macro_new()`](../src/macro.c#L77)) each take a new chunk when the last
   is full, so no pointer into them goes stale and nothing is copied.
 - **Tables that would be long are kept in blocks.** The fixups
   (`FIXUP_BLOCK`, 256 entries of 6 bytes) and the patches to the output
@@ -196,7 +196,7 @@ after the last byte, so the scanners stop there without a bounds test.
 Because a line is never split, tokens point straight into the window, a
 `*/` is never cut in two, and a column is found only when an error needs
 one, by walking back from the token to its line's start
-([`column_of()`](../src/source.c#L1175)).
+([`column_of()`](../src/source.c#L1184)).
 
 Line splices and universal character names are dealt with once per window,
 in [`unsplice()`](../src/source.c#L509), before any scanner sees the text: a backslash-
@@ -259,19 +259,24 @@ The preprocessor is not a separate pass: [`next()`](../src/lex.c#L1039) runs it 
 goes.
 
 **Macros.** A name with the `NAME_MACRO` flag is looked up in a hash table
-of pointers to 16-byte `Macro` records ([`macro_slot()`](../src/macro.c#L105)); the
+of pointers to 16-byte `Macro` records ([`macro_slot()`](../src/macro.c#L106)); the
 records live in chunks and do not move. A macro's text is kept as written,
-and expanding it ([`expand()`](../src/macro.c#L673)) pushes that text as a new source
+and expanding it ([`expand()`](../src/macro.c#L674)) pushes that text as a new source
 window. Rescanning, and macros inside macros, fall out of the machinery
 `#include` already needs. A function-like macro's arguments are collected
-by [`collect_args()`](../src/macro.c#L314), substituted by
-[`build_expansion()`](../src/macro.c#L500) -- `#` stringizes, `##` pastes, and ordinary
+by [`collect_args()`](../src/macro.c#L315), substituted by
+[`build_expansion()`](../src/macro.c#L501) -- `#` stringizes, `##` pastes, and ordinary
 arguments are expanded first -- and the result is pushed as a window that
-frees its text when it is popped. [`expanding()`](../src/macro.c#L234) stops a macro
+frees its text when it is popped. [`expanding()`](../src/macro.c#L235) stops a macro
 expanding inside itself by checking the levels on the source stack.
 `__FILE__`, `__LINE__`, `__DATE__`, `__TIME__` and the `__STDC__` family
-are keywords resolved by [`predefined()`](../src/macro.c#L637); `__DATE__` and `__TIME__`
-are acc's own build time, so output is reproducible.
+are keywords resolved by [`predefined()`](../src/macro.c#L638); `__DATE__` and `__TIME__`
+are acc's own build time, so output is reproducible. The rest -- the type
+widths read out of agondev's clang, `__GNUC__` and `__VERSION__`, and
+`__builtin_unreachable()` -- are ordinary macros defined before the file
+by [`predefined_macros_init()`](../src/macro.c#L822), and
+[`lex_open()`](../src/source.c#L1072) declares `__builtin_ffs` before the
+file's first line.
 
 **Directives.** [`directive()`](../src/directive.c#L1608) dispatches on the name.
 [`logical_line()`](../src/directive.c#L86) copies a directive's logical line into a

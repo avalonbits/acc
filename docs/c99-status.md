@@ -98,8 +98,11 @@ Each is also in the plan's decisions:
 - **Old-style (K&R) function definitions.** Obsolescent in C99 6.11.7.
 - **`long double`.** agondev's library has no arithmetic for it.
 - **`_Complex`.** Optional for a freestanding implementation.
-- **GNU extensions.** `__attribute__` is read and ignored, and
-  `__restrict` is read as `restrict`; nothing else.
+- **GNU extensions.** acc says it is GNU C 4.2.1, as agondev's clang does:
+  `__GNUC__`, `__GNUC_MINOR__`, `__GNUC_PATCHLEVEL__` and `__VERSION__` are
+  predefined. `__attribute__` is read and ignored, `__restrict` is read as
+  `restrict`, `__builtin_ffs` is declared in every file and is in the
+  library, and `__builtin_unreachable()` is nothing; nothing else.
 - **Trigraphs** are read only with `-trigraphs`, as gcc and clang have
   them outside their strict modes.
 - **`double` is `float`**, four bytes, to match agondev's calling
