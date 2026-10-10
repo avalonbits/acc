@@ -99,14 +99,27 @@ typedef struct {
  *
  * Unsigned, and halved by a shift: `/ 2` of a signed int is a call to the
  * runtime's signed divide, which was a third of linking a hello world. */
+/* start[i], found by adding i to the pointer once for each byte of an
+ * int: as an index, a call to the runtime's __imulu (see reloc_entry in
+ * obj.c). The host's ints are other sizes. */
+__attribute__((noinline))
+static int item_start(const int *start, int i)
+{
+    if (sizeof (int) != 3)
+        return start[i];
+
+    return *(const int *) (const void *) ((const char *) start + i + i + i);
+}
+
 static int item_in(const int *start, int n, int at)
 {
     unsigned low = 0, high = (unsigned) n - 1;
 
+    /* Offsets are never negative: compared unsigned, which is no call. */
     while (low < high) {
         unsigned mid = (low + high + 1) >> 1;
 
-        if (start[mid] <= at)
+        if ((unsigned) item_start(start, (int) mid) <= (unsigned) at)
             low = mid;
         else
             high = mid - 1;
@@ -214,9 +227,13 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         acc_error("out of memory for '%s'", path);
 
     /* Where each item starts, and the text's end after the last. */
-    for (i = 0; i != o.nitems; i++)
-        start[i] = obj_item(&o, i);
-    start[o.nitems] = o.text_len;
+    {
+        int *put = start;
+
+        for (i = 0; i != o.nitems; i++)
+            *put++ = obj_item(&o, i);
+        *put = o.text_len;
+    }
 
     /* The item the wanted name is in -- or its bss, if that is where it is.
      * Or every item, for an object placed whole. */
@@ -248,8 +265,8 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         int from, to, run;
 
         item = queue[--nqueue];
-        from = start[item];
-        to = start[item + 1];
+        from = item_start(start, item);
+        to = item_start(start, item + 1);
 
         for (run = 0; run != 2; run++) {
             int end = run ? nrel : o.nrelocs;
@@ -288,7 +305,8 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         while (out_here() & (step - 1))
             out_byte(0);
         t->placed[i] = out_here();
-        copy_text(&o, start[i], start[i + 1] - start[i]);
+        copy_text(&o, item_start(start, i),
+                  item_start(start, i + 1) - item_start(start, i));
         if (obj_link_map_on())
             link_map_item(&o, i, t->placed[i], path);
     }
@@ -297,7 +315,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
      * its own (place_object), so no padding comes between them, and every
      * item is as far from where it is in the object as the first. */
     if (!name && o.nitems)
-        delta = t->placed[0] - start[0];
+        delta = t->placed[0] - *start;
     if (want_bss && t->bss < 0) {
         t->bss = gen_bss_reserve_aligned(o.bss_len, o.bss_align);
         new_bss = 1;
@@ -316,13 +334,11 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         if (flags & OBJ_BSS) {
             if (!new_bss)
                 continue;
-        } else if (!name) {
-            item = -1;                  /* the whole object: delta */
-        } else {
+        } else if (name) {
             item = item_in(start, o.nitems, value);
             if (!want[item])
                 continue;
-        }
+        }                               /* the whole object: delta */
         sym = link_symbol(obj_sym_name(&o, i), flags);
         if ((sym_flags(sym) & SYMF_DEFINED) || gen_bss_offset(sym) >= 0)
             acc_error("'%s' is defined in more than one object, and '%s' is "
@@ -332,8 +348,8 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
 
             continue;
         }
-        sym_at(sym)->val = item < 0 ? value + delta
-                                    : t->placed[item] + value - start[item];
+        sym_at(sym)->val = !name ? value + delta
+                                 : t->placed[item] + value - item_start(start, item);
         sym_set_flags(sym, SYMF_DECLARED | SYMF_DEFINED | SYMF_PARAMS);
     }
 
@@ -354,20 +370,21 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         } else {
             if (!sorted || r == o.nrelocs)      /* or the second table */
                 item = item_in(start, o.nitems, at);
-            while (item + 1 < o.nitems && start[item + 1] <= at)
+            while ((unsigned) item + 1 != (unsigned) o.nitems
+                   && (unsigned) item_start(start, item + 1) <= (unsigned) at)
                 item++;
             if (!want[item])
                 continue;
-            dest = t->placed[item] + at - start[item];
+            dest = t->placed[item] + at - item_start(start, item);
         }
         /* Read from where the slot was copied to: an object read with its
          * front only has no text in hand to read it from. */
         a = obj_reloc_addend(&o, r, out_img + (dest - out_base));
         if (which == 0) {
-            int target = name ? item_in(start, o.nitems, (int) a) : -1;
+            int target = name ? item_in(start, o.nitems, (int) a) : 0;
 
-            gen_slot(dest, kind, target < 0 ? (int) a + delta
-                                            : t->placed[target] + a - start[target]);
+            gen_slot(dest, kind, !name ? (int) a + delta
+                                       : t->placed[target] + a - item_start(start, target));
             /* An address in the image, which -r has to name as it does the
              * compiler's own: a jump inside a routine of the runtime, a
              * call to a static function of a member. */
