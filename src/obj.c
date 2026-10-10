@@ -689,46 +689,58 @@ static int take_object(unsigned char *all, int size, int have,
 
     /* And what the format promises, checked here so that the linker can
      * take it on trust: an assembler writes these too. */
+    /* Every number here is an offset or a count, never negative, so each
+     * is compared unsigned: a signed compare is a call into the runtime,
+     * five of them for every relocation of every object a link reads. */
     {
-        int i, a = 0, b = 0, last = -1;
+        int i, a = 0, b = 0, nrel = obj_nrelocs(o);
+        unsigned prev = 0, least = 0;
 
         for (i = 0; i != o->nitems; i++) {
-            int item = obj_item(o, i);
+            unsigned item = (unsigned) obj_item(o, i);
 
-            if ((i == 0 && item != 0) || (i > 0 && item <= obj_item(o, i - 1))
-                || item >= o->text_len)
+            if ((i == 0 ? item != 0 : item <= prev)
+                || item >= (unsigned) o->text_len)
                 REFUSE("'%s' has its items out of order", path);
+            prev = item;
         }
         if (o->text_len && !o->nitems)
             REFUSE("'%s' has text and no item that holds it", path);
-        for (i = 0; i < obj_nrelocs(o); i++) {
-            int kind = obj_reloc_kind(o, i), at_ = obj_reloc_at(o, i);
+        for (i = 0; i != nrel; i++) {
+            ObjReloc rel;
+            unsigned at_, width;
 
-            if (kind >= REL_KINDS)
+            obj_reloc_read(o, i, &rel);
+            at_ = (unsigned) rel.at;
+            if ((unsigned) rel.kind >= REL_KINDS)
                 REFUSE("'%s' has a relocation of kind %d, which acc does "
-                       "not know", path, kind);
-            if ((kind == REL_HIGH8 || kind == REL_UPPER8) && i < o->nrelocs)
+                       "not know", path, rel.kind);
+            if ((rel.kind == REL_HIGH8 || rel.kind == REL_UPPER8) && !rel.own)
                 REFUSE("'%s' has a HIGH8 or UPPER8 relocation with no "
                        "addend of its own", path);
-            if (at_ < 0 || at_ + obj_reloc_width(kind) > o->text_len)
+            /* Inside the text, the slot whole: what is left from where it
+             * starts, so that nothing is added that could go past the top. */
+            width = (unsigned) obj_reloc_width(rel.kind);
+            if (at_ >= (unsigned) o->text_len || (unsigned) o->text_len - at_ < width)
                 REFUSE("'%s' has a relocation at %06x, outside its %d bytes",
-                       path, at_, o->text_len);
-            if (obj_reloc_sym(o, i) >= o->nsyms + 2)
+                       path, rel.at, o->text_len);
+            if ((unsigned) rel.sym >= (unsigned) o->nsyms + 2u)
                 REFUSE("'%s' has a relocation for a symbol it has not got",
                        path);
             if (i == o->nrelocs)
-                last = -1;
-            if (at_ <= last)
+                least = 0;              /* the second table starts again */
+            if (at_ < least)
                 REFUSE("'%s' has its relocations out of order", path);
-            last = at_;
+            least = at_ + 1;
         }
 
         /* No slot in both tables: a walk of the two in step. */
-        while (a < o->nrelocs && b < o->nrelocs_a) {
-            int x = obj_reloc_at(o, a), y = obj_reloc_at(o, o->nrelocs + b);
+        while (a != o->nrelocs && b != o->nrelocs_a) {
+            unsigned x = (unsigned) obj_reloc_at(o, a);
+            unsigned y = (unsigned) obj_reloc_at(o, o->nrelocs + b);
 
             if (x == y)
-                REFUSE("'%s' has two relocations at %06x", path, x);
+                REFUSE("'%s' has two relocations at %06x", path, (int) x);
             if (x < y)
                 a++;
             else
@@ -902,19 +914,58 @@ long obj_reloc_addend(const Object *o, int i, const unsigned char *slot)
     }
 }
 
+/* Its fields from one find of its entry; a link reads every relocation of
+ * every object it takes, and each accessor above finds the entry again. */
+void obj_reloc_read(const Object *o, int i, ObjReloc *r)
+{
+    const unsigned char *e = reloc_entry(o, i);
+
+    r->at = get24(e);
+    r->sym = low20(e + 3);
+    r->kind = e[5] >> 4;
+    r->own = i >= o->nrelocs;
+    if (r->own) {
+        r->addend = get24(e + 6);
+        if (r->addend & 0x800000L)
+            r->addend -= 0x1000000L;
+    }
+}
+
+/* What obj_reloc_addend says, for one read whole. */
+long obj_reloc_add(const ObjReloc *r, const unsigned char *slot)
+{
+    if (r->own)
+        return r->addend;
+    switch (r->kind) {
+    case REL_ABS24:  return get24(slot);
+    case REL_ABS16:  return slot[0] | slot[1] << 8;
+    case REL_PCREL8: return (signed char) slot[0];
+    default:         return slot[0];
+    }
+}
+
+/* A symbol's entry, by adds: i * OBJ_SYM is a call to __imulu, and a link
+ * reads every symbol of every object it takes. */
+static const unsigned char *sym_entry(const Object *o, int i)
+{
+    const unsigned char *e = o->syms + i + i + i;
+
+    return e + i + i + i + i;
+}
+
 const char *obj_sym_name(const Object *o, int i)
 {
-    return o->strings + get24(o->syms + i * OBJ_SYM);
+    return o->strings + get24(sym_entry(o, i));
 }
 
 int obj_sym_value(const Object *o, int i)
 {
-    return get24(o->syms + i * OBJ_SYM + 3);
+    return get24(sym_entry(o, i) + 3);
 }
 
 int obj_sym_flags(const Object *o, int i)
 {
-    return o->syms[i * OBJ_SYM + 6];
+    return sym_entry(o, i)[6];
 }
 
 int obj_reloc_at(const Object *o, int i)

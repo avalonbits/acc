@@ -63,12 +63,19 @@ o.item(0)
 o.define('_jumper', 0, func=True)
 o.text += bytes([0x18, 0])
 o.reloc(1, 'PCREL8', 'target')
+# And one to a name past where it goes, with an addend of its own that
+# takes it back: -5, three bytes in the second table, read as negative.
+o.item(2)
+o.define('_jumper_back', 2, func=True)
+o.text += bytes([0x18, 0])
+o.reloc(3, 'PCREL8', 'target_end', addend=-5)
 o.write(tmp + '/jr.o')
 
 o = Obj()
 o.item(0)
 o.define('target', 0, func=True)
 o.text += bytes([0x21, 42, 0, 0, 0xc9])
+o.define('target_end', 5)
 o.write(tmp + '/target.o')
 
 # And a jr that cannot reach: 200 bytes between it and where it goes.
@@ -96,6 +103,17 @@ broken('order', lambda o: setattr(o, 'raw',
        ([n3(4) + n3(0), n3(0) + n3(0)], [])))
 broken('both', lambda o: setattr(o, 'raw',
        ([n3(0) + n3(0)], [n3(0) + n3(1 << 20) + n3(0)])))
+broken('outside', lambda o: o.reloc(6, 'ABS24', 'text'))   # 6 to 8 of 8
+broken('outside_top', lambda o: setattr(o, 'raw',          # at 0xfffffe:
+       ([n3(0xfffffe) + n3(0)], [])))                      # 3 more wraps
+broken('nosym', lambda o: setattr(o, 'raw', ([n3(0) + n3(50)], [])))
+broken('items_order', lambda o: (o.item(4), o.item(2)))
+broken('items_same', lambda o: (o.item(4), o.item(4)))
+broken('items_past', lambda o: o.item(8))                  # at the end
+o = Obj()
+o.define('_x', 0, func=True)
+o.text += bytes(8)
+o.write(tmp + '/noitem.o')
 o = Obj()
 o.item(0)
 o.item(3, align=4)                                   # at 3, to be on 16
@@ -114,6 +132,7 @@ int high_past_page(void);
 int upper_of_table(void);
 int low_before(void);
 int jumper(void);
+int jumper_back(void);
 
 int main(void) {
     unsigned t = (unsigned) table;
@@ -127,8 +146,9 @@ int main(void) {
     if (table_word == (t & 0xffff) && table_at == table + 2) r++;
     if (((unsigned) buf & 0xff) == 0) r++;               /* the bss, aligned */
     if (jumper() == 42) r++;
+    if (jumper_back() == 42) r++;
 
-    return r + 34;              /* 8 checks */
+    return r + 33;              /* 9 checks */
 }
 CEOF
 "$ACC" -c "$tmp/main.c" -o "$tmp/main.o" >/dev/null 2>&1 || bad "main.c" "did not compile"
@@ -166,6 +186,13 @@ refuses "a kind acc does not know" "of kind 6" "$tmp/main.o" "$tmp/kind.o"
 refuses "HIGH8 without an addend of its own" "HIGH8 or UPPER8" "$tmp/main.o" "$tmp/high_no_addend.o"
 refuses "relocations out of order" "out of order" "$tmp/main.o" "$tmp/order.o"
 refuses "a slot in both tables" "two relocations at" "$tmp/main.o" "$tmp/both.o"
+refuses "a slot past the text" "outside its" "$tmp/main.o" "$tmp/outside.o"
+refuses "a slot at the top of 24 bits" "outside its" "$tmp/main.o" "$tmp/outside_top.o"
+refuses "a symbol it has not got" "has not got" "$tmp/main.o" "$tmp/nosym.o"
+refuses "items out of order" "items out of order" "$tmp/main.o" "$tmp/items_order.o"
+refuses "two items at one place" "items out of order" "$tmp/main.o" "$tmp/items_same.o"
+refuses "an item at the text's end" "items out of order" "$tmp/main.o" "$tmp/items_past.o"
+refuses "text and no item" "no item that holds" "$tmp/main.o" "$tmp/noitem.o"
 refuses "an item that cannot be aligned" "cannot be where it is" "$tmp/main.o" "$tmp/misaligned.o"
 refuses "a jr that cannot reach" "relative jump" "$tmp/main.o" "$tmp/tab.o" "$tmp/jr.o" "$tmp/far.o" "$tmp/target.o"
 

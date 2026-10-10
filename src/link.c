@@ -111,9 +111,55 @@ static int item_start(const int *start, int i)
     return *(const int *) (const void *) ((const char *) start + i + i + i);
 }
 
+/* And start[i] = value, the same way. */
+__attribute__((noinline))
+static void item_set(int *start, int i, int value)
+{
+    if (sizeof (int) != 3)
+        start[i] = value;
+    else
+        *(int *) (void *) ((char *) start + i + i + i) = value;
+}
+
+/* The symbol relocation `which` of an object names: looked up the first
+ * time, through link_symbol and so name_intern, and remembered in
+ * `syms_of` -- one for each of the object's symbols, -1 until then. An
+ * object calls the same few functions from everywhere, and each slot was
+ * a lookup of its name: a twelfth of linking acc. The flags are the
+ * symbol's own, the same for every slot, so the one lookup leaves the
+ * name as weak or not as each would have. */
+static int slot_symbol(const Object *o, int *syms_of, int which)
+{
+    int sym = item_start(syms_of, which - 2);
+
+    if (sym == -1) {
+        sym = link_symbol(obj_sym_name(o, which - 2), obj_sym_flags(o, which - 2));
+        item_set(syms_of, which - 2, sym);
+    }
+
+    return sym;
+}
+
 static int item_in(const int *start, int n, int at)
 {
     unsigned low = 0, high = (unsigned) n - 1;
+
+    /* A member of a library has a few items: walked by a pointer, which
+     * steps by an add, where each step of the halving is a call to shift
+     * and one to item_start. Halved past 32, an object's hundreds. */
+    if ((unsigned) n <= 32u) {
+        const int *p = start + 1;
+        int i = 1;
+
+        /* Counted alongside: `p - start` is a divide by three, and
+         * `start + n` a multiply. */
+        while (i != n && (unsigned) *p <= (unsigned) at) {
+            p++;
+            i++;
+        }
+
+        return i - 1;
+    }
 
     /* Offsets are never negative: compared unsigned, which is no call. */
     while (low < high) {
@@ -183,21 +229,6 @@ static void copy_text(Object *o, int at, int n)
     out_put += n;
 }
 
-/* Whether relocations lo to hi of an object rise by where their slots are,
- * as the format says each table's do. */
-static int relocs_rise(const Object *o, int lo, int hi)
-{
-    int r;
-
-    if (lo == hi)
-        return 1;
-    for (r = lo + 1; r != hi; r++)
-        if ((unsigned) obj_reloc_at(o, r - 1) > (unsigned) obj_reloc_at(o, r))
-            return 0;
-
-    return 1;
-}
-
 /* The first of relocations lo to hi, which rise, whose slot is at `at` or
  * past it. */
 static int reloc_from(const Object *o, int lo, int hi, int at)
@@ -214,25 +245,37 @@ static int reloc_from(const Object *o, int lo, int hi, int at)
     return lo;
 }
 
+/* take_items' table of the symbols its object names, in a static: as a
+ * local, it took the frame past 128 bytes (see test/frames.sh). A link
+ * takes one object at a time. */
+static int *syms_of;
+
 static void take_items(Object *op, Taken *t, const char *name, const char *path)
 {
     Object o = *op;
     char *want = calloc((size_t) o.nitems + 1, 1);
-    int *queue = malloc(((size_t) o.nitems + 1) * sizeof *queue);
-    int *start = malloc(((size_t) o.nitems + 1) * sizeof *start);
-    int nqueue = 0, i, r, want_bss = !name, new_bss = 0, want_now = 0, sorted;
+    /* As big as `start`, more than it needs, so the two sizes are one
+     * multiply. */
+    int *queue = malloc(((size_t) o.nitems + 1 + (size_t) o.nsyms) * sizeof *queue);
+    /* Where each item starts, and the text's end after the last; then
+     * the symbol each of the object's symbols is in acc's table, found as
+     * slots ask (slot_symbol). One block, so that its size is one multiply. */
+    int *start = malloc(((size_t) o.nitems + 1 + (size_t) o.nsyms) * sizeof *start);
+    int nqueue = 0, i, r, want_bss = !name, new_bss = 0, want_now = 0;
     int nrel = obj_nrelocs(&o), item, delta = 0;
 
     if (!want || !queue || !start)
         acc_error("out of memory for '%s'", path);
 
-    /* Where each item starts, and the text's end after the last. */
     {
         int *put = start;
 
         for (i = 0; i != o.nitems; i++)
             *put++ = obj_item(&o, i);
-        *put = o.text_len;
+        *put++ = o.text_len;
+        syms_of = put;
+        for (i = 0; i != o.nsyms; i++)
+            *put++ = -1;
     }
 
     /* The item the wanted name is in -- or its bss, if that is where it is.
@@ -249,7 +292,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         } else {
             item = item_in(start, o.nitems, obj_sym_value(&o, i));
 
-            if (t->placed[item] < 0 && !want[item]) {
+            if (item_start(t->placed, item) < 0 && !want[item]) {
                 want[item] = 1;
                 queue[nqueue++] = item;
             }
@@ -258,9 +301,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
 
     /* And everything that reaches, a relocation at a time: each item's
      * own, found by halving in the two tables, which are each in order of
-     * where their slots are -- or, from an object whose are not, by a walk
-     * of them all for each item. */
-    sorted = relocs_rise(&o, 0, o.nrelocs) && relocs_rise(&o, o.nrelocs, nrel);
+     * where their slots are, as take_object made sure. */
     while (nqueue) {
         int from, to, run;
 
@@ -271,24 +312,23 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         for (run = 0; run != 2; run++) {
             int end = run ? nrel : o.nrelocs;
 
-            r = run ? o.nrelocs : 0;
-            if (sorted)
-                r = reloc_from(&o, r, end, from);
+            r = reloc_from(&o, run ? o.nrelocs : 0, end, from);
             for (; r != end; r++) {
-                int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), next;
+                ObjReloc rel;
+                int next;
 
-                if (at < from || at >= to) {
-                    if (sorted && (unsigned) at >= (unsigned) to)
-                        break;
-                    continue;
-                }
-                if (which == 1)
+                obj_reloc_read(&o, r, &rel);
+                if ((unsigned) rel.at >= (unsigned) to)
+                    break;
+                if (rel.sym == 1)
                     want_bss = 1;
-                if (which != 0)
+                if (rel.sym != 0)
                     continue;
-                next = item_in(start, o.nitems,
-                               (int) obj_reloc_addend(&o, r, o.text + at));
-                if (t->placed[next] < 0 && !want[next]) {
+                next = (int) obj_reloc_add(&rel, o.text + rel.at);
+                if ((unsigned) next - (unsigned) from < (unsigned) to - (unsigned) from)
+                    continue;           /* inside the item: wanted already */
+                next = item_in(start, o.nitems, next);
+                if (item_start(t->placed, next) < 0 && !want[next]) {
                     want[next] = 1;
                     queue[nqueue++] = next;
                 }
@@ -296,26 +336,33 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         }
     }
 
-    for (i = 0; i != o.nitems; i++) {
-        int step = 1 << obj_item_align(&o, i);
+    /* Walked by pointers, each a step of an add: indexed, the two tables
+     * of three-byte ints were a multiply apiece. */
+    {
+        int *pl = t->placed;
+        const int *sp = start;
 
-        if (!want[i] || t->placed[i] >= 0)
-            continue;
-        want_now = 1;                   /* the object's wants come with it */
-        while (out_here() & (step - 1))
-            out_byte(0);
-        t->placed[i] = out_here();
-        copy_text(&o, item_start(start, i),
-                  item_start(start, i + 1) - item_start(start, i));
-        if (obj_link_map_on())
-            link_map_item(&o, i, t->placed[i], path);
+        for (i = 0; i != o.nitems; i++, pl++, sp++) {
+            int step;
+
+            if (!want[i] || *pl >= 0)
+                continue;
+            step = 1 << obj_item_align(&o, i);
+            want_now = 1;               /* the object's wants come with it */
+            while (out_here() & (step - 1))
+                out_byte(0);
+            *pl = out_here();
+            copy_text(&o, sp[0], sp[1] - sp[0]);
+            if (obj_link_map_on())
+                link_map_item(&o, i, *pl, path);
+        }
     }
     /* An object placed whole is placed as it is: its start rounded up to
      * the largest alignment in it, and every item's offset a multiple of
      * its own (place_object), so no padding comes between them, and every
      * item is as far from where it is in the object as the first. */
     if (!name && o.nitems)
-        delta = t->placed[0] - *start;
+        delta = *t->placed - *start;
     if (want_bss && t->bss < 0) {
         t->bss = gen_bss_reserve_aligned(o.bss_len, o.bss_align);
         new_bss = 1;
@@ -349,7 +396,8 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
             continue;
         }
         sym_at(sym)->val = !name ? value + delta
-                                 : t->placed[item] + value - item_start(start, item);
+                                 : item_start(t->placed, item) + value
+                                   - item_start(start, item);
         sym_set_flags(sym, SYMF_DECLARED | SYMF_DEFINED | SYMF_PARAMS);
     }
 
@@ -358,33 +406,48 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
      * object is taken to where its item went, now or on an earlier look;
      * the bss's and a symbol's are filled when the link ends, since neither
      * is known before. The item a slot is in is found by walking along
-     * with the slots, which rise in each table, and by halving in an
-     * object whose do not. */
+     * with the slots, which rise in each table. */
     for (r = 0, item = 0; r != nrel; r++) {
-        int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), dest;
-        int kind = obj_reloc_kind(&o, r);
+        ObjReloc rel;
+        int at, which, kind, dest;
         long a;
 
+        obj_reloc_read(&o, r, &rel);
+        at = rel.at;
+        which = rel.sym;
+        kind = rel.kind;
         if (!name) {
             dest = at + delta;
         } else {
-            if (!sorted || r == o.nrelocs)      /* or the second table */
-                item = item_in(start, o.nitems, at);
+            if (r == o.nrelocs)                 /* the second table */
+                item = 0;
             while ((unsigned) item + 1 != (unsigned) o.nitems
                    && (unsigned) item_start(start, item + 1) <= (unsigned) at)
                 item++;
             if (!want[item])
                 continue;
-            dest = t->placed[item] + at - item_start(start, item);
+            dest = item_start(t->placed, item) + at - item_start(start, item);
         }
         /* Read from where the slot was copied to: an object read with its
          * front only has no text in hand to read it from. */
-        a = obj_reloc_addend(&o, r, out_img + (dest - out_base));
+        a = obj_reloc_add(&rel, out_img + (dest - out_base));
         if (which == 0) {
-            int target = name ? item_in(start, o.nitems, (int) a) : 0;
+            int target = item;
+            unsigned lo, len;
+
+            /* Most addresses inside a member taken in part are of the
+             * item the slot is in -- a jump inside its own function --
+             * and need no search. */
+            if (name) {
+                lo = (unsigned) item_start(start, item);
+                len = (unsigned) item_start(start, item + 1) - lo;
+                if ((unsigned) a - lo >= len)
+                    target = item_in(start, o.nitems, (int) a);
+            }
 
             gen_slot(dest, kind, !name ? (int) a + delta
-                                       : t->placed[target] + a - item_start(start, target));
+                                       : item_start(t->placed, target) + a
+                                         - item_start(start, target));
             /* An address in the image, which -r has to name as it does the
              * compiler's own: a jump inside a routine of the runtime, a
              * call to a static function of a member. */
@@ -399,12 +462,9 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
             /* The symbol is added to what is in the slot: now, or by
              * gen_finish. */
             out_patch24(dest, (int) a);
-            gen_link_fixup(link_symbol(obj_sym_name(&o, which - 2),
-                                       obj_sym_flags(&o, which - 2)), dest);
+            gen_link_fixup(slot_symbol(&o, syms_of, which), dest);
         } else {
-            gen_late_fixup(link_symbol(obj_sym_name(&o, which - 2),
-                                       obj_sym_flags(&o, which - 2)),
-                           dest, kind, a);
+            gen_late_fixup(slot_symbol(&o, syms_of, which), dest, kind, a);
         }
     }
     free(want);
@@ -437,8 +497,12 @@ static void place_object(Object *op, const char *path)
     t.placed = malloc(((size_t) op->nitems + 1) * sizeof *t.placed);
     if (!t.placed)
         acc_error("out of memory for '%s'", path);
-    for (i = 0; i != op->nitems; i++)
-        t.placed[i] = -1;
+    {
+        int *pl = t.placed;
+
+        for (i = 0; i != op->nitems; i++)
+            *pl++ = -1;
+    }
     t.bss = -1;
     take_items(op, &t, NULL, path);
     free(t.placed);
@@ -470,6 +534,17 @@ static void waits_start(Waits *w)
 
     w->rend = w->rat + nr;
     w->i = w->l = w->k = 0;
+    w->n = gen_nfixups();
+    w->nl = gen_nlate();
+}
+
+/* Another look, from where the last stopped: what it passed is now
+ * defined, or a name no member has, and stays so -- nothing a link does
+ * takes a fixup or a want away, only adds them -- so only what was added
+ * since is new. A look from the start went through every slot of the
+ * program again, each a fixup's lookup, for every member taken. */
+static void waits_more(Waits *w)
+{
     w->n = gen_nfixups();
     w->nl = gen_nlate();
 }
@@ -543,30 +618,59 @@ static void missed_grow(void)
     missed_limit = (NameRef *) (void *) ((char *) missed + room);
 }
 
-static void link_archive(const char *path, int must)
-{
+/* A library open for a link: its index in memory, and what has been taken
+ * from each member, kept between looks so that a second look -- the
+ * runtime's, after the C library's -- takes from a member it took from
+ * before only what is still left there. */
+typedef struct {
     Archive a;
-    Taken *taken;
-    int again = 1, m;
+    Taken  *taken;
+    const char *path;
+} Library;
 
+/* Opened, or 0 if it is not there and need not be. */
+static int library_open(Library *lib, const char *path, int must)
+{
     /* The default libraries may not be there: a card without them links
      * what it is given, as the host build once did. Opened rather than
      * asked after first, which is a second search of the directory. */
-    if (!ar_open_if(path, &a)) {
+    if (!ar_open_if(path, &lib->a)) {
         if (must)
             acc_error("cannot open '%s'", path);
 
-        return;
+        return 0;
     }
-    taken = calloc((size_t) a.nmembers + 1, sizeof *taken);
-    if (!taken)
+    lib->path = path;
+    lib->taken = calloc((size_t) lib->a.nmembers + 1, sizeof *lib->taken);
+    if (!lib->taken)
         acc_error("out of memory for '%s'", path);
 
+    return 1;
+}
+
+static void library_close(Library *lib)
+{
+    int m;
+
+    for (m = 0; m != lib->a.nmembers; m++)
+        if (lib->taken[m].placed)
+            free(lib->taken[m].placed);
+    free(lib->taken);
+    ar_close(&lib->a);
+}
+
+static void library_search(Library *lib)
+{
+    const char *path = lib->path;
+    Taken *taken = lib->taken;
+    int again = 1, m;
+
+    waits_start(&waits);
     while (again) {
         int sym;
 
         again = 0;
-        waits_start(&waits);
+        waits_more(&waits);
         while ((sym = waits_next(&waits)) != -2) {
             const char *name;
             Object o;
@@ -574,7 +678,7 @@ static void link_archive(const char *path, int must)
             if (name_missed(sym_at(sym)->name))
                 continue;
             name = obj_object_name(name_text(sym_at(sym)->name));
-            m = ar_find(&a, name);
+            m = ar_find(&lib->a, name);
             if (m < 0) {
                 if (missed_put == missed_limit)
                     missed_grow();
@@ -582,7 +686,7 @@ static void link_archive(const char *path, int must)
                 name_set_missed(sym_at(sym)->name, 1);
                 continue;
             }
-            ar_member(&a, m, &o);
+            ar_member(&lib->a, m, &o);
             if (!taken[m].placed) {
                 int k;
 
@@ -590,12 +694,16 @@ static void link_archive(const char *path, int must)
                                          * sizeof *taken[m].placed);
                 if (!taken[m].placed)
                     acc_error("out of memory for '%s'", path);
-                for (k = 0; k != o.nitems; k++)
-                    taken[m].placed[k] = -1;
+                {
+                    int *pl = taken[m].placed;
+
+                    for (k = 0; k != o.nitems; k++)
+                        *pl++ = -1;
+                }
                 taken[m].bss = -1;
             }
             take_items(&o, &taken[m], obj_object_name(name_text(sym_at(sym)->name)),
-                       ar_member_name(&a, m));
+                       ar_member_name(&lib->a, m));
             obj_free(&o);
             out_flush();
             if (gen_no_address(sym) && gen_bss_offset(sym) < 0)
@@ -606,10 +714,16 @@ static void link_archive(const char *path, int must)
     }
     while (missed_put != missed)
         name_set_missed(*--missed_put, 0);
-    for (m = 0; m != a.nmembers; m++)
-        free(taken[m].placed);
-    free(taken);
-    ar_close(&a);
+}
+
+static void link_archive(const char *path, int must)
+{
+    Library lib;
+
+    if (!library_open(&lib, path, must))
+        return;
+    library_search(&lib);
+    library_close(&lib);
 }
 
 /* The objects and libraries a program is linked from, in the order given,
@@ -636,14 +750,26 @@ void link_inputs(const char **objs, int nobjs)
         const char *slash = strrchr(ACC_LIBC, '/');
         int dir = slash ? (int) (slash - ACC_LIBC) + 1 : 0;
 
+        Library run, c;
+        int have_rt;
+
         memcpy(rt, ACC_LIBC, (size_t) dir);
         strcpy(rt + dir, "rt.a");
-        if (link_short())
-            link_archive(rt, 0);
-        if (link_short())
-            link_archive(ACC_LIBC, 0);
-        if (link_short())
-            link_archive(rt, 0);
+        /* The runtime opened once for both its looks: an open is some
+         * 150,000 cycles of MOS's, a sixth of linking a hello world. */
+        if (!link_short())
+            return;
+        have_rt = library_open(&run, rt, 0);
+        if (have_rt)
+            library_search(&run);
+        if (link_short() && library_open(&c, ACC_LIBC, 0)) {
+            library_search(&c);
+            library_close(&c);
+            if (have_rt && link_short())
+                library_search(&run);
+        }
+        if (have_rt)
+            library_close(&run);
     }
 #endif
 }

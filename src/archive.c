@@ -249,19 +249,24 @@ const char *ar_member_name(const Archive *a, int i)
  * index is sorted for. */
 int ar_find(const Archive *a, const char *name)
 {
-    int low = 0, high = a->ndefs - 1;
+    unsigned low = 0, high = (unsigned) a->ndefs;
 
-    while (low <= high) {
-        int mid = (low + high) / 2;
-        const unsigned char *def = a->defs + mid * AR_DEF;
-        int order = strcmp(a->strings + get24(def), name);
+    /* Unsigned, halved by a shift and the entry found by adds: a signed
+     * `/ 2` is a call to the runtime's divide and `* AR_DEF` one to its
+     * multiply, at every step for every name a link asks a library for. */
+    while (low != high) {
+        unsigned mid = (low + high) >> 1;
+        const unsigned char *def = a->defs + mid + mid + mid;
+        int order;
 
+        def += mid + mid + mid;         /* AR_DEF, six */
+        order = strcmp(a->strings + get24(def), name);
         if (order == 0)
             return get24(def + 3);
         if (order < 0)
             low = mid + 1;
         else
-            high = mid - 1;
+            high = mid;
     }
 
     return -1;
