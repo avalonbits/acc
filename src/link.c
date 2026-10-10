@@ -245,6 +245,11 @@ static int reloc_from(const Object *o, int lo, int hi, int at)
     return lo;
 }
 
+/* take_items' table of the symbols its object names, in a static: as a
+ * local, it took the frame past 128 bytes (see test/frames.sh). A link
+ * takes one object at a time. */
+static int *syms_of;
+
 static void take_items(Object *op, Taken *t, const char *name, const char *path)
 {
     Object o = *op;
@@ -256,7 +261,6 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
      * the symbol each of the object's symbols is in acc's table, found as
      * slots ask (slot_symbol). One block, so that its size is one multiply. */
     int *start = malloc(((size_t) o.nitems + 1 + (size_t) o.nsyms) * sizeof *start);
-    int *syms_of;
     int nqueue = 0, i, r, want_bss = !name, new_bss = 0, want_now = 0;
     int nrel = obj_nrelocs(&o), item, delta = 0;
 
