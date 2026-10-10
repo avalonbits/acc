@@ -430,12 +430,16 @@ static void gl_back(void)
  * costlier to run, or bigger; `*why` says which. Smaller code may cost up
  * to an eighth more to run: on the corpus that took 0.7% off the code mean
  * for 0.005% on the speed mean, where a quarter more cost lists' main 29%
- * of its time. */
+ * of its time. An eighth by either estimate: ez80asm's
+ * _readMinimumBufferedLine, a loop it never runs in an else, was 13% more
+ * by 8^depth and 11% by block frequency, and 1% of ez80asm's time faster
+ * made from SSA. */
 static int ssa_loses(const char **why)
 {
     if (ssa_cost_made > ssa_cost_first
         && !(ssa_size_made < ssa_size_first
-             && ssa_cost_made <= ssa_cost_first + ssa_cost_first / 8)) {
+             && (ssa_cost_made <= ssa_cost_first + ssa_cost_first / 8
+                 || ssa_freq_made <= ssa_freq_first + ssa_freq_first / 8))) {
         *why = "the first pass's code is cheaper";
         return 1;
     }
