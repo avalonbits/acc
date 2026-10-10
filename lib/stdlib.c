@@ -297,3 +297,12 @@ long long atoll(const char *s)
 
     return negative ? -value : value;
 }
+
+/* The break, as agondev's library has one for a program written for it:
+ * this heap is the whole of what lies between the program and the
+ * stack's reserve from the start, so the break is its end, and does not
+ * move -- sbrk(0) answers it, and asked to move it, (void *) -1. */
+void *sbrk(int increment)
+{
+    return increment ? (void *) -1 : (void *) acc_heap_end;
+}

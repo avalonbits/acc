@@ -648,7 +648,12 @@ static void args_emit(void)
  * they are only ever looked for among the names nothing has defined.
  *
  * The stub asks for a third, the top of the program's memory, where main's
- * stack starts. That one is known by its symbol rather than its name. */
+ * stack starts. That one is known by its symbol rather than its name.
+ *
+ * And agondev's linker's two, for a program written for it: __heapbot,
+ * where the program's memory ends, and __heaptop, the top of all of it,
+ * where agondev's heap meets its stack. Berry's port keeps its own heap a
+ * reserve below __heaptop. */
 static int stack_top_sym = -1;   /* made by gen_finish, for the stub */
 static int stack_top_at;         /* where in the stub it goes */
 
@@ -660,10 +665,12 @@ static int link_given(int sym)
         return out_base + ram_bytes();
     name = name_text(sym_at(sym)->name);
 
-    if (strcmp(name, "acc_heap_start") == 0)
+    if (strcmp(name, "acc_heap_start") == 0 || strcmp(name, "__heapbot") == 0)
         return bss_top;
     if (strcmp(name, "acc_heap_end") == 0)
         return out_base + ram_bytes() - ACC_STACK_RESERVE;
+    if (strcmp(name, "__heaptop") == 0)
+        return out_base + ram_bytes();
 
     return 0;
 }
