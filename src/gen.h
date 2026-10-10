@@ -290,6 +290,7 @@ void gen_logic_right(int settles, int early);  /* and after the right */
 void vtruth(int op);                  /* compare the top with zero: TK_NE, TK_EQ */
 void vdup(void);                      /* the top twice */
 void vswap(void);                     /* the top two the other way round */
+void vacc_out(void);                  /* a byte left in A, into a register */
 void vprefix_local(int offset, Type type, int ext, int op);   /* ++x, --x */
 void vpostfix_local(int offset, Type type, int ext, int op);  /* x++, x-- */
 void vprefix_indirect(int op);        /* ++*p, with p on the stack */

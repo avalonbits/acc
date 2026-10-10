@@ -573,6 +573,7 @@ static int relabel(int op)
     switch (op) {
     case GL_vset_addr: case GL_vset_type: case GL_vset_ext:
     case GL_vset_quals: case GL_vset_bits:
+    case GL_vacc_out:                   /* where, not what */
         return 1;
     }
 
