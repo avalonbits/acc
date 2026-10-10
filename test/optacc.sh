@@ -1464,6 +1464,16 @@ mir "$OPT" "no byte copied from slot to slot" 'dd7e..dd77' no "$webs"
 exported='typedef struct { int name; unsigned char type, ext, kind, flags; int val; } Sym; int f(const Sym *s) { switch (s->kind) { case 6: case 7: case 8: case 9: return 1; } return 0; }'
 picked "$OPT" "a switch's cases weighed evenly" 'ed22fff9' yes "$exported"
 
+# A member read and written back, `p->count -= n`: two uses of its
+# address, a read and a write, each through (iy+d), where folding the
+# offset was for one use alone and the address was made in HL and moved to
+# IY through the stack -- ez80asm's _readMinimumBufferedLine, its
+# ci->bytesinbuffer, 0.4% of its time.
+rmw='struct s { char pad[90]; int count; char *at; };
+void f(struct s *p, int n, int k) { p->count -= n; p->at += k; }'
+mir "$OPT" "a member read and written back: (iy+d)"   'fd275a.*fd2f5a' yes "$rmw"
+mir "$OPT" "not its address moved to IY"               'e5fde1'         no  "$rmw"
+
 big=$(python3 -c "
 print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')
 for n in range(600): print('d = a + b[%d]; if (d < a) c++; a = d;' % n)

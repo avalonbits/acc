@@ -2410,6 +2410,11 @@ static int pointer_relabel(const Ins *insn)
  * `((const char *) &p->m)[1]`, ez80asm's REGSETBYTE, all one (iy+d). */
 static unsigned char *reaches;
 
+/* By value: whether every use of it reads or writes through it -- a
+ * member read and written back, `ci->count -= n`, two uses, each its
+ * (iy+d) -- where folding was for one use alone. */
+static unsigned char *all_through;
+
 /* The one instruction that uses `val`, or -1. */
 static int sole_user(int val)
 {
@@ -3758,6 +3763,22 @@ static int setup(void)
                 }
         }
 
+    all_through = realloc(all_through, (size_t) nvals + 1);
+    if (!all_through)
+        acc_error("out of memory for the machine IR");
+    for (at = 0; at != nvals; at++)
+        all_through[at] = use_n[at] > 1 && use_n[at] < 256;
+    for (at = 1; at != ninsns; at++) {
+        int operand;
+
+        for (operand = 0; operand != insns[at].nin; operand++) {
+            int u = insns[at].in[operand].val;
+
+            if (u >= 0 && (operand != 0 || !through(insns[at].op)))
+                all_through[u] = 0;
+        }
+    }
+
     /* Which addresses reach a read or a write, from the last instruction
      * back: a user is after what it uses, so its answer is known first. */
     reaches = realloc(reaches, (size_t) nvals + 1);
@@ -3768,6 +3789,10 @@ static int setup(void)
         int res = insns[at].res, user;
         const Ins *use;
 
+        if (res >= 0 && all_through[res] && insns[at].op == GL_vmember) {
+            reaches[res] = 1;
+            continue;
+        }
         if (res < 0 || (user = sole_user(res)) < 0)
             continue;
         use = &insns[user];
@@ -3841,6 +3866,18 @@ static int setup(void)
             member_off[res] = member_off[in];
             global_of[res] = global_of[in];
             addrc_of[res] = addrc_of[in];
+            continue;
+        }
+        if (insn->op == GL_vmember && user < 0 && all_through[res]
+            && insn->in[0].val >= 0) {
+            int in = insn->in[0].val;   /* each use its own (iy+d) */
+
+            off = (int) insn->rec->arg[0];
+            if (frame_at[in] == NO_FRAME && !addrc_of[in] && global_of[in] < 0
+                && member_base[in] < 0 && off >= -128 && off + 2 <= 127) {
+                member_base[res] = in;
+                member_off[res] = off;
+            }
             continue;
         }
         if (insn->op != GL_vmember || user < 0 || !reaches[res])
