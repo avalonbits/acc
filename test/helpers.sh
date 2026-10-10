@@ -46,8 +46,11 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 #              one too. Its operator is a byte, so its tests are no AND.
 #   __llsh     a 64-bit shift, a bit at a time. A wide constant's bytes,
 #              shifted out of it rather than read from where it lies.
-#   __idivs    a signed divide. item_of's `(low + high + 1) / 2`, a third of
+#   __idivs    a signed divide. item_in's `(low + high + 1) / 2`, a third of
 #              linking a hello world; an unsigned shift halves it.
+#   (finish.c) fixup_at, which a link runs for every fixup on each look at
+#              a library: its block by a shift by 8, its place in the block
+#              by a mask to a byte and a multiply by six, all three calls.
 #   (obj.c)    the item and relocation accessors a link runs for every
 #              relocation, whose entries are three, six and nine bytes wide:
 #              found by adding the index to the pointer, since as a multiply,
@@ -79,7 +82,10 @@ checks=(
     "type.c +base_type type_specifier_slow"
     "obj.c __imulu obj_item obj_item_align obj_reloc_at obj_reloc_sym
            obj_reloc_kind obj_reloc_addend"
-    "link.c __idivs item_of"
+    "link.c __idivs item_in"
+    "finish.c __ishru fixup_at"
+    "finish.c __iand fixup_at"
+    "finish.c __imulu fixup_at"
 )
 
 fail=0

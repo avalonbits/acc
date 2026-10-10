@@ -45,12 +45,39 @@ static void *block_new(void ***dir, int *n, int *cap, size_t bytes)
 static Fixup *fixup_put;
 static int    fixup_put_at = -1;
 
-Fixup *fixup_at(int i)
+/* The i-th, in its block of 256. Read a byte at a time and found by adds:
+ * on the eZ80 a shift by 8, a mask to a byte and an index into six-byte
+ * entries are each a call into the runtime, and a link asks for every
+ * fixup on each look at a library. Past 65536 of them, which the Agon has
+ * no room for, by the shift, out of line so that it is not made first. */
+__attribute__((noinline))
+static Fixup *fixup_far(int i)
 {
     unsigned b = (unsigned) i >> 8;
 
     return b < (unsigned) nfixup_blocks ? fixup_blocks[b] + (unsigned char) i
                                         : NULL;
+}
+
+Fixup *fixup_at(int i)
+{
+    /* Volatile, or clang puts the shift and the mask back together. */
+    const volatile unsigned char *bytes = (const volatile unsigned char *) &i;
+    unsigned char k, b;
+    const char *dir, *at;
+
+    if ((unsigned) i >= 0x10000u)
+        return fixup_far(i);
+    k = bytes[0];
+    b = bytes[1];
+    if (b >= (unsigned) nfixup_blocks)
+        return NULL;
+    if (sizeof (char *) != 3 || sizeof (Fixup) != 6)
+        return fixup_blocks[b] + k;     /* the host's, where it is no call */
+    dir = (const char *) fixup_blocks;
+    at = *(char *const *) (const void *) (dir + b + b + b);
+
+    return (Fixup *) (const void *) (at + k + k + k + k + k + k);
 }
 
 /* A slot to fill with `fn`'s address once it has one. */
