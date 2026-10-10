@@ -702,7 +702,12 @@ static int take_object(unsigned char *all, int size, int have,
         if (o->text_len && !o->nitems)
             REFUSE("'%s' has text and no item that holds it", path);
         for (i = 0; i < obj_nrelocs(o); i++) {
-            int kind = obj_reloc_kind(o, i), at_ = obj_reloc_at(o, i);
+            ObjReloc rel;
+            int kind, at_;
+
+            obj_reloc_read(o, i, &rel);
+            kind = rel.kind;
+            at_ = rel.at;
 
             if (kind >= REL_KINDS)
                 REFUSE("'%s' has a relocation of kind %d, which acc does "
@@ -713,7 +718,7 @@ static int take_object(unsigned char *all, int size, int have,
             if (at_ < 0 || at_ + obj_reloc_width(kind) > o->text_len)
                 REFUSE("'%s' has a relocation at %06x, outside its %d bytes",
                        path, at_, o->text_len);
-            if (obj_reloc_sym(o, i) >= o->nsyms + 2)
+            if (rel.sym >= o->nsyms + 2)
                 REFUSE("'%s' has a relocation for a symbol it has not got",
                        path);
             if (i == o->nrelocs)
@@ -895,6 +900,36 @@ long obj_reloc_addend(const Object *o, int i, const unsigned char *slot)
         return a & 0x800000L ? a - 0x1000000L : a;
     }
     switch (obj_reloc_kind(o, i)) {
+    case REL_ABS24:  return get24(slot);
+    case REL_ABS16:  return slot[0] | slot[1] << 8;
+    case REL_PCREL8: return (signed char) slot[0];
+    default:         return slot[0];
+    }
+}
+
+/* Its fields from one find of its entry; a link reads every relocation of
+ * every object it takes, and each accessor above finds the entry again. */
+void obj_reloc_read(const Object *o, int i, ObjReloc *r)
+{
+    const unsigned char *e = reloc_entry(o, i);
+
+    r->at = get24(e);
+    r->sym = low20(e + 3);
+    r->kind = e[5] >> 4;
+    r->own = i >= o->nrelocs;
+    if (r->own) {
+        r->addend = get24(e + 6);
+        if (r->addend & 0x800000L)
+            r->addend -= 0x1000000L;
+    }
+}
+
+/* What obj_reloc_addend says, for one read whole. */
+long obj_reloc_add(const ObjReloc *r, const unsigned char *slot)
+{
+    if (r->own)
+        return r->addend;
+    switch (r->kind) {
     case REL_ABS24:  return get24(slot);
     case REL_ABS16:  return slot[0] | slot[1] << 8;
     case REL_PCREL8: return (signed char) slot[0];

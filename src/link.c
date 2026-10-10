@@ -183,21 +183,6 @@ static void copy_text(Object *o, int at, int n)
     out_put += n;
 }
 
-/* Whether relocations lo to hi of an object rise by where their slots are,
- * as the format says each table's do. */
-static int relocs_rise(const Object *o, int lo, int hi)
-{
-    int r;
-
-    if (lo == hi)
-        return 1;
-    for (r = lo + 1; r != hi; r++)
-        if ((unsigned) obj_reloc_at(o, r - 1) > (unsigned) obj_reloc_at(o, r))
-            return 0;
-
-    return 1;
-}
-
 /* The first of relocations lo to hi, which rise, whose slot is at `at` or
  * past it. */
 static int reloc_from(const Object *o, int lo, int hi, int at)
@@ -220,7 +205,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
     char *want = calloc((size_t) o.nitems + 1, 1);
     int *queue = malloc(((size_t) o.nitems + 1) * sizeof *queue);
     int *start = malloc(((size_t) o.nitems + 1) * sizeof *start);
-    int nqueue = 0, i, r, want_bss = !name, new_bss = 0, want_now = 0, sorted;
+    int nqueue = 0, i, r, want_bss = !name, new_bss = 0, want_now = 0;
     int nrel = obj_nrelocs(&o), item, delta = 0;
 
     if (!want || !queue || !start)
@@ -258,9 +243,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
 
     /* And everything that reaches, a relocation at a time: each item's
      * own, found by halving in the two tables, which are each in order of
-     * where their slots are -- or, from an object whose are not, by a walk
-     * of them all for each item. */
-    sorted = relocs_rise(&o, 0, o.nrelocs) && relocs_rise(&o, o.nrelocs, nrel);
+     * where their slots are, as take_object made sure. */
     while (nqueue) {
         int from, to, run;
 
@@ -271,23 +254,20 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         for (run = 0; run != 2; run++) {
             int end = run ? nrel : o.nrelocs;
 
-            r = run ? o.nrelocs : 0;
-            if (sorted)
-                r = reloc_from(&o, r, end, from);
+            r = reloc_from(&o, run ? o.nrelocs : 0, end, from);
             for (; r != end; r++) {
-                int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), next;
+                ObjReloc rel;
+                int next;
 
-                if (at < from || at >= to) {
-                    if (sorted && (unsigned) at >= (unsigned) to)
-                        break;
-                    continue;
-                }
-                if (which == 1)
+                obj_reloc_read(&o, r, &rel);
+                if ((unsigned) rel.at >= (unsigned) to)
+                    break;
+                if (rel.sym == 1)
                     want_bss = 1;
-                if (which != 0)
+                if (rel.sym != 0)
                     continue;
                 next = item_in(start, o.nitems,
-                               (int) obj_reloc_addend(&o, r, o.text + at));
+                               (int) obj_reloc_add(&rel, o.text + rel.at));
                 if (t->placed[next] < 0 && !want[next]) {
                     want[next] = 1;
                     queue[nqueue++] = next;
@@ -358,18 +338,21 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
      * object is taken to where its item went, now or on an earlier look;
      * the bss's and a symbol's are filled when the link ends, since neither
      * is known before. The item a slot is in is found by walking along
-     * with the slots, which rise in each table, and by halving in an
-     * object whose do not. */
+     * with the slots, which rise in each table. */
     for (r = 0, item = 0; r != nrel; r++) {
-        int at = obj_reloc_at(&o, r), which = obj_reloc_sym(&o, r), dest;
-        int kind = obj_reloc_kind(&o, r);
+        ObjReloc rel;
+        int at, which, kind, dest;
         long a;
 
+        obj_reloc_read(&o, r, &rel);
+        at = rel.at;
+        which = rel.sym;
+        kind = rel.kind;
         if (!name) {
             dest = at + delta;
         } else {
-            if (!sorted || r == o.nrelocs)      /* or the second table */
-                item = item_in(start, o.nitems, at);
+            if (r == o.nrelocs)                 /* the second table */
+                item = 0;
             while ((unsigned) item + 1 != (unsigned) o.nitems
                    && (unsigned) item_start(start, item + 1) <= (unsigned) at)
                 item++;
@@ -379,7 +362,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         }
         /* Read from where the slot was copied to: an object read with its
          * front only has no text in hand to read it from. */
-        a = obj_reloc_addend(&o, r, out_img + (dest - out_base));
+        a = obj_reloc_add(&rel, out_img + (dest - out_base));
         if (which == 0) {
             int target = name ? item_in(start, o.nitems, (int) a) : 0;
 

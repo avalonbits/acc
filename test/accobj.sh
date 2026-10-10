@@ -63,12 +63,19 @@ o.item(0)
 o.define('_jumper', 0, func=True)
 o.text += bytes([0x18, 0])
 o.reloc(1, 'PCREL8', 'target')
+# And one to a name past where it goes, with an addend of its own that
+# takes it back: -5, three bytes in the second table, read as negative.
+o.item(2)
+o.define('_jumper_back', 2, func=True)
+o.text += bytes([0x18, 0])
+o.reloc(3, 'PCREL8', 'target_end', addend=-5)
 o.write(tmp + '/jr.o')
 
 o = Obj()
 o.item(0)
 o.define('target', 0, func=True)
 o.text += bytes([0x21, 42, 0, 0, 0xc9])
+o.define('target_end', 5)
 o.write(tmp + '/target.o')
 
 # And a jr that cannot reach: 200 bytes between it and where it goes.
@@ -114,6 +121,7 @@ int high_past_page(void);
 int upper_of_table(void);
 int low_before(void);
 int jumper(void);
+int jumper_back(void);
 
 int main(void) {
     unsigned t = (unsigned) table;
@@ -127,8 +135,9 @@ int main(void) {
     if (table_word == (t & 0xffff) && table_at == table + 2) r++;
     if (((unsigned) buf & 0xff) == 0) r++;               /* the bss, aligned */
     if (jumper() == 42) r++;
+    if (jumper_back() == 42) r++;
 
-    return r + 34;              /* 8 checks */
+    return r + 33;              /* 9 checks */
 }
 CEOF
 "$ACC" -c "$tmp/main.c" -o "$tmp/main.o" >/dev/null 2>&1 || bad "main.c" "did not compile"

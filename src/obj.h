@@ -83,6 +83,18 @@ int  obj_nrelocs(const Object *o);      /* both tables of them together */
 int  obj_reloc_kind(const Object *o, int i);
 long obj_reloc_addend(const Object *o, int i, const unsigned char *slot);
 int  obj_reloc_width(int kind);         /* how many bytes its slot is */
+
+/* One relocation, read whole: what obj_reloc_at, obj_reloc_sym and
+ * obj_reloc_kind say of it, in one call where those are three. */
+typedef struct {
+    int  at;                /* where its slot is in the text */
+    int  sym;               /* 0, 1, or one more than a symbol */
+    int  kind;
+    int  own;               /* its addend is its own (relocs_a): `addend` */
+    long addend;
+} ObjReloc;
+void obj_reloc_read(const Object *o, int i, ObjReloc *r);
+long obj_reloc_add(const ObjReloc *r, const unsigned char *slot);
 const char *obj_c_name(const char *in_object);  /* _f is f; g is @g */
 const char *obj_object_name(const char *in_acc);  /* and back */
 void obj_take(unsigned char *all, int len, const char *path, Object *o);
