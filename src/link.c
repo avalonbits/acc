@@ -115,6 +115,23 @@ static int item_in(const int *start, int n, int at)
 {
     unsigned low = 0, high = (unsigned) n - 1;
 
+    /* A member of a library has a few items: walked by a pointer, which
+     * steps by an add, where each step of the halving is a call to shift
+     * and one to item_start. Halved past 32, an object's hundreds. */
+    if ((unsigned) n <= 32u) {
+        const int *p = start + 1;
+        int i = 1;
+
+        /* Counted alongside: `p - start` is a divide by three, and
+         * `start + n` a multiply. */
+        while (i != n && (unsigned) *p <= (unsigned) at) {
+            p++;
+            i++;
+        }
+
+        return i - 1;
+    }
+
     /* Offsets are never negative: compared unsigned, which is no call. */
     while (low < high) {
         unsigned mid = (low + high + 1) >> 1;
@@ -234,7 +251,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         } else {
             item = item_in(start, o.nitems, obj_sym_value(&o, i));
 
-            if (t->placed[item] < 0 && !want[item]) {
+            if (item_start(t->placed, item) < 0 && !want[item]) {
                 want[item] = 1;
                 queue[nqueue++] = item;
             }
@@ -270,7 +287,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
                 if ((unsigned) next - (unsigned) from < (unsigned) to - (unsigned) from)
                     continue;           /* inside the item: wanted already */
                 next = item_in(start, o.nitems, next);
-                if (t->placed[next] < 0 && !want[next]) {
+                if (item_start(t->placed, next) < 0 && !want[next]) {
                     want[next] = 1;
                     queue[nqueue++] = next;
                 }
@@ -278,26 +295,33 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
         }
     }
 
-    for (i = 0; i != o.nitems; i++) {
-        int step = 1 << obj_item_align(&o, i);
+    /* Walked by pointers, each a step of an add: indexed, the two tables
+     * of three-byte ints were a multiply apiece. */
+    {
+        int *pl = t->placed;
+        const int *sp = start;
 
-        if (!want[i] || t->placed[i] >= 0)
-            continue;
-        want_now = 1;                   /* the object's wants come with it */
-        while (out_here() & (step - 1))
-            out_byte(0);
-        t->placed[i] = out_here();
-        copy_text(&o, item_start(start, i),
-                  item_start(start, i + 1) - item_start(start, i));
-        if (obj_link_map_on())
-            link_map_item(&o, i, t->placed[i], path);
+        for (i = 0; i != o.nitems; i++, pl++, sp++) {
+            int step;
+
+            if (!want[i] || *pl >= 0)
+                continue;
+            step = 1 << obj_item_align(&o, i);
+            want_now = 1;               /* the object's wants come with it */
+            while (out_here() & (step - 1))
+                out_byte(0);
+            *pl = out_here();
+            copy_text(&o, sp[0], sp[1] - sp[0]);
+            if (obj_link_map_on())
+                link_map_item(&o, i, *pl, path);
+        }
     }
     /* An object placed whole is placed as it is: its start rounded up to
      * the largest alignment in it, and every item's offset a multiple of
      * its own (place_object), so no padding comes between them, and every
      * item is as far from where it is in the object as the first. */
     if (!name && o.nitems)
-        delta = t->placed[0] - *start;
+        delta = *t->placed - *start;
     if (want_bss && t->bss < 0) {
         t->bss = gen_bss_reserve_aligned(o.bss_len, o.bss_align);
         new_bss = 1;
@@ -331,7 +355,8 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
             continue;
         }
         sym_at(sym)->val = !name ? value + delta
-                                 : t->placed[item] + value - item_start(start, item);
+                                 : item_start(t->placed, item) + value
+                                   - item_start(start, item);
         sym_set_flags(sym, SYMF_DECLARED | SYMF_DEFINED | SYMF_PARAMS);
     }
 
@@ -360,7 +385,7 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
                 item++;
             if (!want[item])
                 continue;
-            dest = t->placed[item] + at - item_start(start, item);
+            dest = item_start(t->placed, item) + at - item_start(start, item);
         }
         /* Read from where the slot was copied to: an object read with its
          * front only has no text in hand to read it from. */
@@ -380,7 +405,8 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
             }
 
             gen_slot(dest, kind, !name ? (int) a + delta
-                                       : t->placed[target] + a - item_start(start, target));
+                                       : item_start(t->placed, target) + a
+                                         - item_start(start, target));
             /* An address in the image, which -r has to name as it does the
              * compiler's own: a jump inside a routine of the runtime, a
              * call to a static function of a member. */
@@ -433,8 +459,12 @@ static void place_object(Object *op, const char *path)
     t.placed = malloc(((size_t) op->nitems + 1) * sizeof *t.placed);
     if (!t.placed)
         acc_error("out of memory for '%s'", path);
-    for (i = 0; i != op->nitems; i++)
-        t.placed[i] = -1;
+    {
+        int *pl = t.placed;
+
+        for (i = 0; i != op->nitems; i++)
+            *pl++ = -1;
+    }
     t.bss = -1;
     take_items(op, &t, NULL, path);
     free(t.placed);
@@ -626,8 +656,12 @@ static void library_search(Library *lib)
                                          * sizeof *taken[m].placed);
                 if (!taken[m].placed)
                     acc_error("out of memory for '%s'", path);
-                for (k = 0; k != o.nitems; k++)
-                    taken[m].placed[k] = -1;
+                {
+                    int *pl = taken[m].placed;
+
+                    for (k = 0; k != o.nitems; k++)
+                        *pl++ = -1;
+                }
                 taken[m].bss = -1;
             }
             take_items(&o, &taken[m], obj_object_name(name_text(sym_at(sym)->name)),
