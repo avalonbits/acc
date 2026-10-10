@@ -457,6 +457,17 @@ static void waits_start(Waits *w)
     w->nl = gen_nlate();
 }
 
+/* Another look, from where the last stopped: what it passed is now
+ * defined, or a name no member has, and stays so -- nothing a link does
+ * takes a fixup or a want away, only adds them -- so only what was added
+ * since is new. A look from the start went through every slot of the
+ * program again, each a fixup's lookup, for every member taken. */
+static void waits_more(Waits *w)
+{
+    w->n = gen_nfixups();
+    w->nl = gen_nlate();
+}
+
 /* The next name still waited on, or -2 when there are no more. */
 static int waits_next(Waits *w)
 {
@@ -545,11 +556,12 @@ static void link_archive(const char *path, int must)
     if (!taken)
         acc_error("out of memory for '%s'", path);
 
+    waits_start(&waits);
     while (again) {
         int sym;
 
         again = 0;
-        waits_start(&waits);
+        waits_more(&waits);
         while ((sym = waits_next(&waits)) != -2) {
             const char *name;
             Object o;
