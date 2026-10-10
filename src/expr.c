@@ -732,17 +732,49 @@ static void prefix_step(void)
 }
 
 /* What `++` or `--` changes: a name, what a pointer points at, or either
- * in parentheses -- `--(*p)`, which Csmith writes. A postfix after the `)`
- * would bind to what is inside first, and is refused rather than read the
- * wrong way round. */
+ * in parentheses -- `--(*p)`, which Csmith writes. A name alone in the
+ * parentheses goes on past the `)` to the subscripts and members after it:
+ * `++(parser)->depth`, which a macro writes round its argument, as Berry's
+ * enter_recursion does. Any other postfix after the `)` would bind to what
+ * is inside first, and is refused rather than read the wrong way round. */
 static void prefix_operand(int op, const char *spelling)
 {
+    int line = tok_line, paren = 0;
+    const char *spot = tok_at;
+
     if (tok == TK_LPAREN) {
-        int line = tok_line;
-        const char *spot = tok_at;
+        next();
+        paren = 1;
+        if (tok != TK_IDENT) {
+            prefix_operand(op, spelling);
+            goto close;
+        }
+    }
+
+    if (tok == TK_IDENT) {
+        NameRef name = tok_name;
+        int sym = sym_find(name);
 
         next();
-        prefix_operand(op, spelling);
+        if (paren && accept(TK_RPAREN))
+            paren = 0;                  /* `(p)->n`: the chain is the name's */
+        switch (name_operand(sym, name)) {
+        case NAME_LOCAL: {
+            const Sym *local = sym_at(sym);
+
+            vprefix_local(local->val, local->type, local->ext, op);
+            break;
+        }
+        case NAME_OBJECT:
+            vprefix_indirect(op);
+            break;
+        default:
+            acc_error_spot(line, spot, "'%s' cannot be changed by %s",
+                           name_text(name), spelling);
+        }
+        if (!paren)
+            return;
+close:
         expect(TK_RPAREN, "')'");
         if (tok_postfix())
             acc_error_spot(line, spot, "%s of a parenthesis with a subscript "
@@ -750,30 +782,6 @@ static void prefix_operand(int op, const char *spelling)
                                        "reads", spelling);
 
         return;
-    }
-
-    if (tok == TK_IDENT) {
-        NameRef name = tok_name;
-        int sym = sym_find(name);
-        int line = tok_line;
-        const char *spot = tok_at;
-
-        next();
-        switch (name_operand(sym, name)) {
-        case NAME_LOCAL: {
-            const Sym *local = sym_at(sym);
-
-            vprefix_local(local->val, local->type, local->ext, op);
-
-            return;
-        }
-        case NAME_OBJECT:
-            vprefix_indirect(op);
-
-            return;
-        }
-        acc_error_spot(line, spot, "'%s' cannot be changed by %s",
-                       name_text(name), spelling);
     }
 
     if (tok == TK_STAR) {
