@@ -1099,7 +1099,8 @@ void lex_open(const char *path)
      * gcc has them declared, and in the library: a declaration nothing
      * calls costs an object nothing. */
     {
-        static char builtins[] = "int __builtin_ffs(int);";
+        static char builtins[] = "int __builtin_ffs(int);"
+                                 "int __builtin_popcount(unsigned);";
 
         push_text(NAME_NONE, builtins, (int) sizeof builtins - 1);
     }

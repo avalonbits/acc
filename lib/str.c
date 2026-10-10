@@ -1,7 +1,8 @@
 /*
  * What of <string.h> is not assembly: strtok, strcoll and strxfrm. The
  * rest is lib/strlen.s and the files beside it. And GNU C's
- * __builtin_ffs, which the compiler declares in every file.
+ * __builtin_ffs and __builtin_popcount, which the compiler declares in
+ * every file.
  *
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
  * SPDX-License-Identifier: LGPL-2.1-or-later
@@ -72,4 +73,18 @@ int __builtin_ffs(int value)
     }
 
     return at;
+}
+
+/* How many bits of `value` are set: each one cleared in turn, the lowest
+ * first. */
+int __builtin_popcount(unsigned value)
+{
+    int count = 0;
+
+    while (value) {
+        value &= value - 1;
+        count++;
+    }
+
+    return count;
 }

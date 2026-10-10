@@ -1,6 +1,6 @@
 /* GNU C, as agondev's clang is: __GNUC__ and its version, __VERSION__ a
- * string, __builtin_ffs from the library with no header, and
- * __builtin_unreachable on a path that is never taken. */
+ * string, __builtin_ffs and __builtin_popcount from the library with no
+ * header, and __builtin_unreachable on a path that is never taken. */
 static int pick(int which)
 {
     if (which == 1)
@@ -27,6 +27,9 @@ int main(void)
         return 3;
     if (pick(1) + pick(2) != 16)
         return 4;
+    if (__builtin_popcount(none) != 0 || __builtin_popcount(odd) != 2
+        || __builtin_popcount(0xffffffu) != 24 || __builtin_popcount(top) != 1)
+        return 5;
 
     return 42;
 }
