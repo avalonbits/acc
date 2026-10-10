@@ -103,6 +103,17 @@ broken('order', lambda o: setattr(o, 'raw',
        ([n3(4) + n3(0), n3(0) + n3(0)], [])))
 broken('both', lambda o: setattr(o, 'raw',
        ([n3(0) + n3(0)], [n3(0) + n3(1 << 20) + n3(0)])))
+broken('outside', lambda o: o.reloc(6, 'ABS24', 'text'))   # 6 to 8 of 8
+broken('outside_top', lambda o: setattr(o, 'raw',          # at 0xfffffe:
+       ([n3(0xfffffe) + n3(0)], [])))                      # 3 more wraps
+broken('nosym', lambda o: setattr(o, 'raw', ([n3(0) + n3(50)], [])))
+broken('items_order', lambda o: (o.item(4), o.item(2)))
+broken('items_same', lambda o: (o.item(4), o.item(4)))
+broken('items_past', lambda o: o.item(8))                  # at the end
+o = Obj()
+o.define('_x', 0, func=True)
+o.text += bytes(8)
+o.write(tmp + '/noitem.o')
 o = Obj()
 o.item(0)
 o.item(3, align=4)                                   # at 3, to be on 16
@@ -175,6 +186,13 @@ refuses "a kind acc does not know" "of kind 6" "$tmp/main.o" "$tmp/kind.o"
 refuses "HIGH8 without an addend of its own" "HIGH8 or UPPER8" "$tmp/main.o" "$tmp/high_no_addend.o"
 refuses "relocations out of order" "out of order" "$tmp/main.o" "$tmp/order.o"
 refuses "a slot in both tables" "two relocations at" "$tmp/main.o" "$tmp/both.o"
+refuses "a slot past the text" "outside its" "$tmp/main.o" "$tmp/outside.o"
+refuses "a slot at the top of 24 bits" "outside its" "$tmp/main.o" "$tmp/outside_top.o"
+refuses "a symbol it has not got" "has not got" "$tmp/main.o" "$tmp/nosym.o"
+refuses "items out of order" "items out of order" "$tmp/main.o" "$tmp/items_order.o"
+refuses "two items at one place" "items out of order" "$tmp/main.o" "$tmp/items_same.o"
+refuses "an item at the text's end" "items out of order" "$tmp/main.o" "$tmp/items_past.o"
+refuses "text and no item" "no item that holds" "$tmp/main.o" "$tmp/noitem.o"
 refuses "an item that cannot be aligned" "cannot be where it is" "$tmp/main.o" "$tmp/misaligned.o"
 refuses "a jr that cannot reach" "relative jump" "$tmp/main.o" "$tmp/tab.o" "$tmp/jr.o" "$tmp/far.o" "$tmp/target.o"
 

@@ -689,51 +689,58 @@ static int take_object(unsigned char *all, int size, int have,
 
     /* And what the format promises, checked here so that the linker can
      * take it on trust: an assembler writes these too. */
+    /* Every number here is an offset or a count, never negative, so each
+     * is compared unsigned: a signed compare is a call into the runtime,
+     * five of them for every relocation of every object a link reads. */
     {
-        int i, a = 0, b = 0, last = -1;
+        int i, a = 0, b = 0, nrel = obj_nrelocs(o);
+        unsigned prev = 0, least = 0;
 
         for (i = 0; i != o->nitems; i++) {
-            int item = obj_item(o, i);
+            unsigned item = (unsigned) obj_item(o, i);
 
-            if ((i == 0 && item != 0) || (i > 0 && item <= obj_item(o, i - 1))
-                || item >= o->text_len)
+            if ((i == 0 ? item != 0 : item <= prev)
+                || item >= (unsigned) o->text_len)
                 REFUSE("'%s' has its items out of order", path);
+            prev = item;
         }
         if (o->text_len && !o->nitems)
             REFUSE("'%s' has text and no item that holds it", path);
-        for (i = 0; i < obj_nrelocs(o); i++) {
+        for (i = 0; i != nrel; i++) {
             ObjReloc rel;
-            int kind, at_;
+            unsigned at_, width;
 
             obj_reloc_read(o, i, &rel);
-            kind = rel.kind;
-            at_ = rel.at;
-
-            if (kind >= REL_KINDS)
+            at_ = (unsigned) rel.at;
+            if ((unsigned) rel.kind >= REL_KINDS)
                 REFUSE("'%s' has a relocation of kind %d, which acc does "
-                       "not know", path, kind);
-            if ((kind == REL_HIGH8 || kind == REL_UPPER8) && i < o->nrelocs)
+                       "not know", path, rel.kind);
+            if ((rel.kind == REL_HIGH8 || rel.kind == REL_UPPER8) && !rel.own)
                 REFUSE("'%s' has a HIGH8 or UPPER8 relocation with no "
                        "addend of its own", path);
-            if (at_ < 0 || at_ + obj_reloc_width(kind) > o->text_len)
+            /* Inside the text, the slot whole: what is left from where it
+             * starts, so that nothing is added that could go past the top. */
+            width = (unsigned) obj_reloc_width(rel.kind);
+            if (at_ >= (unsigned) o->text_len || (unsigned) o->text_len - at_ < width)
                 REFUSE("'%s' has a relocation at %06x, outside its %d bytes",
-                       path, at_, o->text_len);
-            if (rel.sym >= o->nsyms + 2)
+                       path, rel.at, o->text_len);
+            if ((unsigned) rel.sym >= (unsigned) o->nsyms + 2u)
                 REFUSE("'%s' has a relocation for a symbol it has not got",
                        path);
             if (i == o->nrelocs)
-                last = -1;
-            if (at_ <= last)
+                least = 0;              /* the second table starts again */
+            if (at_ < least)
                 REFUSE("'%s' has its relocations out of order", path);
-            last = at_;
+            least = at_ + 1;
         }
 
         /* No slot in both tables: a walk of the two in step. */
-        while (a < o->nrelocs && b < o->nrelocs_a) {
-            int x = obj_reloc_at(o, a), y = obj_reloc_at(o, o->nrelocs + b);
+        while (a != o->nrelocs && b != o->nrelocs_a) {
+            unsigned x = (unsigned) obj_reloc_at(o, a);
+            unsigned y = (unsigned) obj_reloc_at(o, o->nrelocs + b);
 
             if (x == y)
-                REFUSE("'%s' has two relocations at %06x", path, x);
+                REFUSE("'%s' has two relocations at %06x", path, (int) x);
             if (x < y)
                 a++;
             else
