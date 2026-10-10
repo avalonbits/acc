@@ -133,7 +133,9 @@ calls "/ 3"                           _acc_rt_divs yes \
 # row's, whose width is not known until it runs.
 calls "int * - int *"                 _acc_rt_divs no \
     'int f(int *p, int *q) { return p - q; }'
-calls "int * - int *, a multiply"     _acc_rt_mul yes \
+calls "int * - int *, by 0xaaaaab"    _acc_rt_mulinv3 yes \
+    'int f(int *p, int *q) { return p - q; }'
+calls "int * - int *, no general multiply" _acc_rt_mul\\b no \
     'int f(int *p, int *q) { return p - q; }'
 calls "a 6-byte element's difference" _acc_rt_divs no \
     'struct s { short a[3]; }; int f(struct s *p, struct s *q) { return p - q; }'

@@ -129,6 +129,14 @@ static int mul_const(int value)
     unsigned rest;
     int top, pc = 1, steps;
 
+    /* The inverse of 3, which a pointer difference on ints or pointers is
+     * multiplied by to divide it exactly: a routine of its own, shifts and
+     * adds, at half the general multiply's cycles. */
+    if (((unsigned) value & 0xffffffu) == 0xaaaaabu) {
+        rt_call(RT_MULINV3);
+
+        return 1;
+    }
     if (value <= 0 || value > 0xffff)
         return 0;               /* zero and one are folded before this */
 
