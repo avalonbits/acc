@@ -62,7 +62,7 @@ A run does one of four things, chosen by what is on the command line:
 
 ```mermaid
 flowchart TD
-    main["main()"] --> args["the command line<br/>(agon_split on the Agon)"]
+    main["main()"] --> args["the command line<br/>(agon_split on the Agon, @files read in)"]
     args --> which{"inputs"}
     which -->|"-a lib.a objs"| ar["ar_write() — a library"]
     which -->|"only .o and .a"| link
@@ -84,6 +84,7 @@ flowchart TD
 
 [`main()`](../src/main.c#L453) ·
 [`agon_split()`](../src/main.c#L330) ·
+[`expand_at()`](../src/main.c#L429) ·
 [`ar_write()`](../src/archive.c#L116) ·
 [`obj_current()`](../src/obj.c#L1014) ·
 [`translation_unit()`](../src/decl.c#L1092) ·
@@ -99,6 +100,10 @@ program's own code is laid down first, after the entry stub, and the
 objects and libraries it names -- and then the default library,
 `/lib/acc/rt.a` and `/lib/acc/libc.a` on the Agon -- are placed after it, exactly as a link of
 its object would place them.
+
+A link or an archive reads no C, so [`lex_init()`](../src/lex.c#L1296) -- the
+keywords and the predefined macros -- and the command line's macros are
+made only for a compile.
 
 A compile to an object is based at address 0, so that every address in it
 is an offset from its own first byte and placing it is one addition. A
@@ -171,7 +176,9 @@ The hash table uses open addressing with linear probing over 4-byte slots,
 kept at most three quarters full. The hash, [`name_home()`](../src/names.c#L124), is two
 lanes over a Pearson permutation, `pearson[]`, so it needs no multiply and
 no 24-bit XOR -- both of which are runtime calls here -- and it probes
-about 1.5 times a lookup. The slot's offset is built a byte at a time,
+about 1.5 times a lookup. It starts at 4096 slots for a compile and at
+1024 for a link or an archive, whose names are only what its objects
+define and want ([`name_init()`](../src/names.c#L255)). The slot's offset is built a byte at a time,
 which caps the table at 64 KB: 16,384 slots and 8,191 names. A lookup
 compares with `strncmp` and a terminator test rather than `memcmp`, which
 could read past the arena's end.
@@ -321,6 +328,15 @@ function, struct, union, VLA or bit-field type is `TY_EXT` or
 255 entries, interned by shape: [`ext_array()`](../src/sym.c#L433), [`ext_func()`](../src/sym.c#L463),
 [`ext_record()`](../src/sym.c#L706), [`ext_vla()`](../src/sym.c#L524). Every value on the value stack
 and every symbol carries both bytes.
+
+**Qualifiers** are bits beside the type, kept on what they qualify:
+objects, parameters, members, typedefs and casts
+([`decl_quals_of()`](../src/type.c#L816)). `const` refuses a store to what it qualifies.
+`volatile` anywhere in a declaration marks the object and all it leads to,
+more than C asks and never less, and a value read through it carries the
+mark: such a local is read from its slot every time, never taken from the
+register that wrote it, and read even when nothing uses the value
+([`gen_discard()`](../src/arith.c#L762)). `restrict` changes nothing.
 
 ## 8. Parsing and emitting
 
@@ -557,13 +573,13 @@ pool laid down after the function's code ([`ld_rr_pool()`](../src/wide.c#L765)).
 ## 12. The runtime
 
 Operations the eZ80 does not have -- multiply, divide, shifts by a
-variable, 24-bit logic, every long, long long and float operation, the
-prologue -- are routines in `rt.a`, a library beside the C library,
+variable, 24-bit logic, every long, long long and float operation -- are
+routines in `rt.a`, a library beside the C library,
 written in eZ80 assembly in [`lib/rt/`](../lib/rt) and assembled by zap
 into acc's object format ([`lib/rt/README.md`](../lib/rt/README.md)). A
 link reads it first, since every program calls it and its index is a few
-names, then the C library only if a name is still waiting, and `rt.a` again
-for what the C library's members call ([`link_inputs()`](../src/link.c#L732)). The helper convention is left
+names, then the C library only if a name is still waiting, and `rt.a` again,
+still open, for what the C library's members call ([`link_inputs()`](../src/link.c#L732)). The helper convention is left
 operand in HL, right in BC, result in HL, everything else kept.
 
 Each file is one object: one routine, or several that share code. A link
@@ -635,7 +651,10 @@ what is in memory and starts the buffer again:
   (2 KB on the host, so that the tests exercise it), into `<output>~`,
   which is copied to the output at the end, since an object's tables come
   before its text.
-- **A link** flushes after every object, into the output itself.
+- **A link** flushes once it holds `LINK_HOLD`, 8 KB, looked at after
+  every object, into the output itself. That is more than a hello world's
+  whole image, which so goes to its file once, and little next to the
+  heap.
 
 What is written to a byte already on the card becomes a **patch**, kept in
 1 KB blocks ([`patch()`](../src/image.c#L628)). At the end, [`sweep()`](../src/image.c#L706) reads the
@@ -719,7 +738,7 @@ flowchart TD
     rel --> flush["out_flush()"]
     flush --> objs
     objs -->|"then"| lib{"link_short()?"}
-    lib -->|"yes"| arch["link_archive(): for each name waited on,<br/>ar_find() → take_items() from that member"]
+    lib -->|"yes"| arch["library_search(): each name waited on since the last look,<br/>ar_find() → take_items() from that member"]
     arch --> flush2["out_flush()"] --> lib
     lib -->|"no"| fin["gen_finish()"]
 ```
@@ -729,25 +748,54 @@ flowchart TD
 [`place_object()`](../src/link.c#L479) ·
 [`copy_text()`](../src/link.c#L221) ·
 [`link_short()`](../src/link.c#L585) ·
-[`link_archive()`](../src/link.c#L719) ·
+[`library_search()`](../src/link.c#L662) ·
 [`ar_find()`](../src/archive.c#L250) ·
 [`take_items()`](../src/link.c#L253) ·
 [`gen_finish()`](../src/finish.c#L790)
 
 A library is asked for names in the order of the slots that wait on them
 ([`waits_next()`](../src/link.c#L553)), each routine of the runtime once, at its first
-call. It is kept open while the link reads it, since opening a file on the
-card is a search of its directory, and a name it does not have is marked
+call. Each look after a member is taken starts where the last one stopped
+([`waits_more()`](../src/link.c#L546)): what a look went past is defined by then, or is a
+name the library has no member for, and stays so, since a link only adds
+to what it waits on. A library is kept open while the link reads it, since
+opening a file on the card is a search of its directory -- some 150,000
+cycles of MOS's -- and a name it does not have is marked
 ([`name_set_missed()`](../src/names.c#L366)) so that it is not asked again on the next
-pass. An object named on the command line is placed whole. Its text is read
-straight from the file into the image, after only its front (header,
-symbols and relocations) has been read. From a library, a link takes only
-the items that the wanted name is in and what they reach through their
-relocations, and goes round the library again until nothing more is
-wanted. A library is not opened at all once nothing is waiting on a name.
-Because the image is flushed after every object, a link holds one object
-at a time, and the fixups, which wait longest, are the only thing that
-grows with the program.
+pass. The runtime's library is opened once for both its looks, before the
+C library and after it ([`library_open()`](../src/link.c#L632)), and what was taken from
+each of its members the first time is kept, so that the second takes only
+what is still left there. A library is not opened at all once nothing is
+waiting on a name.
+
+[`take_items()`](../src/link.c#L253) places what is taken from one object. It reads
+where each item starts into a table once, and finds the item an address is
+in from that ([`item_in()`](../src/link.c#L143)): by walking, for up to 32 items, as a
+library's members have, and by halving past that. Each relocation is read
+whole, from one find of its entry ([`obj_reloc_read()`](../src/obj.c#L919)), and each
+symbol an object names is looked up in acc's table once, the first time a
+slot asks for it ([`slot_symbol()`](../src/link.c#L131)), not at every slot that holds
+its address.
+
+An object named on the command line is placed whole, and by one delta. Its
+start is rounded up to the largest alignment any of its items asks for
+([`place_object()`](../src/link.c#L479)), and every item's offset is a multiple of its
+own, so no padding comes between items, and every slot, target and symbol
+is as far from where it is in the object as the first item: no item is
+looked up at all. Its text is read straight from the file into the image,
+after only its front (header, symbols and relocations) has been read.
+
+From a library, a link takes only the items that the wanted name is in and
+what they reach through their relocations, and goes round the library
+again until nothing more is wanted. Relocations rise by where their slots
+are, so the item a slot is in is found by walking along with them, and an
+address is checked against the slot's own item first -- most addresses in
+a member are a jump inside its own function -- before the table is
+searched.
+
+A link writes its image to the file once it holds 8 KB (section 14), so it
+holds little more than one object at a time, and the fixups, which wait
+longest, are the only thing that grows with the program.
 
 `-map` writes where each item went; `-r` writes the relocation table, so
 a program can be moved.
@@ -763,6 +811,10 @@ since MOS turns 1, 4 and 5 into its own messages.
 
 On the Agon, acc splits its own command line ([`agon_split()`](../src/main.c#L330)), with
 quotes and no limit on the number of words, and handles `>`, `>>` and `<`.
+MOS cuts a command line at about 255 characters, so an argument `@file`
+is the words of that file in its place, split the same way, with line ends
+as spaces ([`expand_at()`](../src/main.c#L429)); a `@` word inside the file is a
+word, not read again. It works for a compile, a link and `-a` alike.
 
 acc prints through [`fmt.c`](../src/fmt.c), its own small printf: only the formats acc
 uses, which saves the heap the full one would cost. The Agon build packs
@@ -798,7 +850,8 @@ that build small and fast. [`test/helpers.sh`](../test/helpers.sh),
 sanitised build, and acc.bin, and runs:
 
 - [`test/run.sh`](../test/run.sh): every program in `test/cases`, compiled
-  by acc and by agondev and run on the emulator, eight at a time; both must
+  by acc and by agondev and run on the emulator, eight at a time, each on
+  its own card; both must
   answer 42. agondev's answers are kept in `bin/answers`, under a hash of
   its program and the MOS, so each is run once.
 - [`test/conformance.sh`](../test/conformance.sh): gcc's torture and
@@ -815,10 +868,11 @@ sanitised build, and acc.bin, and runs:
   [`test/bss.sh`](../test/bss.sh), [`test/abi.sh`](../test/abi.sh),
   [`test/abandon.sh`](../test/abandon.sh) and more.
 
-The suites run as three streams at once -- most suites, then the self-build;
-the conformance suites; `test/run.sh` under acc and each of opt-acc's ways
--- and then, with nothing else running, the ones that time the emulator or
-need it to themselves: [`test/target.sh`](../test/target.sh), the release's
+The suites run at once -- the mechanism suites four at a time
+([`test/suites.sh`](../test/suites.sh)), the two that make the Agon build after the
+rest, alongside the conformance suites and `test/run.sh`'s cases -- each
+printed whole as it ends, and then, with nothing else running, the ones
+that time the emulator or need it to themselves: [`test/target.sh`](../test/target.sh), the release's
 and the headers' checks, and the cycle count.
 
 Beyond `make test`: [`test/bench.sh`](../test/bench.sh) counts cycles per

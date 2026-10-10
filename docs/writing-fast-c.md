@@ -41,8 +41,9 @@ What it costs:
   four bytes a call site, since the callee may use IY.
 - **acc's own uses of IY** in that function save it and put it back the
   same way. Those are copies and constants of `long`, `long long` and
-  `float`; an AND with a mask like `0x8000` or `0xffff`; a conversion to
-  `short`; and a frame slot past `(ix-128)`.
+  `float`; an AND with a two-byte mask that keeps some of the low byte,
+  like `0x7fff` or `0xffff`; a conversion to `short`; and a frame slot
+  past `(ix-128)`.
 
 So the best candidate is the pointer or counter a loop uses on every turn,
 in a function whose loop calls nothing, or little, and does no `long` or
@@ -69,10 +70,14 @@ or without it.
 `int` is 24 bits here, up to 8,388,607. A divide by a power of two up to
 256 is a shift (section 5): `x / 4` takes 59 cycles, and an unsigned
 `u / 4` 41. An unsigned `u % 8` is a mask, 6 cycles. Any other divide is
-a call to the divide routine, about 500 to 600 cycles for an `int`.
-An `int` divide works in registers. A `long` or
-`long long` one takes its operands through frame slots and does more work
-at every step, so the same division costs more the wider its type.
+a call to the divide routine, which goes round once for each bit of the
+dividend: about 500 to 600 cycles for an `int` that needs all 24. The
+rounds for a dividend's zero top bytes are skipped, eight at a time, so
+one under 65,536 takes 16 rounds and one under 256 takes 8: a thousand
+remainders of 50,000 by 7 take 433 thousand cycles, where 24 rounds took
+556 thousand. An `int` divide works in registers. A `long` or `long long`
+one takes its operands through frame slots and does more work at every
+step, so the same division costs more the wider its type.
 
 So divide in `int` whenever the values fit. acc's own `printf` used to
 widen every integer to `unsigned long long` and divide it twice per
@@ -101,6 +106,14 @@ does it in A, a byte at a time, and never widens. `c = a + b;` with three
 `unsigned char` locals is three instructions. A byte right shift by a
 constant is that many `srl a` (or `sra a` for signed).
 
+Comparisons too. Two values that fit in a byte -- `unsigned char`s, or
+masks of the low byte like `(x & 15) == mode` -- are compared in A:
+`ld a,(ix+6); cp a,(ix+9)`, six bytes. A char against a constant is `cp`
+as well, and a `switch` on a char (section 9). Two `signed char`s are
+widened to 24 bits and compared as signed ints, 31 bytes. And a `signed
+char` against an unsigned constant, `c < 10u`, is an unsigned comparison
+as C says, made at 24 bits; against `10` it stays in A.
+
 `short` is the eZ80's worst width. The same six operations measured 207
 bytes as `unsigned char`, 277 as `unsigned int` and 406 as `unsigned
 short`. Use `short` only for data whose layout needs two bytes, and do the
@@ -128,7 +141,18 @@ A multiply by a constant up to 65,535 is shifts and adds when that takes
 12 steps or fewer, which covers the usual struct strides: indexing an
 array of a 13-byte struct is 9 bytes of `add hl,hl` and `add hl,de` instead of a
 call, and runs in about a thirtieth of the time. A multiply of two
-variables is a call.
+variables is a call to the multiply routine, about 100 cycles.
+
+Subtracting two pointers into one array is cheap too. They are a whole
+number of elements apart, so the difference in bytes is divided by the
+element's width exactly: a shift for the twos in the width, and a
+multiply by the inverse of the odd part that is left. For `char` that is
+nothing, for `long` a shift (section 5), and for `int` and pointers, three bytes
+wide, a call to `acc_rt_mulinv3`, a routine of shifts and adds with no
+loop. Any other odd part is a multiply by a 24-bit constant, the routine
+above. Only a VLA's rows, whose width is known only when the program
+runs, still divide. aed, whose line index is a gap buffer of ints, ran
+15% faster when `p - q` stopped being a divide.
 
 In a hot loop, walking a pointer is still cheaper than indexing. `p++` is
 `inc hl`s for a stride up to 4, and `inc iy`s or one `lea` if `p` is the
@@ -136,7 +160,7 @@ register local.
 
 ## 7. Calls, and what gets inlined
 
-A call costs about 60 cycles before the callee does anything. acc expands
+A call costs about 45 cycles before the callee does anything. acc expands
 a `static inline` function in place only if its body is a single `return`
 of an int-or-narrower value, with at most eight int-or-narrower
 parameters and no varargs. Any other `inline` function is called.
@@ -161,10 +185,16 @@ with the operands passed in registers. A byte loop written in C cost zap
 ## 9. `switch` is a chain of compares
 
 There are no jump tables. The value is loaded once, and each `case` is
-tested in the order it appears in the source: twelve bytes each, and
-one more compare per case before the one that matches. Put the most
-frequent cases first. For a dense dispatch over many values, index a
+tested in the order it appears in the source: twelve bytes each on an
+`int`, and one more compare per case before the one that matches. Put
+the most frequent cases first. For a dense dispatch over many values, index a
 table of function pointers or of data instead.
+
+A switch on a char -- a `char` variable, or one read through a pointer,
+`switch (*p++)` -- compares the byte in A: `cp n` and a jump, four bytes
+a case where the jump is short, and no test at all for a case the char
+cannot be. A lexer's switch should be on the char, not on an `int` it was
+copied into.
 
 ## 10. `long`, `long long` and `float`
 
@@ -204,6 +234,15 @@ used by one function at a time belongs in a `static`.
   value, `a[i++]`, it also steps back after the store.
 - A comparison in an `if`, a loop condition, `!`, `&&` or `||` is a jump
   on the flags. Storing one, `ok = a < b;`, builds the 0 or 1: `ld hl,1`,
-  a jump and `ld hl,0`, ten bytes more.
+  a jump and `ld hl,0`, ten bytes more. A `?:` on a comparison jumps on
+  the flags as well, even in the middle of an expression:
+  `x * 3 + (c < 26 ? 1 : 2)` makes no 0 or 1.
+- `volatile` is honoured: a volatile local is read from its slot every
+  time, and a volatile read whose value is not used is still made. Declare
+  volatile only what an interrupt or the hardware changes.
+- `malloc` walks only the free blocks, first fit, and a request from the
+  room at the heap's end -- nearly all of them, in a program that frees
+  little -- is quick: a thousand small ones take 372 thousand cycles.
+  `realloc` grows a block into free room after it without copying.
 - A function returning `char` or `unsigned char` returns it in A, and
   `if (f())` tests A directly.

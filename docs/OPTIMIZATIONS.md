@@ -111,14 +111,20 @@ the same shift, plus one for a negative value that had bits shifted out,
 since division rounds toward zero. `x / 4` is 59 cycles where the divide
 was 605. An unsigned remainder by a power of two is an AND with one less.
 
-**Pointer differences** divide by the element's width exactly, so
-[`exact_divide()`](../src/lvalue.c) makes the divide a signed shift for the
-twos in the width and a multiply by the inverse of the odd rest modulo
-2^24: `p - q` on `int *` is a multiply by 0xAAAAAB, the inverse of 3,
-where it was a signed divide by 3. That multiply has a routine of its own,
-[`acc_rt_mulinv3`](../lib/rt/mulinv3.s): 0xAAAAAB is -0x555555, which is
-5 * 17 * 257 * 65537, so it is four shift-and-adds and a negation. A VLA row's width is known only
-at run time and still divides.
+**Pointer differences.** Two pointers into one array are a whole number
+of elements apart, so their difference divides by the element's width
+exactly. [`exact_divide()`](../src/lvalue.c#L184) makes that a signed shift
+for the twos in the width and a multiply by the inverse of the odd rest
+modulo 2^24, which undoes multiplying by it: `p - q` on `int *` or on a
+pointer to pointers is a multiply by 0xAAAAAB, the inverse of 3, rather
+than a signed divide by 3. [`mul_const()`](../src/arith.c#L126) sends a
+multiply by 0xAAAAAB, wherever a program makes one, to a routine of its
+own, [`acc_rt_mulinv3`](../lib/rt/mulinv3.s): 0xAAAAAB is -0x555555, and
+0x555555 is 5 * 17 * 257 * 65537 as far as 24 bits go, so it is four
+shift-and-adds -- the shifts by 8 and 16 whole bytes moved through the
+stack -- and a negation, about half the cycles of the general multiply.
+No constant is loaded into BC for it. A VLA row's width is known only at
+run time, and that difference still divides.
 
 **Multiplies** by a constant from 1 to 65,535 are shifts and adds,
 [`mul_const()`](../src/arith.c#L126): a power of two is only `add hl,hl`s; any other
@@ -127,6 +133,21 @@ hl,hl` and, where the bit is set, an `add hl,de`, then `pop de`. It is
 used up to 12 steps (`MUL_MAX_STEPS`). zap's commonest multiply, by 13 --
 a struct's width -- is 9 bytes this way against the call's 8, and runs in
 about a thirtieth of the time.
+
+**Without a constant.** A multiply, divide or remainder of two values
+calls the runtime, HL by BC into HL. `acc_rt_mul`
+([`lib/rt/mul.s`](../lib/rt/mul.s)) builds the product from MLT's 8x8
+products of the bytes, leaving out the pairs that land above bit 23, and
+works in A and DE alone: the operands' top bytes, which have no register
+names, are read by pushing both a byte apart and popping D from between
+them. It is 100 cycles a call with the call itself, where reading the
+operands from a frame through IY was 163. The divide
+([`lib/rt/udivmod.s`](../lib/rt/udivmod.s)) shifts the dividend into a
+remainder a bit at a time, 24 rounds -- 16, or 8, where the dividend's top
+byte, or two, is zero, since a zero shifted in adds nothing to the
+remainder or the quotient. A thousand remainders of 50000 by 7 take 433
+thousand cycles so, against 556 thousand at 24 rounds each. The divisor's
+zero test is made in place, not called.
 
 **AND, OR and XOR with a constant** ([`bitwise_const()`](../src/arith.c#L26)) work a
 byte at a time through A, touching only the bytes the constant changes:
@@ -144,8 +165,10 @@ byte at a time through A, touching only the bytes the constant changes:
 
 **Known-narrow values.** A register value whose upper bytes are known to be
 zero carries `VQ_BYTE` or `VQ_WORD`, read by `vwidth` in [`gen_int.h`](../src/gen_int.h): an
-unsigned narrow load, a byte dereference, a byte return, and the result of
-a narrow AND all set it. [`bitwise_narrow()`](../src/arith.c#L429) then does `&`, `|` and
+unsigned narrow load, a byte dereference, a byte return, and an AND whose
+constant keeps nothing above the low byte, or above the low two, all set
+it: [`bitwise_const()`](../src/arith.c#L26) answers how many bytes of its
+result can be other than zero. [`bitwise_narrow()`](../src/arith.c#L429) then does `&`, `|` and
 `^` of two register values a byte or two at a time in A. An AND is as
 narrow as its narrower side; OR and XOR need both.
 
@@ -215,7 +238,13 @@ operations measured 207 bytes as `unsigned char`, 277 as `unsigned int`
 and 406 as `unsigned short`.
 
 A value in A is widened only when something needs it as an int
-([`force_reg()`](../src/vstack.c#L827)).
+([`force_reg()`](../src/vstack.c#L827)). A byte left in A -- the value of
+`--w` or `c = x + 1` -- is moved to a register before the right operand of
+an operator is read, and after each argument of a call
+([`vacc_out()`](../src/vstack.c#L478)), because reading a global byte or a
+byte through a pointer goes through A. It is widened as a byte just read
+is, so where the right operand needs no code, a number or a local, the
+widening is taken back and the byte compared in A as before (section 5).
 
 **Narrow loads.** Widening uses the `sbc hl,hl` idiom: `or a; sbc hl,hl`
 is zero, and `ld l,a; rlc l; sbc hl,hl` is A's sign. An unsigned byte or
@@ -279,12 +308,26 @@ fourteen bytes where the carry is one jump. So:
 **Bytes against constants.** [`cmp_byte_const()`](../src/arith.c#L1159) compares a byte
 local, or a byte just read, with a constant in its range in A: `ld
 a,(ix+d); cp n`. `c > k` becomes `c >= k+1`; a signed byte has `xor 80h`
-applied to both sides first.
+applied to both sides first. A signed byte ordered against an unsigned
+constant, `c < 10u`, is not: C converts a negative `c` to a large unsigned
+value, so that order is made at 24 bits. Equality, which signedness does
+not change, is still the byte's.
+
+**Two bytes.** [`cmp_bytes()`](../src/arith.c#L1235) compares two values
+whose top two bytes are known to be zero -- unsigned chars, masks of them
+(`VQ_BYTE`), or an unsigned char not yet loaded -- in A: `ld a,e; cp l`, or
+`ld a,(ix+d); cp (ix+d)`. Both are 0 to 255, where a signed order and an
+unsigned one are the byte's. A byte just read and widened is taken back
+into A, from either side for `==` and `!=`. So `(x & 15) == mode`, with
+`x` in HL and `mode` an unsigned char local, is `ld a,l; and 0fh; cp
+(ix+d)`, not two 24-bit values subtracted with one moved through the stack
+to make room. The answer is made in HL, so anything else there is moved
+out first.
 
 **Tests against zero.** `x == 0` is `add hl,bc; or a; sbc hl,bc`
 ([`hl_zero_test()`](../src/arith.c#L1283)), 4 bytes against 6 for loading a zero. A value
 known to be one or two bytes wide is tested with `ld a,l; or a` or `ld a,l;
-or h`. An AND with a mask leaves its flags for the branch
+or h`; a mask of the low two bytes, `x & 0xfff`, is such a value. An AND with a mask leaves its flags for the branch
 ([`flags_say_nonzero()`](../src/arith.c#L1084)), so `if (c & 0x8000)` is the `and` and a
 `jp z`. A `long` or `long long` against zero ORs its bytes into A.
 
@@ -293,6 +336,15 @@ list of jump holes behind it ([`logic_keep()`](../src/branch.c#L438)); a branch 
 takes the value back and relinks the holes to its own targets
 ([`logic_chain()`](../src/branch.c#L451)). So `while (p < e && ok(*p))` jumps out from
 each side with no 0/1 made.
+
+**`?:` on a comparison.** The values under a `?:`'s condition go to the
+frame before the arms, so that both find them in the same place
+([`gen_cond_begin()`](../src/branch.c#L790)). When the condition is a
+comparison, its 0/1 is taken back first, the values are spilled, and the
+jump is made on the flags the comparison left: a spill is `ld (ix+d),rr`,
+or `lea`, `push` and `pop` for a far slot, and none of them touches the
+flags. `x * 3 + (c < 26 ? 1 : 2)` jumps on the compare, where spilling
+after it would leave only the 0/1 to test again.
 
 ## 7. Registers and the frame
 
@@ -415,7 +467,11 @@ once ([`gen_switch_load()`](../src/branch.c#L586)); each case is `ld de,v; or a;
 hl,de; add hl,de; jp z,case` ([`gen_switch_case()`](../src/branch.c#L607)) -- the `add`
 puts HL back and leaves Z alone, so the value is never reloaded. A `long`
 case compares its top byte in A first and skips the rest on a mismatch.
-There are no jump tables.
+A switch on a char keeps it a byte: it is loaded into A, each case is `cp
+n; jp z,case`, and a case the char cannot be has no test. A char just read
+through a pointer is held as that byte too
+([`vbyte_held()`](../src/branch.c#L328)), so `switch (*p++)` in a lexer
+compares the byte. There are no jump tables.
 
 ## 11. Functions
 
@@ -423,9 +479,10 @@ There are no jump tables.
 hl,ix-frame; ld sp,hl`, 13 bytes, or `ld hl,-frame; add hl,sp; ld sp,hl`
 for a frame past `(ix+d)`'s reach
 ([`gen_func_begin()`](../src/func.c#L472)). A function with no locals
-keeps the first nine. A call to `acc_rt_frameset` was 8 bytes, and some 15
-cycles more on every entry: acc compiling its own inputs ran 5.2% slower
-so, AED 4.4%, ez80asm 3.1% and zap 2.7%.
+keeps the first nine. A call to a frame-setting routine, as agondev makes
+to `__frameset`, is 8 bytes, but some 15 cycles more on every entry:
+written out, acc compiling its own inputs runs 5.2% faster, AED 4.4%,
+ez80asm 3.1% and zap 2.7%, for 1-2% more code.
 
 **No frame where none is needed.** A function with no locals has SP where
 its prologue left it at every return, so its epilogue is `pop ix; ret`.
@@ -450,7 +507,10 @@ and cuts the other seven bytes.
 **Built-in calls.** `memcpy`, `memmove`, `memset` and `memchr` are calls to
 runtime routines built on `ldir` and `cpir`, with their operands in
 registers ([`mem_builtin()`](../src/func.c#L1063)); a byte loop in C cost zap 7% of its
-time. `exit` is four instructions in line ([`exit_builtin()`](../src/func.c#L993)).
+time. `ldir` reads a count of zero as 16 MB, so each routine tests for
+none in place, `or a; sbc hl,hl; sbc hl,bc`, rather than through a call:
+a thousand 7-byte fills and copies take 227 thousand cycles so, against
+287 thousand with the test called. `exit` is four instructions in line ([`exit_builtin()`](../src/func.c#L993)).
 Struct copies are `ldir`.
 
 **Byte results** are returned in A as well as HL, and the caller treats A
