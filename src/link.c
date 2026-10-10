@@ -550,24 +550,52 @@ static void missed_grow(void)
     missed_limit = (NameRef *) (void *) ((char *) missed + room);
 }
 
-static void link_archive(const char *path, int must)
-{
+/* A library open for a link: its index in memory, and what has been taken
+ * from each member, kept between looks so that a second look -- the
+ * runtime's, after the C library's -- takes from a member it took from
+ * before only what is still left there. */
+typedef struct {
     Archive a;
-    Taken *taken;
-    int again = 1, m;
+    Taken  *taken;
+    const char *path;
+} Library;
 
+/* Opened, or 0 if it is not there and need not be. */
+static int library_open(Library *lib, const char *path, int must)
+{
     /* The default libraries may not be there: a card without them links
      * what it is given, as the host build once did. Opened rather than
      * asked after first, which is a second search of the directory. */
-    if (!ar_open_if(path, &a)) {
+    if (!ar_open_if(path, &lib->a)) {
         if (must)
             acc_error("cannot open '%s'", path);
 
-        return;
+        return 0;
     }
-    taken = calloc((size_t) a.nmembers + 1, sizeof *taken);
-    if (!taken)
+    lib->path = path;
+    lib->taken = calloc((size_t) lib->a.nmembers + 1, sizeof *lib->taken);
+    if (!lib->taken)
         acc_error("out of memory for '%s'", path);
+
+    return 1;
+}
+
+static void library_close(Library *lib)
+{
+    int m;
+
+    for (m = 0; m != lib->a.nmembers; m++)
+        if (lib->taken[m].placed)
+            free(lib->taken[m].placed);
+    free(lib->taken);
+    ar_close(&lib->a);
+}
+
+static void library_search(Library *lib)
+{
+    const char *path = lib->path;
+    Taken *taken = lib->taken;
+    int again = 1, m;
 
     waits_start(&waits);
     while (again) {
@@ -582,7 +610,7 @@ static void link_archive(const char *path, int must)
             if (name_missed(sym_at(sym)->name))
                 continue;
             name = obj_object_name(name_text(sym_at(sym)->name));
-            m = ar_find(&a, name);
+            m = ar_find(&lib->a, name);
             if (m < 0) {
                 if (missed_put == missed_limit)
                     missed_grow();
@@ -590,7 +618,7 @@ static void link_archive(const char *path, int must)
                 name_set_missed(sym_at(sym)->name, 1);
                 continue;
             }
-            ar_member(&a, m, &o);
+            ar_member(&lib->a, m, &o);
             if (!taken[m].placed) {
                 int k;
 
@@ -603,7 +631,7 @@ static void link_archive(const char *path, int must)
                 taken[m].bss = -1;
             }
             take_items(&o, &taken[m], obj_object_name(name_text(sym_at(sym)->name)),
-                       ar_member_name(&a, m));
+                       ar_member_name(&lib->a, m));
             obj_free(&o);
             out_flush();
             if (gen_no_address(sym) && gen_bss_offset(sym) < 0)
@@ -614,10 +642,16 @@ static void link_archive(const char *path, int must)
     }
     while (missed_put != missed)
         name_set_missed(*--missed_put, 0);
-    for (m = 0; m != a.nmembers; m++)
-        free(taken[m].placed);
-    free(taken);
-    ar_close(&a);
+}
+
+static void link_archive(const char *path, int must)
+{
+    Library lib;
+
+    if (!library_open(&lib, path, must))
+        return;
+    library_search(&lib);
+    library_close(&lib);
 }
 
 /* The objects and libraries a program is linked from, in the order given,
@@ -644,14 +678,26 @@ void link_inputs(const char **objs, int nobjs)
         const char *slash = strrchr(ACC_LIBC, '/');
         int dir = slash ? (int) (slash - ACC_LIBC) + 1 : 0;
 
+        Library run, c;
+        int have_rt;
+
         memcpy(rt, ACC_LIBC, (size_t) dir);
         strcpy(rt + dir, "rt.a");
-        if (link_short())
-            link_archive(rt, 0);
-        if (link_short())
-            link_archive(ACC_LIBC, 0);
-        if (link_short())
-            link_archive(rt, 0);
+        /* The runtime opened once for both its looks: an open is some
+         * 150,000 cycles of MOS's, a sixth of linking a hello world. */
+        if (!link_short())
+            return;
+        have_rt = library_open(&run, rt, 0);
+        if (have_rt)
+            library_search(&run);
+        if (link_short() && library_open(&c, ACC_LIBC, 0)) {
+            library_search(&c);
+            library_close(&c);
+            if (have_rt && link_short())
+                library_search(&run);
+        }
+        if (have_rt)
+            library_close(&run);
     }
 #endif
 }

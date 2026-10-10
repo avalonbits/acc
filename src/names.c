@@ -252,7 +252,7 @@ static void buckets_rehash(unsigned newn)
     free(old);
 }
 
-void name_init(void)
+void name_init(int compiling)
 {
 #ifdef AGONDEV
     name_arena = name_first;
@@ -271,8 +271,10 @@ void name_init(void)
      * every name again -- starting at 1024, the two a program with
      * <agon/vdp.h> needed were 8% of its compile, and each held the old
      * table and the new at once. Sixteen KB, which a program that never
-     * needed them can spare. */
-    buckets_rehash(4096);
+     * needed them can spare. A link or an archive reads no headers, and its
+ * names are what its objects define and want: 1024, whose clearing is a
+ * quarter of what 4096's was in a link of a hello world. */
+    buckets_rehash(compiling ? 4096 : 1024);
 }
 
 /* The table that finds a name from its text, let go of: an object's

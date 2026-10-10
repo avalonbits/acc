@@ -591,13 +591,17 @@ int main(int argc, char **argv)
     stack_paint();
     cycles_start();
 
-    name_init();
-    lex_init();
+    name_init(in != NULL);
+    /* The keywords and the predefined macros, and the command line's,
+     * only for something compiled: a link or an archive reads no C, and
+     * making them was a tenth of linking a hello world. */
+    if (in)
+        lex_init();
     sym_init();
     gen_init();
 
     /* The command line's macros, before a source line is read. */
-    for (i = 0; i != ncmdline; i++) {
+    for (i = 0; in && i != ncmdline; i++) {
         if (cmdline[i].undef)
             lex_undefine(cmdline[i].arg);
         else

@@ -398,9 +398,10 @@ void out_flush(void)
     unsigned char *held = out_img + out_flushed;
     int used = (int) (out_put - held);
 
-    if (!out_may_flush || !used
-        || (out_may_flush == OUT_FLUSH_COPY
-            && (unsigned) used < (unsigned) out_flush_at))
+    /* A link too, once it holds as much: written after each member, a
+     * hello world's image went to its file a member at a time, and every
+     * slot gen_finish filled in it was a read and a write of the file. */
+    if (!out_may_flush || !used || (unsigned) used < (unsigned) out_flush_at)
         return;
     if (!spill)
         spill_open();
