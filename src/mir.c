@@ -6300,10 +6300,107 @@ static void spill_store(int a, int v, MIns *out)
 /* By spill: whether the join being rewritten stores into its slot. */
 static unsigned char *slot_stored;
 
+/* Two spilled this round, one copied into the other -- a phi and what
+ * comes into it -- given one slot where their ranges never meet: the
+ * copy is then of a slot to itself, and made not at all. Spilled in an
+ * earlier round, a register is in the code no more, its ranges gone, so
+ * only those spilled now; and a slot held by at most WEB_MAX, each new
+ * one weighed against those it has, so linear. ez80asm's
+ * getDefineValueToken copied its state, its length and its pointer from
+ * one slot to another each time round its loop. */
+#define WEB_MAX 8
+static int *web_next;           /* by register: the next with its slot */
+static int *web_head, *web_count, web_cap;
+
+static int web_fits(int slot, int v)
+{
+    int m;
+
+    for (m = web_head[slot]; m >= 0; m = web_next[m])
+        if (ranges_meet(m, v))
+            return 0;
+
+    return 1;
+}
+
+static void web_join(int slot, int v)
+{
+    vr[v].spill = slot;
+    web_next[v] = web_head[slot];
+    web_head[slot] = v;
+    web_count[slot]++;
+}
+
+static void web_copy(int src, int dst)
+{
+    int slot, other;
+
+    if (src == dst || !spilled[src] || !spilled[dst] || vr[src].width != vr[dst].width
+        || vr[src].remat || vr[dst].remat || vr[src].param || vr[dst].param)
+        return;
+    if (vr[src].spill && vr[dst].spill)
+        return;
+    if (!vr[src].spill && !vr[dst].spill) {
+        if (ranges_meet(src, dst))
+            return;
+        slot = new_spill(vr[src].width);
+        if (slot >= web_cap) {
+            web_cap = 2 * slot + 16;
+            web_head = realloc(web_head, (size_t) web_cap * sizeof *web_head);
+            web_count = realloc(web_count, (size_t) web_cap * sizeof *web_count);
+            if (!web_head || !web_count)
+                acc_error("out of memory for the machine IR");
+            for (other = slot; other != web_cap; other++)
+                web_count[other] = 0;
+        }
+        web_head[slot] = -1;
+        web_count[slot] = 0;
+        web_join(slot, src);
+        web_join(slot, dst);
+        return;
+    }
+    slot = vr[src].spill ? vr[src].spill : vr[dst].spill;
+    other = vr[src].spill ? dst : src;
+    if (slot < web_cap && web_count[slot] && web_count[slot] < WEB_MAX
+        && web_fits(slot, other))
+        web_join(slot, other);
+}
+
+static void spill_webs(void)
+{
+    int blk, at, k;
+
+    web_next = realloc(web_next, ((size_t) nvr + 1) * sizeof *web_next);
+    if (!web_next)
+        acc_error("out of memory for the machine IR");
+    for (k = 0; k < web_cap; k++)
+        web_count[k] = 0;               /* an earlier round's: closed */
+    for (blk = 0; blk != nmb; blk++)
+        for (at = 0; at != mb[blk].n; at++) {
+            const MIns *mi = &mb[blk].ins[at];
+
+            if (mi->op == M_COPY)
+                web_copy(mi->a, mi->d);
+            else if (mi->op == M_PCOPY)
+                for (k = 0; k != pc[mi->imm].n; k++)
+                    web_copy(pc[mi->imm].src[k], pc[mi->imm].dst[k]);
+        }
+}
+
+/* Whether a copy is of a spilled register into itself, or into another in
+ * the same slot: made as a load and a store of that slot, it is not made
+ * at all. */
+static int same_slot(int src, int dst)
+{
+    return spilled[src] && spilled[dst] && vr[src].spill
+           && vr[src].spill == vr[dst].spill;
+}
+
 static void spill_all(void)
 {
     int blk, v;
 
+    spill_webs();
     for (v = 0; v != nvr; v++)
         if (spilled[v] && !vr[v].remat && !vr[v].param && !vr[v].spill)
             vr[v].spill = new_spill(vr[v].width);
@@ -6325,9 +6422,20 @@ static void spill_all(void)
             if (mi.d >= 0 && spilled[mi.d] && (vr[mi.d].remat || vr[mi.d].param)
                 && (mi.op == M_LDI || mi.op == M_LDSYM || mi.op == M_LDF))
                 continue;
+            if (mi.op == M_COPY && same_slot(mi.a, mi.d))
+                continue;
             if (mi.op == M_PCOPY) {
                 PCopy *p = &pc[mi.imm];
                 int marked[MAX_PCOPY], nmarked = 0;
+
+                for (k = 0; k < p->n;)
+                    if (same_slot(p->src[k], p->dst[k])) {
+                        p->n--;
+                        p->src[k] = p->src[p->n];
+                        p->dst[k] = p->dst[p->n];
+                    } else {
+                        k++;
+                    }
 
                 /* A source in its slot is read after the copies, which
                  * write registers only: straight into where it goes, or

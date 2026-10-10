@@ -1393,10 +1393,10 @@ mirwants "$OPT" "x < 0x1000000L as a long"        acc_rt_lrcmps yes 'int f(int x
 
 # The pick weighs the ways by how often each block is estimated to run:
 # scan's machine-level code, a ninth cheaper by 8^depth -- its loop's
-# branches all counted as hot as the loop -- is 2% cheaper by block
-# frequency, short of the sixteenth that outweighs the leaf backend's
-# being smaller. The machine IR makes it twice, for its two ways, and not
-# a third time as the way kept.
+# branches all counted as hot as the loop -- is 8% cheaper by block
+# frequency, and as small as the leaf backend's since a copy within one
+# spill slot is not made. The machine IR makes it twice, for
+# its two ways, and a third time as the way kept.
 scansrc='const char *scan(const char *p)
 {
     const char *end;
@@ -1429,12 +1429,40 @@ rm -f "$tmp/c.o"
 got=$(OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
       OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_SSA_STATS=1 \
       "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 | grep -c '^mir scan')
-if [ "$got" = 2 ]; then
+if [ "$got" = 3 ]; then
     pass=$((pass + 1))
 else
-    printf '  FAIL %-50s mir made it %s times, want 2\n' "the pick weighs blocks by frequency" "$got"
+    printf '  FAIL %-50s mir made it %s times, want 3\n' "the pick weighs blocks by frequency" "$got"
     fail=$((fail + 1))
 fi
+
+# A phi and what is copied into it, both spilled, share a slot where their
+# lives never meet, and the copy between them is not made: a token
+# scanner's state, its length and its pointer, each copied from one slot to
+# another every time round the loop as ez80asm's getDefineValueToken had
+# them -- ld a, (ix-6) / ld (ix-7), a -- and the code 661 bytes for 541.
+webs='typedef struct { char *start, *next; char terminator; } tok_t;
+void error(int);
+unsigned char f(tok_t *token, char *src) { unsigned char length = 0; int state; _Bool escaped = 0, terminated;
+ while (*src == 32) src++; if (*src == 0) { token->start = 0; return 0; } token->start = src;
+ switch (*src) { case 34: state = 1; src++; length++; break; case 39: state = 2; src++; length++; break; case 40: state = 3; src++; length++; break; default: state = 0; }
+ while (*src) { terminated = 0;
+  switch (state) { case 1: switch (*src) { case 92: escaped = !escaped; break; case 34: if (!escaped) state = 0; escaped = 0; break; default: escaped = 0; break; } break;
+  case 2: if (*src == 39) { if (src[1] == 39) { src++; length++; } state = 0; } break;
+  case 3: if (*src == 41) state = 0; break;
+  case 0: terminated = *src == 59 || *src == 44 || *src == 61; break; }
+  if (terminated) break; src++; length++; }
+ token->terminator = *src; token->next = *src ? src + 1 : src;
+ if (state == 1) error(1); return length; }'
+mirs "a token scanner, made by it" yes "$webs"
+mir "$OPT" "no byte copied from slot to slot" 'dd7e..dd77' no "$webs"
+# A switch's tests, a block each in the machine-level backend, share what
+# runs them evenly among the cases: obj.c's exported, its last case
+# weighed an eighth of its first, kept the hybrid path's code with a frame
+# of seven bytes; weighed evenly that backend's is a sixteenth cheaper,
+# with a frame of one.
+exported='typedef struct { int name; unsigned char type, ext, kind, flags; int val; } Sym; int f(const Sym *s) { switch (s->kind) { case 6: case 7: case 8: case 9: return 1; } return 0; }'
+picked "$OPT" "a switch's cases weighed evenly" 'ed22fff9' yes "$exported"
 
 big=$(python3 -c "
 print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')
