@@ -204,9 +204,14 @@ void *realloc(void *p, size_t n)
 
         return p;
     }
+    /* Where there is no room for it, the block is left as it was: C
+     * says so, and a program that collects its garbage and asks again --
+     * Berry's VM, growing its stack -- asks again with this pointer. It
+     * was freed, and the stack went on in freed memory. */
     fresh = malloc(n);
-    if (fresh)
-        memcpy(fresh, p, b->size);
+    if (!fresh)
+        return NULL;
+    memcpy(fresh, p, b->size);
     free(p);
 
     return fresh;
