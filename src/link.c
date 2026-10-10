@@ -266,8 +266,10 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
                     want_bss = 1;
                 if (rel.sym != 0)
                     continue;
-                next = item_in(start, o.nitems,
-                               (int) obj_reloc_add(&rel, o.text + rel.at));
+                next = (int) obj_reloc_add(&rel, o.text + rel.at);
+                if ((unsigned) next - (unsigned) from < (unsigned) to - (unsigned) from)
+                    continue;           /* inside the item: wanted already */
+                next = item_in(start, o.nitems, next);
                 if (t->placed[next] < 0 && !want[next]) {
                     want[next] = 1;
                     queue[nqueue++] = next;
@@ -364,7 +366,18 @@ static void take_items(Object *op, Taken *t, const char *name, const char *path)
          * front only has no text in hand to read it from. */
         a = obj_reloc_add(&rel, out_img + (dest - out_base));
         if (which == 0) {
-            int target = name ? item_in(start, o.nitems, (int) a) : 0;
+            int target = item;
+            unsigned lo, len;
+
+            /* Most addresses inside a member taken in part are of the
+             * item the slot is in -- a jump inside its own function --
+             * and need no search. */
+            if (name) {
+                lo = (unsigned) item_start(start, item);
+                len = (unsigned) item_start(start, item + 1) - lo;
+                if ((unsigned) a - lo >= len)
+                    target = item_in(start, o.nitems, (int) a);
+            }
 
             gen_slot(dest, kind, !name ? (int) a + delta
                                        : t->placed[target] + a - item_start(start, target));
