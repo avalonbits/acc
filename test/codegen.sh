@@ -291,8 +291,8 @@ emits "(c & 0x80) == 0"                 "$not_test" no \
 
 # A narrow value converted to a type as wide is widened once, the way that
 # type wants: a char read as unsigned char loads zero-filled, with no sign
-# fill -- rlc l; sbc hl, hl -- first.
-sign_fill=cb05ed62
+# fill -- rla; sbc hl, hl; rra -- first.
+sign_fill=17ed621f
 emits "(unsigned char) of a char local" "$sign_fill" no \
     'unsigned f(char c) { return (unsigned char) c; }'
 emits "(unsigned char) *p of a char"    "$sign_fill" no \
