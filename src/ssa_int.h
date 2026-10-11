@@ -152,6 +152,7 @@ void ssa_inline_slots(void);
 void ssa_emit_statics(void);
 int  ssa_inline_bytes(void);
 int  ssa_locals_kept(void);
+int  ssa_frame_bytes(void);
 void costs(const int *block_start, int end);
 int  inline_moved(int offset);
 void find_loops(void);

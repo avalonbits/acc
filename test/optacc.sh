@@ -1474,6 +1474,46 @@ void f(struct s *p, int n, int k) { p->count -= n; p->at += k; }'
 mir "$OPT" "a member read and written back: (iy+d)"   'fd275a.*fd2f5a' yes "$rmw"
 mir "$OPT" "not its address moved to IY"               'e5fde1'         no  "$rmw"
 
+# Bodies read in place, ten, each giving its room back for the next: five
+# ints whose address is taken, the same fifteen bytes each time, and ten
+# answers kept to the end. Counted once each -- 150 bytes, past (ix+d)'s
+# reach -- they left the spills no room, so the machine-level backend
+# refused the function; and the first pass's code was kept, the other ways
+# tried only where the first one could be made. The bytes the frame takes
+# are counted, and the machine IR tried where the rest were refused:
+# link.c's take_items, 248 bytes smaller so.
+rooms='void g(int *);
+__attribute__((always_inline)) static inline int one(int k) { int t1 = k, t2 = k, t3 = k, t4 = k, t5 = k; g(&t1); g(&t2); g(&t3); g(&t4); g(&t5); return t1 + t2 + t3 + t4 + t5; }
+int f(int k) { int a, b, c, d, e, a2, b2, c2, d2, e2;
+ a = one(k); b = one(a); c = one(b); d = one(c); e = one(d);
+ a2 = one(e); b2 = one(a2); c2 = one(b2); d2 = one(c2); e2 = one(d2);
+ return a + b + c + d + e + a2 + b2 + c2 + d2 + e2; }'
+printf '%s\n' "$rooms" > "$tmp/c.c"
+rm -f "$tmp/c.o"
+got=$(OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+      OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_SSA_STATS=1 \
+      "$OPT" -c "$tmp/c.c" -o "$tmp/c.o" 2>&1 | grep -c '^mir f$\|^ssa f made$')
+if [ "$got" = 2 ]; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s\n' "bodies' shared room counted once, made by mir"
+    fail=$((fail + 1))
+fi
+
+# And a local the first pass put past (ix+d)'s reach, with bodies read in
+# place: the machine IR lays out the frame again, the far one below it
+# with the arrays, and makes the function where the rest fits. acc's own
+# take_items, which reads its helpers in place, refused for the far one.
+rm -f "$tmp/c.o"
+if OPTACC_SSA=1 OPTACC_REGS=1 OPTACC_NATIVE=1 OPTACC_IY=1 OPTACC_HOMES=2 OPTACC_LEAF=1 \
+    OPTACC_INLINE=1 OPTACC_PEEP=1 OPTACC_MIR=1 OPTACC_SSA_STATS=1 \
+    "$OPT" -c src/link.c -o "$tmp/c.o" -Iinclude -Isrc 2>&1 | grep -q '^mir take_items$'; then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-50s\n' "a far local and bodies read in place, made by mir"
+    fail=$((fail + 1))
+fi
+
 big=$(python3 -c "
 print('unsigned f(unsigned a, unsigned *b, unsigned c) { unsigned d;')
 for n in range(600): print('d = a + b[%d]; if (d < a) c++; a = d;' % n)

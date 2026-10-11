@@ -476,6 +476,60 @@ static void inline_slots(void)
 static int local_gone(int from, int size);
 int frame_of_value(const Ins *insn);
 
+/* The bytes frame_compact lays out: those a local still in memory or an
+ * inlined call's scratch takes, each byte once however many locals the
+ * first pass gave it to in turn. ssa_locals_kept counts each local whole,
+ * and the inlined bodies of zap's encoder, which give their room back for
+ * the next to take, came to three times the frame they need. Linear in
+ * the frame. */
+int ssa_frame_bytes(void)
+{
+    int at, lo = 0, hi = 0, used = 0, b, region;
+    unsigned char *taken;
+
+    for (at = 1; at != ninsns; at++) {
+        const GenRec *rec = insns[at].rec;
+
+        if (insns[at].op != I_FRAME || rec->op != GL_gen_local || frame_of_value(&insns[at])
+            || local_gone((int) rec->ret, (int) rec->arg[0]) || (int) rec->ret >= 0)
+            continue;
+        if ((int) rec->ret < lo)
+            lo = (int) rec->ret;
+        if ((int) rec->ret + (int) rec->arg[0] > hi)
+            hi = (int) rec->ret + (int) rec->arg[0];
+    }
+    for (region = 0; region != nmerged; region++)
+        if (inlined[region].from < 0) {
+            if (inlined[region].from < lo)
+                lo = inlined[region].from;
+            if (inlined[region].from + inlined[region].size > hi)
+                hi = inlined[region].from + inlined[region].size;
+        }
+    if (lo == 0)
+        return 0;
+    taken = calloc((size_t) (hi - lo) + 1, 1);
+    if (!taken)
+        acc_error("out of memory for the SSA form");
+    for (at = 1; at != ninsns; at++) {
+        const GenRec *rec = insns[at].rec;
+
+        if (insns[at].op != I_FRAME || rec->op != GL_gen_local || frame_of_value(&insns[at])
+            || local_gone((int) rec->ret, (int) rec->arg[0]) || (int) rec->ret >= 0)
+            continue;
+        for (b = 0; b != (int) rec->arg[0]; b++)
+            taken[(int) rec->ret + b - lo] = 1;
+    }
+    for (region = 0; region != nmerged; region++)
+        if (inlined[region].from < 0)
+            for (b = 0; b != inlined[region].size; b++)
+                taken[inlined[region].from + b - lo] = 1;
+    for (b = 0; b != hi - lo; b++)
+        used += taken[b];
+    free(taken);
+
+    return used;
+}
+
 /* The first pass's frame laid out again, as one block: every byte that a
  * local still in memory or an inlined call's scratch takes, in the first
  * pass's order, and none that only values took. The first pass gives a
