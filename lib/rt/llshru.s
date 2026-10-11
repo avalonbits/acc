@@ -9,12 +9,20 @@
 
 	XDEF	_acc_rt_llshrs
 	XDEF	_acc_rt_llshru
+	XDEF	_acc_rt_llshrs3
+	XDEF	_acc_rt_llshru3
+	XREF	acc_rt_wcopy8
 
 	.assume adl=1
 	SEGMENT CODE
 
 ; Right shifts walk down from the top byte. What comes in at the top is zero
 ; for an unsigned value and the sign for a signed one, and E says which.
+_acc_rt_llshrs3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy8
+	jr	_acc_rt_llshrs
+_acc_rt_llshru3:
+	call	acc_rt_wcopy8
 _acc_rt_llshru:
 	ld	a, (de)			; the count, before E is taken over
 	push	de

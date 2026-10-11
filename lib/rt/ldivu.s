@@ -9,10 +9,14 @@
 
 	XDEF	_acc_rt_ldivu
 	XREF	acc_rt_ludivmod_core
+	XDEF	_acc_rt_ldivu3
+	XREF	acc_rt_wcopy4
 
 	.assume adl=1
 	SEGMENT CODE
 
+_acc_rt_ldivu3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy4
 _acc_rt_ldivu:
 	push	iy
 	push	hl

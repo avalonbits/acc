@@ -9,6 +9,8 @@
 
 	XDEF	_acc_rt_ladd
 	XDEF	acc_rt_ladd_n
+	XDEF	_acc_rt_ladd3
+	XREF	acc_rt_wcopy4
 
 	.assume adl=1
 	SEGMENT CODE
@@ -22,6 +24,8 @@
 ; the way the arithmetic needs.
 
 
+_acc_rt_ladd3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy4
 _acc_rt_ladd:
 	push	bc
 	push	de

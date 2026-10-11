@@ -8,6 +8,8 @@
 ;
 
 	XDEF	_acc_rt_lshl
+	XDEF	_acc_rt_lshl3
+	XREF	acc_rt_wcopy4
 
 	.assume adl=1
 	SEGMENT CODE
@@ -24,6 +26,8 @@
 ; there is no (hl+d).
 
 
+_acc_rt_lshl3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy4
 _acc_rt_lshl:
 	ld	a, (de)
 	and	a, 31

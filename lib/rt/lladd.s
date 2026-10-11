@@ -9,6 +9,8 @@
 
 	XDEF	_acc_rt_lladd
 	XREF	acc_rt_ladd_n
+	XDEF	_acc_rt_lladd3
+	XREF	acc_rt_wcopy8
 
 	.assume adl=1
 	SEGMENT CODE
@@ -21,6 +23,8 @@
 ; entered with eight in B.
 
 
+_acc_rt_lladd3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy8
 _acc_rt_lladd:
 	push	bc
 	push	de

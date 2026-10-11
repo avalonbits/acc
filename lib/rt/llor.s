@@ -9,10 +9,14 @@
 
 	XDEF	_acc_rt_llor
 	XREF	acc_rt_lor_n
+	XDEF	_acc_rt_llor3
+	XREF	acc_rt_wcopy8
 
 	.assume adl=1
 	SEGMENT CODE
 
+_acc_rt_llor3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy8
 _acc_rt_llor:
 	push	bc
 	push	de

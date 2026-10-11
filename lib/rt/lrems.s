@@ -12,10 +12,14 @@
 	XREF	acc_rt_labs_iy
 	XREF	acc_rt_lneg_iy
 	XREF	acc_rt_ludivmod_core
+	XDEF	_acc_rt_lrems3
+	XREF	acc_rt_wcopy4
 
 	.assume adl=1
 	SEGMENT CODE
 
+_acc_rt_lrems3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy4
 _acc_rt_lrems:
 	push	ix
 	push	iy

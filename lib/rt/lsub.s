@@ -9,6 +9,8 @@
 
 	XDEF	_acc_rt_lsub
 	XDEF	acc_rt_lsub_n
+	XDEF	_acc_rt_lsub3
+	XREF	acc_rt_wcopy4
 
 	.assume adl=1
 	SEGMENT CODE
@@ -16,6 +18,8 @@
 ; Only (hl) has an `sbc a, (rr)` form, so the right-hand byte goes through C
 ; on the way. Neither `ld c, a` nor `ld a, (hl)` touches the carry, so the
 ; borrow still chains from one byte to the next.
+_acc_rt_lsub3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy4
 _acc_rt_lsub:
 	push	bc
 	push	de
