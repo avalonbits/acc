@@ -12,6 +12,8 @@
 	XDEF	acc_rt_labs_iy
 	XDEF	acc_rt_lneg_iy
 	XDEF	acc_rt_ludivmod_core
+	XDEF	_acc_rt_lmul3
+	XREF	acc_rt_wcopy4
 
 	.assume adl=1
 	SEGMENT CODE
@@ -88,6 +90,8 @@
 	ld	(iy + 3), a
 	ENDMACRO
 
+_acc_rt_lmul3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy4
 _acc_rt_lmul:
 	push	ix
 	push	iy

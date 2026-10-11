@@ -14,6 +14,8 @@
 	XDEF	acc_rt_llrem_move
 	XDEF	acc_rt_lludivmod_core
 	XREF	acc_rt_llneg_hl
+	XDEF	_acc_rt_llmul3
+	XREF	acc_rt_wcopy8
 
 	.assume adl=1
 	SEGMENT CODE
@@ -34,6 +36,8 @@
 ;
 ; The left operand is copied out first, to ix+0..7, because the answer is
 ; built where it was.
+_acc_rt_llmul3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy8
 _acc_rt_llmul:
 	push	ix
 	push	iy

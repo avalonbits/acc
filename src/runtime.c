@@ -30,19 +30,20 @@ int      nrt_fixups, rt_fixups_cap;
 
 /* What each is called, without the acc_rt_ in front: in the order of the
  * enum in runtime.h. */
-static const char *const rt_names[RT_COUNT] = {
+static const char *const rt_names[RT_COPYING] = {
     "frameset", "frameset0",
     "memcpy", "memmove", "memset", "memchr",
     "and", "or", "xor", "shl", "shru", "shrs",
     "mul", "divu", "remu", "divs", "rems",
-    "ladd", "lsub", "land", "lor", "lxor", "lcmpeq", "lcmpord",
+    "ladd", "lsub", "land", "lor", "lxor",
     "lshl", "lshru", "lshrs", "lmul", "ldivu", "lremu", "ldivs",
-    "lrems", "lneg", "lnot",
-    "itof", "uitof", "ftoi", "fcmp", "fsub", "fadd", "fmul", "fdiv",
-    "ltof", "ultof", "ftol",
-    "lladd", "llsub", "lland", "llor", "llxor", "llcmpeq",
-    "llcmpord", "llneg", "llnot", "llshl", "llshru", "llshrs",
+    "lrems", "fsub", "fadd", "fmul", "fdiv",
+    "lladd", "llsub", "lland", "llor", "llxor",
+    "llshl", "llshru", "llshrs",
     "llmul", "lldivu", "llremu", "lldivs", "llrems",
+    "lcmpeq", "lcmpord", "lneg", "lnot",
+    "itof", "uitof", "ftoi", "fcmp", "ltof", "ultof", "ftol",
+    "llcmpeq", "llcmpord", "llneg", "llnot",
     "lltof", "ulltof", "ftoll",
     "shr", "sdiv", "mulinv3",
 #ifdef OPT_ACC
@@ -70,9 +71,10 @@ int rt_symbol(int which)
 {
     if (rt_syms[which] == SYM_NONE) {
         char name[32];
-        int sym, len;
+        int sym, len, copying = (unsigned) which >= RT_COPYING;
 
-        len = snprintf(name, sizeof name, "acc_rt_%s", rt_names[which]);
+        len = snprintf(name, sizeof name, copying ? "acc_rt_%s3" : "acc_rt_%s",
+                       rt_names[copying ? which - RT_COPYING + RT_LADD : which]);
         sym = sym_push(name_intern(name, len), SYM_FUNC, 0);
         sym_set_flags(sym, SYMF_DECLARED | SYMF_PARAMS);
         rt_syms[which] = sym;

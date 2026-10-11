@@ -12,6 +12,8 @@
 	XREF	acc_rt_labs_iy
 	XREF	acc_rt_lneg_iy
 	XREF	acc_rt_ludivmod_core
+	XDEF	_acc_rt_ldivs3
+	XREF	acc_rt_wcopy4
 
 	.assume adl=1
 	SEGMENT CODE
@@ -19,6 +21,8 @@
 ; C99 has division truncate towards zero and the remainder take the sign of
 ; the dividend, which is what dividing the magnitudes and fixing the sign
 ; afterwards gives.
+_acc_rt_ldivs3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy4
 _acc_rt_ldivs:
 	push	ix
 	push	iy

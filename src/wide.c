@@ -1061,6 +1061,40 @@ typedef struct {
 static LongOp  lops[LOPS];
 static LongOp *lop_top;                 /* past the last, or NULL: none */
 
+/* The routine applied to the slot at `to`, its right operand at `right` or
+ * in the pool. With `fill`, the left operand is the value on top, still to
+ * be put in the slot first. One in the frame elsewhere is copied in by the
+ * routine's own entry that does that, its address in BC: three bytes of
+ * code where the copy through IY was twelve, eighteen for a long long. The
+ * copy is an ldir, from the bottom up, so it can move a value down onto
+ * itself but not up: one there is put in place as before. */
+static void wide_apply(int to, int fill, const LongOp *op)
+{
+    int from = 0, copying = 0;
+
+    if (fill) {
+        const Value *top = vsp - 1;
+
+        from = top->val;
+        copying = wide_in_place(top, op->result, op->n)
+                  && (unsigned) (to - from) >= (unsigned) op->n;
+        if (!copying)
+            materialise_long(to, op->result);
+        vdrop();
+    }
+    lea_rr_ix(R_HL, to);
+    if (op->pooled)
+        ld_rr_pool(R_DE, op->bits, op->n);
+    else
+        lea_rr_ix(R_DE, op->right);
+    if (copying) {
+        lea_rr_ix(R_BC, from);
+        rt_call(RT_COPY_OF(op->which));
+    } else {
+        rt_call(op->which);
+    }
+}
+
 /* See lops: 1 if the value on top, going into the wide variable at
  * `offset`, was made again there. Not if a right operand is read from where
  * the variable is: the routine would write it while it read it. */
@@ -1102,16 +1136,8 @@ int long_into(int offset, Type type)
     *vsp++ = first->left;
     vtop++;
     lop_top = NULL;
-    materialise_long(offset, first->result);
-    vdrop();
-    for (op = first; op <= last; op++) {
-        lea_rr_ix(R_HL, offset);
-        if (op->pooled)
-            ld_rr_pool(R_DE, op->bits, op->n);
-        else
-            lea_rr_ix(R_DE, op->right);
-        rt_call(op->which);
-    }
+    for (op = first; op <= last; op++)
+        wide_apply(offset, op == first, op);
     vpush(VAL_LOCAL, type, offset);
 
     return 1;
@@ -1253,15 +1279,7 @@ void vbinop_long(int op, Type result)
     lop->n = n;
     lop->result = result;
 
-    materialise_long(left, result);
-    vdrop();
-
-    lea_rr_ix(R_HL, left);
-    if (pooled)
-        ld_rr_pool(R_DE, bits, n);
-    else
-        lea_rr_ix(R_DE, right);
-    rt_call(which);
+    wide_apply(left, 1, lop);
     lop->slot = left;
     lop->end = out_here();
     lop->epoch = out_rewinds;

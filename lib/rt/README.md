@@ -29,7 +29,11 @@ The helpers the code generator calls take the left operand in HL and the
 right in BC, and answer in HL. Everything else is kept: acc's register
 allocator may have live values in DE, and IY is its scratch. A `long`, a
 `long long` or a `float` lives in the frame; the routine takes the address
-of the destination and left operand in HL and of the right in DE.
+of the destination and left operand in HL and of the right in DE. Each
+binary operator's has a second entry, its name with a 3 after it, that
+takes the left operand's address in BC as well and copies it to the
+destination first (`acc_rt_wcopy4` or `acc_rt_wcopy8`): three bytes of
+code at the call where a copy of the left operand was twelve.
 
 The routines named `_acc_rt_lr...` take a `long` in registers instead, as
 agondev's do: the left operand, and the answer, in E:UHL -- E the top byte,

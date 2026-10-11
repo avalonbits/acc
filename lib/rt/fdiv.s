@@ -16,6 +16,8 @@
 	XREF	acc_rt_fround
 	XREF	acc_rt_fnorm
 	XREF	acc_rt_funpack
+	XDEF	_acc_rt_fdiv3
+	XREF	acc_rt_wcopy4
 
 	.assume adl=1
 	SEGMENT CODE
@@ -42,6 +44,8 @@
 ; The frame is fadd's, so the packing at the end of fadd finishes this too.
 
 
+_acc_rt_fdiv3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy4
 _acc_rt_fdiv:
 	push	ix
 	push	iy

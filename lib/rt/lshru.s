@@ -8,10 +8,14 @@
 ;
 
 	XDEF	_acc_rt_lshru
+	XDEF	_acc_rt_lshru3
+	XREF	acc_rt_wcopy4
 
 	.assume adl=1
 	SEGMENT CODE
 
+_acc_rt_lshru3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy4
 _acc_rt_lshru:
 	ld	a, (de)
 	and	a, 31

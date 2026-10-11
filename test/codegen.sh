@@ -687,5 +687,25 @@ emits "*p twice, p loaded once"          7efe2028057efe09 yes \
 emits "not again"                        "28..dd2706" no \
     'int f(const char *p) { if (*p == 32 || *p == 9) return 1; return 2; }'
 
+# A wide operator's left operand in the frame elsewhere is copied into the
+# answer's slot by the routine's entry that ends in 3, from the address in
+# BC -- lea bc, ix+6 -- not by four loads and stores through IY. One already
+# in the answer's slot, the answer of the operator before, takes the plain
+# entry.
+calls "long ^ long, copied by lxor3"     _acc_rt_lxor3 yes \
+    'long f(long a, long b) { return a ^ b; }'
+emits "no copy through IY"               dd31 no \
+    'long f(long a, long b) { return a ^ b; }'
+emits "the left's address in BC"         ed0206cd yes \
+    'long f(long a, long b) { return a ^ b; }'
+calls "float * float, fmul3"             _acc_rt_fmul3 yes \
+    'float f(float a, float b) { return a * b; }'
+calls "long long - long long, llsub3"    _acc_rt_llsub3 yes \
+    'long long f(long long a, long long b) { return a - b; }'
+calls "into a variable, ldivs3"          _acc_rt_ldivs3 yes \
+    'long f(long a, long b) { long q = a / b; return q; }'
+calls "the answer before, plain lxor"    '_acc_rt_lxor[^3]' yes \
+    'long f(long a, long b, long c) { return (a ^ b) ^ c; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -16,13 +16,22 @@
 	XDEF	acc_rt_fadd_zero
 	XDEF	acc_rt_fround
 	XREF	acc_rt_funpack
+	XDEF	_acc_rt_fadd3
+	XDEF	_acc_rt_fsub3
+	XREF	acc_rt_wcopy4
 
 	.assume adl=1
 	SEGMENT CODE
 
+_acc_rt_fadd3:				; the left operand copied in from (bc) first
+	call	acc_rt_wcopy4
+	jr	_acc_rt_fadd
+
 ; The right operand is written to, which is why helper_writes_right in gen.c
 ; names this routine: acc passes a right operand where the program keeps it
 ; unless the routine is one of the few that change it.
+_acc_rt_fsub3:
+	call	acc_rt_wcopy4
 _acc_rt_fsub:
 	push	hl			; the same as adding the right operand
 	push	de			; with its sign turned over, and the

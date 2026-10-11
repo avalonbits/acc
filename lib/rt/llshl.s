@@ -8,6 +8,8 @@
 ;
 
 	XDEF	_acc_rt_llshl
+	XDEF	_acc_rt_llshl3
+	XREF	acc_rt_wcopy8
 
 	.assume adl=1
 	SEGMENT CODE
@@ -15,6 +17,8 @@
 ; (hl) shifted by the low byte of (de), masked to six bits. A bit at a time,
 ; each a pass over the eight bytes: rl and rr through (hl) carry the bit from
 ; one byte into the next, and the passes restart from the saved pointer.
+_acc_rt_llshl3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy8
 _acc_rt_llshl:
 	ld	a, (de)
 	and	a, 63

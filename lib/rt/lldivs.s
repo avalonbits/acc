@@ -12,6 +12,8 @@
 	XREF	acc_rt_llabs_iy
 	XREF	acc_rt_llneg_iy
 	XREF	acc_rt_lludivmod_core
+	XDEF	_acc_rt_lldivs3
+	XREF	acc_rt_wcopy8
 
 	.assume adl=1
 	SEGMENT CODE
@@ -19,6 +21,8 @@
 ; Magnitudes divided and the sign put back, as for a long: the quotient is
 ; negative when the operands differ in sign, the remainder takes the
 ; dividend's.
+_acc_rt_lldivs3:			; the left operand copied in from (bc) first
+	call	acc_rt_wcopy8
 _acc_rt_lldivs:
 	push	ix
 	push	iy
