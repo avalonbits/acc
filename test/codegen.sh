@@ -769,5 +769,13 @@ emits "a char returned, no ld a, l"      1f6fdde1c9 yes \
 emits "an unsigned char param returned: ld l, (ix+6) / ld a, l" dd6e067d yes \
     'unsigned char f(unsigned char v) { return v; }'
 
+# An int stored to a global defined elsewhere goes to its address, ld
+# (nn), hl -- not the address loaded and stored through, ld hl, nn / ld de,
+# n / ld (hl), de.
+emits "extern = 5: ld (nn), hl"          21050000220000 yes \
+    'extern int g; void f(void) { g = 5; }'
+emits "extern = local, not through HL"   ed1f no \
+    'extern int g; void f(int x) { g = x; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
