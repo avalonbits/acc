@@ -94,6 +94,7 @@ typedef struct {
 void out_cut_sum(const Cut *cuts, int n);   /* before out_cut_moved or out_cut */
 void out_cut(const Cut *cuts, int n, int first);
 int  out_cut_moved(int a);          /* an address, wherever it is */
+int  out_cut_over(int a);           /* one at the start of a run */
 void out_cut_rewind(void);          /* and a run of them in rising order */
 int  out_cut_next(int a);
 void out_relocs_write(const char *path);

@@ -583,7 +583,32 @@ static void switch_statement(void)
     hole_push(&breaks, gen_jump());
     gen_label(to_tests);
     gen_stmt_end();
-    gen_switch_load(slot, held);
+    {
+        /* How many cases a value of the type can meet, and the lowest and
+         * the highest of them, for the code generator to choose how to
+         * find the one: see gen_switch_load. Biased so that the smallest a
+         * value can be is 0, which makes every comparison unsigned: an
+         * int's as the three bytes it is compared on, a char's as the
+         * byte; a long's not asked. */
+        unsigned bias = type_size(held) == 1 ? (type_unsigned(held) ? 0 : 0x80)
+                                              : 0x800000;
+        unsigned lo = 0, hi = 0, u;
+        int n = 0;
+
+        for (i = in_switch.case_mark; (unsigned) i < (unsigned) ncases; i++) {
+            u = ((unsigned) (int) case_value[i] + bias) & 0xffffff;
+            if (type_size(held) == 1 && u > 255)
+                continue;                       /* a value it cannot have */
+            if (!n || u < lo)
+                lo = u;
+            if (!n || u > hi)
+                hi = u;
+            n++;
+        }
+        gen_switch_load(slot, held, n, (int) (lo - bias),
+                        type_wide(held) || !n || hi - lo > 254
+                        ? 0 : (int) (hi - lo + 1));
+    }
     for (i = in_switch.case_mark; i < ncases; i++)
         gen_switch_case(case_value[i], case_high[i], held, case_at[i], slot);
     if (in_switch.default_at >= 0)

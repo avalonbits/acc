@@ -424,6 +424,8 @@ static void cut_out(Cut *cuts, int ncuts, int holes, const Mark *from)
             continue;                   /* going away with the code it is in */
         infile = (unsigned) *p < (unsigned) out_flushed;
         to = out_cut_moved(infile ? out_slot_get(*p) : get24(out_img + *p));
+        if (to == -1 && holes)
+            to = out_cut_over(infile ? out_slot_get(*p) : get24(out_img + *p));
         if (to < 0) {
             if (holes)
                 continue;

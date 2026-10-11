@@ -45,7 +45,7 @@ static const char *const rt_names[RT_COPYING] = {
     "itof", "uitof", "ftoi", "fcmp", "ltof", "ultof", "ftol",
     "llcmpeq", "llcmpord", "llneg", "llnot",
     "lltof", "ulltof", "ftoll",
-    "shr", "sdiv", "mulinv3",
+    "shr", "sdiv", "mulinv3", "switch", "jump", "jump8",
 #ifdef OPT_ACC
     "lrsub", "lrand", "lror", "lrxor", "lrshl", "lrshru", "lrshrs",
     "lrneg", "lrnot", "lrcmpu", "lrcmps", "lrmul", "lrdivu",

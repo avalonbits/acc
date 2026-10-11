@@ -25,7 +25,7 @@ enum {
     RT_ITOF, RT_UITOF, RT_FTOI, RT_FCMP, RT_LTOF, RT_ULTOF, RT_FTOL,
     RT_LLCMPEQ, RT_LLCMPORD, RT_LLNEG, RT_LLNOT,
     RT_LLTOF, RT_ULLTOF, RT_FTOLL,
-    RT_SHR, RT_SDIV, RT_MULINV3,
+    RT_SHR, RT_SDIV, RT_MULINV3, RT_SWITCH, RT_JUMP, RT_JUMP8,
 #ifdef OPT_ACC
     /* A long in registers, E:UHL and A:UBC: opt-acc's machine-level
      * backend's. */

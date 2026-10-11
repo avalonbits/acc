@@ -2349,6 +2349,20 @@ int peep_analyse(const Mark *from, int start, int end)
         refused = "the function is in the file already";
         return 0;
     }
+
+    /* A switch's table follows the call that reads it, and would be read
+     * as code: the function is left as it is. */
+    {
+        const RtFixup *r;
+
+        for (r = rt_fixups + from->rt; r != rt_fixups + nrt_fixups; r++)
+            if (r->which == RT_SWITCH || r->which == RT_JUMP
+                || r->which == RT_JUMP8) {
+                refused = "a switch's table";
+                nins = 0;
+                return 0;
+            }
+    }
     if (!read_function() || !mark_slots(from)) {
         nins = 0;
         return 0;
