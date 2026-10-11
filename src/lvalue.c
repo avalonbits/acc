@@ -582,6 +582,31 @@ static int store_byte_through(Type to)
     return 1;
 }
 
+/* An int stored to an extern's address loaded just now, with nothing made
+ * since -- the value a number or an int local, which make no code until
+ * they are wanted: the load taken back, and the address made one in the
+ * image, what was added to it kept, for the store below to write to
+ * itself, ld (nn), hl, the extern's fixup moved to it after. Where ld hl,
+ * nn / ld de, v / ld (hl), de was ten bytes or nine, eight or seven. */
+static int extern_moved;
+
+__attribute__((noinline))
+static void store_to_extern(void)
+{
+    Value *val = vsp - 1, *at = vsp - 2;
+
+    if (gaddr_end != out_here() || gaddr_epoch != out_rewinds
+        || at->kind != VAL_REG || at->val != R_HL || gaddr_reg != R_HL
+        || !(val_number(val->kind) || (val->kind == VAL_LOCAL && !val->bits
+                                       && type_size(val->type) == ACC_INT_SIZE)))
+        return;
+    at->val = get24(out_img + (gaddr_end - ACC_INT_SIZE - out_base));
+    at->kind = VAL_ADDR;
+    out_rewind(gaddr_end - 1 - ACC_INT_SIZE);
+    gaddr_end = -1;
+    extern_moved = 1;
+}
+
 /* *p = v, with the pointer under the value on the stack. The value is left
  * behind, because an assignment is an expression and what it comes to is
  * what was assigned. */
@@ -685,6 +710,9 @@ void vstore_indirect(void)
         return;
     }
 
+    if (type_size(to) == ACC_INT_SIZE)
+        store_to_extern();
+
     /* To an address known as a constant -- a global of this file -- the
      * store names it: ld (nn), hl, de or bc for three bytes, ld (nn), a
      * for one, where it was the address loaded into HL and a store through
@@ -732,6 +760,10 @@ void vstore_indirect(void)
             out_reloc(out_here());
         else
             gen_bss_fixup(out_here());
+        if (extern_moved) {
+            fixup_at(nfixups - 1)->at = out_here();
+            extern_moved = 0;
+        }
         out_word24(at->val);
         vstore_leave_value();
 
