@@ -797,5 +797,13 @@ emits "r = g(x): into r, no copy"        dd2ffc7bdd77ff yes \
 emits "nor IY"                           dd31 no \
     'long g(int); long f(int x) { long r; r = g(x); return r; }'
 
+# A global defined elsewhere, read while HL holds something: from its
+# address into DE, ld de, (nn) -- not the address loaded into DE, HL moved
+# out of the way and the address into it to read through.
+emits "x + ge: ld de, (nn)"              ed5b000000 yes \
+    'extern int ge; int h(int, int); int f(int x) { return h(x + 1, ge); }'
+emits "a char of one: ld a, (nn)"        3a000000 yes \
+    'extern char ce; int h(int, int); int f(int x) { return h(x + 1, ce); }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

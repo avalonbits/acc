@@ -358,7 +358,7 @@ void vderef(void)
 {
     Value *top = vsp - 1;
     Type to;
-    int deref_ext = 0, deref_quals = 0;
+    int deref_ext = 0, deref_quals = 0, answer = R_HL;
 
     if (vtop == 0)
         acc_error("internal: nothing to dereference");
@@ -430,6 +430,41 @@ void vderef(void)
         goto read;
     }
 
+    /* An extern's address just loaded into a pair, with nothing made or
+     * jumped to since: read from there. A byte's load is made ld a, (nn)
+     * where it lies, and an int's ld hl, (nn) -- or, where the address
+     * went to DE or BC because HL was holding something, ld de, (nn) or
+     * ld bc, (nn), a byte longer, the extern's fixup moved with it, and the
+     * answer left there: not HL emptied and the address moved into it to
+     * be read through. */
+    if (top->kind == VAL_REG && top->val == gaddr_reg && gaddr_end == out_here()
+        && gaddr_epoch == out_rewinds && join_at != out_here()
+        && !type_wide(to) && type_size(to) != 2) {
+        int at = gaddr_end - ACC_INT_SIZE, added;   /* the address's slot */
+        unsigned char *op = out_img + (at - 1 - out_base);
+
+        gaddr_end = -1;
+        imm_hl_end = -1;        /* what is there, not the address: read once */
+        if (type_size(to) == 1) {
+            *op = 0x3a;                             /* ld a, (nn) */
+            top->kind = VAL_CONST;                  /* nothing in the pair */
+            evict_reg(R_HL);
+            goto read;
+        }
+        if (gaddr_reg == R_HL) {
+            *op = 0x2a;                             /* ld hl, (nn) */
+            goto read;
+        }
+        added = get24(out_img + (at - out_base));
+        out_rewind(at - 1);
+        out_byte2(0xed, gaddr_reg == R_DE ? 0x5b : 0x4b);  /* ld rr, (nn) */
+        fixup_at(nfixups - 1)->at = out_here();
+        out_reloc(out_here());
+        out_word24(added);
+        answer = gaddr_reg;
+        goto read;
+    }
+
     force_into(top, R_HL);
 
     if (type_wide(to)) {
@@ -477,7 +512,7 @@ read:
     }
 
     vdrop();
-    vpush_reg(R_HL);
+    vpush_reg(answer);
     (vsp - 1)->type = type_promote(to);
     if (type_unsigned(to) && type_size(to) < ACC_INT_SIZE && !type_pointer(to))
         vset_width(vsp - 1, type_size(to));
