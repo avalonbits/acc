@@ -274,6 +274,8 @@ int  widen_byte_op(const Value *v, int op, int c);
 int widen_undo(const Value *v);
 Type widen_held(const Value *v);
 int widen_undo_left(void);
+int a_is_l(void);
+extern int a_stored_at;                 /* insn.c: see frame_byte */
 int store_byte_widened(int offset, Type type);
 int widen_again(Type to);
 extern int logic_from;

@@ -330,6 +330,14 @@ Type vbyte_held(void)
     return widen_held(vsp - 1);
 }
 
+/* Whether A holds what L does: a byte just widened into HL from A, which
+ * leaves it in A as well -- ld a, l would load it again. Not a local's,
+ * which an unsigned one is read straight into L for (widen_local). */
+int a_is_l(void)
+{
+    return widen_live() && type_size(widen_type) == 1 && widen_disp == INT_MIN;
+}
+
 /* Whether widen_undo would: the byte's type if so, TY_VOID if not. */
 Type widen_held(const Value *v)
 {

@@ -755,5 +755,19 @@ calls "no frame: frameset0"              _acc_rt_frameset0 yes \
 calls "a short one's, written out"       _acc_rt_frameset no \
     'int g(int); int f(int a) { int x = a; g(x); return g(x); }'
 
+# A char stored from A and read back at once is not loaded again:
+# ld (ix-1), a straight to the widening, rla. One stored to a global from a
+# byte just read goes from A as it is: ld a, (hl) / ld (nn), a. And a char
+# returned leaves A as the widening left it: rra / ld l, a and the
+# epilogue, no ld a, l.
+emits "d = *p; f(d): not read again"     dd77ff17 yes \
+    'int h(int); int f(char *p) { char d = *p; return h(d); }'
+emits "g = *p: from A, not widened"      7e32 yes \
+    'char g; int f(char *p) { g = *p; return 0; }'
+emits "a char returned, no ld a, l"      1f6fdde1c9 yes \
+    'char f(char *p) { return *p; }'
+emits "an unsigned char param returned: ld l, (ix+6) / ld a, l" dd6e067d yes \
+    'unsigned char f(unsigned char v) { return v; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

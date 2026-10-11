@@ -319,16 +319,39 @@ void frame_byte(int op, int disp)
         far_op(0xfd, op, disp);
 }
 
-void ld_a_ix(int disp)   { frame_byte(0x7e, disp); }
+/* A load of a slot into A straight after A was stored to it is left out,
+ * as ld_rr_ix leaves out a pair's -- `d = *p; f(d)` stored d and read it
+ * back at once. Where the store ended is kept, and forgotten by a rewind
+ * that takes it back (gen_rewound): one only as far as the end of it --
+ * the value widened again after it for the assignment, and discarded --
+ * leaves it standing. */
+int a_stored_at = -1;
+static int a_stored_disp;
+
+void ld_a_ix(int disp)
+{
+    if (a_stored_at != out_here() || a_stored_disp != disp
+        || join_at == out_here() || slot_volatile(disp))
+        frame_byte(0x7e, disp);
+}
 void ld_e_ix(int disp)   { frame_byte(0x5e, disp); }
 void ld_l_ix(int disp)   { frame_byte(0x6e, disp); }
 static void ld_h_ix(int disp)   { frame_byte(0x66, disp); }
-void ld_ix_a(int disp)   { frame_byte(0x77, disp); }
+void ld_ix_a(int disp)
+{
+    frame_byte(0x77, disp);
+    a_stored_at = out_here();
+    a_stored_disp = disp;
+}
 static void ld_ix_l(int disp)   { frame_byte(0x75, disp); }
 static void ld_ix_h(int disp)   { frame_byte(0x74, disp); }
 void ld_l_a(void)        { out_byte(0x6f); }
 void ld_h_a(void)        { out_byte(0x67); }
-void ld_a_l(void)        { out_byte(0x7d); }
+void ld_a_l(void)
+{
+    if (!a_is_l())
+        out_byte(0x7d);
+}
 void ld_a_h(void)        { out_byte(0x7c); }
 void ld_a_hl(void)       { out_byte(0x7e); }      /* ld a, (hl) */
 void ld_hl_a(void)       { out_byte(0x77); }      /* ld (hl), a */
