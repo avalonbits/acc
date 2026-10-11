@@ -311,6 +311,34 @@ void vaddr_local(int offset, Type type)
     vpush(VAL_REG, type_ptr_to(type), reg);
 }
 
+/* p->m read, three bytes or one: vmember has just loaded the pointer from
+ * its slot into HL and added the member's offset -- ld hl, (ix+d) and an
+ * inc hl a byte, or ld de, n / add hl, de -- and that is taken back, the
+ * pointer put in IY instead and the member read at (iy+n): ld iy, (ix+d) /
+ * ld hl, (iy+n), six bytes where it was seven to ten. Only where IY holds
+ * no local, the code is exactly that, and it is smaller. Whether it did. */
+static struct {
+    int      at, end, disp, off;
+    unsigned epoch;
+} member = { 0, -1, 0, 0, 0 };
+
+static int member_through_iy(int op)
+{
+    int tail = out_here() - member.at - 3;
+    const unsigned char *p = out_img + (member.at - out_base);
+
+    if (iy_local || member.end != out_here() || member.epoch != out_rewinds
+        || p[0] != 0xdd || p[1] != 0x27 || p[2] != (unsigned char) member.disp
+        || (unsigned) tail != (p[3] == 0x23 ? (unsigned) member.off : 5u)
+        || (unsigned) tail < 3u - (op == 0x27))
+        return 0;
+    out_rewind(member.at);
+    out_byte3(0xdd, 0x31, member.disp);         /* ld iy, (ix+d) */
+    out_iy_d(op, member.off);                   /* ld hl / a, (iy+n) */
+
+    return 1;
+}
+
 /* *p: the top is a pointer and becomes what it points at.
  *
  * Four bytes go to a frame slot, because that is where every four-byte value
@@ -418,9 +446,11 @@ void vderef(void)
         if (type_size(to) == 1)
             widen_loaded(to);
     } else if (type_size(to) == ACC_INT_SIZE) {
-        ld_hl_ind_hl();
+        if (!member_through_iy(0x27))
+            ld_hl_ind_hl();
     } else if (type_size(to) == 1) {
-        ld_a_hl();
+        if (!member_through_iy(0x7e))
+            ld_a_hl();
 read:
         if (type_size(to) == 1)
             widen_loaded(to);
@@ -471,8 +501,16 @@ void vmember(int offset, Type type, int ext, int quals)
                      TY_PTR_MAX);
     if (offset) {
         (vsp - 1)->type = type_ptr_to(TY_CHAR);
+        Value *top = vsp - 1;
+        int from = top->kind == VAL_LOCAL && (unsigned) offset < 128;
+
+        member.at = out_here();
+        member.disp = top->val;
+        member.off = offset;
         vpush_const(offset, TY_INT);
         vapply(TK_PLUS, 0);
+        member.end = from ? out_here() : -1;
+        member.epoch = out_rewinds;
     }
     (vsp - 1)->type = type_ptr_to(type);
     (vsp - 1)->ext = (unsigned char) ext;
