@@ -733,5 +733,17 @@ emits "not with a local in IY"           dd3106 no \
 emits "nor an element, b[i]"             dd31 no \
     'char b[40]; int f(int i) { return b[i]; }'
 
+# A char argument for a char parameter is pushed as the byte, the callee
+# widening it: ld a, (hl) / ld l, a / push hl, and a char local is ld hl,
+# (ix+d) / push hl. Past a prototype's parameters it is widened as ever.
+emits "*p for a char, not widened"       7e6fe5 yes \
+    'int g(char); int f(char *p) { return g(*p); }'
+emits "a char local, pushed as it lies"  dd27ffe5 yes \
+    'int g(char); int f(char c) { char d = c; return g(d); }'
+emits "a variadic char, widened"         17ed621f yes \
+    'int g(int, ...); int f(char *p) { return g(1, *p); }'
+emits "a _Bool local, not as it lies"    dd27ffe5 no \
+    'int g(_Bool); int f(_Bool b) { _Bool c = b; return g(c); }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
