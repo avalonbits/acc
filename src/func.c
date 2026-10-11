@@ -1331,10 +1331,38 @@ static int keeps_iy(const Callee *callee)
     return callee->fn == SYM_NONE || sym_at(callee->fn)->name != setjmp_name;
 }
 
+/* A byte for a parameter declared a char pushed as the byte alone: the
+ * callee reads the low byte of its slot and widens it itself, as agondev's
+ * does -- whose callers push the byte and nothing above it. So no sign or
+ * zero fill first: a byte just read and widened has the widening taken
+ * back, ld l, a / push hl, and a char local is pushed with the two bytes
+ * past it, ld hl, (ix+d) / push hl. Not a _Bool's, nor an argument past
+ * the prototype's, which C widens to int. Whether it was. */
+static int narrow_argument(Type param)
+{
+    Value *v = vsp - 1;
+
+    if (type_size(param) != 1 || param == TY_BOOL)
+        return 0;
+    if (widen_undo(v)) {
+        ld_l_a();
+    } else if (v->kind == VAL_LOCAL && !v->bits && type_size(v->type) == 1) {
+        evict_reg(R_HL);
+        ld_rr_ix(R_HL, v->val);
+    } else {
+        return 0;
+    }
+    push_rr(R_HL);
+    vdrop();
+
+    return 1;
+}
+
 static void call_to(const Callee *callee, int nargs, int params_first,
                     int nparams)
 {
     int i, argslots = 0, keep_iy = keeps_iy(callee);
+    Type param;
 
     /* Anything still live in a register has to come out before the call.
      * The result comes back in HL and the callee is free with the rest, so a
@@ -1362,8 +1390,9 @@ static void call_to(const Callee *callee, int nargs, int params_first,
         }
         if (which >= nparams && gen_objects && type_float((vsp - 1)->type))
             gen_want("acc_format_float");
+        param = TY_VOID;
         if (which < nparams) {
-            Type param = sym_param_type(params_first, which);
+            param = sym_param_type(params_first, which);
 
             if (type_is_struct(param))
                 struct_argument(param, sym_param_ext(params_first, which),
@@ -1412,6 +1441,8 @@ static void call_to(const Callee *callee, int nargs, int params_first,
             push_rr(R_HL);
             vdrop();
             argslots += 2;      /* six bytes, so two slots to take back */
+        } else if (narrow_argument(param)) {
+            argslots++;
         } else {
             int reg = vpop_reg();
 
