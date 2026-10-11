@@ -718,5 +718,20 @@ emits "nor before the jump back"         dd27fd18 no \
 emits "while: loaded for the jump back"  dd27fa18 yes \
     'int g(int); int f(int n) { int s = 0, i = 0; while (i < n) { i++; s = g(i); } return s; }'
 
+# p->m read with the pointer in IY: ld iy, (ix+6) / ld hl, (iy+3), where
+# it was ld hl, (ix+6), three inc hl and ld hl, (hl); a byte further in
+# with ld a, (iy+6). Not where IY holds a register local, nor for an
+# array's element, whose address is not a member's offset.
+emits "p->b through IY"                  dd3106fd2703 yes \
+    'struct s { int a, b; char c; }; int f(struct s *p) { return p->b; }'
+emits "p->c, a byte, through IY"         dd3106fd7e06 yes \
+    'struct s { int a, b; char c; }; int f(struct s *p) { return p->c; }'
+emits "p->a, offset 0, as it was"        dd3106 no \
+    'struct s { int a, b; char c; }; int f(struct s *p) { return p->a; }'
+emits "not with a local in IY"           dd3106 no \
+    'struct s { int a, b; char c; struct s *n; }; int f(struct s *p) { register struct s *q = p->n; return q->a + p->c; }'
+emits "nor an element, b[i]"             dd31 no \
+    'char b[40]; int f(int i) { return b[i]; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
