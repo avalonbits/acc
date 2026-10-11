@@ -861,7 +861,10 @@ void gen_return(int line, const char *spot)
             vconvert(return_type);
             wide_needs_slot();
             at = (vsp - 1)->val;
-            if (type_eight(return_type)) {
+            if (long_answer_here(vsp - 1)) {
+                if (!long_answer.moved)
+                    out_rewind(long_answer.end - 7);    /* in E:HL still */
+            } else if (type_eight(return_type)) {
                 ld_rr_ix(R_HL, at);
                 ld_rr_ix(R_DE, at + ACC_INT_SIZE);
                 ld_rr_ix(R_BC, at + 2 * ACC_INT_SIZE);
@@ -1525,6 +1528,10 @@ static void call_to(const Callee *callee, int nargs, int params_first,
         ld_ix_a(slot + ACC_INT_SIZE);
         vpush_scratch(callee->type, slot);
         (vsp - 1)->ext = (unsigned char) callee->ext;
+        long_answer.end = out_here();
+        long_answer.slot = slot;
+        long_answer.epoch = out_rewinds;
+        long_answer.moved = 0;
 
         return;
     }

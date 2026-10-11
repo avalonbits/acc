@@ -787,5 +787,15 @@ emits "p->b = 5 through IY"              dd3106210500 yes \
 emits "p->a = 5, as it was"              dd3106 no \
     'struct s { int a, b; char c; }; void f(struct s *p) { p->a = 5; }'
 
+# A call's long answer is returned from E:HL as it came -- the call and the
+# epilogue, nothing between -- and stored straight into a variable: ld
+# (ix-4), hl / ld a, e / ld (ix-1), a, not to scratch and copied with IY.
+emits "return g(x): no store, no load"   cd000000c1ddf9 yes \
+    'long g(int); long f(int x) { return g(x); }'
+emits "r = g(x): into r, no copy"        dd2ffc7bdd77ff yes \
+    'long g(int); long f(int x) { long r; r = g(x); return r; }'
+emits "nor IY"                           dd31 no \
+    'long g(int); long f(int x) { long r; r = g(x); return r; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

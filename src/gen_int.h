@@ -276,6 +276,13 @@ Type widen_held(const Value *v);
 int widen_undo_left(void);
 int a_is_l(void);
 extern int a_stored_at;                 /* insn.c: see frame_byte */
+typedef struct {
+    int           end, slot;
+    unsigned      epoch;
+    unsigned char moved;                /* into a variable */
+} LongAnswer;
+extern LongAnswer long_answer;          /* wide.c: a call's long answer */
+int long_answer_here(const Value *v);
 int store_byte_widened(int offset, Type type);
 int widen_again(Type to);
 extern int logic_from;
