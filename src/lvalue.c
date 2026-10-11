@@ -322,7 +322,9 @@ static struct {
     unsigned epoch;
 } member = { 0, -1, 0, 0, 0 };
 
-static int member_through_iy(int op)
+/* The load and the add taken back and the pointer put in IY, where the
+ * add they made was `need` bytes or more: whether it was. */
+static int member_in_iy(unsigned need)
 {
     int tail = out_here() - member.at - 3;
     const unsigned char *p = out_img + (member.at - out_base);
@@ -330,10 +332,18 @@ static int member_through_iy(int op)
     if (iy_local || member.end != out_here() || member.epoch != out_rewinds
         || p[0] != 0xdd || p[1] != 0x27 || p[2] != (unsigned char) member.disp
         || (unsigned) tail != (p[3] == 0x23 ? (unsigned) member.off : 5u)
-        || (unsigned) tail < 3u - (op == 0x27))
+        || (unsigned) tail < need)
         return 0;
     out_rewind(member.at);
     out_byte3(0xdd, 0x31, member.disp);         /* ld iy, (ix+d) */
+
+    return 1;
+}
+
+static int member_through_iy(int op)
+{
+    if (!member_in_iy(3u - (op == 0x27)))
+        return 0;
     out_iy_d(op, member.off);                   /* ld hl / a, (iy+n) */
 
     return 1;
@@ -686,6 +696,35 @@ void vstore_indirect(void)
         vpush_scratch(to, slot);
 
         return;
+    }
+
+    /* p->m = v the same way, where v makes no code before the store -- a
+     * number, or a local as wide: the pointer put in IY instead of the
+     * address made in HL, and written at (iy+n) below. A byte number is
+     * ld (iy+n), n, and a byte local goes through A. */
+    if (type_size(to) != 2 && (vsp - 2)->kind == VAL_REG
+        && (vsp - 2)->val == R_HL
+        && (val_number((vsp - 1)->kind)
+            || ((vsp - 1)->kind == VAL_LOCAL && !(vsp - 1)->bits
+                && type_size((vsp - 1)->type) == type_size(to)))
+        && member_in_iy(type_size(to) == 1 ? 3u : 2u)) {
+        Value *val = vsp - 1;
+
+        (vsp - 2)->kind = VAL_IY;
+        (vsp - 2)->val = member.off;
+        if (type_size(to) == 1) {
+            if (val->kind == VAL_LOCAL) {
+                ld_a_ix(val->val);
+                val->kind = VAL_ACC;
+                val->type = to;
+            } else {
+                out_iy_d(0x36, member.off);     /* ld (iy+n), n */
+                out_byte(val->val);
+                vstore_leave_value();
+
+                return;
+            }
+        }
     }
 
     /* Through the local in IY: written at (iy+d), from A for a byte or from
