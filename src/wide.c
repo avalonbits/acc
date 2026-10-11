@@ -267,6 +267,22 @@ void check_no_float_mix(Type to, const Value *from)
 /* Put the top of the stack into a wide slot, whatever width it arrived as:
  * a long into a long long's slot is extended by its sign or by zero, and a
  * long long into a long's is its low four bytes. */
+/* Where a call's four-byte answer was last put, from E:HL into a scratch
+ * slot -- ld (ix+s), hl / ld a, e / ld (ix+s+3), a, seven bytes -- for a
+ * store of it straight after to take over (materialise_long), moving it to
+ * the variable, and a return of it to read from E:HL where it still is
+ * (gen_return): taken back where it is scratch still. */
+LongAnswer long_answer = { -1, 0, 0, 0 };
+
+/* Whether `v` is that answer, with nothing made since and nothing taken
+ * back: the seven bytes are as they were written. */
+int long_answer_here(const Value *v)
+{
+    return long_answer.end == out_here() && long_answer.epoch == out_rewinds
+           && v->kind == VAL_LOCAL && v->val == long_answer.slot && !v->bits
+           && type_wide_bytes(v->type) == ACC_LONG_SIZE;
+}
+
 void materialise_long(int disp, Type type)
 {
     Value *top = vsp - 1;
@@ -308,6 +324,23 @@ void materialise_long(int disp, Type type)
 
         if (top->val == disp && from == n)
             return;                     /* already there */
+
+        /* A call's long answer, just stored to scratch from E:HL: stored
+         * here instead, the two displacements written over. Once: moved to
+         * a variable, a copy of that -- `a = b = f()` -- is a copy. */
+        if (n == ACC_LONG_SIZE && !long_answer.moved && long_answer_here(top)
+            && (unsigned) (disp + 128) <= 255u - ACC_INT_SIZE
+            && type_float(top->type) == type_float(type)) {
+            unsigned char *p = out_img + (long_answer.end - 7 - out_base);
+
+            p[2] = (unsigned char) disp;        /* ld (ix+d), hl */
+            p[6] = (unsigned char) (disp + ACC_INT_SIZE);  /* ld (ix+d), a */
+            stored_at = -1;
+            long_answer.slot = disp;            /* E:HL hold it still */
+            long_answer.moved = 1;
+
+            return;
+        }
         if (from >= n) {
             copy_long(disp, top->val, n);
 
