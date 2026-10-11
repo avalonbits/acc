@@ -707,5 +707,16 @@ calls "into a variable, ldivs3"          _acc_rt_ldivs3 yes \
 calls "the answer before, plain lxor"    '_acc_rt_lxor[^3]' yes \
     'long f(long a, long b, long c) { return (a ^ b) ^ c; }'
 
+# A loop's counter stored on the way in is not loaded again at the top --
+# ld (ix-3), hl straight to ld de, (ix+6), n for the test -- and the jump
+# back, after i++ has stored it, needs no load either. A body that ends
+# storing something else loads it before the jump: ld hl, (ix-3), jr.
+emits "for: i not read again at the top" dd2ffddd1706 yes \
+    'int g(int); int f(int n) { int i; for (i = 0; i < n; i++) g(i); return 0; }'
+emits "nor before the jump back"         dd27fd18 no \
+    'int g(int); int f(int n) { int i; for (i = 0; i < n; i++) g(i); return 0; }'
+emits "while: loaded for the jump back"  dd27fa18 yes \
+    'int g(int); int f(int n) { int s = 0, i = 0; while (i < n) { i++; s = g(i); } return s; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

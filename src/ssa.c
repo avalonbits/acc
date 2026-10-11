@@ -672,6 +672,7 @@ static int pushes(int op)
     case GL_gen_cond_middle_void: case GL_gen_return:
     case GL_gen_stmt_end: case GL_gen_value_end: case GL_gen_jump:
     case GL_gen_jump_to: case GL_gen_label: case GL_gen_here:
+    case GL_gen_loop_top: case GL_gen_loop_back:
     case GL_gen_switch_load: case GL_gen_switch_case:
     case GL_gen_zero_array: case GL_gen_copy_to_array:
     case GL_gen_cond_same: case GL_gen_func_begin:
@@ -883,7 +884,7 @@ static void build_one(const GenRec *rec)
             (void) pop();
         return;
 
-    case GL_gen_here:
+    case GL_gen_here: case GL_gen_loop_top:
         block = label_block((int) rec->ret);
         *imap_slot(&here_block, (int) rec->ret, 1) = block;
         return;
@@ -896,7 +897,7 @@ static void build_one(const GenRec *rec)
         hole_of((int) rec->ret, ninsns - 1);
         new_block(-1);
         return;
-    case GL_gen_jump_to:
+    case GL_gen_jump_to: case GL_gen_loop_back:
         insn = new_insn(I_JMP, rec);
         insn->target = back_to(rec->arg[0]);
         new_block(-1);
@@ -1500,7 +1501,7 @@ static int writes_no_memory(int op)
     case GL_gen_discard: case GL_gen_stmt_end: case GL_gen_value_end:
     case GL_vpush_function: case GL_vpush_global_addr: case GL_vcast:
     case GL_gen_here: case GL_gen_jump: case GL_gen_jump_to:
-    case GL_gen_jump_if_false: case GL_gen_jump_if_true_to:
+    case GL_gen_loop_top: case GL_gen_loop_back: case GL_gen_jump_if_false: case GL_gen_jump_if_true_to:
     case GL_gen_switch_load: case GL_gen_switch_case: case GL_gen_logic_left:
     case GL_gen_logic_right: case GL_vtruth: case GL_vdup: case GL_vswap:
     case GL_gen_cond_begin: case GL_gen_cond_middle: case GL_gen_cond_end:

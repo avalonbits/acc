@@ -276,6 +276,8 @@ void gen_rollback(GenMark *m);
 int  gen_here(void);                  /* the address a backward jump aims at */
 int  gen_jump(void);                  /* jp nn, to be patched; returns the hole */
 void gen_jump_to(int target);         /* jp nn, backwards */
+int  gen_loop_top(void);              /* gen_here for a loop's top */
+void gen_loop_back(int target);       /* gen_jump_to back to a loop's top */
 int  gen_jump_if_false(void);         /* pop the top, jump when it is zero */
 void gen_jump_if_true_to(int target); /* pop the top, jump back when it is not */
 
