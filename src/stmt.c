@@ -338,7 +338,7 @@ static void continue_statement(void)
     if (vla_mark != NO_VLA_MARK)
         gen_stack_back(vla_mark);
     if (jumps.continue_to >= 0)
-        gen_jump_to(jumps.continue_to);
+        gen_loop_back(jumps.continue_to);
     else
         hole_push(&continues, gen_jump());
 }
@@ -353,12 +353,12 @@ static void while_statement(void)
 
     scope_mark = mark;
     next();
-    top = gen_here();
+    top = gen_loop_top();
     condition();
     to_end = gen_jump_if_false();
     loop_begin(top);
     substatement();
-    gen_jump_to(top);
+    gen_loop_back(top);
     gen_label(to_end);
     loop_end();
     sym_scope_end(mark);
@@ -882,7 +882,7 @@ static void for_statement(void)
     }
 
     gen_stmt_end();
-    top = gen_here();
+    top = gen_loop_top();
     if (tok != TK_SEMI) {
         comma_expr();
         to_end = gen_jump_if_false();
@@ -912,7 +912,7 @@ static void for_statement(void)
         gen_stmt_end();
         comma_expr();
         gen_discard();
-        gen_jump_to(top);
+        gen_loop_back(top);
         step = step_kept(&step_len);
         if (step)
             gen_rollback(&before);
@@ -925,7 +925,7 @@ static void for_statement(void)
         substatement();
         holes_land(&continues, jumps.continue_mark);
         step_again(step, step_len);
-        gen_jump_to(top);
+        gen_loop_back(top);
         if (to_end >= 0)
             gen_label(to_end);
         loop_end();
@@ -941,7 +941,7 @@ static void for_statement(void)
 
     loop_begin(again);
     substatement();
-    gen_jump_to(again);
+    gen_loop_back(again);
     if (to_end >= 0)
         gen_label(to_end);
     loop_end();

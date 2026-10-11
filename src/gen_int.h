@@ -116,6 +116,7 @@ extern int imm_hl_end;
 extern unsigned imm_hl_epoch;
 void ld_rr_imm(int reg, int imm) /* ld rr, nn */;
 extern int stored_at, stored_disp, stored_reg, join_at;
+void loop_tops_clear(void);
 void ld_ix_rr(int disp, int reg) /* ld (ix+d), rr */;
 void push_rr(int reg);
 void pop_rr(int reg);

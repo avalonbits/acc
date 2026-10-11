@@ -110,12 +110,72 @@ static int slot_volatile(int disp)
 #define slot_volatile(disp) 0
 #endif
 
+/* The top of a loop with a pair just stored on the way in, before its
+ * condition: the pair holds the slot there too if every jump back brings
+ * it, and the condition's load of it is left out on that promise --
+ * `for (i = 0; i < n; i++)` stored i and read it again at once. A top the
+ * promise is made for is kept for the function, and gen_loop_back keeps
+ * it: the jump back loads the pair first unless it holds the slot. */
+typedef struct {
+    int           at;
+    signed char   disp;
+    unsigned char reg;
+} LoopTop;
+
+#define LOOP_TOPS 8
+static LoopTop  tops[LOOP_TOPS];
+static LoopTop *tops_end = tops;
+static int      top_at = -1;            /* the last top, if a store ends at it */
+static unsigned top_epoch;
+
+void loop_tops_clear(void)              /* a function's start */
+{
+    tops_end = tops;
+}
+
+int gen_loop_top(void)
+{
+    top_at = stored_at == out_here() && join_at != out_here() ? out_here() : -1;
+    top_epoch = out_rewinds;
+
+    return gen_here();
+}
+
+/* Whether the one place jumped to since the store is the top it ended at,
+ * which is then kept. */
+static int loop_top_holds(void)
+{
+    if (top_at != stored_at || join_at != stored_at || top_epoch != out_rewinds
+        || tops_end == tops + LOOP_TOPS)
+        return 0;
+    tops_end->at = top_at;
+    tops_end->disp = (signed char) stored_disp;
+    tops_end->reg = (unsigned char) stored_reg;
+    tops_end++;
+    top_at = -1;
+
+    return 1;
+}
+
+void gen_loop_back(int target)
+{
+    const LoopTop *t;
+
+    for (t = tops; t != tops_end; t++)
+        if (t->at == target) {
+            ld_rr_ix(t->reg, t->disp);
+            break;
+        }
+    gen_jump_to(target);
+}
+
 void ld_rr_ix(int reg, int disp)    /* ld rr, (ix+d) */
 {
     if (stored_disp == disp && stored_reg == reg && !slot_volatile(disp)
         && (unsigned) (out_here() - stored_at) <= STORED_REACH
         && (unsigned) out_rewound_to >= (unsigned) stored_at
-        && (unsigned) (join_at - stored_at) > (unsigned) (out_here() - stored_at)
+        && ((unsigned) (join_at - stored_at) > (unsigned) (out_here() - stored_at)
+            || loop_top_holds())
         && (stored_at == out_here() || pairs_kept(stored_at)))
         return;
     if (disp_fits(disp)) {
