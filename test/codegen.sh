@@ -745,5 +745,15 @@ emits "a variadic char, widened"         17ed621f yes \
 emits "a _Bool local, not as it lies"    dd27ffe5 no \
     'int g(_Bool); int f(_Bool b) { _Bool c = b; return g(c); }'
 
+# A function 200 bytes long or more, written out, has its prologue made a
+# call -- ld hl, -frame / call acc_rt_frameset, or acc_rt_frameset0 with no
+# frame -- and a shorter one keeps it written out.
+long_body='int g(int); int f(int a) { int x = a; g(x); g(1); g(2); g(3); g(4); g(5); g(6); g(7); g(8); g(9); g(10); g(11); g(12); g(13); g(14); g(15); g(16); g(17); g(18); g(19); g(20); g(21); g(22); g(23); g(24); return g(x); }'
+calls "a long function's prologue, a call" '_acc_rt_frameset[^0]' yes "$long_body"
+calls "no frame: frameset0"              _acc_rt_frameset0 yes \
+    "$(printf '%s' "$long_body" | sed 's/int x = a; g(x);//; s/g(x)/g(a)/')"
+calls "a short one's, written out"       _acc_rt_frameset no \
+    'int g(int); int f(int a) { int x = a; g(x); return g(x); }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

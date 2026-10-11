@@ -289,9 +289,7 @@ void rt_call(int which);
 #ifdef OPT_ACC
 int  mem_in_place(int which, int count);    /* func.c: memset, memcpy in place */
 #endif
-#ifdef OPT_ACC
 void rt_insert(int index, int which, int at);   /* a call already made */
-#endif
 void rt_fill_all(void);
 __attribute__((noreturn)) void rt_missing(int sym);
 

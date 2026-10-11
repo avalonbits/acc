@@ -39,14 +39,17 @@ text_of() {
     od -An -tu1 -j7 -N3 "$tmp/x.o" | awk '{ print $1 + $2 * 256 + $3 * 65536 }'
 }
 
-# n statements, which is how the target is pushed out of reach.
+# n statements, which is how the target is pushed out of reach -- and,
+# for the far pair, makes both functions long enough that both have their
+# prologue made a call (func.c's FRAME_CALL_FROM): one each side of it
+# would put the five bytes that saves in the subtraction.
 body() {
     local i=0
     while [ "$i" -lt "$1" ]; do i=$((i + 1)); printf '    t += %d;\n' "$i"; done
 }
 
 near=$(body 2)
-far=$(body 20)
+far=$(body 30)
 
 loop()  { printf 'int f(int a) { int t = 0;\n  while (a) { a--;\n%s  }\n  return t; }\n' "$1"; }
 plain() { printf 'int f(int a) { int t = 0;\n  { a--;\n%s  }\n  return t; }\n' "$1"; }
