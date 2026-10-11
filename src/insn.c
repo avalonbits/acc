@@ -330,7 +330,6 @@ void ld_l_a(void)        { out_byte(0x6f); }
 void ld_h_a(void)        { out_byte(0x67); }
 void ld_a_l(void)        { out_byte(0x7d); }
 void ld_a_h(void)        { out_byte(0x7c); }
-static void rlc_l(void)         { out_byte2(0xcb, 0x05); }
 void ld_a_hl(void)       { out_byte(0x7e); }      /* ld a, (hl) */
 void ld_hl_a(void)       { out_byte(0x77); }      /* ld (hl), a */
 void inc_hl(void)        { out_byte(0x23); }
@@ -347,11 +346,14 @@ void ld_ind_hl_de(void)  { out_byte2(0xed, 0x1f); }  /* ld (hl), de */
 void sbc_hl_hl(void)     { out_byte2(0xed, 0x62); }
 
 /* HL = the sign of A, in all three bytes. Clobbers L on the way. */
+/* rla puts A's sign in the carry; sbc hl, hl leaves the carry as it found
+ * it, so rra puts back the bit rla took out and A is as it was. A byte
+ * shorter than ld l, a / rlc l, and A is kept rather than copied. */
 void fill_hl_with_sign_of_a(void)
 {
-    ld_l_a();
-    rlc_l();                    /* bit 7 into the carry */
+    out_byte(0x17);             /* rla: bit 7 into the carry */
     sbc_hl_hl();                /* 0 or -1, upper byte included */
+    out_byte(0x1f);             /* rra: A back as it was */
 }
 
 void fill_hl_with_zero(void)
