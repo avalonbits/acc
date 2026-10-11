@@ -777,5 +777,15 @@ emits "extern = 5: ld (nn), hl"          21050000220000 yes \
 emits "extern = local, not through HL"   ed1f no \
     'extern int g; void f(int x) { g = x; }'
 
+# p->m = v with the pointer in IY: a byte number is ld iy, (ix+6) / ld
+# (iy+6), 7, an int number ld hl, 5 / ld (iy+3), hl. Not p->a, where the
+# address is the pointer itself.
+emits "p->c = 7 through IY"              dd3106fd360607 yes \
+    'struct s { int a, b; char c; }; void f(struct s *p) { p->c = 7; }'
+emits "p->b = 5 through IY"              dd3106210500 yes \
+    'struct s { int a, b; char c; }; void f(struct s *p) { p->b = 5; }'
+emits "p->a = 5, as it was"              dd3106 no \
+    'struct s { int a, b; char c; }; void f(struct s *p) { p->a = 5; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
