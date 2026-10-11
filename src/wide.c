@@ -844,6 +844,8 @@ void gen_rewound(int here)
 {
     const int *last;
 
+    if ((unsigned) here < (unsigned) a_stored_at)
+        a_stored_at = -1;       /* the store taken back: see frame_byte */
     if (!npool_sites)
         return;                 /* nearly every rewind: nothing to look at */
     last = pool_site_at + npool_sites;

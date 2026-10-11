@@ -60,12 +60,14 @@ for probe in "char:9" "short:9" "int:9" "unsigned int:9" "long:12" \
 done
 
 echo "  --- where a result comes back"
-# A one-byte result is left in A: the last thing before the epilogue is ld a,l.
+# A one-byte result is left in A: the last thing before the epilogue is ld
+# a, l -- or the widening into HL that leaves A as it found it, the sign's
+# rra / ld l, a or the zero's sbc hl, hl / ld l, a.
 compile "char f(int n) { return n; }"
 got=$(python3 - "$tmp/p.bin" <<'PY'
 import re, sys
 data = open(sys.argv[1], 'rb').read()
-print("A" if re.search(rb'\x7d(?:\xdd\xf9)?\xdd\xe1\xc9', data) else "not A")
+print("A" if re.search(rb'(?:\x7d|\x1f\x6f|\xed\x62\x6f)(?:\xdd\xf9)?\xdd\xe1\xc9', data) else "not A")
 PY
 )
 check "a 1-byte result" "$got" "A"

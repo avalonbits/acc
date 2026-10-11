@@ -714,6 +714,9 @@ void vstore_indirect(void)
                 out_byte2(0x3e, val->val);              /* ld a, n */
             } else if (val->kind == VAL_ACC) {
                 ;                                       /* in A already */
+            } else if (widen_undo(val)) {
+                val->kind = VAL_ACC;                    /* in A, unwidened */
+                val->type = to;
             } else if (val->kind == VAL_LOCAL && !val->bits
                        && type_size(val->type) == 1) {
                 ld_a_ix(val->val);                      /* no widening */
