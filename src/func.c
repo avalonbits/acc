@@ -512,10 +512,13 @@ void gen_func_begin(int fn, int nparams, Type returns)
      * has been read: it is filled in at the end (frame_lea), and a function
      * with no frame has the last six bytes cut, or all fifteen where
      * nothing reads IX (frame_none). Fifteen bytes where ld hl, -frame /
-     * call acc_rt_frameset -- agondev's __frameset -- was eight, and some
+     * call acc_rt_frameset -- agondev's __frameset -- is eight, and some
      * fifteen cycles less on every entry: acc compiling its own inputs ran
      * 5.2% faster so, AED 4.4%, ez80asm 3.1% and zap 2.7%, for 1-2% more
-     * code. opt-acc may make it the call again (frame_wants_call). */
+     * code. So a function as long as FRAME_CALL_FROM, whose entry is a
+     * smaller share of what it costs, has the call made after all
+     * (frame_to_call): the apps' code 0.7% smaller for 1.4% more cycles.
+     * opt-acc makes it when asked to (frame_wants_call). */
     out_word24(0xdde5dd);                       /* push ix; ld ix, */
     out_word24(0x000021);                       /*   0 */
     out_word24(0x39dd00);                       /* ; add ix, sp */
@@ -617,6 +620,12 @@ static int frame_wants_call(void)
 {
     return getenv("OPTACC_FRAME_CALL") && !hot_has(sym_at(func_sym)->name);
 }
+#endif
+
+/* How long a function is, written out, before its prologue is a call:
+ * every function's saved 1.5% of the apps' code for 3.6% more cycles, the
+ * same trade at every length tried, and this is the one chosen. */
+#define FRAME_CALL_FROM 200
 
 /* The prologue made a call: ld hl, -frame / call acc_rt_frameset, or call
  * acc_rt_frameset0 for no frame, over the start of what was written out;
@@ -643,7 +652,6 @@ static int frame_to_call(void)
 
     return at + ACC_INT_SIZE;
 }
-#endif
 
 void gen_func_end(void)
 {
@@ -733,7 +741,10 @@ void gen_func_end(void)
     peep_function(&func_mark, func_start);
     peep_answer = PEEP_ANY;
 #else
-    relax_function(&func_mark, frame_unused ? frame_none() : frame_lea());
+    relax_function(&func_mark, frame_unused ? frame_none()
+                   : (unsigned) (out_here() - func_start) >= FRAME_CALL_FROM
+                   ? frame_to_call()
+                   : frame_lea());
 #endif
     pool_emit();
     static_end();
