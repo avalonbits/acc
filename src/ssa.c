@@ -3773,8 +3773,12 @@ static void emit_insn(const Ins *insn, int blk, int at)
         emit_branch(insn, blk);
         break;
     case GL_gen_switch_load:
+        /* No table (ncases 0): a value may be pinned in a register across
+         * the cases, which the comparisons keep and the table's routine
+         * does not, and a value moved back between two cases would be
+         * written among the entries. */
         gen_switch_load(inline_moved((int) insn->rec->arg[0]),
-                        (Type) insn->rec->arg[1]);
+                        (Type) insn->rec->arg[1], 0, 0, 0);
         break;
     case GL_gen_switch_case:
         gen_switch_case(insn->rec->arg[0], (uint32_t) insn->rec->arg[1],
@@ -9574,7 +9578,7 @@ static void emit_insn_regs(const Ins *insn, int blk, int at)
     case GL_gen_switch_load:
         pins_restore();
         gen_switch_load(inline_moved((int) insn->rec->arg[0]),
-                        (Type) insn->rec->arg[1]);
+                        (Type) insn->rec->arg[1], 0, 0, 0);  /* no table: see above */
         pins_check();
         break;
     case GL_gen_switch_case:

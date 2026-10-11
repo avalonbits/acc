@@ -591,30 +591,104 @@ void gen_jump_if_true_to(int target)
 
 /* The value a switch compares its cases with, into HL -- and for a long its
  * top byte into A, and a char into A alone -- once, ahead of all the tests. */
-void gen_switch_load(int slot, Type type)
+/* How a switch finds its case, whichever is the smallest -- the faster
+ * where two are as small:
+ *
+ *   by index, a table of an address for each value from the lowest case's
+ *   to the highest's and one more for none, after a call to the runtime
+ *   with the lowest and the count before it: three bytes a value, and the
+ *   case found at once -- for cases that lie close together;
+ *   one at a time, a comparison and a jump each, six bytes a case on a
+ *   char and twelve on an int;
+ *   on an int, by search, a table of each case's value and address after a
+ *   call that reads along it, six bytes a case. Not on a char, where it is
+ *   four to the comparisons' six: the bytes it saved over the apps were a
+ *   twentieth of a percent, for half a percent more of their cycles.
+ *
+ * A search table's count, three bytes of which two are read, is written as its entries are, at
+ * switch_count_at, -1 when no search table is; switch_index_at is where an
+ * index table's addresses start, -1 when none is. */
+static int switch_count_at = -1, switch_index_at = -1, switch_lo;
+
+void gen_switch_load(int slot, Type type, int ncases, int lo, int range)
 {
-    if (type_size(type) == 1) {
+    unsigned n = (unsigned) ncases, r = (unsigned) range, i;
+    int narrow = type_size(type) == 1, end;
+    unsigned char *p;
+
+    switch_count_at = switch_index_at = -1;
+    if (narrow) {
         ld_a_ix(slot);
+    } else {
+        ld_rr_ix(R_HL, slot);
+        if (type_wide(type)) {
+            ld_a_ix(slot + ACC_INT_SIZE);
+            return;
+        }
+    }
+
+    /* By index where its table, nine bytes and three a value on a char,
+     * eleven and three on an int, is no bigger than the comparisons, six
+     * bytes a case, or the search, six and six: r + 3 <= 2n, r + 2 <= 2n. */
+    if (r && r + 2 + (unsigned) narrow <= n + n) {
+        rt_call(narrow ? RT_JUMP8 : RT_JUMP);
+        if (narrow)
+            out_opcode24(lo & 0xff, range);     /* lo, count, and two more */
+        else
+            out_opcode24(range, lo);            /* count, lo */
+        switch_index_at = out_here();
+        switch_lo = lo;
+        for (i = 0; i <= r; i++) {
+            out_reloc(out_here());
+            out_word24(0);
+        }
+        end = out_here();
+        for (p = out_img + (switch_index_at - out_base); i--; p += 3)
+            put24(p, end);                      /* none, until a case says */
         return;
     }
-    ld_rr_ix(R_HL, slot);
-    if (type_wide(type)) {
-        ld_a_ix(slot + ACC_INT_SIZE);
-    }
+    if (narrow || n < 2)
+        return;
+    rt_call(RT_SWITCH);
+    out_word24(0);
+    switch_count_at = out_here() - ACC_INT_SIZE;
 }
 
-/* To `target` if the loaded value is `value`.
- *
- *   ld de, value / or a / sbc hl, de / add hl, de / jp z, target
- *
- * The add puts HL back for the next case and leaves the zero flag as the
- * subtraction set it, so the value is loaded once however many cases there
- * are. A long compares its top byte in A first and skips the rest when that
- * differs. A char is compared in A, and has no test for a value it
- * cannot have. */
 void gen_switch_case(long value, uint32_t high, Type type, int target,
                      int slot)
 {
+    if (switch_index_at != -1) {
+        int v = (int) value;
+        unsigned at = (unsigned) (v - switch_lo) & 0xffffff;
+
+        if (type_size(type) == 1) {
+            if ((((unsigned) v + (type_unsigned(type) ? 0 : 128)) & 0xffffff) > 255)
+                return;                         /* a value it cannot have */
+            at &= 0xff;
+        }
+        {
+            /* Three bytes an address, without a multiply: clang makes
+             * at + at + at one, which is a call here. */
+            volatile unsigned twice = at + at;
+
+            put24(out_img + (switch_index_at + (int) (twice + at) - out_base),
+                  target);
+        }
+
+        return;
+    }
+    if (switch_count_at != -1) {
+        unsigned char *count;
+
+        out_word24((int) (value & 0xffffff));
+        out_reloc(out_here());
+        out_word24(target);
+        count = out_img + (switch_count_at - out_base);
+        if (!++count[0])
+            count[1]++;
+
+        return;
+    }
     if (type_size(type) == 1) {
         /* cp n / jp z, target, for a value the char can have: 0 to 255
          * unsigned, -128 to 127 signed. The case is an int's three bytes,

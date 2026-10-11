@@ -271,6 +271,21 @@ void out_reloc_merge(const int *add, int n, int first)
     out_reloc_put += n;
 }
 
+/* Where an address at the start of a run lands -- a whole instruction taken
+ * out, a jump to the next: where what followed it is now -- or -1 for one
+ * inside a run, or none. A switch's table holds the address after it, which
+ * is such a jump when the switch's end is straight after. */
+int out_cut_over(int a)
+{
+    const int *r = cut_run;
+
+    for (; r < cut_stop && (unsigned) r[CUT_AT] <= (unsigned) a; r += CUT_WIDE)
+        if (r[CUT_AT] == a)
+            return r == cut_run ? a : a - r[CUT_GONE - CUT_WIDE];
+
+    return -1;
+}
+
 /* Where an address lands once the runs are taken out of the image, or -1 for
  * one that is inside a run and so does not land anywhere. */
 /* Compared unsigned throughout: every one of these is an offset or an

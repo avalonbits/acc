@@ -805,5 +805,19 @@ emits "x + ge: ld de, (nn)"              ed5b000000 yes \
 emits "a char of one: ld a, (nn)"        3a000000 yes \
     'extern char ce; int h(int, int); int f(int x) { return h(x + 1, ce); }'
 
+# How a switch finds its case: an int's two sparse cases by searching a
+# table, one by comparing; cases close together, on a char or an int, by
+# an index into a table of addresses; a char's sparse cases by comparing.
+calls "an int switch of two, a search"  _acc_rt_switch yes \
+    'int f(int x) { switch (x) { case 1: return 5; case 900: return 6; } return 0; }'
+calls "an int switch of one, compares"  _acc_rt_switch no \
+    'int f(int x) { switch (x) { case 1: return 5; } return 0; }'
+calls "a char's 1 to 4, by index"       _acc_rt_jump8 yes \
+    'int f(char c) { switch (c) { case 1: return 5; case 2: return 6; case 3: return 7; case 4: return 8; } return 0; }'
+calls "an int's 0 to 5, by index"       '_acc_rt_jump[^8]' yes \
+    'int f(int x) { switch (x) { case 0: return 5; case 1: return 6; case 2: return 7; case 3: return 1; case 4: return 2; case 5: return 9; } return 0; }'
+calls "a char's far apart, compares"    _acc_rt_jump8 no \
+    'int f(char c) { switch (c) { case 1: return 5; case 50: return 6; case 100: return 7; case 120: return 8; } return 0; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

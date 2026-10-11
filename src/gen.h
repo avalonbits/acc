@@ -284,7 +284,7 @@ void gen_jump_if_true_to(int target); /* pop the top, jump back when it is not *
 /* A switch: the value it switches on, stored in a frame slot when the switch
  * begins, loaded once where the cases are tested, and compared with each
  * case's constant in turn. */
-void gen_switch_load(int slot, Type type);
+void gen_switch_load(int slot, Type type, int ncases, int lo, int range);
 void gen_switch_case(long value, uint32_t high, Type type, int target,
                      int slot);
 int  gen_logic_left(int settles);     /* && and ||: after the left operand */
