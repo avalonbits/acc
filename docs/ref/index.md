@@ -40,3 +40,19 @@ with `ref acc <name>`: a function, a macro, a type or a header.
 - [`stddef.h`](stddef.md): `size_t`, `NULL`, `offsetof`
 - [`stdbool.h`](stdbool.md): `bool`, `true`, `false`
 - [`iso646.h`](iso646.md): operators spelled as words
+
+## The Agon
+
+- [`agon/mos.h`](agon-mos.md): MOS's calls, files, system variables
+- [`agon/vdp.h`](agon-vdp.md): the VDP, as libagon names it
+- [`agon/vdp_vdu.h`](agon-vdp_vdu.md): libagon's old name for `agon/vdp.h`
+- [`agon/vdp/screen.h`](agon-vdp-screen.md): text, modes and the screen
+- [`agon/vdp/graphics.h`](agon-vdp-graphics.md): lines, shapes, colours
+- [`agon/vdp/bitmap.h`](agon-vdp-bitmap.md): bitmaps, sprites, fonts
+- [`agon/vdp/buffer.h`](agon-vdp-buffer.md): the VDP's buffers
+- [`agon/vdp/audio.h`](agon-vdp-audio.md): sound
+- [`agon/keyboard.h`](agon-keyboard.md): key events as they happen
+- [`agon/joystick.h`](agon-joystick.md): the joystick ports
+- [`agon/gpio.h`](agon-gpio.md): the GPIO pins
+- [`agon/timer.h`](agon-timer.md): delays
+- [`ez80f92.h`](ez80f92.md): the eZ80F92's registers

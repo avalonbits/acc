@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  * Both are in acc's runtime rather than the library, since they are the
- * stack pointer and the frame pointer and C cannot say either: see the
- * setjmp section of src/rt/helpers.s. A jmp_buf is where setjmp was called
+ * stack pointer and the frame pointer and C cannot say either: see
+ * lib/rt/setjmp.s and lib/rt/longjmp.s. A jmp_buf is where setjmp was called
  * from, IX, the stack pointer and IY.
  */
 #pragma once

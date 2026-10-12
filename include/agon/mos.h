@@ -10,7 +10,7 @@
  * What is behind them is not libagon's: each is C over one routine of acc's
  * runtime that makes a MOS call with whatever registers that call wants and
  * hands back every register it answers in -- see acc_rt_mos_call in
- * src/rt/helpers.s. A call marked "MOS 3" is not in MOS 2; it answers 23
+ * lib/rt/mos_call.s. A call marked "MOS 3" is not in MOS 2; it answers 23
  * there.
  *
  * SPDX-License-Identifier: LGPL-2.1-or-later
