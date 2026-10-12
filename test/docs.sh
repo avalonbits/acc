@@ -21,14 +21,15 @@ ok() { pass=$((pass + 1)); }
 bad() { printf '  FAIL %-34s %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
 # The functions a header declares: its comments and preprocessor lines
-# taken out, then the first name before a parenthesis in each declaration
-# that is not a typedef.
+# taken out, then the name before the parameters of each declaration that
+# is not a typedef.
 functions() {
     python3 - "$1" <<'PY'
 import re, sys
 
 text = open(sys.argv[1]).read()
 text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.S)
+text = text.replace('\\\n', ' ')                # a #define's lines made one
 text = re.sub(r'//[^\n]*', ' ', text)
 text = re.sub(r'^\s*#[^\n]*', ' ', text, flags=re.M)
 text = re.sub(r'__attribute__\s*\(\(.*?\)\)', ' ', text)
@@ -36,8 +37,11 @@ for decl in text.split(';'):
     decl = ' '.join(decl.split())
     if not decl or decl.startswith('typedef') or decl.endswith('}'):
         continue
-    name = re.search(r'\b([A-Za-z_]\w*)\s*\(', decl)
-    if name:
+    # A function answering a pointer to one, as signal is, is named
+    # inside the first parentheses; `__` names are the library's own.
+    name = (re.search(r'\(\s*\*\s*([A-Za-z_]\w*)\s*\(', decl)
+            or re.search(r'\b([A-Za-z_]\w*)\s*\(', decl))
+    if name and not name.group(1).startswith('__'):
         print(name.group(1))
 PY
 }
@@ -59,6 +63,7 @@ for page in docs/ref/*.md; do
 
     # reftool answers a line a query: kind 1 is a key found exactly.
     names=$(functions "include/$header")
+    [ -n "$names" ] || continue         # macros and types alone
     found=$(printf '%s\n' "$names" | "$REFTOOL" "$DAT" lookup)
     while read -r name && read -r answer <&3; do
         case $answer in
