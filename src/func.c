@@ -485,6 +485,8 @@ void gen_func_begin(int fn, int nparams, Type returns)
     nconst_rets = 0;
     stored_at = -1;                     /* not a load or a store of this one */
     loop_tops_clear();
+    iy_end = -1;
+    locals_addressed = 0;
     npool = npool_sites = 0;
     out_on_rewind = gen_rewound;
     static_begin(fn);
