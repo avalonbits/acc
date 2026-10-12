@@ -62,7 +62,7 @@ LIBASM    = lib/strlen.s lib/strcmp.s lib/strchr.s lib/strcpy.s lib/strncpy.s \
             lib/itoa.s lib/ltoa.s lib/ultoa.s lib/toa.s lib/malloc.s
 LIBASMOBJ = $(LIBASM:lib/%.s=$(BIN)/lib/%.o)
 
-.PHONY: all clean test unit agon test-suites test-conformance test-conformance-opt \
+.PHONY: all clean test unit agon doc test-suites test-conformance test-conformance-opt \
 	test-cases test-alone
 
 # acc-asan is part of the ordinary build and not only of `test`, because
@@ -88,6 +88,26 @@ $(BIN)/zap: | $(BIN)
 	@[ -f $(ZAP_SRC)/src/zap.c ] || { echo "no zap source at $(ZAP_SRC): set ZAP_SRC, or ZAP" >&2; exit 1; }
 	$(CC) -std=gnu11 -O2 -fsigned-char -w -include $(ZAP_SRC)/test/stubs/host_types.h \
 	    -I$(ZAP_SRC)/src -I$(ZAP_SRC)/test/stubs -o $@ $(ZAPSRCS)
+
+# The reference to acc's library, docs/ref/*.md, as bin/acc.dat for ref,
+# the Agon's reader: `make doc`. ref's md2ref makes it and its reftool reads
+# it back for test/docs.sh, both built here from REF_SRC, a checkout of ref,
+# as zap is. Not part of `all`; `make test` makes it when ref is there.
+REF_SRC ?= $(HOME)/code/ref
+REFDOCS  = $(wildcard docs/ref/*.md)
+HAVE_REF = $(wildcard $(REF_SRC)/src/md2ref)
+
+doc: $(BIN)/acc.dat
+
+$(BIN)/acc.dat: $(REFDOCS) $(BIN)/md2ref $(BIN)/reftool
+	@$(BIN)/md2ref -o $@ -t acc docs/ref >/dev/null
+
+$(BIN)/md2ref $(BIN)/reftool &: | $(BIN)
+	@[ -d $(REF_SRC)/src/md2ref ] || { echo "no ref source at $(REF_SRC): set REF_SRC" >&2; exit 1; }
+	$(CC) -std=c99 -O1 -fsigned-char -w -I$(REF_SRC)/src/core -o $(BIN)/md2ref \
+	    $(wildcard $(REF_SRC)/src/md2ref/*.c) $(REF_SRC)/src/core/normalize.c
+	$(CC) -std=c99 -O1 -fsigned-char -w -I$(REF_SRC)/src/core -o $(BIN)/reftool \
+	    $(wildcard $(REF_SRC)/src/core/*.c) $(REF_SRC)/test/host/reftool.c
 
 RTSRC = $(wildcard lib/rt/*.s)
 RTOBJ = $(RTSRC:lib/rt/%.s=$(BIN)/lib/rt_%.o)
@@ -192,7 +212,7 @@ $(BIN):
 # what wants the emulator to itself, nothing else running: a compile on the
 # Agon of every case in one boot, the release's and the headers' checks,
 # whose long runs a busy machine would time out, and the cycle count.
-test: all unit agon
+test: all unit agon $(if $(HAVE_REF),doc)
 	@$(MAKE) --no-print-directory -j4 --output-sync=target test-suites test-conformance \
 	    test-conformance-opt test-cases
 	@$(MAKE) --no-print-directory test-alone

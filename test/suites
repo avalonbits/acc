@@ -48,6 +48,7 @@ ACC=bin/acc-asan test/vdpreal.sh || [ $? -eq 77 ]
 test/abi-acc.sh
 ACC=bin/acc-asan test/errors.sh
 test/runner.sh || [ $? -eq 77 ]
+test/docs.sh || [ $? -eq 77 ]
 test/rtlong.sh || [ $? -eq 77 ]
 ACC=bin/acc-asan test/self.sh
 ACC=bin/acc-asan test/selfbuild.sh

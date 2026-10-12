@@ -248,6 +248,11 @@ On Linux, with a C compiler and make, and a checkout of
 
     make                # bin/acc, bin/zap, bin/libc.a and bin/rt.a
     make test           # the test suites
+    make doc            # bin/acc.dat, the library reference
+
+The library reference, `docs/ref/*.md`, is a book for ref, the Agon's
+reader, made by ref's md2ref from a checkout of ref in `~/code/ref` (or
+`REF_SRC=<dir>`): `ref acc fopen` shows `fopen`.
 
 acc on the host links `bin/rt.a` and `bin/libc.a` and finds its headers in
 `include/` by default, as the Agon build does from `/lib/acc`:
