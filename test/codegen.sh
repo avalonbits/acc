@@ -831,5 +831,13 @@ emits "p->b = 5; p->c = 7: one ld iy"    "dd3106.*dd3106" no \
 emits "but loaded again after p = q"     "dd3106.*dd3106" yes \
     'struct s { int a, b; char c; }; int g(int); void f(struct s *p, struct s *q) { p->b = 5; p = q; g(1); p->c = 7; }'
 
+# A float constant on the left of + or *, which do not care which side is
+# which, goes to the right, read from the pool: not built in the frame,
+# ld iy, 0x200000 / ld (ix+d), iy / ld iy, 0x422000 / ld (ix+d), iy.
+emits "40.0f + x: 40 not built"          fd21000020 no \
+    'float f(float x) { return 40.0f + x; }'
+emits "2.0f * x: 2 not built"            fd21000000dd3e no \
+    'float f(float x) { return 2.0f * x; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
