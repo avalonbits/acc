@@ -12,6 +12,7 @@
 	XREF	acc_rt_labs_iy
 	XREF	acc_rt_lneg_iy
 	XREF	acc_rt_ludivmod_core
+	XREF	acc_rt_ldiv_buf
 	XDEF	_acc_rt_lrems3
 	XREF	acc_rt_wcopy4
 
@@ -24,10 +25,16 @@ _acc_rt_lrems:
 	push	ix
 	push	iy
 	push	bc
+	push	de
 	push	hl
 	pop	iy
-	push	de
-	pop	ix
+	ex	de, hl			; the divisor copied, to be made positive
+	ld	de, acc_rt_ldiv_buf	; there and not where the caller has it
+	ld	bc, 4
+	ldir
+	lea	hl, iy + 0
+	ld	de, acc_rt_ldiv_buf
+	ld	ix, acc_rt_ldiv_buf
 	ld	a, (iy + 3)		; the remainder takes the dividend's
 	and	a, 0x80			; sign
 	ld	b, a
@@ -44,6 +51,7 @@ _acc_rt_lrems:
 	ld	(iy + 3), a
 	bit	7, b
 	call	nz, acc_rt_lneg_iy
+	pop	de
 	pop	bc
 	pop	iy
 	pop	ix

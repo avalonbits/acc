@@ -565,27 +565,6 @@ static int spill_lowest(int operands, int live_top)
     return low < floor ? floor : low;
 }
 
-/* Whether the routine writes through DE as well as HL, which says whether
- * its right operand has to be a copy.
- *
- * The divisions do: they leave the remainder where the divisor was. So does
- * the float subtract, which turns the right operand's sign over and adds --
- * and the float comparison, which rewrites both operands as the unsigned
- * integers that sort the way they do. All three are written that way on
- * purpose, because the operand was scratch the operator had finished with;
- * this list is what keeps that true. Everything else only reads. */
-static int helper_writes_right(int which)
-{
-    switch (which) {
-    case RT_LDIVU:  case RT_LREMU:  case RT_LDIVS:  case RT_LREMS:
-    case RT_LLDIVU: case RT_LLREMU: case RT_LLDIVS: case RT_LLREMS:
-    case RT_FSUB:
-        return 1;
-    }
-
-    return 0;
-}
-
 /* Whether a value is already what the routine wants to read: in the frame,
  * of the width the operation is at, and meaning what its bytes say -- a long
  * and an unsigned long are the same four bytes, a float is not. A global is
@@ -1258,7 +1237,7 @@ void vbinop_long(int op, Type result)
      * it lies: the routine only reads through DE. That is a copy of the
      * value saved, and a scratch slot, on most of the wide operators a
      * program has -- `a + b` now copies a and reads b. */
-    in_place = !helper_writes_right(which) && wide_in_place(vsp - 1, result, n);
+    in_place = wide_in_place(vsp - 1, result, n);
     low = spill_lowest(2, in_place);
 
     /* A right operand read in place is live while the routine runs, and
@@ -1279,7 +1258,7 @@ void vbinop_long(int op, Type result)
      * left goes where the answer is to be, which is at or below where the
      * operands are. */
     left = slot_at(low, n);
-    pooled = !in_place && !helper_writes_right(which)
+    pooled = !in_place
              && wide_const_top(result, &bits) && npool < POOL_MAX;
     if (pooled) {
         vdrop();                        /* read from the pool, below */

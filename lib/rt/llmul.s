@@ -13,6 +13,7 @@
 	XDEF	acc_rt_llneg_iy
 	XDEF	acc_rt_llrem_move
 	XDEF	acc_rt_lludivmod_core
+	XDEF	acc_rt_lldiv_buf
 	XREF	acc_rt_llneg_hl
 	XDEF	_acc_rt_llmul3
 	XREF	acc_rt_wcopy8
@@ -357,9 +358,9 @@ acc_rt_lludivmod_core:
 	ld	de, (iy + 28)
 	ld	bc, 8
 	ldir
-	lea	hl, iy + 0
-	ld	de, (iy + 37)
-	ld	bc, 8
+	lea	hl, iy + 0		; the remainder to acc_rt_lldiv_buf: not
+	ld	de, acc_rt_lldiv_buf	; over the divisor, which the caller
+	ld	bc, 8			; may still read
 	ldir
 
 	ld	hl, 28
@@ -372,12 +373,12 @@ acc_rt_lludivmod_core:
 	pop	bc
 	ret
 
-; The remainder the core left where the divisor was, moved to (iy).
+; The remainder the core left in acc_rt_lldiv_buf, moved to (iy).
 acc_rt_llrem_move:
 	push	bc
 	push	de
 	push	hl
-	ex	de, hl
+	ld	hl, acc_rt_lldiv_buf
 	lea	de, iy + 0
 	ld	bc, 8
 	ldir
@@ -404,3 +405,9 @@ acc_rt_llabs_ix:
 	call	acc_rt_llneg_hl
 	pop	hl
 	ret
+
+; The remainder the core leaves, eight bytes: and where the signed routines
+; put a copy of the divisor to make it positive, which the core copies
+; before it writes the remainder over it.
+acc_rt_lldiv_buf:
+	.byte	0, 0, 0, 0, 0, 0, 0, 0

@@ -27,16 +27,19 @@ _acc_rt_fadd3:				; the left operand copied in from (bc) first
 	call	acc_rt_wcopy4
 	jr	_acc_rt_fadd
 
-; The right operand is written to, which is why helper_writes_right in gen.c
-; names this routine: acc passes a right operand where the program keeps it
-; unless the routine is one of the few that change it.
+; The same as adding the right operand with its sign turned over -- and
+; turned back after, since acc passes a right operand where the program
+; keeps it, a variable or a constant in the pool, which no routine changes.
 _acc_rt_fsub3:
 	call	acc_rt_wcopy4
 _acc_rt_fsub:
-	push	hl			; the same as adding the right operand
-	push	de			; with its sign turned over, and the
-	push	bc			; operand is the caller's scratch slot,
-	ex	de, hl			; dead once the operator has been applied
+	call	.fsub_flip
+	call	_acc_rt_fadd
+.fsub_flip:
+	push	hl
+	push	de
+	push	bc
+	ex	de, hl
 	ld	bc, 3
 	add	hl, bc
 	ld	a, (hl)
@@ -45,7 +48,7 @@ _acc_rt_fsub:
 	pop	bc
 	pop	de
 	pop	hl
-	; fall through
+	ret
 
 _acc_rt_fadd:
 	push	ix

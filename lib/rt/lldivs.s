@@ -12,6 +12,7 @@
 	XREF	acc_rt_llabs_iy
 	XREF	acc_rt_llneg_iy
 	XREF	acc_rt_lludivmod_core
+	XREF	acc_rt_lldiv_buf
 	XDEF	_acc_rt_lldivs3
 	XREF	acc_rt_wcopy8
 
@@ -27,10 +28,16 @@ _acc_rt_lldivs:
 	push	ix
 	push	iy
 	push	bc
+	push	de
 	push	hl
 	pop	iy
-	push	de
-	pop	ix
+	ex	de, hl			; the divisor copied, to be made positive
+	ld	de, acc_rt_lldiv_buf	; there and not where the caller has it
+	ld	bc, 8
+	ldir
+	lea	hl, iy + 0
+	ld	de, acc_rt_lldiv_buf
+	ld	ix, acc_rt_lldiv_buf
 	ld	a, (iy + 7)
 	xor	a, (ix + 7)
 	ld	b, a
@@ -39,6 +46,7 @@ _acc_rt_lldivs:
 	call	acc_rt_lludivmod_core
 	bit	7, b
 	call	nz, acc_rt_llneg_iy
+	pop	de
 	pop	bc
 	pop	iy
 	pop	ix

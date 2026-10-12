@@ -12,6 +12,7 @@
 	XDEF	acc_rt_labs_iy
 	XDEF	acc_rt_lneg_iy
 	XDEF	acc_rt_ludivmod_core
+	XDEF	acc_rt_ldiv_buf
 	XDEF	_acc_rt_lmul3
 	XREF	acc_rt_wcopy4
 
@@ -234,7 +235,8 @@ acc_rt_ludivmod_core:
 	push	hl
 	push	ix
 	push	iy
-	push	de			; where the remainder goes
+	ld	hl, acc_rt_ldiv_buf	; where the remainder goes: not over the
+	push	hl			; divisor, which the caller may still read
 	push	iy			; and the quotient
 
 	; The dividend: b:ix, from its first byte that is not zero -- the
@@ -323,7 +325,7 @@ acc_rt_ludivmod_core:
 	pop	iy			; the quotient where the dividend was
 	ld	(iy + 0), ix
 	ld	(iy + 3), b
-	pop	iy			; the remainder where the divisor was
+	pop	iy			; the remainder, in acc_rt_ldiv_buf
 	ld	(iy + 0), hl
 	ld	(iy + 3), c
 	pop	iy
@@ -332,3 +334,9 @@ acc_rt_ludivmod_core:
 	pop	de
 	pop	bc
 	ret
+
+; The remainder the core leaves, four bytes: and where the signed routines
+; put a copy of the divisor to make it positive, which the core reads before
+; it writes the remainder over it.
+acc_rt_ldiv_buf:
+	.byte	0, 0, 0, 0
