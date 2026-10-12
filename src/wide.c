@@ -1223,9 +1223,9 @@ void vbinop_long(int op, Type result)
      * on the left it was written into a slot of its own. */
     if ((vsp[-2].kind == VAL_WIDE || val_number(vsp[-2].kind))
         && vsp[-1].kind != VAL_WIDE && !val_number(vsp[-1].kind)
-        && !type_float(result)
-        && (op == TK_PLUS || op == TK_STAR || op == TK_AMP || op == TK_PIPE
-            || op == TK_CARET))
+        && (op == TK_PLUS || op == TK_STAR
+            || (!type_float(result)
+                && (op == TK_AMP || op == TK_PIPE || op == TK_CARET))))
         vswap();
 
     if (long_const_bytes(op, result))
