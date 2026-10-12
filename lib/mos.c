@@ -17,7 +17,7 @@
 
 #include <agon/mos.h>
 
-/* acc's runtime: see src/rt/helpers.s. */
+/* acc's runtime: see lib/rt/mos*.s. */
 int acc_rt_mos(int fn, int hl, int de, int bc);
 int acc_rt_mos_de(int fn, int hl, int de, int bc);
 int acc_rt_mos_hl(int fn, int hl, int de, int bc);

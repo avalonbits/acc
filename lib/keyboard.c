@@ -15,11 +15,11 @@
  * so that a program busy for a while between polls still gets every key it
  * was sent, in order -- up to buf_len of them, past which the newest are
  * dropped. The handler, and the ring's state it reads and writes, are
- * acc's runtime: see the end of src/rt/helpers.s. The ring is here. */
+ * acc's runtime: see lib/rt/kbuf_handler.s. The ring is here. */
 void acc_rt_kbuf_handler(void);
 unsigned char *acc_rt_kbuf_state(void);
 
-#define KB_SLOTS 0              /* the state's bytes: see helpers.s */
+#define KB_SLOTS 0              /* the state's bytes: see kbuf_state.s */
 #define KB_START 1
 #define KB_END   2
 #define KB_RING  3
