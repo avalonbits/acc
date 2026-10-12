@@ -286,7 +286,7 @@ int long_answer_here(const Value *v)
 void materialise_long(int disp, Type type)
 {
     Value *top = vsp - 1;
-    int n = type_wide_bytes(type);
+    int n = type_wide_bytes(type), i;
 
     check_no_float_mix(type, top);
 
@@ -300,7 +300,6 @@ void materialise_long(int disp, Type type)
      * fourth is the zero every address has. */
     if (val_pending(top->kind)) {
         int reg = force_reg(top);
-        int i;
 
         ld_ix_rr(disp, reg);
         for (i = ACC_INT_SIZE; i < n; i++) {
@@ -357,8 +356,13 @@ void materialise_long(int disp, Type type)
 
         return;
     }
+    /* Known to fit in a byte or two -- an unsigned char read and widened,
+     * say -- its sign is 0 whatever its type: the top byte zero, with no
+     * test of bit 23. Asked before it is in HL, which keeps what it was
+     * made as. */
+    i = type_unsigned(top->type) || vwidth(top) < ACC_INT_SIZE;
     force_into(top, R_HL);
-    store_int_as_long(disp, type_unsigned(top->type), n);
+    store_int_as_long(disp, i, n);
 }
 
 /* A floating constant, laid down as the four bytes the machine reads. The

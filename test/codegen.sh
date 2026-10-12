@@ -839,5 +839,12 @@ emits "40.0f + x: 40 not built"          fd21000020 no \
 emits "2.0f * x: 2 not built"            fd21000000dd3e no \
     'float f(float x) { return 2.0f * x; }'
 
+# An unsigned char made a long has a top byte of 0: xor a, a -- not its
+# sign tested, push hl / add hl, hl / pop hl / sbc a, a.
+emits "*p, an unsigned char, as a long"  e529e19f no \
+    'long f(const unsigned char *p) { long x = *p; return x; }'
+emits "a signed char's sign still"       e529e19f yes \
+    'long f(const signed char *p, int k) { long x = *p + k; return x; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
