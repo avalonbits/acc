@@ -9,6 +9,7 @@
 
 	XDEF	_acc_rt_lremu
 	XREF	acc_rt_ludivmod_core
+	XREF	acc_rt_ldiv_buf
 	XDEF	_acc_rt_lremu3
 	XREF	acc_rt_wcopy4
 
@@ -22,11 +23,10 @@ _acc_rt_lremu:
 	push	iy
 	push	hl
 	pop	iy
-	push	de
-	pop	ix
+	ld	ix, acc_rt_ldiv_buf
 	call	acc_rt_ludivmod_core
 	ld	a, (ix + 0)		; the remainder is the answer, and the
-	ld	(iy + 0), a		; core left it where the divisor was
+	ld	(iy + 0), a		; core left it in its buffer
 	ld	a, (ix + 1)
 	ld	(iy + 1), a
 	ld	a, (ix + 2)
