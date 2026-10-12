@@ -276,6 +276,7 @@ Type widen_held(const Value *v);
 int widen_undo_left(void);
 int a_is_l(void);
 extern int a_stored_at;                 /* insn.c: see frame_byte */
+extern int iy_end, locals_addressed;    /* lvalue.c: what IY holds */
 typedef struct {
     int           end, slot;
     unsigned      epoch;

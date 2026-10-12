@@ -292,6 +292,7 @@ void vaddr_local(int offset, Type type)
 {
     int reg;
 
+    locals_addressed = 1;                       /* see iy_end */
     if (type_ptr_depth(type) == TY_PTR_MAX)
         acc_error_at(tok_line, "a pointer can be %d deep and this is deeper",
                      TY_PTR_MAX);
@@ -324,9 +325,68 @@ static struct {
 
 /* The load and the add taken back and the pointer put in IY, where the
  * add they made was `need` bytes or more: whether it was. */
+/* What IY was last loaded with: the pointer in slot iy_disp, by a load
+ * ending at iy_end, -1 for nothing known. A function that takes a local's
+ * address keeps nothing -- the pointer could change with no store to its
+ * slot to say so -- and a rewind past the load forgets it (gen_rewound). */
+int iy_end = -1, locals_addressed;
+static int iy_disp;
+
+/* Whether the code from `from` to `to` keeps IY, and the pointer slot `disp`
+ * it holds, as they were: made only of what is known to leave both alone
+ * -- loads and stores through IY and the frame, but none to that slot, the
+ * pairs' own moves and sums, and jumps away, which leave the way through
+ * as it was (one in is a join, which member_in_iy refuses). Not a call: a
+ * callee is free with IY, which is why a register local in it is saved
+ * round each one. Anything else says no. */
+static int iy_kept(int from, int to, int disp)
+{
+    /* ex, add, inc, dec, push, pop, moves through A, or, sbc a, rla, rra;
+     * after ED, ld hl, (hl) and sbc hl, rr; after DD or FD, loads of a pair
+     * or A, and stores, checked below. */
+    static const unsigned char one[] = {
+        0xeb, 0x09, 0x19, 0x29, 0x23, 0x2b, 0xc5, 0xd5, 0xe5, 0xc1, 0xd1,
+        0xe1, 0x7d, 0x7c, 0x6f, 0x67, 0x7e, 0xb7, 0x9f, 0x17, 0x1f
+    };
+    static const unsigned char ed[] = { 0x27, 0x62, 0x52, 0x42 };
+    static const unsigned char ixy[] = {
+        0x07, 0x17, 0x27, 0x7e, 0x0f, 0x1f, 0x2f, 0x77, 0x36
+    };
+    const unsigned char *p = out_img + (from - out_base);
+    const unsigned char *end = out_img + (to - out_base);
+
+    while (p < end) {
+        unsigned char op = p[0];
+
+        if ((op & 0xcf) == 0x01 || op == 0xc3
+            || (op & 0xe7) == 0xc2) {           /* ld rr, nn; jp */
+            p += 4;
+        } else if (op == 0x18 || (op & 0xe7) == 0x20) {   /* jr */
+            p += 2;
+        } else if (memchr(one, op, sizeof one)) {
+            p++;
+        } else if (op == 0xed && memchr(ed, p[1], sizeof ed)) {
+            p += 2;
+        } else if ((op == 0xdd || op == 0xfd) && memchr(ixy, p[1], sizeof ixy)) {
+            /* A store to the frame clear of the pointer's three bytes, or
+             * through IY; ld (ix+d), n is neither. */
+            if (op == 0xdd && p[1] != 0x07 && p[1] != 0x17 && p[1] != 0x27
+                && p[1] != 0x7e
+                && (p[1] == 0x36
+                    || (unsigned) ((signed char) p[2] - disp + 2) < 5u))
+                return 0;
+            p += p[1] == 0x36 ? 4 : 3;
+        } else {
+            return 0;
+        }
+    }
+
+    return p == end;
+}
+
 static int member_in_iy(unsigned need)
 {
-    int tail = out_here() - member.at - 3;
+    int tail = out_here() - member.at - 3, kept;
     const unsigned char *p = out_img + (member.at - out_base);
 
     if (iy_local || member.end != out_here() || member.epoch != out_rewinds
@@ -334,8 +394,19 @@ static int member_in_iy(unsigned need)
         || (unsigned) tail != (p[3] == 0x23 ? (unsigned) member.off : 5u)
         || (unsigned) tail < need)
         return 0;
+
+    /* IY holding that pointer still, from a load the code since has left
+     * alone and with nothing jumping in between: not loaded again. */
+    kept = iy_end != -1 && iy_disp == member.disp && !locals_addressed
+           && (unsigned) (member.at - iy_end) <= 128u
+           && (unsigned) (join_at - iy_end) > (unsigned) (member.at - iy_end)
+           && iy_kept(iy_end, member.at, member.disp);
     out_rewind(member.at);
-    out_byte3(0xdd, 0x31, member.disp);         /* ld iy, (ix+d) */
+    if (!kept) {
+        out_byte3(0xdd, 0x31, member.disp);     /* ld iy, (ix+d) */
+        iy_end = out_here();
+        iy_disp = member.disp;
+    }
 
     return 1;
 }

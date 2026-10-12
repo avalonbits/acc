@@ -879,6 +879,8 @@ void gen_rewound(int here)
 
     if ((unsigned) here < (unsigned) a_stored_at)
         a_stored_at = -1;       /* the store taken back: see frame_byte */
+    if ((unsigned) here < (unsigned) iy_end)
+        iy_end = -1;            /* the load taken back: see lvalue.c */
     if (!npool_sites)
         return;                 /* nearly every rewind: nothing to look at */
     last = pool_site_at + npool_sites;

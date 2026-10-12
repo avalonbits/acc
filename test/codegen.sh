@@ -819,5 +819,11 @@ calls "an int's 0 to 5, by index"       '_acc_rt_jump[^8]' yes \
 calls "a char's far apart, compares"    _acc_rt_jump8 no \
     'int f(char c) { switch (c) { case 1: return 5; case 50: return 6; case 100: return 7; case 120: return 8; } return 0; }'
 
+# Two members of one pointer, one after the other: IY loaded with it once.
+emits "p->b = 5; p->c = 7: one ld iy"    "dd3106.*dd3106" no \
+    'struct s { int a, b; char c; }; void f(struct s *p) { p->b = 5; p->c = 7; }'
+emits "but loaded again after p = q"     "dd3106.*dd3106" yes \
+    'struct s { int a, b; char c; }; int g(int); void f(struct s *p, struct s *q) { p->b = 5; p = q; g(1); p->c = 7; }'
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
