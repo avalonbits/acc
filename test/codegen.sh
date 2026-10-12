@@ -498,7 +498,13 @@ emits "x < n, by the carry"             ed5229e2 yes \
     'int f(int x, int n) { if (x < n) return 1; return 2; }'
 emits "x < n, nothing moved"            000080.9 no \
     'int f(int x, int n) { if (x < n) return 1; return 2; }'
-emits "x > 5, as x >= 6, moved"         01060080 yes \
+emits "x > 5, as x >= 6, moved"         0100008009 yes \
+    'int f(int x) { if (x > 5) return 1; return 2; }'
+# ... and 0x800006 taken away by adding 2^24 - 0x800006: ld bc, 0x7ffffa /
+# add hl, bc, not ld bc, 0x800006 / or a / sbc hl, bc.
+emits "x >= 6 by an add"                 01faff7f09 yes \
+    'int f(int x) { if (x > 5) return 1; return 2; }'
+emits "nor the subtract"                 0106008 no \
     'int f(int x) { if (x > 5) return 1; return 2; }'
 
 # A read through an address loaded as a constant is one instruction:

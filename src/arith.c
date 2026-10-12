@@ -1319,9 +1319,21 @@ static int signed_as_unsigned(int op)
         evict_reg(rr);
         ld_rr_imm(rr, 0x800000);
         add_hl_rr(rr);
-        ld_rr_imm(rr, (c + 0x800000) & 0xffffff);
-        or_a_a();
-        sbc_hl_rr(rr);
+
+        /* The moved constant b taken away by adding 2^24 - b: the carry
+         * then says x >= c rather than x < c, and the subtract's or a,
+         * two bytes, is gone. Not for b = 0, -8388608 moved, whose add
+         * would be of nothing and never carry. */
+        c = (c + 0x800000) & 0xffffff;
+        if (c) {
+            ld_rr_imm(rr, 0x1000000 - c);
+            add_hl_rr(rr);
+            op = op == TK_LT ? TK_GE : TK_LT;
+        } else {
+            ld_rr_imm(rr, c);
+            or_a_a();
+            sbc_hl_rr(rr);
+        }
     } else {
         if (tok_pair(op, TK_GT)) {
             Value swapped = *lhs;       /* a > b is b < a */
