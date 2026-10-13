@@ -6,7 +6,7 @@ gets every key it was sent, in order.
 
 MOS sends a packet for every key going down and every key coming up.
 `kbuf_init` has MOS call a handler of acc's runtime on each one (with
-`mos_setkbvector`, MOS call 0x1D; see [agon/mos.h](agon-mos.md)), and
+`mos_setkbvector`, MOS call 0x1D; see [agon/mos.h](27-agon-mos.md)), and
 the handler copies the packet's four bytes into a ring on the heap. The
 program takes them out with `kbuf_poll_event`. The header includes
 `stdint.h` and `stdbool.h`.

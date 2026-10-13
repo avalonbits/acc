@@ -7,7 +7,7 @@ A port has four registers, at consecutive I/O ports: its data register
 (the port's own number), then the data direction (a 1 bit makes that pin
 an input), then `ALT1` and `ALT2`, which choose an alternate function and
 are both 0 for a plain pin. The header includes `ez80f92.h`, which names
-all four of each port (see [ez80f92.h](ez80f92.md)), and `stdbool.h` and
+all four of each port (see [ez80f92.h](39-ez80f92.md)), and `stdbool.h` and
 `stdint.h`.
 
 Every function comes in two forms. One takes a port and a pin number,

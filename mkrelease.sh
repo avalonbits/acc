@@ -6,7 +6,7 @@
 #   lib/acc/libc.a           the C library, linked into every program
 #   lib/acc/rt.a             acc's runtime, which every program calls
 #   lib/acc/include/         its headers, searched for every #include
-#   config/ref/docs/acc.dat  the library's reference, for ref: `ref acc printf`
+#   config/ref/docs/acc.dat  the API reference, for ref: `ref acc printf`
 #
 # The library is the host build's: the host and Agon builds of acc produce
 # the same objects byte for byte, which test/target.sh checks.

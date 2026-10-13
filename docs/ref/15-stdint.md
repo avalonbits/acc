@@ -129,7 +129,7 @@ Integers that hold a pointer: an address is three bytes, and so is an
 
 The widest integers: 64 bits. `INTMAX_MIN`, `INTMAX_MAX` and
 `UINTMAX_MAX` are `INT64_MIN`, `INT64_MAX` and `UINT64_MAX`.
-[`inttypes.h`](inttypes.md) has the functions over them.
+[`inttypes.h`](16-inttypes.md) has the functions over them.
 
 ## `SIZE_MAX`, `PTRDIFF_MIN`, `PTRDIFF_MAX`, `WCHAR_MIN`, `WCHAR_MAX`
 

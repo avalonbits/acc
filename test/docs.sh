@@ -84,6 +84,23 @@ for page in "$DOCS"/*.md; do
     keys "$header" "$names"
 done
 
+# The book's title, and its pages in the order index.md lists them, which
+# is the order md2ref reads them in: index.md first, then by name, so the
+# names begin with their place.
+title=$("$REFTOOL" "$DAT" info | sed -n 's/^title //p')
+if [ "$title" = "Agon C Compiler API reference" ]; then
+    ok
+else
+    bad "the book's title" "it is: $title"
+fi
+listed=$(grep -o '](0*[0-9]*-[^)#]*\.md)' "$DOCS/index.md" | tr -d '()]' | awk '!seen[$0]++')
+named=$(cd "$DOCS" && ls [0-9]*.md)
+if [ "$listed" = "$named" ]; then
+    ok
+else
+    bad "pages in index.md's order" "$(diff <(echo "$listed") <(echo "$named") | head -3 | tr '\n' ' ')"
+fi
+
 # The options, as the usage acc prints names them: the word an option line
 # starts with, and any other option the line names after a `;`.
 ACC=${ACC:-bin/acc}

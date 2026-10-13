@@ -20,7 +20,7 @@ register it answers in. The numbers below are those calls'.
 A call marked "MOS 3" is not in MOS 2, and answers
 `MOS_NOT_IMPLEMENTED` (23) there.
 
-`stdio.h`'s files ([`fopen`](stdio.md#fopen) and the rest) are built
+`stdio.h`'s files ([`fopen`](04-stdio.md#fopen) and the rest) are built
 on these; a program that uses `stdio.h` need not call them.
 
 ## `FRESULT`, `FR_OK`, `FR_DISK_ERR`, `FR_INT_ERR`, `FR_NOT_READY`, `FR_NO_FILE`, `FR_NO_PATH`, `FR_INVALID_NAME`, `FR_DENIED`, `FR_EXIST`, `FR_INVALID_OBJECT`, `FR_WRITE_PROTECTED`, `FR_INVALID_DRIVE`, `FR_NOT_ENABLED`, `FR_NO_FILESYSTEM`, `FR_MKFS_ABORTED`, `FR_TIMEOUT`, `FR_LOCKED`, `FR_NOT_ENOUGH_CORE`, `FR_TOO_MANY_OPEN_FILES`, `FR_INVALID_PARAMETER`, `MOS_INVALID_COMMAND`, `MOS_NOT_IMPLEMENTED`
@@ -757,7 +757,7 @@ BC, the count written.
 
 `fprintf` into a `FIL`. MOS 3's call 0x8C is not made: acc formats with
 its own `printf`, which knows every conversion (see
-[`printf`](stdio.md#printf-fprintf-sprintf-snprintf)), and writes
+[`printf`](04-stdio.md#printf-fprintf-sprintf-snprintf)), and writes
 the text 64 bytes at a time with `ffs_fwrite`. The answer is how many
 characters were formatted; a failed write is not seen. MOS's own `f_printf` is
 `mos_getfunction(MOS_FUNC_F_PRINTF, 0)`.
