@@ -123,5 +123,27 @@ if [ -x bin/acc ] && [ -f bin/libc.a ]; then
     check "as does any other that is not one" "$got" removed
 fi
 
+# The build id: make test runs makes side by side that can each remake
+# src/acc_build.h, and with one temporary name for all of them one make's
+# mv took the file another was about to move, and that make failed. Six at
+# once, six times, over a copy of the sources, so that the real header is
+# not touched in the middle of a test run.
+race=$(mktemp -d)
+cp Makefile "$race/" && cp -r src "$race/src"
+failed=0
+for _ in 1 2 3 4 5 6; do
+    rm -f "$race/src/acc_build.h"
+    for _ in 1 2 3 4 5 6; do
+        make -s -C "$race" src/acc_build.h >/dev/null 2>"$race/err.$BASHPID.$RANDOM" &
+    done
+    wait
+done
+grep -qs . "$race"/err.* && failed=1
+leftover=$(ls "$race/src" | grep -c '^acc_build\.h\.')
+[ "$failed" = 0 ] && [ -s "$race/src/acc_build.h" ] && [ "$leftover" = 0 ] \
+    && got=whole || got=failed
+check "the build id, six makes at once" "$got" whole
+rm -rf "$race"
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
