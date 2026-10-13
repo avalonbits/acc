@@ -17,12 +17,17 @@ Unzip `acc-<version>.zip` onto the root of the SD card. It holds:
     /lib/acc/libc.a           the C library
     /lib/acc/rt.a             acc's runtime, which every program calls
     /lib/acc/include/         its headers, <stdio.h> to <agon/vdp.h>
+    /config/ref/docs/acc.dat  the reference, for the ref reader
 
 acc looks in `/lib/acc/include` for every `#include`, and takes what a
 program calls from `/lib/acc/rt.a` and `/lib/acc/libc.a`, without being
 told. `/bin` is where
 MOS looks for a command, so `acc` works from any directory. It is tested
 on MOS 3.0.2.
+
+With ref, the Agon's reference reader, on the card, `ref acc <name>`
+shows the reference for any function, macro or option of acc's:
+`ref acc fopen`, `ref acc -moslet`.
 
 ## Using it on the Agon
 
