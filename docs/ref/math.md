@@ -283,7 +283,7 @@ of a NaN the NaN; it sets no error for any of them.
     float  fdimf(float x, float y);
 
 `x - y` when `x` is the larger, and 0 otherwise. A NaN on either side
-answers 0.
+answers a NaN.
 
 ## `fmax`, `fmin`, `fmaxf`, `fminf`
 
@@ -365,7 +365,8 @@ does not: `hypot(3e30, 4e30)` is about `5e30`, though `3e30 * 3e30`
 alone is an infinity. An answer too large is an overflow (`ERANGE`, an
 infinity).
 
-When the larger of the two is an infinity or a NaN, it is the answer.
+An infinity on either side answers an infinity, even with a NaN on the
+other, as C99 F.9.4.3 has it; otherwise a NaN answers a NaN.
 
 ## `exp`, `exp2`, `expm1`, `expf`, `exp2f`, `expm1f`
 
@@ -431,12 +432,15 @@ the range.
   `y`). A `y` below zero is a pole (`ERANGE`, an infinity; negative for
   `-0.0` and an odd `y`).
 - `x` infinite: a `y` above zero answers an infinity (negative for minus
-  infinity and an odd `y`), and below zero answers 0.
+  infinity and an odd `y`), and below zero answers 0 (`-0.0` for minus
+  infinity and an odd `y`).
 - An answer too large is an overflow (`ERANGE`, an infinity); one too
   small is zero, with no error.
 
-An infinite `y` with a finite `x` other than 1 answers a NaN, where C99
-asks for 0 or an infinity.
+- `y` infinite, C99 F.9.4.4's way: 1 for an `x` of 1 or -1; otherwise 0
+  or an infinity, an infinity where `|x|` is below 1 and `y` is minus
+  infinity or `|x|` is above 1 and `y` is infinity, with no error:
+  `pow(0.5, INFINITY)` is 0 and `pow(0, -INFINITY)` an infinity.
 
 ## `sin`, `cos`, `tan`, `sinf`, `cosf`, `tanf`
 
@@ -449,7 +453,8 @@ asks for 0 or an infinity.
 
 The sine, cosine and tangent of `x` radians. `x` is brought down to
 within pi/4 of a multiple of pi/2, with pi/2 taken away in five pieces
-so that the remainder keeps its digits.
+so that the remainder keeps its digits. `sin` and `tan` of `-0.0` are
+`-0.0`.
 
 Measured against the host's library: `sin` within two ulp over -100 to
 100, and `cos` within eight, the eight being where the cosine passes
@@ -470,6 +475,7 @@ An infinity is a domain error (`EDOM`, a NaN).
 The arc sine (from -pi/2 to pi/2), arc cosine (from 0 to pi) and arc
 tangent (from -pi/2 to pi/2), in radians. Measured against the host's
 library: `atan` and `asin` within two ulp, `acos` within one.
+`atan(-0.0)` is `-0.0`.
 
 `asin` and `acos` of a number past 1 either way are a domain error
 (`EDOM`, a NaN). `atan` of an infinity is pi/2 with its sign.
@@ -486,10 +492,12 @@ right half of the circle by the signs.
 When `x` is zero, the answer is pi/2 when `y` is above zero and -pi/2
 otherwise. When both are zero, the signs of the zeros decide, as C99
 has it: `atan2(0.0, -0.0)` is pi, `atan2(-0.0, -0.0)` is -pi, and with
-`x` `+0.0` the answer is `y`'s zero.
+`x` `+0.0` the answer is `y`'s zero. A negative `x` with `y` a zero
+answers pi with `y`'s sign: `atan2(-0.0, -1)` is -pi.
 
-Two infinities answer a NaN, where C99 asks for an odd multiple of
-pi/4.
+A NaN on either side answers a NaN. Two infinities answer an odd
+multiple of pi/4, by their signs: `atan2(INFINITY, -INFINITY)` is
+3pi/4.
 
 ## `sinh`, `cosh`, `tanh`, `sinhf`, `coshf`, `tanhf`
 
@@ -502,7 +510,7 @@ pi/4.
 
 The hyperbolic sine, cosine and tangent, written so that a small `x`
 keeps its digits. Measured against the host's library: within three or
-four ulp.
+four ulp. `sinh` and `tanh` of `-0.0` are `-0.0`.
 
 `sinh` and `cosh` of more than 88 are worked out through half the
 exponent, so that an answer below the largest float is found; one past

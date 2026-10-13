@@ -83,6 +83,8 @@ double atan(double x)
     double a = x < 0.0f ? -x : x, v;
     int inverted = 0, folded = 0;
 
+    if (x == 0.0f)
+        return x;                       /* -0 is -0 */
     if ((bits(x) & 0x7fffffffu) >= 0x7f800000u)
         return (bits(x) & 0x7fffffffu) > 0x7f800000u ? __acc_nan()
                                                      : (x < 0.0f ? -PIO2 : PIO2);
@@ -160,6 +162,13 @@ double atan2(double y, double x)
 {
     double v;
 
+    if (isnan(x) || isnan(y))
+        return x + y;
+    if (isinf(x) && isinf(y)) {
+        double q = x > 0.0f ? PIO4 : 3.0f * PIO4;
+
+        return y > 0.0f ? q : -q;
+    }
     if (x == 0.0f && y == 0.0f)
         return bits(x) & 0x80000000u ? (y < 0.0f || (bits(y) & 0x80000000u)
                                          ? -PI : PI)
@@ -170,7 +179,8 @@ double atan2(double y, double x)
     if (x > 0.0f)
         return v;
 
-    return y >= 0.0f ? v + PI : v - PI;
+    /* By y's sign bit, so that -0 on the left of a negative x is -pi. */
+    return bits(y) & 0x80000000u ? v - PI : v + PI;
 }
 
 float atanf(float x)           { return atan(x); }

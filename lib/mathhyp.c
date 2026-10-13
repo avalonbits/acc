@@ -64,6 +64,8 @@ double sinh(double x)
 {
     double a = x < 0.0f ? -x : x, v;
 
+    if (x == 0.0f)
+        return x;                       /* -0 is -0 */
     if (a < 1.0f) {
         /* (e^a - 1) and its reciprocal, so that small a keeps its digits:
          * e^a - e^-a would take them away. */
@@ -96,6 +98,8 @@ double tanh(double x)
 {
     double a = x < 0.0f ? -x : x, v;
 
+    if (x == 0.0f)
+        return x;                       /* -0 is -0 */
     if (a > 9.0f) {
         v = 1.0f;
     } else {
@@ -145,8 +149,8 @@ double atanh(double x)
 {
     double a = fabs(x), v;
 
-    if (isnan(x))
-        return x;
+    if (isnan(x) || x == 0.0f)
+        return x;                       /* and -0 is -0 */
     if (a > 1.0f)
         return __acc_domain_error();
     if (a == 1.0f)

@@ -54,7 +54,7 @@ void obj_print_version(void)
  *
  * A name that C can use is spelled as agondev spells it, with an underscore
  * in front: the function `f` is `_f`, main is `_main`, and the runtime's
- * helpers are the `_acc_rt_...` their labels in lib/rt/*.s already
+ * helpers are the `_acc_rt_...` their labels in lib/rt's files already
  * are. A name without one is an assembly object's own, which C cannot name.
  * Inside acc the underscore is taken off, and a name that had none is given
  * an @ in front instead, which no C name can have: see obj_c_name. 
