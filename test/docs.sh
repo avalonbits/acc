@@ -4,11 +4,12 @@
 # declares is a key ref finds, so that `ref acc <name>` never comes back
 # empty for a name the library has; so is every option `acc -h` lists.
 #
-# The book is a few pages, each a group -- `# Numbers` -- of sections, as
-# ref's other books are shelved: a header's section is its name,
-# `## `math.h``, and its functions are found by reading the header's
+# A page documents a header when its title is the header's name,
+# `# `math.h``, and its functions are found by reading the header's
 # declarations, so a function added to a header without a heading of its
-# own is a failure here, and so is a header with no section.
+# own is a failure here, and so is a header with no page. The pages are
+# shelved in groups by the menu beside them, docs/ref/mkdocs.yml, as ref's
+# other books are; every page has to be in it.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -62,15 +63,15 @@ for decl in text.split(';'):
 PY
 }
 
-# Every header under include/ has a section, `## `name.h``, and each
-# section is a header there: what acc ships and what the book covers.
+# Every header under include/ has a page, `# `name.h``, and each such page
+# is a header there: what acc ships and what the book covers.
 shipped=$(cd include && find . -name '*.h' | sed 's|^\./||' | sort)
-covered=$(sed -n 's/^## `\(.*\.h\)`$/\1/p' "$DOCS"/*.md | sort)
+covered=$(awk 'FNR == 1 && /^# `.*\.h`$/ { gsub(/^# `|`$/, ""); print }' "$DOCS"/*.md | sort)
 for header in $shipped; do
     if grep -qx "$header" <<<"$covered"; then
         ok
     else
-        bad "$header has a section" "none in $DOCS"
+        bad "$header has a page" "none in $DOCS"
     fi
 done
 for header in $covered; do
@@ -85,16 +86,16 @@ for header in $covered; do
     keys "$header" "$names"
 done
 
-# Each page is one group: one level-1 heading, its first line, which md2ref
-# makes the page's top; a second would be a page of its own in the
-# contents. And the book's title.
-for page in "$DOCS"/*.md; do
-    if [ "$(grep -c '^# ' "$page")" = 1 ] && head -1 "$page" | grep -q '^# '; then
-        ok
-    else
-        bad "$(basename "$page") is one group" "its level-1 headings: $(grep -c '^# ' "$page")"
-    fi
-done
+# Every page is in the menu, under a group, and every page the menu names
+# is there: a page left out would be shelved after the groups, under
+# "Pages outside the menu". And the book's title.
+menu=$(sed -n 's/^ *- \([A-Za-z0-9_.-]*\.md\)$/\1/p' "$DOCS/mkdocs.yml" | sort)
+pages=$(cd "$DOCS" && ls *.md | sort)
+if [ -n "$menu" ] && [ "$menu" = "$pages" ]; then
+    ok
+else
+    bad "the menu names every page" "$(diff <(echo "$menu") <(echo "$pages") | grep '^[<>]' | head -3 | tr '\n' ' ')"
+fi
 title=$("$REFTOOL" "$DAT" info | sed -n 's/^title //p')
 if [ "$title" = "Agon C Compiler API reference" ]; then
     ok

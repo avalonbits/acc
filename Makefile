@@ -94,7 +94,9 @@ $(BIN)/zap: | $(BIN)
 # it back for test/docs.sh, both built here from REF_SRC, a checkout of ref,
 # as zap is. Not part of `all`; `make test` makes it when ref is there.
 REF_SRC ?= $(HOME)/code/ref
-REFDOCS  = $(wildcard docs/ref/*.md)
+REFDOCS  = docs/ref $(wildcard docs/ref/*.md) docs/ref/mkdocs.yml
+REFSRCS  = $(wildcard $(REF_SRC)/src/md2ref/*.c $(REF_SRC)/src/md2ref/*.h \
+             $(REF_SRC)/src/core/*.c $(REF_SRC)/src/core/*.h)
 HAVE_REF = $(wildcard $(REF_SRC)/src/md2ref)
 
 doc: $(BIN)/acc.dat
@@ -102,7 +104,7 @@ doc: $(BIN)/acc.dat
 $(BIN)/acc.dat: $(REFDOCS) $(BIN)/md2ref $(BIN)/reftool
 	@$(BIN)/md2ref -o $@ -t "Agon C Compiler API reference" docs/ref >/dev/null
 
-$(BIN)/md2ref $(BIN)/reftool &: | $(BIN)
+$(BIN)/md2ref $(BIN)/reftool &: $(REFSRCS) | $(BIN)
 	@[ -d $(REF_SRC)/src/md2ref ] || { echo "no ref source at $(REF_SRC): set REF_SRC" >&2; exit 1; }
 	$(CC) -std=c99 -O1 -fsigned-char -w -I$(REF_SRC)/src/core -o $(BIN)/md2ref \
 	    $(wildcard $(REF_SRC)/src/md2ref/*.c) $(REF_SRC)/src/core/normalize.c

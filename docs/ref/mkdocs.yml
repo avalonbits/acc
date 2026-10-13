@@ -1,0 +1,50 @@
+# The Agon C Compiler API reference, for ref: md2ref reads this menu, as
+# MkDocs does, and makes each group a heading in the contents.
+site_name: Agon C Compiler API reference
+nav:
+  - The compiler:
+      - using.md
+      - options.md
+      - language.md
+  - Input and output:
+      - stdio.md
+      - wchar.md
+  - Strings and characters:
+      - string.md
+      - ctype.md
+      - wctype.md
+      - locale.md
+  - Numbers:
+      - math.md
+      - tgmath.md
+      - fenv.md
+      - float.md
+      - limits.md
+      - stdint.md
+      - inttypes.md
+  - The program:
+      - stdlib.md
+      - errno.md
+      - assert.md
+      - signal.md
+      - setjmp.md
+      - stdarg.md
+      - time.md
+  - Language headers:
+      - stddef.md
+      - stdbool.md
+      - iso646.md
+  - The Agon:
+      - agon-mos.md
+      - agon-vdp.md
+      - agon-vdp_vdu.md
+      - agon-vdp-screen.md
+      - agon-vdp-graphics.md
+      - agon-vdp-bitmap.md
+      - agon-vdp-buffer.md
+      - agon-vdp-audio.md
+      - agon-keyboard.md
+      - agon-joystick.md
+      - agon-gpio.md
+      - agon-timer.md
+      - ez80f92.md
