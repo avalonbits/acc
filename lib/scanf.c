@@ -249,6 +249,36 @@ static const char *scan_set(const char *p, int fs, unsigned char *set)
 #undef F
 }
 
+/* Whether the scan set at `p` takes c, read from the format as scan_set
+ * reads it: for a wide character from 256 up, which the 256 flags have no
+ * room for. */
+static int wide_in_set(const char *p, int fs, int c)
+{
+    int invert = 0, in = 0, lo;
+
+#define F(q) (fs == 1 ? *(const unsigned char *) (q) : *(const unsigned short *) (q))
+    if (F(p) == '^') {
+        invert = 1;
+        p += fs;
+    }
+    if (F(p) == ']') {
+        in |= c == ']';
+        p += fs;
+    }
+    while ((lo = F(p)) && lo != ']') {
+        if (F(p + fs) == '-' && F(p + 2 * fs) && F(p + 2 * fs) != ']') {
+            in |= c >= lo && c <= F(p + 2 * fs);
+            p += 3 * fs;
+        } else {
+            in |= c == lo;
+            p += fs;
+        }
+    }
+
+    return in != invert;
+#undef F
+}
+
 /* Where a %c, %s or %[ puts what it reads, which may be bytes or wide
  * characters, from input that may be either: bytes into wide characters
  * are UTF-8 decoded, and wide characters into bytes are UTF-8 encoded, as
@@ -439,13 +469,16 @@ int __acc_scan(Input *in, const char *fmt, int fs, va_list ap)
         }
 
         case 'c': case 's': case '[': {
-            /* A wide conversion is one with an l in the narrow functions,
-             * or with no h in the wide ones. */
+            /* A wide conversion is one with an l, in the wide functions as
+             * in the narrow ones (C99 7.24.2.2): without one, what is read
+             * is stored as bytes, a wide input's characters as their
+             * UTF-8. */
             Sink sink;
+            const char *set_at = fmt;
             int n = 0;
 
             sink.p = to;
-            sink.wide = fs == 1 ? longs > 0 : shorts == 0;
+            sink.wide = longs > 0;
             sink.in_wide = fs != 1;
             sink.need = 0;
             if (conv == '[')
@@ -457,7 +490,9 @@ int __acc_scan(Input *in, const char *fmt, int fs, va_list ap)
                 if (c == EOF)
                     break;
                 if (conv == 's' ? is_space(c)
-                    : conv == '[' ? c >= 256 || !set[c] : 0) {
+                    : conv == '[' ? (c < 256 ? !set[c]
+                                             : !wide_in_set(set_at, fs, c))
+                    : 0) {
                     back(in, c);
                     break;
                 }

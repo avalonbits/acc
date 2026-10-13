@@ -256,14 +256,15 @@ What differs:
 | `%n`       | `int *`      | stores the wide characters so far       |
 
 The width and the precision of `%s` and `%ls` count wide characters. A
-`%s` string stops at bytes that are not a character, which put
-`EILSEQ` in `errno` but do not fail the call. `%c` of a value `btowc`
-refuses, anything outside 0 to 127, writes the character 0xFFFF. A `NULL`
+`%s` string with bytes that are not UTF-8, within its precision, is an
+encoding error: the call answers -1 and puts `EILSEQ` in `errno`. `%c`
+of a value `btowc` refuses, anything outside 0 to 127, writes `WEOF`'s
+character, 0xFFFF, as glibc writes its `WEOF`. A `NULL`
 for `%s` or `%ls` writes `(null)`.
 
 The answer is how many wide characters were written, not counting the
 terminator, or -1 when a character could not be written to the stream,
-or did not fit.
+did not fit, or was an encoding error.
 
 `swprintf` writes at most `n - 1` characters and a terminator. Unlike
 `snprintf`, it answers -1 when the whole did not fit, rather than the
@@ -301,23 +302,18 @@ It is `scanf`'s reader: the conversions, widths, lengths, answers and
 `errno` are `scanf`'s, white space is the same six ASCII characters,
 and a width counts wide characters.
 
-What differs is where `%c`, `%s` and `%[` store, which is not what C99
-says:
+`%c`, `%s` and `%[` store as C99 says, by whether an `l` is written:
 
 | Conversion            | Stores to    | What                             |
 |-----------------------|--------------|----------------------------------|
-| `%c`, `%s`, `%[`      | `wchar_t *`  | the wide characters              |
 | `%lc`, `%ls`, `%l[`   | `wchar_t *`  | the wide characters              |
-| `%hc`, `%hs`, `%h[`   | `char *`     | their UTF-8 bytes                |
+| `%c`, `%s`, `%[`      | `char *`     | their UTF-8 bytes                |
 
-C99 has `%s` with no length store bytes in the wide functions, as it
-does in `scanf`; acc stores wide characters unless an `h` is written.
-A program meant for both writes `%ls` for a wide string, and here
-`%hs` for a narrow one, whose buffer needs room for three bytes a
-character.
+A `char` buffer needs room for three bytes a character. An `h`, as in
+`%hs`, stores bytes too.
 
-A set, `%[...]`, holds only characters below 256: a character from 256
-up is never in one, even after a `^`.
+A set, `%[...]`, takes any wide character its list names, those from 256
+up included, and `^` turns it over for all of them.
 
     int n;
     wchar_t word[16];
