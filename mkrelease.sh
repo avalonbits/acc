@@ -6,6 +6,7 @@
 #   lib/acc/libc.a           the C library, linked into every program
 #   lib/acc/rt.a             acc's runtime, which every program calls
 #   lib/acc/include/         its headers, searched for every #include
+#   config/ref/docs/acc.dat  the library's reference, for ref: `ref acc printf`
 #
 # The library is the host build's: the host and Agon builds of acc produce
 # the same objects byte for byte, which test/target.sh checks.
@@ -38,8 +39,9 @@ fi
 # Built fresh, not whatever is lying in bin/.
 make >/dev/null
 make -f Makefile.agon >/dev/null
+make doc >/dev/null
 
-for f in bin/acc.bin bin/libc.a bin/rt.a; do
+for f in bin/acc.bin bin/libc.a bin/rt.a bin/acc.dat; do
     if [ ! -f "$f" ]; then
         echo "mkrelease: $f does not exist" >&2
 
@@ -51,8 +53,9 @@ OUT="acc-$VERSION.zip"
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
-mkdir -p "$STAGE/bin" "$STAGE/lib/acc"
+mkdir -p "$STAGE/bin" "$STAGE/lib/acc" "$STAGE/config/ref/docs"
 cp bin/acc.bin "$STAGE/bin/"
+cp bin/acc.dat "$STAGE/config/ref/docs/"
 cp bin/libc.a bin/rt.a "$STAGE/lib/acc/"
 cp -r include "$STAGE/lib/acc/include"
 

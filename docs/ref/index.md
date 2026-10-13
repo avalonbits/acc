@@ -3,6 +3,12 @@
 The reference to acc's C library, a header at a time. Look a name up
 with `ref acc <name>`: a function, a macro, a type or a header.
 
+## acc
+
+- [Using acc](using.md): compiling, linking, libraries, errors
+- [acc's options](options.md): every option, one by one
+- [The language](language.md): types, what is left out, limits
+
 ## Input and output
 
 - [`stdio.h`](stdio.md): files, the console, `printf` and `scanf`
