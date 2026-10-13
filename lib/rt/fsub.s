@@ -35,19 +35,18 @@ _acc_rt_fsub3:
 _acc_rt_fsub:
 	call	.fsub_flip
 	call	_acc_rt_fadd
-.fsub_flip:
-	push	hl
-	push	de
-	push	bc
+.fsub_flip:				; the sign, in the top byte of (de)
 	ex	de, hl
-	ld	bc, 3
-	add	hl, bc
+	inc	hl
+	inc	hl
+	inc	hl
 	ld	a, (hl)
 	xor	a, 0x80
 	ld	(hl), a
-	pop	bc
-	pop	de
-	pop	hl
+	dec	hl
+	dec	hl
+	dec	hl
+	ex	de, hl
 	ret
 
 _acc_rt_fadd:
