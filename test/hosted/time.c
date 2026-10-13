@@ -84,6 +84,25 @@ int main(void)
 
     printf("asctime [%s]", asctime(gmtime(&(time_t) { 1234567890 })));
     printf("difftime %g\n", difftime(100, 40));
+    /* mktime writes its own argument and not the struct gmtime answered. */
+    {
+        struct tm *g = gmtime(&(time_t) { 86400 }), m = *g;
+
+        m.tm_mday += 40;
+        mktime(&m);
+        printf("gmtime kept %d, mktime %d %d\n", g->tm_mday, m.tm_mon, m.tm_mday);
+    }
+
+    /* A day or a month out of range has a name of `?`. */
+    {
+        struct tm odd = *gmtime(&(time_t) { 0 });
+
+        odd.tm_wday = -1;
+        odd.tm_mon = 12;
+        strftime(buf, sizeof buf, "%a %A %b %B", &odd);
+        printf("out of range [%s]\n", buf);
+    }
+
     printf("strftime short %d\n", (int) strftime(buf, 5, "%Y-%m", gmtime(&(time_t) { 0 })));
     printf("strftime exact %d\n", (int) strftime(buf, 5, "%Y", gmtime(&(time_t) { 0 })));
     printf("wcsftime %d", (int) wcsftime(wbuf, 64, L"%A %d %B %Y", gmtime(&(time_t) { 0 })));

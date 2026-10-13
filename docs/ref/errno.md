@@ -96,7 +96,8 @@ writes made of them.
 
     #define EINVAL 22
 
-An argument that is not valid. Only
-[`strtonum`](stdlib.md#strtonum) sets it: for a string that is not a
-number, and for a `minval` greater than `maxval`. It is POSIX's, not
-C99's.
+An argument that is not valid. [`strtonum`](stdlib.md#strtonum) sets
+it for a string that is not a number, and for a `minval` greater than
+`maxval`; [`signal`](signal.md#signal-sig_dfl-sig_ign-sig_err) and
+[`raise`](signal.md#raise) for a signal there is no such thing as. It is
+POSIX's, not C99's.

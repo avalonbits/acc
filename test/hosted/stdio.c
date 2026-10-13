@@ -140,6 +140,16 @@ int main(void)
     printf("missing %d\n", fopen("t_missing.txt", "r") == NULL);
     printf("write to input: %d", fputc('a', f = fopen("t_nbf.txt", "r")) == EOF);
     printf(" error %d\n", ferror(f) != 0);
+    clearerr(f);
+    printf("fprintf to input: %d", fprintf(f, "%s", "abc") < 0);
+    printf(" error %d\n", ferror(f) != 0);
+    fclose(f);
+
+    /* Room for the terminator alone: nothing is read, and the line is
+     * empty. */
+    f = fopen("t_nbf.txt", "r");
+    line[0] = 'x';
+    printf("fgets 1: %d [%s]\n", fgets(line, 1, f) == line, line);
     fclose(f);
 
     /* Renaming and removing. */
@@ -176,7 +186,12 @@ int main(void)
     printf(" [%s] then %d\n", line, getchar() == EOF);
     remove("t_in.txt");
 
-    printf("fflush(NULL) %d\n", fflush(NULL));
+    /* A standard stream made a file is flushed by fflush(NULL) too. */
+    freopen("t_err.txt", "w", stderr);
+    fputs("held", stderr);
+    printf("fflush(NULL) %d", fflush(NULL));
+    dump("t_err.txt");
+    remove("t_err.txt");
 
     /* Out through exit from below main, which runs atexit's functions as
      * returning from main does. */

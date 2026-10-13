@@ -24,9 +24,8 @@ float's precision.
 `malloc` answers room for `n` bytes, or `NULL` when there is no free
 block that large. `malloc(0)` answers `NULL`. The bytes are not cleared.
 
-`calloc` is `malloc` of `count * size` bytes, all set to zero. The
-product is not checked: one past what a `size_t` holds (16 MB) wraps,
-and the block is smaller than was asked for.
+`calloc` is `malloc` of `count * size` bytes, all set to zero. A product
+past what a `size_t` holds (16 MB) answers `NULL`.
 
 `free` gives a block back; `free(NULL)` does nothing. A freed block is
 joined to whichever of its neighbours is free, so the room a program

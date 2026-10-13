@@ -160,8 +160,8 @@ and not used, and forgets a character pushed back by `ungetc`, so MOS is
 where the program has got to. (C99 leaves that undefined.)
 
 `fflush(NULL)` flushes every file `fopen` and `tmpfile` opened, and
-answers `EOF` when any of them failed; it does not reach a standard
-stream that `freopen` made a file. On the keyboard and the screen
+and `stdout` and `stderr` where `freopen` made them files, and answers
+`EOF` when any of them failed. On the keyboard and the screen
 `fflush` does nothing and answers 0.
 
 ## `setvbuf`, `setbuf`, `_IOFBF`, `_IOLBF`, `_IONBF`
@@ -225,8 +225,8 @@ One character can be pushed back, as C promises, and no more: a second
 and adds a terminator. The answer is `s`, or `NULL` when nothing was
 read, or a read failed (then what is in `s` is not to be used).
 
-An `n` of 0 or less answers `NULL`, and so does an `n` of 1, where C99
-has an empty string and `s`.
+An `n` of 0 or less answers `NULL`. An `n` of 1 reads nothing and
+answers `s`, holding the empty string.
 
 `gets` reads a line of `stdin` into `s`, without its `'\n'`, and adds a
 terminator. The answer is `s`, or `NULL` at the end of the input with
@@ -383,8 +383,9 @@ some other way leaves it there.
 Write `fmt` with each conversion in it replaced by the next argument,
 formatted: `printf` to `stdout`, `fprintf` to `f`, and `sprintf` and
 `snprintf` into the string at `to`, with a terminator. The answer is how
-many characters were written, not counting the terminator. A failure
-to write is not reported: the answer is the count all the same.
+many characters were written, not counting the terminator, or a
+negative number when a file refused one, as a stream opened only to
+read does.
 
 `printf` to the screen writes each character as it goes; nothing is
 held back. `fprintf` writes through `fputc`, so a file's buffering

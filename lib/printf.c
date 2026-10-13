@@ -30,8 +30,10 @@
  * lives. The same one putchar goes through. */
 int acc_rt_putch(int c);
 
-/* How many characters have gone out, which is what printf answers with. */
+/* How many characters have gone out, which is what printf answers with,
+ * and whether a file refused one, when it answers -1 instead. */
 static int written;
+static char refused;
 
 /* Where they go. The screen when none of these is set, which is what printf
  * wants; a buffer with a size for snprintf; and a file for fprintf, reached
@@ -61,9 +63,11 @@ static void emit(int c)
     } else if (acc_sink_fn) {
         acc_sink_fn(c);                 /* the wide printf: see wprintf.c */
     } else if (acc_sink_file) {
-        acc_sink_putc(c, acc_sink_file);
+        if (acc_sink_putc(c, acc_sink_file) == EOF)
+            refused = 1;
     } else if (__acc_stdout_putc) {
-        __acc_stdout_putc(c);           /* stdout is a file: see stdio.c */
+        if (__acc_stdout_putc(c) == EOF)    /* stdout is a file: stdio.c */
+            refused = 1;
     } else {
         acc_rt_putch(c);
     }
@@ -256,6 +260,7 @@ int acc_format(const char *fmt, va_list ap)
     const char *p = fmt;
 
     written = 0;
+    refused = 0;
     while (*p) {
         int flags = 0, width = 0, prec = -1, longs = 0, shorts = 0, upper = 0;
         unsigned long long value;
@@ -499,7 +504,8 @@ int acc_format(const char *fmt, va_list ap)
             digits[ndigits++] = '0';
         emit_number(digits, ndigits, prefix, nprefix, width, prec, flags);
     }
-    return written;
+    /* C99 7.19.6.1: a negative answer for an output error. */
+    return refused ? -1 : written;
 }
 
 int printf(const char *fmt, ...)

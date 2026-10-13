@@ -152,6 +152,12 @@ int fflush(FILE *f)
         for (i = 0; i < FOPEN_MAX; i++)
             if (files[i].how && fflush(&files[i]) != 0)
                 bad = 1;
+        /* And stdout and stderr where freopen made them files, which are
+         * not in the table. */
+        if (is_file(stdout) && fflush(stdout) != 0)
+            bad = 1;
+        if (is_file(stderr) && fflush(stderr) != 0)
+            bad = 1;
 
         return bad ? EOF : 0;
     }
@@ -413,6 +419,13 @@ char *fgets(char *s, int n, FILE *f)
 
     if (n <= 0)
         return NULL;
+    /* Room for the terminator alone: nothing to read, and no end of the
+     * input met, so the answer is the empty line, as glibc's is. */
+    if (n == 1) {
+        *s = 0;
+
+        return s;
+    }
     while (--n > 0 && (c = fgetc(f)) != EOF) {
         *p++ = (char) c;
         if (c == '\n')

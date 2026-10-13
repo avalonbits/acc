@@ -122,9 +122,10 @@ static void split(block *b, size_t n, int was_free)
         free_put(rest, NULL, free_list);
 }
 
-/* Rounded up to three bytes, which is what this machine's words are, so
- * that what comes back is as aligned as anything here needs -- and to room
- * for the links once it is free again. */
+/* A request as the heap keeps it: never less than the links it holds once
+ * it is free again. (n + 2) & ~2 is n, or n + 2 where bit 1 of n + 2 is
+ * set -- not a rounding to a word, which the eZ80 has no need of, but what
+ * lib/malloc.s does too, and the two have to agree on a block's size. */
 static size_t rounded(size_t n)
 {
     n = (n + 2) & ~(size_t) 2;
@@ -174,7 +175,12 @@ void free(void *p)
 void *calloc(size_t count, size_t size)
 {
     size_t n = count * size;
-    void *p = malloc(n);
+    void *p;
+
+    /* A product past 24 bits would wrap to a block too small. */
+    if (size && count > (size_t) -1 / size)
+        return NULL;
+    p = malloc(n);
 
     if (p)
         memset(p, 0, n);

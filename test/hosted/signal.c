@@ -2,6 +2,7 @@
  * sets itself again before it returns, which reads the same whether the
  * library puts a signal back to SIG_DFL before calling its handler, as
  * acc's does, or leaves it set, as glibc's does. */
+#include <errno.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdio.h>
@@ -30,6 +31,13 @@ int main(void)
     printf("distinct %d\n", SIGINT != SIGTERM && SIGABRT != SIGFPE
                             && SIGILL != SIGSEGV && SIG_DFL != SIG_IGN
                             && SIG_ERR != SIG_DFL && SIG_ERR != SIG_IGN);
+
+    /* A signal there is no such thing as: SIG_ERR and EINVAL. */
+    errno = 0;
+    printf("no such signal %d", signal(-1, count) == SIG_ERR);
+    printf(" errno %d", errno == EINVAL);
+    errno = 0;
+    printf(" raise %d errno %d\n", raise(-1) != 0, errno == EINVAL);
 
     old = signal(SIGINT, count);
     printf("first old is default %d\n", old == SIG_DFL);

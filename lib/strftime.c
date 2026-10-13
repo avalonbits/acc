@@ -46,6 +46,14 @@ static void puts_n(Out *o, const char *s, int n)
         put(o, *s++);
 }
 
+/* names[at] of a table of `count`, or `?` for a field out of range, as
+ * glibc writes one: a day of the week or a month the caller never put in
+ * range is not read from past the table's end. */
+static const char *named(const char *const *names, int at, int count)
+{
+    return (unsigned) at < (unsigned) count ? names[at] : "?";
+}
+
 /* v in at least `width` digits, with `fill` in front. */
 static void number(Out *o, long v, int width, int fill)
 {
@@ -112,11 +120,11 @@ static void format(Out *o, const char *fmt, int fs, const struct tm *t)
         if (F(fmt) == 'E' || F(fmt) == 'O')
             fmt += fs;
         switch (F(fmt)) {
-        case 'a': puts_n(o, days[t->tm_wday % 7], 3); break;
-        case 'A': puts_n(o, days[t->tm_wday % 7], 99); break;
+        case 'a': puts_n(o, named(days, t->tm_wday, 7), 3); break;
+        case 'A': puts_n(o, named(days, t->tm_wday, 7), 99); break;
         case 'b':
-        case 'h': puts_n(o, months[t->tm_mon % 12], 3); break;
-        case 'B': puts_n(o, months[t->tm_mon % 12], 99); break;
+        case 'h': puts_n(o, named(months, t->tm_mon, 12), 3); break;
+        case 'B': puts_n(o, named(months, t->tm_mon, 12), 99); break;
         case 'c': format(o, "%a %b %e %H:%M:%S %Y", 1, t); break;
         case 'C': number(o, year / 100 - (year % 100 < 0), 2, '0'); break;
         case 'd': number(o, t->tm_mday, 2, '0'); break;
