@@ -1,9 +1,9 @@
 # `agon/vdp/screen.h`
 
 Text, colour, modes, viewports, the cursor, characters, the keyboard and
-the VDP's system commands. It is part of [agon/vdp.h](agon-vdp.md),
+the VDP's system commands. It is part of [agon/vdp.h](28-agon-vdp.md),
 which is what a program includes; graphics are in
-[agon/vdp/graphics.h](agon-vdp-graphics.md).
+[agon/vdp/graphics.h](31-agon-vdp-graphics.md).
 
 Each call sends what libagon sends for the same arguments. The calls
 libagon does not have send VDP 2.16.0's commands as its own source
@@ -13,7 +13,7 @@ reads them. A byte argument passed as an `int` is sent as its low byte;
 A call that asks the VDP for something, such as the cursor's place, a
 pixel or the screen's size, is answered through MOS: the VDP sends a
 packet, MOS puts what is in it in the system variables (`sys_vars`, in
-[agon/mos.h](agon-mos.md)) and sets a bit in `sys_vars->vdp_pflags`. A
+[agon/mos.h](27-agon-mos.md)) and sets a bit in `sys_vars->vdp_pflags`. A
 `vdp_request_` call given a true `wait` clears all of `vdp_pflags`,
 sends the request, and waits until the bit for its answer is set; there
 is no time limit. Given false, it sends the request and returns at once,
@@ -112,7 +112,7 @@ page.
 VDU 17, `colour`: the text colour. `vdp_set_text_bg_colour` sends VDU
 17, `colour` + 128 (`BACKGROUND_COL_OFFSET`), the text background. The
 colour names, `BLACK` to `BRIGHT_WHITE`, are in
-[agon/vdp.h](agon-vdp.md).
+[agon/vdp.h](28-agon-vdp.md).
 
     vdp_set_text_colour(BRIGHT_YELLOW);
     vdp_set_text_bg_colour(BLUE);
@@ -146,7 +146,7 @@ low byte.
 `vdp_reset_viewports` sends VDU 26. `vdp_set_text_viewport` sends VDU
 28, `left`, `bottom`, `right`, `top`: the text viewport, its corners
 one byte each. The graphics viewport is
-[`vdp_set_graphics_viewport`](agon-vdp-graphics.md#vdp_set_graphics_viewport).
+[`vdp_set_graphics_viewport`](31-agon-vdp-graphics.md#vdp_set_graphics_viewport).
 
 ## `vdp_set_text_viewport_via_plot`, `vdp_set_graphics_viewport_via_plot`, `vdp_set_graphics_origin_via_plot`, `vdp_move_graphics_origin_and_viewport`
 
@@ -323,7 +323,7 @@ VDU 23, 0, &86: the screen's size and mode. The answer is in
 
 `vdp_request_rtc` sends VDU 23, 0, &87, 0: the clock. The answer is
 `sys_vars->rtc`, six bytes MOS keeps packed: what they mean is the
-`vdp_time_t` that `mos_unpackrtc` in [agon/mos.h](agon-mos.md) fills
+`vdp_time_t` that `mos_unpackrtc` in [agon/mos.h](27-agon-mos.md) fills
 in. Its flag is `vdp_pflag_rtc`.
 
 `vdp_set_rtc` sends VDU 23, 0, &87, 1, `year` - 1980, `month`, `day`,
@@ -422,7 +422,7 @@ until the VDP is reset.
 
 VDU 23, 0, &9B, `bufferId;`: the bytes of a buffer drawn as characters,
 none of them taken as a command. Buffers are in
-[agon/vdp/buffer.h](agon-vdp-buffer.md).
+[agon/vdp/buffer.h](33-agon-vdp-buffer.md).
 
 ## `vdp_set_variable`, `vdp_clear_variable`
 

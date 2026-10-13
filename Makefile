@@ -100,7 +100,7 @@ HAVE_REF = $(wildcard $(REF_SRC)/src/md2ref)
 doc: $(BIN)/acc.dat
 
 $(BIN)/acc.dat: $(REFDOCS) $(BIN)/md2ref $(BIN)/reftool
-	@$(BIN)/md2ref -o $@ -t acc docs/ref >/dev/null
+	@$(BIN)/md2ref -o $@ -t "Agon C Compiler API reference" docs/ref >/dev/null
 
 $(BIN)/md2ref $(BIN)/reftool &: | $(BIN)
 	@[ -d $(REF_SRC)/src/md2ref ] || { echo "no ref source at $(REF_SRC): set REF_SRC" >&2; exit 1; }

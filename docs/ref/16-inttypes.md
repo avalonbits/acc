@@ -1,7 +1,7 @@
 # `inttypes.h`
 
 The `printf` and `scanf` conversions for the types of
-[`stdint.h`](stdint.md), and functions over `intmax_t`, which is a
+[`stdint.h`](15-stdint.md), and functions over `intmax_t`, which is a
 `long long` here.
 
 The header includes `stdint.h`, so it gives all of that header's types
@@ -38,7 +38,7 @@ a negative `int8_t` or `int16_t` as a 24-bit `unsigned int`: `-1` is
 `ffffff`. Converting it to `uint8_t` or `uint16_t` first writes `ff` or
 `ffff`.
 
-See [`printf`](stdio.md#printf-fprintf-sprintf-snprintf) for the
+See [`printf`](04-stdio.md#printf-fprintf-sprintf-snprintf) for the
 conversions and lengths themselves.
 
 ## `SCNd32`, `SCNu32`, `SCNx32`, `SCNd64`, `SCNu64`, `SCNx64`, `SCNx8`
@@ -63,7 +63,7 @@ in front, for the letters `d`, `i`, `o`, `u` and `x` (C99 has no
 | 32 bits, exact, least and fast          | `l`    | `"ld"`       |
 | 64 bits, exact, least and fast, `MAX`   | `ll`   | `"lld"`      |
 
-See [`scanf`](stdio.md#scanf-fscanf-sscanf) for how each reads.
+See [`scanf`](04-stdio.md#scanf-fscanf-sscanf) for how each reads.
 
 ## `PRIdMAX`, `PRIuMAX`, `PRIxMAX`, `PRIdPTR`, `PRIuPTR`, `PRIxPTR`
 
@@ -89,7 +89,7 @@ The magnitude of `j`. `INTMAX_MIN` has no magnitude an `intmax_t` holds.
     imaxdiv_t imaxdiv(intmax_t numer, intmax_t denom);
 
 `numer / denom` in `quot` and `numer % denom` in `rem`, both at once,
-as [`lldiv`](stdlib.md#div-ldiv-lldiv-div_t-ldiv_t-lldiv_t) has them:
+as [`lldiv`](17-stdlib.md#div-ldiv-lldiv-div_t-ldiv_t-lldiv_t) has them:
 the quotient is truncated toward zero, so `rem` has `numer`'s sign. It
 is the two operators and nothing more, so `denom` must not be 0.
 
@@ -100,7 +100,7 @@ is the two operators and nothing more, so `denom` must not be 0.
 
 `strtoll` and `strtoull` under the names of `intmax_t`: they call those
 and answer what they answer. See
-[`strtol`](stdlib.md#strtol-strtoul-strtoll-strtoull) for the bases,
+[`strtol`](17-stdlib.md#strtol-strtoul-strtoll-strtoull) for the bases,
 `*end`, and `ERANGE` with `INTMAX_MIN`, `INTMAX_MAX` or `UINTMAX_MAX`
 for a number past the range.
 

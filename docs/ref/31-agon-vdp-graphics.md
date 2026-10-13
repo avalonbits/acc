@@ -1,14 +1,14 @@
 # `agon/vdp/graphics.h`
 
 The graphics colour, viewport and origin, the line style, and PLOT with
-every shape it draws. It is part of [agon/vdp.h](agon-vdp.md), which is
+every shape it draws. It is part of [agon/vdp.h](28-agon-vdp.md), which is
 what a program includes; text and the screen mode are in
-[agon/vdp/screen.h](agon-vdp-screen.md), and bitmaps in
-[agon/vdp/bitmap.h](agon-vdp-bitmap.md).
+[agon/vdp/screen.h](30-agon-vdp-screen.md), and bitmaps in
+[agon/vdp/bitmap.h](32-agon-vdp-bitmap.md).
 
 Coordinates are the VDP's: 16-bit, from the graphics origin, with y up
 unless the program has turned logical coordinates off
-([`vdp_set_pixel_coordinates`](agon-vdp-screen.md#vdp_logical_scr_dims-vdp_set_pixel_coordinates-vdp_set_logical_coordinates)).
+([`vdp_set_pixel_coordinates`](30-agon-vdp-screen.md#vdp_logical_scr_dims-vdp_set_pixel_coordinates-vdp_set_logical_coordinates)).
 `x;` is a 16-bit argument, sent low byte first.
 
 Nearly all of it is PLOT, VDU 25, a code, `x;` `y;`. The VDP keeps the
@@ -369,5 +369,5 @@ so a negative one is a very large one.
 PLOT &ED, `x;` `y;`: the current bitmap, at (`x`, `y`), in its own
 colours; mode 7 (PLOT &EF) would draw it in the pen's.
 Bitmaps are made and chosen with
-[agon/vdp/bitmap.h](agon-vdp-bitmap.md).
+[agon/vdp/bitmap.h](32-agon-vdp-bitmap.md).
 

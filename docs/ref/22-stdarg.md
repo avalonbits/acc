@@ -79,6 +79,6 @@ that the arguments can be read twice. It is an assignment, `to = from`.
     vsprintf(buf, fmt, ap);                 /* then write */
 
 A `va_list` handed to a function, such as
-[`vprintf`](stdio.md#vprintf-vfprintf-vsprintf-vsnprintf), is a copy
+[`vprintf`](04-stdio.md#vprintf-vfprintf-vsprintf-vsnprintf), is a copy
 of the pointer: what the function reads with it does not move the
 caller's.

@@ -3,7 +3,7 @@
 The buffered commands: VDU 23, 0, &A0, bufferId; command, arguments. A
 buffer is a list of blocks of bytes the VDP keeps under a 16-bit ID; it
 can hold VDU commands to call later, bitmap or sample data, or a
-matrix. A program includes [agon/vdp.h](agon-vdp.md), which includes
+matrix. A program includes [agon/vdp.h](28-agon-vdp.md), which includes
 this.
 
 The first part is libagon's, name for name, sending libagon's bytes
@@ -77,7 +77,7 @@ The command byte, after bufferId;.
 
 The VDP takes the commands from &20 to &29 only once
 `VDP_VAR_AFFINE_TRANSFORM` is set (VDU 23, 0, &F8, 1; 1;, see
-[agon/vdp/bitmap.h](agon-vdp-bitmap.md)); until then it reads the rest
+[agon/vdp/bitmap.h](32-agon-vdp-bitmap.md)); until then it reads the rest
 of the command as VDU codes.
 
 ## `vdp_adv_command`
@@ -415,7 +415,7 @@ shear is rounded to the nearest 1/256 and cut to 16 bits. libagon sends
 x's high byte where y's should be in the translation; acc sends y.
 "Skewed" is a shear, as libagon has it, not the VDP's SKEW, which takes
 angles. The matrix is used to draw by `vdp_adv_use_affine_matrix` in
-[agon/vdp/bitmap.h](agon-vdp-bitmap.md).
+[agon/vdp/bitmap.h](32-agon-vdp-bitmap.md).
 
 ## `vdp_adv_apply_transformation_with_stride`
 

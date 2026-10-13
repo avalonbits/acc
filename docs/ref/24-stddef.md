@@ -14,7 +14,7 @@ bytes, so a size and a pointer difference are both as wide as an `int`:
 The type of a size: what `sizeof` answers and what `malloc`, `strlen`
 and the other functions of sizes take and answer. It is an `unsigned
 int`, 24 bits, from 0 to 16777215 (`SIZE_MAX` in
-[`stdint.h`](stdint.md)). `printf` and `scanf` read one with `%zu`, or
+[`stdint.h`](15-stdint.md)). `printf` and `scanf` read one with `%zu`, or
 with a plain `%u`, since it is an `unsigned int` already.
 
 `stdio.h`, `stdlib.h`, `string.h` and other headers give `size_t` too,
@@ -26,7 +26,7 @@ the same type.
 
 The type of one pointer less another. It is an `int`, 24 bits, from
 -8388608 to 8388607 (`PTRDIFF_MIN` and `PTRDIFF_MAX` in
-[`stdint.h`](stdint.md)). `%td` reads one, as does a plain `%d`.
+[`stdint.h`](15-stdint.md)). `%td` reads one, as does a plain `%d`.
 
 ## `wchar_t`
 
@@ -34,7 +34,7 @@ The type of one pointer less another. It is an `int`, 24 bits, from
 
 A wide character, as agondev has it: 16 bits, signed. It is what `L'x'`
 is and what an `L"..."` string is an array of. Its limits, `WCHAR_MIN`
-of -32768 and `WCHAR_MAX` of 32767, are in [`stdint.h`](stdint.md) and
+of -32768 and `WCHAR_MAX` of 32767, are in [`stdint.h`](15-stdint.md) and
 `wchar.h`.
 
 Sixteen bits holds the characters UTF-8 writes in one, two or three
@@ -46,7 +46,7 @@ bytes, up to U+FFFF, and no further; a character past that has no
     #define NULL ((void *) 0)
 
 The null pointer constant. `stdio.h`, `stdlib.h`, `string.h`,
-[`stdint.h`](stdint.md) and others define it the same way, each only
+[`stdint.h`](15-stdint.md) and others define it the same way, each only
 when it is not defined yet.
 
 ## `offsetof`
