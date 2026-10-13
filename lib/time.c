@@ -64,6 +64,8 @@ static long long carry(long long *x, long long n)
     return q;
 }
 
+static void break_down(time_t when, struct tm *out);
+
 /* The fields put back in range -- 61 seconds is a minute and a second,
  * month 14 is February of the next year -- and the time they come to. */
 time_t mktime(struct tm *t)
@@ -79,27 +81,28 @@ time_t mktime(struct tm *t)
 
     {
         time_t when = days * 86400 + hour * 3600 + min * 60 + sec;
-        struct tm *n = gmtime(&when);
 
-        *t = *n;
+        break_down(when, t);
 
         return when;
     }
 }
 
-static struct tm broken;
-
-struct tm *gmtime(const time_t *tp)
+/* The time `when` broken down into `out`: what gmtime answers, and what
+ * mktime writes back over its argument -- straight there, so that the
+ * struct gmtime last answered is not written over by mktime, which C99
+ * 7.23.3 does not let it touch. */
+static void break_down(time_t when, struct tm *out)
 {
-    long long z = *tp, secs, era, y;
+    long long z = when, secs, era, y;
     int doe, yoe, doy, mp, d, m;
 
     secs = z;
     z = carry(&secs, 86400);
-    broken.tm_hour = (int) (secs / 3600);
-    broken.tm_min = (int) (secs / 60 % 60);
-    broken.tm_sec = (int) (secs % 60);
-    broken.tm_wday = (int) ((z % 7 + 11) % 7);  /* 1970-01-01 was a Thursday */
+    out->tm_hour = (int) (secs / 3600);
+    out->tm_min = (int) (secs / 60 % 60);
+    out->tm_sec = (int) (secs % 60);
+    out->tm_wday = (int) ((z % 7 + 11) % 7);  /* 1970-01-01 was a Thursday */
 
     z += 719468;
     era = (z >= 0 ? z : z - 146096) / 146097;
@@ -112,11 +115,18 @@ struct tm *gmtime(const time_t *tp)
     m = mp < 10 ? mp + 3 : mp - 9;
     y += m <= 2;
 
-    broken.tm_year = (int) (y - 1900);
-    broken.tm_mon = m - 1;
-    broken.tm_mday = d;
-    broken.tm_yday = (int) (days_from_civil(y, m, d) - days_from_civil(y, 1, 1));
-    broken.tm_isdst = 0;
+    out->tm_year = (int) (y - 1900);
+    out->tm_mon = m - 1;
+    out->tm_mday = d;
+    out->tm_yday = (int) (days_from_civil(y, m, d) - days_from_civil(y, 1, 1));
+    out->tm_isdst = 0;
+}
+
+struct tm *gmtime(const time_t *tp)
+{
+    static struct tm broken;
+
+    break_down(*tp, &broken);
 
     return &broken;
 }

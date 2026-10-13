@@ -4,6 +4,7 @@
  * Copyright (C) 2026 Igor Cananea <icc@avalonbits.com>
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
+#include <errno.h>
 #include <signal.h>
 #include <stdlib.h>
 
@@ -21,8 +22,13 @@ void (*signal(int sig, void (*func)(int)))(int)
 {
     void (*old)(int);
 
-    if (sig <= 0 || sig > 15)
+    /* C99 7.14.1.1: a request that cannot be honoured answers SIG_ERR and
+     * puts a positive value in errno; glibc's is EINVAL. */
+    if (sig <= 0 || sig > 15) {
+        errno = EINVAL;
+
         return SIG_ERR;
+    }
     old = handlers[sig];
     handlers[sig] = func;
     __acc_raise = raise;
@@ -38,8 +44,11 @@ int raise(int sig)
 {
     void (*handler)(int);
 
-    if (sig <= 0 || sig > 15)
+    if (sig <= 0 || sig > 15) {
+        errno = EINVAL;
+
         return -1;
+    }
     handler = handlers[sig];
     if (handler == SIG_IGN)
         return 0;

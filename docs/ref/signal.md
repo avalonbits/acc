@@ -38,15 +38,15 @@ Set what happens when `sig` is raised, and answer what was set before:
 - `SIG_IGN` ignores the signal.
 - A function is called with the signal's number, as its handler.
 
-A `sig` that is not 1 to 15 answers `SIG_ERR` and changes nothing.
-`errno` is not set.
+A `sig` that is not 1 to 15 answers `SIG_ERR`, changes nothing, and
+puts `EINVAL` in `errno`.
 
 ## `raise`
 
     int raise(int sig);
 
 Raise `sig` in the program, now, and answer 0 once it is dealt with;
-a `sig` that is not 1 to 15 answers -1.
+a `sig` that is not 1 to 15 answers -1 and puts `EINVAL` in `errno`.
 
 A handler is called with `sig` after the signal has been put back to
 `SIG_DFL`, so a handler that raises its own signal ends the program

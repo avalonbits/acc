@@ -111,8 +111,8 @@ range, `tm_wday` and `tm_yday` filled in, and `tm_isdst` 0.
 
 It never answers -1 for an error: every `struct tm` is some time.
 
-`mktime` works through `gmtime`, so it writes over the `struct tm` that
-`gmtime` and `localtime` answer.
+`mktime` writes only `*t`: the `struct tm` that `gmtime` and
+`localtime` last answered is left as it was.
 
 ## `gmtime`, `localtime`
 
@@ -205,9 +205,8 @@ after a `%` is written as it stands, with the `%`; a `%` at the end of
 `fmt` writes nothing.
 
 The fields are read as they are, not put in range first: pass a `struct
-tm` that `gmtime` or `mktime` filled in. The names of weekdays and
-months are taken from `tm_wday` and `tm_mon` modulo 7 and 12, so they
-must not be negative.
+tm` that `gmtime` or `mktime` filled in. A `tm_wday` or `tm_mon` out of
+range has the name `?`, as glibc writes it.
 
 The answer is the number of characters written, not counting the
 terminator that follows them. When they and the
