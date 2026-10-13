@@ -201,6 +201,31 @@ int main(void)
         show("", ws);
         bytes(" narrow", nb, strlen(nb));
         printf("swscanf eof %d\n", swscanf(L"", L"%d", &a));
+
+        /* Without an l, %s stores bytes, a wide input's as UTF-8. */
+        {
+            char one[16], two[16];
+
+            n = swscanf(L"w\u00f6rd \u20acx", L"%s %s", one, two);
+            printf("swscanf plain %d", n);
+            bytes("", one, strlen(one));
+            bytes(" and", two, strlen(two));
+        }
+
+        /* A set takes characters past 255, and so does one turned over. */
+        n = swscanf(L"\u20ac\u20aca", L"%l[\u20ac]", ws);
+        printf("swscanf set %d", n);
+        show("", ws);
+        n = swscanf(L"\u20ac\u0101a", L"%l[^a]", ws);
+        printf("swscanf not set %d", n);
+        show("", ws);
+
+        /* Bytes that are not UTF-8 in a %s: an encoding error. */
+        errno = 0;
+        n = swprintf(w, 64, L"[%s]", "a\xffz");
+        printf("swprintf bad bytes %d errno %d", n < 0, errno == EILSEQ);
+        n = swprintf(w, 64, L"[%.1s]", "a\xffz");
+        printf(" before them %d\n", n);
     }
 
     /* A file, written wide and read back both ways. */

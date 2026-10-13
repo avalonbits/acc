@@ -12,6 +12,7 @@
  * time, and its characters come back here to be written wide. The two can
  * then never disagree about how a number is written.
  */
+#include <errno.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -91,7 +92,7 @@ static char *decimal(char *p, int v)
 
 /* The characters of a narrow string as wide ones: up to `max` of them, or
  * all when max is negative, into `put` when `emit` is set. Answers how
- * many there are. */
+ * many there are, or -1 at bytes that are not UTF-8 before then. */
 static int narrow_string(const char *s, int max, int emit)
 {
     mbstate_t st = { 0, 0, 0 };
@@ -102,7 +103,7 @@ static int narrow_string(const char *s, int max, int emit)
     while (*s && (max < 0 || n < max)) {
         r = mbrtowc(&wc, s, 3, &st);
         if (r == (size_t) -1 || r == (size_t) -2)
-            break;
+            return -1;
         if (emit)
             put(wc);
         s += r;
@@ -236,6 +237,13 @@ static int wformat(const wchar_t *fmt, va_list ap)
                 if (!s)
                     s = "(null)";
                 n = narrow_string(s, prec, 0);
+                if (n < 0) {
+                    /* An encoding error, which C99 7.24.2.1 answers with
+                     * a negative number, and glibc with EILSEQ. */
+                    errno = EILSEQ;
+                    out->bad = 1;
+                    break;
+                }
                 if (!left)
                     pad(width - n);
                 narrow_string(s, prec, 1);

@@ -586,8 +586,9 @@ index and the length come back through their pointers; `index` may be
 The length comes back through `length`.
 
 `mos_getabsolutepath` (call 0x3C) writes `path` made absolute into
-`resolved`: `path` in HL, `resolved` in IX, `*length` in DE. It does
-not write the length back.
+`resolved`: `path` in HL, `resolved` in IX, `*length` in DE. MOS 3 does
+not work the length out yet and hands back what it was given, so
+`*length` is left as it was.
 
 ## `mos_getleafname`, `mos_isdirectory`
 
