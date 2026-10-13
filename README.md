@@ -141,7 +141,7 @@ is left between them -- and acc says so if a program will not fit.
 `acc -v` prints the version:
 
     */ acc -v
-    acc 0.4.0 (build 6031230)
+    acc 0.5.0 (build 3886519)
 
 Every compile and link ends by printing the time it took, as
 `Done in 0.04 seconds`; the examples leave that line out. An error prints
@@ -232,12 +232,12 @@ size or time over agondev's:
 
 | | code | whole image | time to run |
 | --- | --- | --- | --- |
-| the benchmark programs, mean | 1.31 | 1.00 | 1.04 |
-| acc itself | 1.20 | 1.21 | 1.02 |
-| vi, the editor | 1.05 | 1.19 | 0.89 |
-| AED, the editor | 1.36 | | 0.89 |
-| zap, the assembler | 1.14 | 1.13 | 1.43 |
-| ez80asm, the assembler | 1.25 | | 1.38 |
+| the benchmark programs, mean | 1.20 | 0.97 | 1.03 |
+| acc itself | 1.15 | 1.17 | 1.02 |
+| vi, the editor | 1.01 | 1.15 | 0.89 |
+| AED, the editor | 1.27 | | 0.87 |
+| zap, the assembler | 1.07 | 1.07 | 1.42 |
+| ez80asm, the assembler | 1.20 | | 1.35 |
 
 `test/size.sh`, `test/perf.sh` and `test/apps.sh` produce these tables;
 each program's figures are in [docs/performance.md](docs/performance.md).
@@ -268,7 +268,7 @@ The Agon build needs [AgonDev](https://github.com/AgonPlatform/agondev) in
 `~/agondev` (or `AGONDEV=<dir>`):
 
     make -f Makefile.agon       # bin/acc.bin
-    ./mkrelease.sh 0.4.0        # acc-0.4.0.zip, the SD card layout
+    ./mkrelease.sh 0.5.0        # acc-0.5.0.zip, the SD card layout
 
 `make test` runs every program it compiles on
 [fab-agon-emulator](https://github.com/tomm/fab-agon-emulator), and checks

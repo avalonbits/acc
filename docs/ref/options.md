@@ -115,7 +115,7 @@ MOS's 255 characters, such as a link of many objects.
 
 ## `-v`, `--version`
 
-Print the version and the build, and stop: `acc 0.4.0 (build 6031230)`.
+Print the version and the build, and stop: `acc 0.5.0 (build 3886519)`.
 
 ## `-h`, `--help`
 
