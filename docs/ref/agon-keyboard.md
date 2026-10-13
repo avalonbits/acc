@@ -76,6 +76,8 @@ packet goes in as usual.
 End the buffer: tell MOS to call no handler (`mos_setkbvector` with
 `NULL`), and free the ring. It does nothing when no buffer was started.
 
-Nothing ends the buffer for the program: neither `exit` nor returning
-from `main` calls `kbuf_deinit`. The handler is in the program, so a
-program that starts one ends it before it ends.
+The end of the program ends a buffer still running, however the
+program ends: returning from `main`, `exit`, `_Exit` or `abort`. MOS
+would otherwise go on calling the handler, which was in the program,
+after the program had gone. A program needs `kbuf_deinit` only to stop
+taking keys before it ends.

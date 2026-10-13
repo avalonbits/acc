@@ -27,6 +27,9 @@ unsigned char *acc_rt_kbuf_state(void);
 
 static uint8_t *ring;
 
+extern void (*__acc_release)(void);
+void __acc_exit_arm(void);
+
 void kbuf_init(uint8_t buf_len)
 {
     volatile uint8_t *s = acc_rt_kbuf_state();
@@ -42,6 +45,11 @@ void kbuf_init(uint8_t buf_len)
     s[KB_END] = 0;
     memcpy((void *) (s + KB_RING), &ring, 3);
     mos_setkbvector(acc_rt_kbuf_handler, 0);
+
+    /* MOS calls the handler until it is told not to, after the program has
+     * gone too: the end of the program tells it, however it ends. */
+    __acc_release = kbuf_deinit;
+    __acc_exit_arm();
 }
 
 void kbuf_deinit(void)

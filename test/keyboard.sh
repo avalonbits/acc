@@ -13,7 +13,11 @@
 #   - typed twice into a buffer of four, read out in between, the second
 #     round's first four come out too: reading goes round the end of the
 #     ring and back to its start;
-#   - emptied with kbuf_clear before it is read, it gives nothing.
+#   - emptied with kbuf_clear before it is read, it gives nothing;
+#   - left running when main returns, or when the program ends by _Exit,
+#     the buffer is ended by the end of the program: test/keyboard/after.c, run next, writes over the memory the
+#     first program had and waits for keys, which a handler MOS still held
+#     would take into those bytes, so that it never says GOT.
 #
 # A kbuf that reads the system variables instead of being called on each
 # packet sees only the last of them, and fails both.
@@ -34,16 +38,23 @@ AGONDEV=${AGONDEV:-$HOME/agondev}
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 bin/acc test/keyboard/kbuf.c -I include bin/libc.a -o "$tmp/acc.bin" >/dev/null \
     || { echo "  FAIL keyboard: kbuf.c does not compile"; exit 1; }
+bin/acc test/keyboard/after.c -I include bin/libc.a -o "$tmp/after.bin" >/dev/null \
+    || { echo "  FAIL keyboard: after.c does not compile"; exit 1; }
 fail=0
 
-# run <program> <args>: its GOT lines, one to a round, with "abc" typed
-# each time it says READY -- once the buffer is there to take the keys.
+# run <program> <args> [<next>]: its GOT lines, one to a round, with "abc"
+# typed each time it says READY -- once the buffer is there to take the
+# keys. With <next>, that program is run after it, and its lines too.
 run() {
     local sd fifo cap hold emu typed=0
 
     sd=$(emu_card); fifo=$(mktemp -u); cap=$(mktemp)
     cp "$1" "$sd/bin/kbuf.bin"
     printf 'kbuf %s\r\n' "$2" > "$sd/autoexec.txt"
+    if [ -n "${3:-}" ]; then
+        cp "$3" "$sd/bin/after.bin"
+        printf 'after\r\n' >> "$sd/autoexec.txt"
+    fi
     mkfifo "$fifo"
     tail -f /dev/null > "$fifo" & hold=$!
     (cd "$EMU" && exec timeout 60 ./agon-cli-emulator --sdcard "$sd" \
@@ -62,10 +73,10 @@ run() {
     rm -rf "$sd" "$fifo" "$cap"
 }
 
-check() {      # check <who> <program> <args> <what is wanted> <what it is>
+check() {      # check <who> <program> <args> <wanted> <what it is> [<next>]
     local got
 
-    got=$(run "$2" "$3")
+    got=$(run "$2" "$3" "${6:-}")
     if [ "$got" = "$4" ]; then
         echo "  ok   $1, $5: $4"
     else
@@ -99,5 +110,9 @@ if [ -x "$AGONDEV/bin/ez80-none-elf-clang" ]; then
 fi
 
 cases acc "$tmp/acc.bin"
+check acc "$tmp/acc.bin" '16 0 0 leave' 'alive' 'left running at the end' \
+    "$tmp/after.bin"
+check acc "$tmp/acc.bin" '16 0 0 _Exit' 'alive' 'left running at _Exit' \
+    "$tmp/after.bin"
 
 exit $fail

@@ -6,9 +6,15 @@
  * then <rounds> times says READY, waits without polling until MOS has
  * counted <packets> more key packets, and prints every event the buffer
  * then gives, as <ascii in hex><d or u>. With `clear`, it empties the buffer
- * before reading it. test/keyboard.sh types the keys. */
+ * before reading it. test/keyboard.sh types the keys.
+ *
+ * `kbuf <length> 0 0 leave` starts the buffer and returns from main without
+ * kbuf_deinit, which the end of the program has to do for it; `_Exit` in
+ * place of `leave` ends it with _Exit, which skips the atexit functions and
+ * has to do it all the same. */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <agon/keyboard.h>
 #include <agon/mos.h>
 
@@ -25,6 +31,10 @@ int main(int argc, char **argv)
     rounds = atoi(argv[3]);
 
     kbuf_init((uint8_t) atoi(argv[1]));
+    if (argc > 4 && !strcmp(argv[4], "leave"))
+        return 0;
+    if (argc > 4 && !strcmp(argv[4], "_Exit"))
+        _Exit(0);
     while (rounds-- > 0) {
         start = v[sysvar_vkeycount];
         printf("READY\r\n");
