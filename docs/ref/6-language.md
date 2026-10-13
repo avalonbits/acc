@@ -1,4 +1,8 @@
-# `stddef.h`
+# Language headers
+
+The headers that give the language its names: `size_t`, `NULL`, `offsetof`, `bool`, and operators spelled as words.
+
+## `stddef.h`
 
 The common definitions: the types of a size, of a difference between
 pointers and of a wide character, the null pointer, and `offsetof`.
@@ -7,49 +11,49 @@ An eZ80 in ADL mode addresses three bytes, and acc's `int` is three
 bytes, so a size and a pointer difference are both as wide as an `int`:
 24 bits.
 
-## `size_t`
+### `size_t`
 
     typedef unsigned int size_t;
 
 The type of a size: what `sizeof` answers and what `malloc`, `strlen`
 and the other functions of sizes take and answer. It is an `unsigned
 int`, 24 bits, from 0 to 16777215 (`SIZE_MAX` in
-[`stdint.h`](15-stdint.md)). `printf` and `scanf` read one with `%zu`, or
+[`stdint.h`](4-numbers.md#stdinth)). `printf` and `scanf` read one with `%zu`, or
 with a plain `%u`, since it is an `unsigned int` already.
 
 `stdio.h`, `stdlib.h`, `string.h` and other headers give `size_t` too,
 the same type.
 
-## `ptrdiff_t`
+### `ptrdiff_t`
 
     typedef int ptrdiff_t;
 
 The type of one pointer less another. It is an `int`, 24 bits, from
 -8388608 to 8388607 (`PTRDIFF_MIN` and `PTRDIFF_MAX` in
-[`stdint.h`](15-stdint.md)). `%td` reads one, as does a plain `%d`.
+[`stdint.h`](4-numbers.md#stdinth)). `%td` reads one, as does a plain `%d`.
 
-## `wchar_t`
+### `wchar_t`
 
     typedef short wchar_t;
 
 A wide character, as agondev has it: 16 bits, signed. It is what `L'x'`
 is and what an `L"..."` string is an array of. Its limits, `WCHAR_MIN`
-of -32768 and `WCHAR_MAX` of 32767, are in [`stdint.h`](15-stdint.md) and
+of -32768 and `WCHAR_MAX` of 32767, are in [`stdint.h`](4-numbers.md#stdinth) and
 `wchar.h`.
 
 Sixteen bits holds the characters UTF-8 writes in one, two or three
 bytes, up to U+FFFF, and no further; a character past that has no
 `wchar_t`.
 
-## `NULL`
+### `NULL`
 
     #define NULL ((void *) 0)
 
 The null pointer constant. `stdio.h`, `stdlib.h`, `string.h`,
-[`stdint.h`](15-stdint.md) and others define it the same way, each only
+[`stdint.h`](4-numbers.md#stdinth) and others define it the same way, each only
 when it is not defined yet.
 
-## `offsetof`
+### `offsetof`
 
     #define offsetof(type, member) __builtin_offsetof(type, member)
 
@@ -75,3 +79,68 @@ starts where the one before it ends.
     offsetof(struct s, l)                   /* 1 */
 
 A `type` that is not a struct or a union is an error.
+
+## `stdbool.h`
+
+The boolean type and its two values, by name. The header is four macros
+and nothing else.
+
+### `bool`
+
+    #define bool _Bool
+
+`_Bool` is the compiler's own type, one byte, that holds only 0 or 1:
+any value stored in it that is not 0 (an integer, a float or a pointer)
+is stored as 1.
+
+    bool found = strchr(s, ':');        /* 1 when there is a ':' */
+
+### `true`, `false`
+
+    #define true  1
+    #define false 0
+
+Plain `int` constants, as C99 has them, so they can be used in `#if`.
+
+### `__bool_true_false_are_defined`
+
+    #define __bool_true_false_are_defined 1
+
+Says that the three names above are defined.
+
+## `iso646.h`
+
+The operators spelled as words, for keyboards and character sets that
+lack the punctuation. Each is a macro for the operator, and nothing
+else. C99 names eleven, and acc has all of them.
+
+### `and`, `or`, `not`, `not_eq`
+
+    #define and     &&
+    #define or      ||
+    #define not     !
+    #define not_eq  !=
+
+The logical operators, and not-equal.
+
+    if (ready and not failed)
+        start();
+
+### `bitand`, `bitor`, `xor`, `compl`
+
+    #define bitand  &
+    #define bitor   |
+    #define xor     ^
+    #define compl   ~
+
+The bitwise operators.
+
+### `and_eq`, `or_eq`, `xor_eq`
+
+    #define and_eq  &=
+    #define or_eq   |=
+    #define xor_eq  ^=
+
+The bitwise assignments.
+
+    flags or_eq FLAG_DONE;

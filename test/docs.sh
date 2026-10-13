@@ -1,15 +1,14 @@
 #!/bin/bash
 # The reference, docs/ref/*.md, made into bin/acc.dat for ref (make doc):
-# every function a documented header declares is a key ref finds, so that
-# `ref acc <name>` never comes back empty for a name the library has; so is
-# every option `acc -h` lists; and the contents page, index.md, links every
-# page.
+# every header acc ships has a section of its own, and every function it
+# declares is a key ref finds, so that `ref acc <name>` never comes back
+# empty for a name the library has; so is every option `acc -h` lists.
 #
-# A page whose title is a header's name, `# `string.h`` for
-# include/string.h, documents that header. Its functions are found by
-# reading the header's declarations, so a function added to a header
-# without a heading of its own in the page is a failure here. A page with
-# any other title, such as options.md, is about acc itself.
+# The book is a few pages, each a group -- `# Numbers` -- of sections, as
+# ref's other books are shelved: a header's section is its name,
+# `## `math.h``, and its functions are found by reading the header's
+# declarations, so a function added to a header without a heading of its
+# own is a failure here, and so is a header with no section.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -63,42 +62,44 @@ for decl in text.split(';'):
 PY
 }
 
-for page in "$DOCS"/*.md; do
-    [ "$page" = "$DOCS/index.md" ] && continue
-    base=$(basename "$page")
-    if grep -q "]($base)" "$DOCS/index.md"; then
+# Every header under include/ has a section, `## `name.h``, and each
+# section is a header there: what acc ships and what the book covers.
+shipped=$(cd include && find . -name '*.h' | sed 's|^\./||' | sort)
+covered=$(sed -n 's/^## `\(.*\.h\)`$/\1/p' "$DOCS"/*.md | sort)
+for header in $shipped; do
+    if grep -qx "$header" <<<"$covered"; then
         ok
     else
-        bad "index.md links $base" "no link to it"
+        bad "$header has a section" "none in $DOCS"
     fi
-
-    header=$(sed -n '1s/^# `\(.*\)`$/\1/p' "$page")
-    [ -n "$header" ] || continue        # about acc, not a header
-    if [ ! -f "include/$header" ]; then
-        bad "$base names a header" "include/$header is not there"
+done
+for header in $covered; do
+    if [ -f "include/$header" ]; then
+        ok
+    else
+        bad "$header is a header" "include/$header is not there"
         continue
     fi
-
     names=$(functions "include/$header")
     [ -n "$names" ] || continue         # macros and types alone
     keys "$header" "$names"
 done
 
-# The book's title, and its pages in the order index.md lists them, which
-# is the order md2ref reads them in: index.md first, then by name, so the
-# names begin with their place.
+# Each page is one group: one level-1 heading, its first line, which md2ref
+# makes the page's top; a second would be a page of its own in the
+# contents. And the book's title.
+for page in "$DOCS"/*.md; do
+    if [ "$(grep -c '^# ' "$page")" = 1 ] && head -1 "$page" | grep -q '^# '; then
+        ok
+    else
+        bad "$(basename "$page") is one group" "its level-1 headings: $(grep -c '^# ' "$page")"
+    fi
+done
 title=$("$REFTOOL" "$DAT" info | sed -n 's/^title //p')
 if [ "$title" = "Agon C Compiler API reference" ]; then
     ok
 else
     bad "the book's title" "it is: $title"
-fi
-listed=$(grep -o '](0*[0-9]*-[^)#]*\.md)' "$DOCS/index.md" | tr -d '()]' | awk '!seen[$0]++')
-named=$(cd "$DOCS" && ls [0-9]*.md)
-if [ "$listed" = "$named" ]; then
-    ok
-else
-    bad "pages in index.md's order" "$(diff <(echo "$listed") <(echo "$named") | head -3 | tr '\n' ' ')"
 fi
 
 # The options, as the usage acc prints names them: the word an option line
