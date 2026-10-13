@@ -16,7 +16,8 @@
  * leaves it out, as it does every member nothing asks for. gcc's pr54937
  * takes exit's address this way.
  *
- * _Exit is here too, since it is exit with the exit hook taken away.
+ * _Exit is here too, since it is exit with the exit hook taken away -- all
+ * but the release below.
  */
 #include <stdlib.h>
 
@@ -25,17 +26,25 @@ void exit(int status)
     exit(status);
 }
 
+/* What has to be given back to MOS however the program ends, or NULL: a
+ * key handler kbuf_init gave MOS (keyboard.c), which MOS would otherwise go
+ * on calling into whatever is loaded where the program was. The exit hook
+ * runs it after the files are closed (atexit.c), and _Exit runs it too. */
+void (*__acc_release)(void);
+
 /* The end without the exit hook: no atexit functions and no files closed,
  * which is what C99 7.20.4.4 says _Exit skips. The hook is pointed at a
- * function that does nothing, and then this is exit. */
+ * function that does only the release, and then this is exit. */
 extern void (*__acc_exit_hook)(void);
 
-static void nothing(void)
+static void released(void)
 {
+    if (__acc_release)
+        __acc_release();
 }
 
 void _Exit(int status)
 {
-    __acc_exit_hook = nothing;
+    __acc_exit_hook = released;
     exit(status);
 }

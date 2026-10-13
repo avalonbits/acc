@@ -7,8 +7,9 @@
  * The startup stub calls through a cell named __acc_exit_hook on the way
  * out, whether main returned or exit sent it back -- see src/rt/startup.s.
  * It starts pointing at a `ret`. atexit points it at at_exit below, which
- * runs the registered functions last first, as C99 7.20.4.3 says, and then
- * has the file layer flush and close every file still open. The file layer
+ * runs the registered functions last first, as C99 7.20.4.3 says, then
+ * has the file layer flush and close every file still open, and last gives
+ * MOS back what the program took from it (__acc_release, in exit.c). The file layer
  * arms it the same way when it opens one, so a program that writes a file
  * and never closes it still finds it complete on the card.
  *
@@ -21,6 +22,8 @@ extern void (*__acc_exit_hook)(void);
 /* The file layer's, set when it opens a file; see file.c. */
 void (*__acc_close_files)(void);
 
+extern void (*__acc_release)(void);
+
 #define ATEXIT_MAX 32           /* C99 asks for at least 32 */
 
 static void (*handlers[ATEXIT_MAX])(void);
@@ -32,6 +35,8 @@ static void at_exit(void)
         handlers[--count]();
     if (__acc_close_files)
         __acc_close_files();
+    if (__acc_release)
+        __acc_release();
 }
 
 /* That something wants the end of the program to run at_exit. */
