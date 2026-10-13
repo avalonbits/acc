@@ -117,8 +117,10 @@ void rt_insert(int index, int which, int at)
         if (!rt_fixups)
             acc_error("out of memory for the runtime fixups");
     }
-    memmove(rt_fixups + index + 1, rt_fixups + index,
-            (size_t) (nrt_fixups - index) * sizeof *rt_fixups);
+    /* rt_call's, nearly every one, goes on the end, with nothing to move. */
+    if (index != nrt_fixups)
+        memmove(rt_fixups + index + 1, rt_fixups + index,
+                (size_t) (nrt_fixups - index) * sizeof *rt_fixups);
     rt_fixups[index].which = (unsigned char) which;
     rt_fixups[index].at = at;
     nrt_fixups++;
