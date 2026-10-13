@@ -115,7 +115,7 @@ double sin(double x)
     double r;
     int q;
 
-    if (isnan(x)) return x;
+    if (isnan(x) || x == 0.0f) return x;     /* -0 is -0 */
     if (isinf(x)) return __acc_domain_error();
     q = reduce(x, &r);
     switch (q) {
@@ -147,7 +147,7 @@ double tan(double x)
     double r, s, c;
     int q;
 
-    if (isnan(x)) return x;
+    if (isnan(x) || x == 0.0f) return x;     /* -0 is -0 */
     if (isinf(x)) return __acc_domain_error();
     q = reduce(x, &r);
     s = sin_poly(r);

@@ -169,6 +169,18 @@ double pow(double x, double y)
         }
     }
 
+    /* An infinite y, C99 F.9.4.4: 1 for x of 1 or -1, and otherwise 0 or
+     * infinity by whether |x| is below 1 and which infinity y is. The
+     * general path below would take infinity from infinity. */
+    if ((uy & 0x7fffffffu) == 0x7f800000u) {
+        uint32_t ax = ux & 0x7fffffffu;
+
+        if (ax == 0x3f800000u)
+            return 1.0f;
+
+        return (ax < 0x3f800000u) == ((uy & 0x80000000u) == 0) ? 0.0f : HUGE_VAL;
+    }
+
     if (x == 0.0f) {
         if (y > 0.0f)
             return odd_int ? x : 0.0f;
@@ -177,7 +189,8 @@ double pow(double x, double y)
     }
     if ((ux & 0x7fffffffu) == 0x7f800000u)
         return (ux & 0x80000000u) == 0 ? (y > 0.0f ? x : 0.0f)
-                                       : (y > 0.0f ? (odd_int ? x : -x) : 0.0f);
+                                       : (y > 0.0f ? (odd_int ? x : -x)
+                                                   : (odd_int ? -0.0f : 0.0f));
     if (x < 0.0f) {
         double v;
 

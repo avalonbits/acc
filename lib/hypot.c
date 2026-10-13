@@ -66,6 +66,9 @@ double hypot(double x, double y)
     double a = x < 0.0f ? -x : x, b = y < 0.0f ? -y : y, t;
     int e;
 
+    /* An infinity first, NaN or not on the other side (C99 F.9.4.3). */
+    if (isinf(x) || isinf(y)) return HUGE_VAL;
+    if (isnan(x) || isnan(y)) return x + y;
     if (a < b) { t = a; a = b; b = t; }
     if (b == 0.0f) return a;
     if ((bits(a) & 0x7fffffffu) >= 0x7f800000u) return a;

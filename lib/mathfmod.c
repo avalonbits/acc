@@ -122,6 +122,9 @@ double remainder(double x, double y)
 
 double fdim(double x, double y)
 {
+    if (isnan(x) || isnan(y))
+        return x + y;                   /* a NaN, as C99 F.9.9.1 has it */
+
     return x > y ? x - y : 0.0f;
 }
 

@@ -130,6 +130,8 @@ double exp2(double x)
 /* exp(x)-1, likewise: for small x the 1 would take the answer's digits. */
 double expm1(double x)
 {
+    if (x == 0.0f)
+        return x;                       /* -0 is -0 */
     if (x > -0.25f && x < 0.25f) {
         double p = EXP_P4;
 

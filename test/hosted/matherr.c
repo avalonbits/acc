@@ -62,7 +62,20 @@ int main(void)
     TWO(powf, 2.0f, 128.0f); TWO(powf, nan, 0.0f); TWO(powf, 1.0f, nan);
     TWO(fmodf, 1.0f, 0.0f); TWO(fmodf, inf, 1.0f); TWO(fmodf, nan, 1.0f);
     TWO(remainderf, 1.0f, 0.0f); TWO(remainderf, inf, 2.0f);
-    TWO(hypotf, big, big); TWO(hypotf, inf, nan);
+    TWO(hypotf, big, big); TWO(hypotf, inf, nan); TWO(hypotf, nan, inf);
+    TWO(hypotf, nan, -inf); TWO(hypotf, nan, 1.0f);
+
+    /* An infinite power, and -0 kept where C99 keeps it. */
+    TWO(powf, 2.0f, inf); TWO(powf, 0.5f, inf); TWO(powf, -2.0f, inf);
+    TWO(powf, 2.0f, -inf); TWO(powf, 0.5f, -inf); TWO(powf, -1.0f, inf);
+    TWO(powf, -1.0f, -inf); TWO(powf, 0.0f, -inf); TWO(powf, 0.0f, inf);
+    TWO(powf, -inf, -3.0f); TWO(powf, -inf, -2.0f);
+    TWO(atan2f, nan, 0.0f); TWO(atan2f, 0.0f, nan); TWO(atan2f, inf, inf);
+    TWO(atan2f, -inf, inf); TWO(atan2f, inf, -inf); TWO(atan2f, -inf, -inf);
+    TWO(atan2f, -0.0f, -inf); TWO(atan2f, -0.0f, -1.0f);
+    TWO(fdimf, nan, 1.0f); TWO(fdimf, 1.0f, nan);
+    ONE(sinf, -0.0f); ONE(tanf, -0.0f); ONE(atanf, -0.0f); ONE(sinhf, -0.0f);
+    ONE(tanhf, -0.0f); ONE(expm1f, -0.0f); ONE(atanhf, -0.0f);
     INT(ldexpf, big, 10); INT(scalbnf, 1.0f, 200);
     TWO(nextafterf, 0x1.fffffep127f, inf);
     va = big;
