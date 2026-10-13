@@ -2,7 +2,7 @@
 
 How to compile a program, build one from several files, make a library,
 and read what acc says when something is wrong. The options are listed one
-by one in [acc's options](02-options.md).
+by one in [acc's options](options.md).
 
 ## Installing
 

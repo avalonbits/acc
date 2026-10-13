@@ -1,15 +1,15 @@
 #!/bin/bash
 # The reference, docs/ref/*.md, made into bin/acc.dat for ref (make doc):
-# every function a documented header declares is a key ref finds, so that
-# `ref acc <name>` never comes back empty for a name the library has; so is
-# every option `acc -h` lists; and the contents page, index.md, links every
-# page.
+# every header acc ships has a section of its own, and every function it
+# declares is a key ref finds, so that `ref acc <name>` never comes back
+# empty for a name the library has; so is every option `acc -h` lists.
 #
-# A page whose title is a header's name, `# `string.h`` for
-# include/string.h, documents that header. Its functions are found by
-# reading the header's declarations, so a function added to a header
-# without a heading of its own in the page is a failure here. A page with
-# any other title, such as options.md, is about acc itself.
+# A page documents a header when its title is the header's name,
+# `# `math.h``, and its functions are found by reading the header's
+# declarations, so a function added to a header without a heading of its
+# own is a failure here, and so is a header with no page. The pages are
+# shelved in groups by the menu beside them, docs/ref/mkdocs.yml, as ref's
+# other books are; every page has to be in it.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -63,42 +63,44 @@ for decl in text.split(';'):
 PY
 }
 
-for page in "$DOCS"/*.md; do
-    [ "$page" = "$DOCS/index.md" ] && continue
-    base=$(basename "$page")
-    if grep -q "]($base)" "$DOCS/index.md"; then
+# Every header under include/ has a page, `# `name.h``, and each such page
+# is a header there: what acc ships and what the book covers.
+shipped=$(cd include && find . -name '*.h' | sed 's|^\./||' | sort)
+covered=$(awk 'FNR == 1 && /^# `.*\.h`$/ { gsub(/^# `|`$/, ""); print }' "$DOCS"/*.md | sort)
+for header in $shipped; do
+    if grep -qx "$header" <<<"$covered"; then
         ok
     else
-        bad "index.md links $base" "no link to it"
+        bad "$header has a page" "none in $DOCS"
     fi
-
-    header=$(sed -n '1s/^# `\(.*\)`$/\1/p' "$page")
-    [ -n "$header" ] || continue        # about acc, not a header
-    if [ ! -f "include/$header" ]; then
-        bad "$base names a header" "include/$header is not there"
+done
+for header in $covered; do
+    if [ -f "include/$header" ]; then
+        ok
+    else
+        bad "$header is a header" "include/$header is not there"
         continue
     fi
-
     names=$(functions "include/$header")
     [ -n "$names" ] || continue         # macros and types alone
     keys "$header" "$names"
 done
 
-# The book's title, and its pages in the order index.md lists them, which
-# is the order md2ref reads them in: index.md first, then by name, so the
-# names begin with their place.
+# Every page is in the menu, under a group, and every page the menu names
+# is there: a page left out would be shelved after the groups, under
+# "Pages outside the menu". And the book's title.
+menu=$(sed -n 's/^ *- \([A-Za-z0-9_.-]*\.md\)$/\1/p' "$DOCS/mkdocs.yml" | sort)
+pages=$(cd "$DOCS" && ls *.md | sort)
+if [ -n "$menu" ] && [ "$menu" = "$pages" ]; then
+    ok
+else
+    bad "the menu names every page" "$(diff <(echo "$menu") <(echo "$pages") | grep '^[<>]' | head -3 | tr '\n' ' ')"
+fi
 title=$("$REFTOOL" "$DAT" info | sed -n 's/^title //p')
 if [ "$title" = "Agon C Compiler API reference" ]; then
     ok
 else
     bad "the book's title" "it is: $title"
-fi
-listed=$(grep -o '](0*[0-9]*-[^)#]*\.md)' "$DOCS/index.md" | tr -d '()]' | awk '!seen[$0]++')
-named=$(cd "$DOCS" && ls [0-9]*.md)
-if [ "$listed" = "$named" ]; then
-    ok
-else
-    bad "pages in index.md's order" "$(diff <(echo "$listed") <(echo "$named") | head -3 | tr '\n' ' ')"
 fi
 
 # The options, as the usage acc prints names them: the word an option line

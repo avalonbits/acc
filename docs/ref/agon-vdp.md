@@ -8,13 +8,13 @@ that the others share.
 
 | Header                                      | Has                      |
 |---------------------------------------------|--------------------------|
-| [agon/vdp/screen.h](30-agon-vdp-screen.md)     | text, modes, the cursor  |
-| [agon/vdp/graphics.h](31-agon-vdp-graphics.md) | PLOT and the shapes      |
-| [agon/vdp/bitmap.h](32-agon-vdp-bitmap.md)     | bitmaps, sprites, fonts  |
-| [agon/vdp/buffer.h](33-agon-vdp-buffer.md)     | the buffered commands    |
-| [agon/vdp/audio.h](34-agon-vdp-audio.md)       | sound                    |
+| [agon/vdp/screen.h](agon-vdp-screen.md)     | text, modes, the cursor  |
+| [agon/vdp/graphics.h](agon-vdp-graphics.md) | PLOT and the shapes      |
+| [agon/vdp/bitmap.h](agon-vdp-bitmap.md)     | bitmaps, sprites, fonts  |
+| [agon/vdp/buffer.h](agon-vdp-buffer.md)     | the buffered commands    |
+| [agon/vdp/audio.h](agon-vdp-audio.md)       | sound                    |
 
-It includes `stdbool.h`, `stdint.h` and [agon/mos.h](27-agon-mos.md) too.
+It includes `stdbool.h`, `stdint.h` and [agon/mos.h](agon-mos.md) too.
 
 The names, the arguments and the bytes sent are libagon's, so that a
 program written against libagon builds against acc and draws the same;
@@ -32,7 +32,7 @@ byte is sent.
 
 The few calls that read an answer send a request, and the VDP's answer
 reaches the program through MOS's system variables: see
-[agon/vdp/screen.h](30-agon-vdp-screen.md).
+[agon/vdp/screen.h](agon-vdp-screen.md).
 
 ## `BLACK`, `RED`, `GREEN`, `YELLOW`, `BLUE`, `MAGENTA`, `CYAN`, `WHITE`, `BRIGHT_BLACK`, `BRIGHT_RED`, `BRIGHT_GREEN`, `BRIGHT_YELLOW`, `BRIGHT_BLUE`, `BRIGHT_MAGENTA`, `BRIGHT_CYAN`, `BRIGHT_WHITE`
 
@@ -55,8 +55,8 @@ The sixteen colours, as an enum:
 
 A colour with 128 added is the background colour, for VDU 17 (the text
 colour) and VDU 18 (the graphics colour).
-[`vdp_set_text_bg_colour`](30-agon-vdp-screen.md#vdp_set_text_colour-vdp_set_text_bg_colour)
-adds it; [`vdp_set_graphics_bg_colour`](31-agon-vdp-graphics.md#vdp_set_graphics_colour-vdp_set_graphics_fg_colour-vdp_set_graphics_bg_colour-vdp_gcol)
+[`vdp_set_text_bg_colour`](agon-vdp-screen.md#vdp_set_text_colour-vdp_set_text_bg_colour)
+adds it; [`vdp_set_graphics_bg_colour`](agon-vdp-graphics.md#vdp_set_graphics_colour-vdp_set_graphics_fg_colour-vdp_set_graphics_bg_colour-vdp_gcol)
 flips the bit instead.
 
 ## `VDP_PUTS`, `VDU_A`, `VDU_A_x_y`, `VDU_ADV_CMD`, `VDU_AUDIO_CMD`

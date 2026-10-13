@@ -5,7 +5,7 @@
     acc -a <lib.a> <file.o>...
 
 Options may come before or after the files, in any order. How they fit
-together is in [Using acc](01-using.md).
+together is in [Using acc](using.md).
 
 ## `-c`
 

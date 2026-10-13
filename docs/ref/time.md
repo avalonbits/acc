@@ -150,7 +150,7 @@ buffer, which the next call of either writes over.
 Write the time in `*t` into `s` as `fmt` says, as `printf` writes
 numbers: characters other than `%` are copied, and a `%` and the
 character after it are a conversion. The locale is C's, the only one
-acc has. [`wcsftime`](05-wchar.md#wcsftime), in `wchar.h`, is the same
+acc has. [`wcsftime`](wchar.md#wcsftime), in `wchar.h`, is the same
 for wide strings.
 
 | Conv | Writes                              | Example        |

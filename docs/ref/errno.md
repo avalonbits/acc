@@ -27,9 +27,9 @@ first and looks after:
         puts("too large");
 
 The file functions of `stdio.h` do not set `errno` (see
-[`stdio.h`](04-stdio.md)), nor do `time.h`'s or `signal`. The words for a
-number are [`strerror`](06-string.md#strerror)'s, and
-[`perror`](04-stdio.md#perror) prints those for `errno`.
+[`stdio.h`](stdio.md)), nor do `time.h`'s or `signal`. The words for a
+number are [`strerror`](string.md#strerror)'s, and
+[`perror`](stdio.md#perror) prints those for `errno`.
 
 ## `EDOM`
 
@@ -37,7 +37,7 @@ number are [`strerror`](06-string.md#strerror)'s, and
 
 An argument outside the function's domain. The functions of `math.h`
 set it, and answer a NaN, as C asks when
-[`math_errhandling`](10-math.md#math_errhandling-math_errno-math_errexcept)
+[`math_errhandling`](math.md#math_errhandling-math_errno-math_errexcept)
 is `MATH_ERRNO`, which it is:
 
 - `sqrt` of a negative number, `-INFINITY` among them;
@@ -68,15 +68,15 @@ error in `math.h`; it is the nearest number there is, a denormal or 0.
 
 The functions that read numbers from strings set it too:
 
-- [`strtol`](17-stdlib.md#strtol-strtoul-strtoll-strtoull), `strtoul`,
+- [`strtol`](stdlib.md#strtol-strtoul-strtoll-strtoull), `strtoul`,
   `strtoll`, `strtoull`, `strtoimax` and `strtoumax`, and the `wcsto`
   forms of each, for a number past the type's range;
-- [`strtod`](17-stdlib.md#strtod-strtof-atof), `strtof`, `atof`, `wcstod`
+- [`strtod`](stdlib.md#strtod-strtof-atof), `strtof`, `atof`, `wcstod`
   and `wcstof`, for a number too large for a float, or too small to be
   held exactly;
-- [`strtonum`](17-stdlib.md#strtonum), for a number outside the range it is
+- [`strtonum`](stdlib.md#strtonum), for a number outside the range it is
   given;
-- the [`scanf`](04-stdio.md#scanf-fscanf-sscanf) family, for a number it
+- the [`scanf`](stdio.md#scanf-fscanf-sscanf) family, for a number it
   reads that is out of range.
 
 ## `EILSEQ`
@@ -86,8 +86,8 @@ The functions that read numbers from strings set it too:
 Bytes that are not a character: not UTF-8, or a character outside the
 16 bits of a `wchar_t`, or a wide character that is one of the
 surrogates. The multibyte and wide character conversions set it: of
-`stdlib.h`, [`mblen`](17-stdlib.md#mblen-mbtowc-wctomb-mb_cur_max),
-`mbtowc`, `wctomb`, [`mbstowcs`](17-stdlib.md#mbstowcs-wcstombs) and
+`stdlib.h`, [`mblen`](stdlib.md#mblen-mbtowc-wctomb-mb_cur_max),
+`mbtowc`, `wctomb`, [`mbstowcs`](stdlib.md#mbstowcs-wcstombs) and
 `wcstombs`; of `wchar.h`, `mbrtowc`, `mbrlen`, `wcrtomb`, `mbsrtowcs`
 and `wcsrtombs`; and `fgetwc` and `fputwc`, and so the wide reads and
 writes made of them.
@@ -96,8 +96,8 @@ writes made of them.
 
     #define EINVAL 22
 
-An argument that is not valid. [`strtonum`](17-stdlib.md#strtonum) sets
+An argument that is not valid. [`strtonum`](stdlib.md#strtonum) sets
 it for a string that is not a number, and for a `minval` greater than
-`maxval`; [`signal`](20-signal.md#signal-sig_dfl-sig_ign-sig_err) and
-[`raise`](20-signal.md#raise) for a signal there is no such thing as. It is
+`maxval`; [`signal`](signal.md#signal-sig_dfl-sig_ign-sig_err) and
+[`raise`](signal.md#raise) for a signal there is no such thing as. It is
 POSIX's, not C99's.

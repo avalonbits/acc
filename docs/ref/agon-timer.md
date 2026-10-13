@@ -9,7 +9,7 @@ A delay, as libagon names it, counted by the eZ80's timer 0.
 Wait `ms` milliseconds. A `ms` of 0 returns at once.
 
 `delay` busy-waits on timer 0 of the eZ80 (see
-[ez80f92.h](39-ez80f92.md)): it stops the timer (`TMR0_CTL`, I/O port
+[ez80f92.h](ez80f92.md)): it stops the timer (`TMR0_CTL`, I/O port
 0x80), loads 72 into its reload registers (`TMR0_RR_L` and `TMR0_RR_H`),
 reads `TMR0_CTL` once to clear any flag left over, and starts it running
 continuously on the 18.432 MHz clock divided by 256. That is 72,000

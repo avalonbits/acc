@@ -137,7 +137,7 @@ it, either answers `(size_t) -1` with `EILSEQ` in `errno`, and `*src`
 each one's own.
 
 `mbstowcs` and `wcstombs` in
-[`stdlib.h`](17-stdlib.md#mbstowcs-wcstombs) are these with a state of
+[`stdlib.h`](stdlib.md#mbstowcs-wcstombs) are these with a state of
 their own each time.
 
 ## `btowc`, `wctob`
@@ -182,7 +182,7 @@ of one, answer `WEOF`, set the stream's error flag and put `EILSEQ` in
 
 `getwc` is a function, not a macro, so it is `fgetwc` exactly. The
 keyboard is read a line at a time, as
-[`fgetc`](04-stdio.md#fgetc-getc-getchar) reads it.
+[`fgetc`](stdio.md#fgetc-getc-getchar) reads it.
 
 ## `ungetwc`
 
@@ -202,7 +202,7 @@ functions read it back; `fgetc` does not see it. A seek, `fflush` or
 
     wchar_t *fgetws(wchar_t *s, int n, FILE *f);
 
-[`fgets`](04-stdio.md#fgets-gets) for wide characters: it reads characters
+[`fgets`](stdio.md#fgets-gets) for wide characters: it reads characters
 of `f` into `s` until it has read a `L'\n'` (which it keeps), has read
 `n - 1`, or comes to the end of the input, and adds a terminator. The
 answer is `s`, or `NULL` when nothing was read, or when the reading
@@ -238,7 +238,7 @@ character that could not be written.
     int fwprintf(FILE *f, const wchar_t *fmt, ...);
     int swprintf(wchar_t *s, size_t n, const wchar_t *fmt, ...);
 
-[`printf`](04-stdio.md#printf-fprintf-sprintf-snprintf) with a wide
+[`printf`](stdio.md#printf-fprintf-sprintf-snprintf) with a wide
 format, writing wide characters: `wprintf` to `stdout`, `fwprintf` to
 `f` (each character through `fputwc`, so as UTF-8), and `swprintf` into
 the wide string at `s`. The conversions, flags, widths, precisions and
@@ -286,7 +286,7 @@ it prints a float or not.
 
 `wprintf`, `fwprintf` and `swprintf` with the arguments in a `va_list`
 the caller has started with `va_start`, as
-[`vprintf`](04-stdio.md#vprintf-vfprintf-vsprintf-vsnprintf) is to
+[`vprintf`](stdio.md#vprintf-vfprintf-vsprintf-vsnprintf) is to
 `printf`.
 
 ## `wscanf`, `fwscanf`, `swscanf`
@@ -295,7 +295,7 @@ the caller has started with `va_start`, as
     int fwscanf(FILE *f, const wchar_t *fmt, ...);
     int swscanf(const wchar_t *s, const wchar_t *fmt, ...);
 
-[`scanf`](04-stdio.md#scanf-fscanf-sscanf) with a wide format, reading wide
+[`scanf`](stdio.md#scanf-fscanf-sscanf) with a wide format, reading wide
 characters: `wscanf` from `stdin`, `fwscanf` from `f` (each character
 through `fgetwc`, so as UTF-8), and `swscanf` from the wide string `s`.
 It is `scanf`'s reader: the conversions, widths, lengths, answers and
@@ -338,12 +338,12 @@ caller has started with `va_start`.
     unsigned long long wcstoull(const wchar_t *s, wchar_t **end,
                                 int base);
 
-[`strtol`](17-stdlib.md#strtol-strtoul-strtoll-strtoull) and its family
+[`strtol`](stdlib.md#strtol-strtoul-strtoll-strtoull) and its family
 over a wide string, read in place by the same reader: the same white
 space, signs, bases, limits and `ERANGE`, and `*end` left on the first
 wide character not part of the number. Nothing past ASCII is a digit, a
 sign or white space. The `intmax_t` ones,
-[`wcstoimax` and `wcstoumax`](16-inttypes.md#wcstoimax-wcstoumax), are in
+[`wcstoimax` and `wcstoumax`](inttypes.md#wcstoimax-wcstoumax), are in
 `inttypes.h`.
 
 ## `wcstod`, `wcstof`
@@ -351,7 +351,7 @@ sign or white space. The `intmax_t` ones,
     double wcstod(const wchar_t *s, wchar_t **end);
     float wcstof(const wchar_t *s, wchar_t **end);
 
-[`strtod`](17-stdlib.md#strtod-strtof-atof) over a wide string, read by the
+[`strtod`](stdlib.md#strtod-strtof-atof) over a wide string, read by the
 same reader: decimal and hex, `inf`, `infinity`, `nan`, correctly
 rounded. `double` is `float` in acc, so the two are the same.
 
@@ -366,7 +366,7 @@ The length of `s` in wide characters, not counting its terminator.
     wchar_t *wcscpy(wchar_t *to, const wchar_t *from);
     wchar_t *wcscat(wchar_t *to, const wchar_t *from);
 
-[`strcpy` and `strcat`](06-string.md#strcpy-strcat-stpcpy) for wide
+[`strcpy` and `strcat`](string.md#strcpy-strcat-stpcpy) for wide
 strings: `wcscpy` copies `from` and its terminator to `to`, and `wcscat`
 to the end of the wide string at `to`. Both answer `to`, which must
 have room; nothing checks.
@@ -376,7 +376,7 @@ have room; nothing checks.
     wchar_t *wcsncpy(wchar_t *to, const wchar_t *from, size_t n);
     wchar_t *wcsncat(wchar_t *to, const wchar_t *from, size_t n);
 
-[`strncpy` and `strncat`](06-string.md#strncpy-strncat-stpncpy) for wide
+[`strncpy` and `strncat`](string.md#strncpy-strncat-stpncpy) for wide
 strings. `wcsncpy` writes exactly `n` wide characters: `from`, then
 zeros, and no terminator when `from` has `n` or more. `wcsncat` copies
 at most `n` of `from` to the end of `to`, and then always a terminator.
@@ -431,7 +431,7 @@ empty `needle` is found at `hay`.
     wchar_t *wcspbrk(const wchar_t *s, const wchar_t *accept);
 
 [`strspn`, `strcspn` and
-`strpbrk`](06-string.md#strspn-strcspn-strpbrk) for wide strings: how many
+`strpbrk`](string.md#strspn-strcspn-strpbrk) for wide strings: how many
 of `s`'s first characters are all in `accept`, how many are all not in
 `reject`, and where the first one in `accept` is (or `NULL`).
 
@@ -439,7 +439,7 @@ of `s`'s first characters are all in `accept`, how many are all not in
 
     wchar_t *wcstok(wchar_t *s, const wchar_t *delim, wchar_t **save);
 
-[`strtok`](06-string.md#strtok) for wide strings, but where it stopped is
+[`strtok`](string.md#strtok) for wide strings, but where it stopped is
 kept in `*save` rather than a static variable, so two strings can be
 split at once. The first call names the string; each call after it
 passes `NULL` and the same `save`. It answers each token, with a
@@ -475,7 +475,7 @@ C, a character at a time, not the block instructions `memcpy` uses.
     size_t wcsftime(wchar_t *s, size_t max, const wchar_t *fmt,
                     const struct tm *t);
 
-[`strftime`](23-time.md#strftime), from `time.h`, with a wide format, writing wide characters:
+[`strftime`](time.md#strftime), from `time.h`, with a wide format, writing wide characters:
 the same writer, so every conversion is the same, in the C locale and
 in UTC. A character of `fmt` that is not part of a conversion is copied
 as it is.

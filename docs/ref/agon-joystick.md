@@ -32,7 +32,7 @@ buttons. Pass the answer to the macros below.
     void resetJoysticks(void);
 
 Make every pin of port C, and the top four of port D, inputs, as
-`inputModePinID` does (see [agon/gpio.h](37-agon-gpio.md)): their `ALT2`
+`inputModePinID` does (see [agon/gpio.h](agon-gpio.md)): their `ALT2`
 and `ALT1` bits cleared, and their direction bits set: the pins
 `getJoystickButtons` reads, set up to be read.
 

@@ -1,7 +1,7 @@
 # `agon/vdp/audio.h`
 
 Sound: VDU 23, 0, &85, channel, command, arguments. A program includes
-[agon/vdp.h](28-agon-vdp.md), which includes this.
+[agon/vdp.h](agon-vdp.md), which includes this.
 
 The byte after &85 is a channel, 0 to 31, or, for the commands on a
 sample, a negative sample number: -1 is the sample kept in buffer

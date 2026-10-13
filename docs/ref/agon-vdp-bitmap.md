@@ -3,7 +3,7 @@
 Bitmaps and sprites (VDU 23, 27), the mouse (VDU 23, 0, &89), a
 character drawn as a bitmap (&92), fonts (&95), the affine transform
 (&96), the tile engine (&C2), the copper (&C4) and contexts (&C8). A
-program includes [agon/vdp.h](28-agon-vdp.md), which includes this.
+program includes [agon/vdp.h](agon-vdp.md), which includes this.
 
 Each call sends one VDU command (a few send two or three) in one call
 into MOS, and none waits for an answer. The bytes are libagon's, name
@@ -16,13 +16,13 @@ argument is wider; `x;` is two bytes, low first; `x(3)` is three.
 
 An 8-bit bitmap number `n` is the bitmap in buffer 64000 + `n`. The
 calls named `vdp_adv_` take the 16-bit buffer ID itself; buffers are in
-[agon/vdp/buffer.h](33-agon-vdp-buffer.md).
+[agon/vdp/buffer.h](agon-vdp-buffer.md).
 
 ## `VDP_VAR_AFFINE_TRANSFORM`, `VDP_VAR_HW_SPRITES`, `VDP_VAR_TILE_ENGINE`, `VDP_VAR_COPPER`
 
 Parts of the VDP that are off until a program sets their VDP variable
 (VDU 23, 0, &F8, id; value;, `vdp_set_variable` in
-[agon/vdp/screen.h](30-agon-vdp-screen.md)). While one is unset its
+[agon/vdp/screen.h](agon-vdp-screen.md)). While one is unset its
 commands take no bytes at all: the VDP reads what follows as VDU codes.
 
 | Name                       | ID      | Turns on                     |
@@ -343,7 +343,7 @@ font. VDU 23, 0, &95, 5, buffer_id; is the copy, and VDU 23, 0, &95,
 VDU 23, 0, &96, flags, affineID;. With bit 0 of `flags` set, bitmaps are
 drawn through the affine matrix in buffer `affineID`. The VDP takes it
 only once `VDP_VAR_AFFINE_TRANSFORM` is set. The matrices are made by
-the commands in [agon/vdp/buffer.h](33-agon-vdp-buffer.md).
+the commands in [agon/vdp/buffer.h](agon-vdp-buffer.md).
 
 ## `vdp_tilebank_init`, `vdp_tilebank_load`, `vdp_tilebank_draw`, `vdp_tilebank_free`
 

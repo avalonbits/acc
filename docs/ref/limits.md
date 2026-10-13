@@ -69,4 +69,4 @@ needs a `long`.
 The most bytes a multibyte character takes. Multibyte characters are
 UTF-8, as far as a 16-bit `wchar_t` goes: one to three bytes, up to
 U+FFFF, and a four-byte sequence is not one. See
-[`mblen`](17-stdlib.md#mblen-mbtowc-wctomb-mb_cur_max).
+[`mblen`](stdlib.md#mblen-mbtowc-wctomb-mb_cur_max).

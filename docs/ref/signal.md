@@ -71,7 +71,7 @@ are not closed.
     raise(SIGTERM);                 /* on_term runs; stop is 1 */
 
 `abort` raises `SIGABRT` when the program has called `signal`; see
-[`abort`](17-stdlib.md#abort).
+[`abort`](stdlib.md#abort).
 
 ## `sig_atomic_t`
 
