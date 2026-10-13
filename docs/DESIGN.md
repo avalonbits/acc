@@ -138,7 +138,7 @@ size at the moment it grows. acc is written around that:
   sbrk, [`_wrap__sbrk()`](../src/image.c#L171), which the Agon build links in place of
   libagon's.
 - **Arenas grow in chunks that never move.** Names
-  ([`names_chunk()`](../src/names.c#L206)), struct members ([`members_chunk()`](../src/sym.c#L652)) and
+  ([`names_chunk()`](../src/names.c#L137)), struct members ([`members_chunk()`](../src/sym.c#L652)) and
   macro records ([`macro_new()`](../src/macro.c#L77)) each take a new chunk when the last
   is full, so no pointer into them goes stale and nothing is copied.
 - **Tables that would be long are kept in blocks.** The fixups
@@ -160,7 +160,7 @@ and member chunks come from one large reservation.
 ## 4. Names
 
 Every identifier and every macro name is interned once, in
-[`name_intern()`](../src/names.c#L292), into an arena of NUL-terminated strings, and is
+[`name_intern()`](../src/names.c#L223), into an arena of NUL-terminated strings, and is
 referred to from then on by its offset: a `NameRef`, three bytes on the
 Agon. Nothing is ever freed.
 
@@ -169,16 +169,19 @@ so that finding it costs one load rather than a table probe:
 
 | byte | holds | read by |
 |---|---|---|
-| `ref-4` | `NAME_MACRO`, `NAME_WIDE`, `NAME_WEAK`, `NAME_STRONG` | [`name_is_macro`](../src/lex_int.h#L103), [`name_weak()`](../src/names.c#L351) |
+| `ref-4` | `NAME_MACRO`, `NAME_WIDE`, `NAME_WEAK`, `NAME_STRONG` | [`name_is_macro`](../src/lex_int.h#L103), [`name_weak()`](../src/names.c#L282) |
 | `ref-3 .. ref-1` | the file-scope symbol for this name, plus one — or, for a keyword, its token code at `ref-3` | [`name_global()`](../src/sym.c#L110), [`next()`](../src/lex.c#L1039) |
 
 The hash table uses open addressing with linear probing over 4-byte slots,
-kept at most three quarters full. The hash, [`name_home()`](../src/names.c#L124), is two
+kept at most three quarters full. The hash, [`name_hash_c()`](../src/hash.h#L58), is two
 lanes over a Pearson permutation, `pearson[]`, so it needs no multiply and
 no 24-bit XOR -- both of which are runtime calls here -- and it probes
-about 1.5 times a lookup. It starts at 4096 slots for a compile and at
+about 1.5 times a lookup. On the Agon it is [`src/hash.s`](../src/hash.s),
+written by hand with every value in a register, and
+[`name_home()`](../src/names.c#L90) masks the two bytes it answers into a
+slot's offset. It starts at 4096 slots for a compile and at
 1024 for a link or an archive, whose names are only what its objects
-define and want ([`name_init()`](../src/names.c#L255)). The slot's offset is built a byte at a time,
+define and want ([`name_init()`](../src/names.c#L186)). The slot's offset is built a byte at a time,
 which caps the table at 64 KB: 16,384 slots and 8,191 names. A lookup
 compares with `strncmp` and a terminator test rather than `memcmp`, which
 could read past the arena's end.
@@ -771,7 +774,7 @@ name the library has no member for, and stays so, since a link only adds
 to what it waits on. A library is kept open while the link reads it, since
 opening a file on the card is a search of its directory -- some 150,000
 cycles of MOS's -- and a name it does not have is marked
-([`name_set_missed()`](../src/names.c#L366)) so that it is not asked again on the next
+([`name_set_missed()`](../src/names.c#L297)) so that it is not asked again on the next
 pass. The runtime's library is opened once for both its looks, before the
 C library and after it ([`library_open()`](../src/link.c#L632)), and what was taken from
 each of its members the first time is kept, so that the second takes only

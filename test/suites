@@ -4,6 +4,7 @@
 test/abi.sh || [ $? -eq 77 ]
 test/helpers.sh || [ $? -eq 77 ]
 test/fmt_agon.sh || [ $? -eq 77 ]
+test/hash.sh || [ $? -eq 77 ]
 test/frames.sh || [ $? -eq 77 ]
 test/msgpack.sh
 test/forget.sh
