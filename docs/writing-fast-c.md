@@ -44,6 +44,12 @@ What it costs:
   `float`; an AND with a two-byte mask that keeps some of the low byte,
   like `0x7fff` or `0xffff`; a conversion to `short`; and a frame slot
   past `(ix-128)`.
+- **Members through a pointer** lose IY. Elsewhere `p->m`, with `p` an
+  ordinary local, is read and written from IY, `ld iy,(ix+d); ld
+  hl,(iy+n)`, six bytes, with IY kept for the next member of the same
+  pointer. In a function with a register local it goes through HL: `ld
+  hl,(ix+d)`, the offset added, and the access: up to four bytes more
+  each time, and the pointer loaded again for every member.
 
 So the best candidate is the pointer or counter a loop uses on every turn,
 in a function whose loop calls nothing, or little, and does no `long` or
@@ -91,10 +97,11 @@ same change in `printf`'s float code, whose numbers were provably under
 An unsigned comparison is a subtract and one jump on carry. A signed one
 of two variables turns the difference's sign into the carry and turns the
 carry over where the subtract overflowed, `add hl,hl; jp po; ccf`: six
-more bytes at every compare. Against a constant other than 0, both sides
-are moved by `0x800000` first, five more bytes. acc skips both when
-neither side can be negative, and against 0 the sign alone is the answer,
-`add hl,hl`, cheaper than any unsigned compare.
+more bytes at every compare. Against a constant other than 0, `x` is
+moved by `0x800000` first and the constant taken away by an add, three
+more bytes. acc skips both when neither side can be negative, and against
+0 the sign alone is the answer, `add hl,hl`, cheaper than any unsigned
+compare.
 
 Counters, sizes and indexes that are never negative should be `unsigned`.
 Nothing else gets dearer for it, and an unsigned divide is cheaper too.
@@ -113,6 +120,10 @@ as well, and a `switch` on a char (section 9). Two `signed char`s are
 widened to 24 bits and compared as signed ints, 31 bytes. And a `signed
 char` against an unsigned constant, `c < 10u`, is an unsigned comparison
 as C says, made at 24 bits; against `10` it stays in A.
+
+A `char` passed to a `char` parameter costs nothing to widen: it is pushed
+as the byte, and the callee widens it. Past a prototype's parameters, as
+in `printf`'s, C promotes it to `int`, and it is widened at the call.
 
 `short` is the eZ80's worst width. The same six operations measured 207
 bytes as `unsigned char`, 277 as `unsigned int` and 406 as `unsigned
@@ -160,10 +171,12 @@ register local.
 
 ## 7. Calls, and what gets inlined
 
-A call costs about 45 cycles before the callee does anything. acc expands
-a `static inline` function in place only if its body is a single `return`
-of an int-or-narrower value, with at most eight int-or-narrower
-parameters and no varargs. Any other `inline` function is called.
+A call costs about 45 cycles before the callee does anything, about 15
+more where the callee is 200 bytes or longer and sets its frame up with a
+call to the runtime. acc expands a `static inline` function in place only
+if its body is a single `return` of an int-or-narrower value, with at most
+eight int-or-narrower parameters and no varargs. Any other `inline`
+function is called.
 
 So a character-class test or an accessor used in a hot loop should be
 written as one `return` expression:
@@ -182,24 +195,36 @@ These four are built in: calls to routines built on `ldir` and `cpir`,
 with the operands passed in registers. A byte loop written in C cost zap
 7% of its running time. Struct assignment is an `ldir` too.
 
-## 9. `switch` is a chain of compares
+## 9. `switch`: tables where the cases are close
 
-There are no jump tables. The value is loaded once, and each `case` is
-tested in the order it appears in the source: twelve bytes each on an
-`int`, and one more compare per case before the one that matches. Put
-the most frequent cases first. For a dense dispatch over many values, index a
-table of function pointers or of data instead.
+The value is loaded once, and acc lays down whichever of three ways to
+find the case is smallest:
+
+- **A jump table** where the cases lie close together: about one case for
+  every two values from the lowest to the highest, or closer. A call, a
+  few bytes of header, and three bytes for every value in that range,
+  cases or not. The case is found at once, however many there are.
+- **A search table** on an `int` whose cases are spread out: six bytes a
+  case, a value and an address, read along in the order the cases appear.
+- **A chain of compares** otherwise, in the order the cases appear:
+  twelve bytes a case on an `int`, and one more compare per case before
+  the one that matches. A `long` switch is always this.
+
+So a dense dispatch over many values needs no table of function pointers
+to be fast; a sparse one, searched or compared, should have its most
+frequent cases first.
 
 A switch on a char -- a `char` variable, or one read through a pointer,
-`switch (*p++)` -- compares the byte in A: `cp n` and a jump, four bytes
-a case where the jump is short, and no test at all for a case the char
-cannot be. A lexer's switch should be on the char, not on an `int` it was
-copied into.
+`switch (*p++)` -- works on the byte in A: its jump table is indexed by
+it, or each case is `cp n` and a jump, four bytes where the jump is short,
+and a case the char cannot be has no test at all. A lexer's switch should
+be on the char, not on an `int` it was copied into.
 
 ## 10. `long`, `long long` and `float`
 
 These live in frame slots, and almost every operation on them is a call:
-`lea hl,ix+a; lea de,ix+b; call`. `&`, `|`, `^` with a constant, and
+`lea hl,ix+a; lea de,ix+b; call`, with a `lea bc` too where the routine
+copies the left operand into place. `&`, `|`, `^` with a constant, and
 shifts by 1, 8, 16 or 24, are done on the slot's bytes directly. Everything
 else costs a call. If an `int` holds the value, use it.
 
@@ -208,7 +233,7 @@ The float routines, in cycles per call with the code around it:
 | operation | cycles |
 | --- | --- |
 | `+` | 381 |
-| `-` | 417 |
+| `-` | 479 |
 | `*` | 555 |
 | `/` | 946 |
 | `<` and the other compares | about 200 |
