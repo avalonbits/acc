@@ -310,7 +310,8 @@ char parse_option(char *line, char **argv)
  * and has nothing to do. */
 static void agon_close_redirect(void)
 {
-    fclose(fmt_console);
+    if (fmt_console)                    /* not closed already: see diag.c */
+        fclose(fmt_console);
 }
 
 static void agon_redirect(const char *how, char *file)

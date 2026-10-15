@@ -192,6 +192,7 @@ int ar_open_if(const char *path, Archive *a)
     unsigned char head[AR_HEADER];
     long size;
     int front;
+    size_t msize, dsize;
 
     if (!f)
         return 0;
@@ -209,23 +210,27 @@ int ar_open_if(const char *path, Archive *a)
     a->ndefs = get24(head + 10);
     a->strings_len = get24(head + 13);
 
-    front = a->nmembers * AR_MEMBER + a->ndefs * AR_DEF + a->strings_len;
+    msize = (size_t) a->nmembers * AR_MEMBER;
+    dsize = (size_t) a->ndefs * AR_DEF;
+    front = (int) (msize + dsize) + a->strings_len;
     if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0)
         acc_error("cannot read '%s'", path);
     if (front < 0 || AR_HEADER + front > size)
         acc_error("'%s' says it lists more than it holds", path);
 
-    a->front = malloc((size_t) front);
-    if (!a->front)
+    /* The two tables, a block each; the names stay in the file. Held
+     * whole, the list of libc.a was 19 KB in one piece, which a link that
+     * follows a compile could not always find. */
+    a->members = malloc(msize + 1);
+    a->defs = malloc(dsize + 1);
+    if (!a->members || !a->defs)
         acc_error("out of memory for '%s'", path);
     if (fseek(f, AR_HEADER, SEEK_SET) != 0
-        || (int) fread(a->front, 1, (size_t) front, f) != front)
+        || fread(a->members, 1, msize, f) != msize
+        || fread(a->defs, 1, dsize, f) != dsize)
         acc_error("short read on '%s'", path);
     a->file = f;
-
-    a->members = a->front;
-    a->defs = a->front + a->nmembers * AR_MEMBER;
-    a->strings = (char *) a->defs + a->ndefs * AR_DEF;
+    a->strings_at = (long) (AR_HEADER + msize + dsize);
     a->size = (int) size;
 
     return 1;
@@ -233,16 +238,54 @@ int ar_open_if(const char *path, Archive *a)
 
 void ar_close(Archive *a)
 {
-    free(a->front);
-    a->front = NULL;
+    free(a->members);
+    free(a->defs);
+    a->members = a->defs = NULL;
     if (a->file)
         fclose((FILE *) a->file);
     a->file = NULL;
 }
 
+/* The name at `at` among the strings, compared with `name` as strcmp would
+ * order the two: read from the file a piece at a time, as far as they agree
+ * and the next byte. */
+static int name_order(const Archive *a, int at, const char *name)
+{
+    FILE *f = (FILE *) a->file;
+    unsigned char piece[AR_NAME_MAX];
+    size_t got, k;
+
+    if (fseek(f, a->strings_at + at, SEEK_SET) != 0)
+        acc_error("cannot read '%s'", a->path);
+    for (;;) {
+        got = fread(piece, 1, sizeof piece, f);
+        if (!got)
+            acc_error("short read on '%s'", a->path);
+        for (k = 0; k != got; k++, name++) {
+            if (piece[k] != (unsigned char) *name)
+                return piece[k] < (unsigned char) *name ? -1 : 1;
+            if (!*name)
+                return 0;
+        }
+    }
+}
+
+/* A member's name, for the object read from it to carry: read into a
+ * buffer the next call writes over, which is the next member's, as a link
+ * reads one member at a time. Static, and not in the Archive, which is in
+ * its callers' frames. */
 const char *ar_member_name(const Archive *a, int i)
 {
-    return a->strings + get24(a->members + i * AR_MEMBER);
+    static char name[AR_NAME_MAX];
+    FILE *f = (FILE *) a->file;
+    size_t got;
+
+    if (fseek(f, a->strings_at + get24(a->members + i * AR_MEMBER), SEEK_SET) != 0)
+        acc_error("cannot read '%s'", a->path);
+    got = fread(name, 1, sizeof name - 1, f);
+    name[got] = 0;
+
+    return name;
 }
 
 /* Which member defines `name`, or -1. A binary search, which is what the
@@ -260,7 +303,7 @@ int ar_find(const Archive *a, const char *name)
         int order;
 
         def += mid + mid + mid;         /* AR_DEF, six */
-        order = strcmp(a->strings + get24(def), name);
+        order = name_order(a, get24(def), name);
         if (order == 0)
             return get24(def + 3);
         if (order < 0)

@@ -50,15 +50,18 @@ enum {
 };
 
 /* A library: objects end to end, with a list of what each defines in front
- * of them. Only that list is read when one is opened; a member is read when
- * the link turns out to want it, from the file kept open for it -- opening
- * one on the card is a search of its directory, and a link takes dozens. */
+ * of them. Only the list's two tables are read when one is opened, and not
+ * the names they point at, which are most of it: a name is read from the
+ * file when a search comes to it. A member is read when the link turns out
+ * to want it, from the file kept open for it -- opening one on the card is
+ * a search of its directory, and a link takes dozens. */
+#define AR_NAME_MAX 64                  /* a name read whole; past it, a piece at a time */
+
 typedef struct {
     const char    *path;
     void          *file;                 /* a FILE, open until ar_close */
-    unsigned char *front;                /* the list, as it is in the file */
-    unsigned char *members, *defs;
-    char          *strings;
+    unsigned char *members, *defs;       /* the two tables, as in the file */
+    long           strings_at;           /* where the names start in it */
     int            build, nmembers, ndefs, strings_len, size;
 } Archive;
 
