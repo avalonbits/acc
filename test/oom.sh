@@ -14,6 +14,9 @@
 #     nesting, locals, an expression, the library -- at a size it has to
 #     build, in one step and as an object and a link (test/oom/gen.py makes
 #     each);
+#   - a program of little code reaching much of the library, its headers'
+#     names compacted for the link that follows the compile in one step: at
+#     80 functions it runs out of memory linking without that;
 #   - each of four axes well past what fits, which has to fail as running
 #     out of memory, saying so, and leave no output, no object and no file
 #     of the image behind;
@@ -78,6 +81,7 @@ locals 800 two
 expr 800 one
 expr 800 two
 libcalls 10 two
+reach 80 one
 macros 8000 over
 longfunc 3200 over
 globals 8000 over

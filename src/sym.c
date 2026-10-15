@@ -248,6 +248,13 @@ int sym_push(NameRef name, int kind, int val)
     return at;
 }
 
+/* The names of the file-scope symbols alone kept, for a link that follows
+ * the compile: see name_compact. */
+void sym_names_compact(void)
+{
+    name_compact((unsigned char *) &sym_at(0)->name, sym_nglobal_bytes, sizeof(Sym));
+}
+
 /* The file-scope region, in bytes: symbols [0, sym_nglobals()) stepping by
  * the size of a Sym. What an object file exports comes from this walk, and
  * it is the only thing outside sym.c that needs to know the table has two

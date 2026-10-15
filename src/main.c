@@ -702,6 +702,7 @@ int main(int argc, char **argv)
         bss_end();
         lex_close();                    /* its window is room for the link */
         sym_members_free();
+        sym_names_compact();            /* the link's names, as an object's */
         rt_name_all();                  /* the runtime, from the library */
         link_inputs(objs, nobjs);
         gen_finish();

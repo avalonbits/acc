@@ -131,6 +131,8 @@ static char *chunk_at, *chunk_end;      /* the current chunk's free part */
 
 #ifdef AGONDEV
 static char name_first[NAME_CHUNK];
+static char *name_chunks;               /* the chunks malloc gave, each after
+                                         * a pointer to the one before */
 #else
 #define NAME_RESERVE (64L * 1024 * 1024)
 static char *reserve_at;
@@ -142,9 +144,12 @@ static void names_chunk(size_t need)
     size_t size = need > NAME_CHUNK ? need : NAME_CHUNK;
 
 #ifdef AGONDEV
-    chunk_at = malloc(size);
+    chunk_at = malloc(sizeof(char *) + size);
     if (!chunk_at)
         acc_error("out of memory for names");
+    memcpy(chunk_at, &name_chunks, sizeof(char *));
+    name_chunks = chunk_at;
+    chunk_at += sizeof(char *);
 #else
     if (reserve_at + size > name_arena + NAME_RESERVE)
         acc_error("more names than the host build reserved room for");
@@ -186,6 +191,26 @@ static void buckets_rehash(unsigned newn)
     free(old);
 }
 
+/* The arena empty again, from its first chunk, and every chunk after that
+ * given back. */
+static void names_empty(void)
+{
+#ifdef AGONDEV
+    while (name_chunks) {
+        char *chunk = name_chunks;
+
+        memcpy(&name_chunks, chunk, sizeof(char *));
+        free(chunk);
+    }
+#else
+    reserve_at = name_arena + NAME_CHUNK;
+#endif
+    name_arena[0] = '\0';     /* so offset 0 is never a real name */
+    chunk_at = name_arena + 1;
+    chunk_end = name_arena + NAME_CHUNK;
+    nnames = 0;
+}
+
 void name_init(int compiling)
 {
 #ifdef AGONDEV
@@ -194,11 +219,8 @@ void name_init(int compiling)
     name_arena = malloc(NAME_RESERVE);
     if (!name_arena)
         acc_error("out of memory for names");
-    reserve_at = name_arena + NAME_CHUNK;
 #endif
-    name_arena[0] = '\0';     /* so offset 0 is never a real name */
-    chunk_at = name_arena + 1;
-    chunk_end = name_arena + NAME_CHUNK;
+    names_empty();
 
     /* 4096 slots, which hold 3071 names before the table grows: an Agon
      * program's headers come to two or three thousand, and a rehash hashes
@@ -209,6 +231,125 @@ void name_init(int compiling)
  * names are what its objects define and want: 1024, whose clearing is a
  * quarter of what 4096's was in a link of a hello world. */
     buckets_rehash(compiling ? 4096 : 1024);
+}
+
+/* Only the names a link can want, kept: those in the name fields from
+ * `first`, `step` bytes apart over `bytes` -- the file-scope symbols' -- each with its
+ * flags and the symbol it stands for, and the fields made to hold where
+ * each is now. The rest -- every macro's name and parameter, every local,
+ * every word a header used -- go, and so do the chunks they were in and a
+ * table sized for them.
+ *
+ * It is what a build in one step does between its compile and its link:
+ * the link that follows a compile to an object starts from that object's
+ * names alone, and this starts from the same. A program that includes
+ * <agon/vdp.h> has thousands of names, in 33 KB of chunks and a table of
+ * 16 KB, which a link held on to, beside what it was reading.
+ *
+ * Linear: each kept name is copied out once, the arena emptied, and each
+ * interned again once. Two free bits of the flags byte, 0x40 and 0x20,
+ * mark for the while a name counted and a name copied. */
+#define NAME_COUNTED 0x40
+#define NAME_COPIED  0x20
+
+static NameRef ref_at(const unsigned char *at)
+{
+    NameRef ref;
+
+    memcpy(&ref, at, sizeof ref);
+
+    return ref;
+}
+
+static void ref_put(unsigned char *at, NameRef ref)
+{
+    memcpy(at, &ref, sizeof ref);
+}
+
+/* The three bytes in front of a name, which the symbol it stands for is in
+ * (see name_global). */
+static int field_get(const unsigned char *at)
+{
+    return at[0] | at[1] << 8 | (int) at[2] << 16;
+}
+
+static void field_put(unsigned char *at, int v)
+{
+    at[0] = (unsigned char) v;
+    at[1] = (unsigned char) (v >> 8);
+    at[2] = (unsigned char) (v >> 16);
+}
+
+void name_compact(unsigned char *first, int bytes, int step)
+{
+    unsigned char *field, *keep, *put, *at;
+    size_t total = 1;
+    int off;
+    unsigned kept = 0;
+    unsigned slots = 1024;
+
+    for (off = 0, field = first; off != bytes; off += step, field += step) {
+        NameRef ref = ref_at(field);
+
+        if (ref == NAME_NONE || (name_arena[ref - 4] & NAME_COUNTED))
+            continue;
+        name_arena[ref - 4] |= NAME_COUNTED;
+        total += 4 + strlen(name_arena + ref) + 1;
+        kept++;
+    }
+    keep = malloc(total);
+    if (!keep)
+        acc_error("out of memory for names");
+
+    /* Out of the arena: each entry its flags, its field and its text, and
+     * the old field made to say where the entry is, plus one. */
+    put = keep + 1;
+    for (off = 0, field = first; off != bytes; off += step, field += step) {
+        NameRef ref = ref_at(field);
+        size_t len;
+
+        if (ref == NAME_NONE)
+            continue;
+        if (!((unsigned char) name_arena[ref - 4] & NAME_COPIED)) {
+            len = strlen(name_arena + ref) + 1;
+            put[0] = (unsigned char) (name_arena[ref - 4]
+                                      & ~(NAME_COUNTED | NAME_COPIED));
+            memcpy(put + 1, name_arena + ref - 3, 3);
+            memcpy(put + 4, name_arena + ref, len);
+            name_arena[ref - 4] |= NAME_COPIED;
+            field_put((unsigned char *) name_arena + ref - 3, (int) (put - keep));
+            put += 4 + len;
+        }
+        ref_put(field, (NameRef) field_get((unsigned char *) name_arena + ref - 3));
+    }
+
+    /* The arena from empty, and a table for what is kept. */
+    names_empty();
+    free(buckets);
+    buckets = NULL;
+    while (slots - slots / 4 - 1 < kept + 512)     /* three quarters full */
+        slots *= 2;
+    buckets_end = NULL;
+    buckets_rehash(slots);
+
+    /* Each entry interned again, its flags and field put back, and the new
+     * name left in the entry, where the fields go to find it. */
+    for (at = keep + 1; at != put; ) {
+        size_t len = strlen((char *) at + 4);
+        NameRef ref = name_intern((char *) at + 4, (int) len);
+
+        name_arena[ref - 4] = (char) at[0];
+        memcpy(name_arena + ref - 3, at + 1, 3);
+        field_put(at + 1, (int) ref);
+        at += 4 + len + 1;
+    }
+    for (off = 0, field = first; off != bytes; off += step, field += step) {
+        NameRef entry = ref_at(field);
+
+        if (entry != NAME_NONE)
+            ref_put(field, (NameRef) field_get(keep + entry + 1));
+    }
+    free(keep);
 }
 
 /* The table that finds a name from its text, let go of: an object's

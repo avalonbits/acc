@@ -3,10 +3,14 @@
 size n, for test/oom.sh. Each axis is one thing a compile holds in memory
 while it works: functions, one function's statements, globals, strings,
 macros, a struct's members, a switch's cases, nested blocks, locals, one
-long expression, and a program reaching much of the library."""
+long expression, a program reaching much of the library, and `reach`: a
+little code that calls n different functions of it."""
 import sys
 
 axis, n = sys.argv[1], int(sys.argv[2])
+
+# reach's calls: each a different function of the library, C's and the Agon's.
+CALLS = ['d += sin(d)', 'd += cos(d)', 'd += tan(d)', 'd += asin(0.5)', 'd += acos(0.5)', 'd += atan(d)', 'd += atan2(d, 2.0)', 'd += sinh(d)', 'd += cosh(d)', 'd += tanh(d)', 'd += exp(d)', 'd += log(2.0)', 'd += log10(2.0)', 'd += pow(d, 2.0)', 'd += sqrt(2.0)', 'd += ceil(d)', 'd += floor(d)', 'd += fabs(d)', 'd += fmod(d, 3.0)', 'd += frexp(d, &i)', 'd += ldexp(d, 2)', 'd += modf(d, &e)', 'd += cbrt(d)', 'd += hypot(d, 2.0)', 'd += expm1(d)', 'd += log1p(d)', 'd += log2(2.0)', 'd += exp2(d)', 'd += trunc(d)', 'd += round(d)', 'n += lround(d)', 'd += rint(d)', 'd += nearbyint(d)', 'd += remainder(d, 3.0)', 'd += fdim(d, 1.0)', 'd += fmax(d, 1.0)', 'd += fmin(d, 1.0)', 'd += fma(d, 2.0, 1.0)', 'd += erf(d)', 'd += erfc(d)', 'd += tgamma(2.5)', 'd += lgamma(2.5)', 'd += asinh(d)', 'd += acosh(2.0)', 'd += atanh(0.5)', 'd += copysign(d, -1.0)', 'd += nextafter(d, 2.0)', 'd += logb(d)', 'n += ilogb(8.0)', 'd += scalbn(d, 2)', 'n += strlen(buf)', 'strcpy(buf, "abc")', 'strncpy(buf, "abcd", 3)', 'strcat(buf, "x")', 'strncat(buf, "yz", 1)', 'n += strcmp(buf, "a")', 'n += strncmp(buf, "a", 1)', 'n += strchr(buf, 98) != 0', 'n += strrchr(buf, 98) != 0', 'n += strstr(buf, "b") != 0', 'n += strspn(buf, "ab")', 'n += strcspn(buf, "c")', 'n += strpbrk(buf, "c") != 0', 'n += strtok(buf, ",") != 0', 'memcpy(buf, "q", 1)', 'memmove(buf + 1, buf, 2)', 'memset(buf + 8, 0, 4)', 'n += memcmp(buf, "q", 1)', 'n += memchr(buf, 113, 4) != 0', 'free(strdup(buf))', 'n += strerror(2)[0]', 'n += strcasecmp(buf, "Q")', 'n += atoi("12")', 'n += atol("12")', 'n += strtol("12", 0, 10)', 'n += strtoul("12", 0, 10)', 'd += strtod("1.5", 0)', 'n += abs(-n)', 'n += labs(-3L)', 'n += div(7, 2).quot', 'n += rand()', 'srand(1)', 'qsort(buf, 3, 1, cmp)', 'n += bsearch(buf, buf, 3, 1, cmp) != 0', 'free(malloc(8))', 'free(calloc(2, 4))', 'free(realloc(0, 8))', 'printf("%d\\n", n)', 'sprintf(buf, "%d", n)', 'snprintf(buf, 8, "%x", n)', 'n += sscanf("4", "%d", &i)', 'f = fopen("t.txt", "w")', 'fputs("a\\n", f)', 'fprintf(f, "%d\\n", n)', 'fwrite(buf, 1, 2, f)', 'n += ftell(f)', 'fseek(f, 0, SEEK_SET)', 'fclose(f)', 'f = fopen("t.txt", "r")', 'n += fgets(buf, 8, f) != 0', 'n += fread(buf, 1, 2, f)', 'fclose(f)', 'rename("t.txt", "u.txt")', 'remove("u.txt")', 'puts(buf)', 'putchar(65)', 'n += isalpha(65)', 'n += isdigit(48)', 'n += isspace(32)', 'n += toupper(97)', 'n += tolower(65)', 'now = time(0)', 'n += gmtime(&now)->tm_year', 'n += (int) mktime(gmtime(&now))', 'n += strftime(buf, 32, "%Y", gmtime(&now))', 'n += (int) clock()', 'd += difftime(now, now)', 'n += wcslen(L"ab")', 'wcscpy(wb, L"x")', 'n += mbstowcs(wb, "ab", 4)', 'n += wcstombs(buf, wb, 8)', 'n += swprintf(wb, 4, L"%d", 1)', 'vdp_clear_screen()', 'mos_putstring("x")', 'vdp_mode(1)', 'vdp_cursor_tab(1, 1)', 'vdp_set_text_colour(1)', 'vdp_plot(69, 10, 10)', 'vdp_move_to(1, 1)', 'vdp_line_to(5, 5)', 'vdp_set_graphics_colour(0, 1)']
 out = []
 w = out.append
 
@@ -99,6 +103,17 @@ elif axis == 'libcalls':           # a program that reaches much of the library
     for i in range(n):
         w(f'    snprintf(buf, sizeof buf, "%d %x %s", {i}, {i}, strchr(buf, {i % 90 + 32}) ? "y" : "n");')
     w('    return 0; }')
+elif axis == 'reach':                # little code, much of the library
+    for h in ('stdio', 'stdlib', 'string', 'ctype', 'math', 'time', 'wchar'):
+        w(f'#include <{h}.h>')
+    w('#include <agon/mos.h>')
+    w('#include <agon/vdp.h>')
+    w('static int cmp(const void *a, const void *b) { return *(const char *) a - *(const char *) b; }')
+    w('int main(void) {')
+    w('    double d = 0.5, e; int i, n = 0; char buf[64] = "abc"; wchar_t wb[8]; FILE *f; time_t now;')
+    for c in CALLS[:n]:
+        w(f'    {c};')
+    w('    return n + (int) d; }')
 else:
     sys.exit(f'no axis {axis}')
 print('\n'.join(out))
