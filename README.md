@@ -9,6 +9,18 @@ definitions in the K&R style, and it comes with a C library of its own:
 every header of C99's hosted library, plus agondev's `<agon/...>` headers
 for MOS, the VDP, the keyboard, GPIO, joysticks and timers.
 
+## Contents
+
+- [Installing on the Agon](#installing-on-the-agon)
+- [Using it on the Agon](#using-it-on-the-agon)
+- [Options](#options)
+- [The language](#the-language)
+- [How big a file can be](#how-big-a-file-can-be)
+- [How it works](#how-it-works)
+- [What the code costs](#what-the-code-costs)
+- [Building](#building)
+- [License](#license)
+
 ## Installing on the Agon
 
 Unzip `acc-<version>.zip` onto the root of the SD card. It holds:
