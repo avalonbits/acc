@@ -10,7 +10,7 @@
 #ifndef ACC_VERSION_H
 #define ACC_VERSION_H
 
-#define ACC_VERSION "0.6.0"
+#define ACC_VERSION "0.6.1"
 
 /* What the compiler calls itself: acc, or opt-acc, its optimising build for
  * the host (docs/optimizer-plan.md). */
