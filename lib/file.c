@@ -15,6 +15,15 @@
  * written first, and input read ahead is given back by seeking MOS to where
  * the program has actually got to.
  *
+ * A file opened without `b` is text, as agondev's library has it: a newline
+ * the program writes is a return and a line feed in the file, which is what
+ * the Agon's own tools and a PC reading the card expect, and a return and a
+ * line feed read is one newline. The buffer holds the file's own bytes, so
+ * that a place told or sought is a place in the file; the newline is made
+ * as a character goes in and undone as one comes out. fwrite writes what it
+ * is given, which agondev's does too, so that a block of data put out
+ * through a stream opened without `b` arrives as it was.
+ *
  * stdin is the keyboard, a line at a time through MOS's line editor, with
  * escape as the end of the input. stdout and stderr are the screen, and are
  * not buffered: MOS writes a character at a time and the screen is where a
@@ -36,6 +45,7 @@
 #define F_APPEND  4             /* every write goes at the end */
 #define F_CONSOLE 8             /* the keyboard or the screen, not a file */
 #define F_TEMP    16            /* tmpfile's: removed when it is closed */
+#define F_TEXT    32            /* opened without `b`: see the top */
 
 /* What the buffer holds. */
 #define B_NONE    0
@@ -170,7 +180,8 @@ int fflush(FILE *f)
 }
 
 /* The flags a mode string asks for, or 0 for one C does not have: r, w or
- * a, then + and b in either order. */
+ * a, then +, and b or t, in either order -- t, text, being agondev's and
+ * what no b means anyway. */
 static int mode_of(const char *mode, uint8_t *mos)
 {
     int how;
@@ -181,11 +192,14 @@ static int mode_of(const char *mode, uint8_t *mos)
     case 'a': how = F_WRITE | F_APPEND;  *mos = FA_WRITE | FA_OPEN_APPEND;   break;
     default:  return 0;
     }
+    how |= F_TEXT;
     for (; *mode; mode++) {
         if (*mode == '+') {
             how |= F_READ | F_WRITE;
             *mos |= FA_READ | FA_WRITE;
-        } else if (*mode != 'b') {
+        } else if (*mode == 'b') {
+            how &= ~F_TEXT;
+        } else if (*mode != 't') {
             return 0;
         }
     }
@@ -368,6 +382,31 @@ static int fill(FILE *f)
     return n;
 }
 
+/* The next byte of the buffer, filling it first if it is used up: EOF at
+ * the end of the input. */
+static int next_byte(FILE *f)
+{
+    if ((f->last != B_INPUT || f->at == f->held) && !fill(f))
+        return EOF;
+
+    return (unsigned char) f->buf[f->at++];
+}
+
+/* A return just read from a text file: a newline if a line feed follows
+ * it, which goes with it, and the return itself if anything else does. A
+ * line feed that is the first byte of the next buffer is looked for there;
+ * one that is not is left for the next read. */
+static int after_return(FILE *f)
+{
+    if (f->at == f->held && !fill(f))
+        return '\r';
+    if (f->buf[f->at] != '\n')
+        return '\r';
+    f->at++;
+
+    return '\n';
+}
+
 int fgetc(FILE *f)
 {
     int c;
@@ -386,10 +425,11 @@ int fgetc(FILE *f)
 
         return c;
     }
-    if ((f->last != B_INPUT || f->at == f->held) && !fill(f))
-        return EOF;
+    c = next_byte(f);
+    if (c == '\r' && (f->how & F_TEXT))
+        c = after_return(f);
 
-    return (unsigned char) f->buf[f->at++];
+    return c;
 }
 
 int getc(FILE *f)
@@ -476,12 +516,29 @@ size_t fread(void *to, size_t size, size_t count, FILE *f)
     }
     while (got < want) {
         if (f->last == B_INPUT && f->at < f->held) {
+            const char *from = f->buf + f->at, *cr;
+
             n = f->held - f->at;
             if ((size_t) n > want - got)
                 n = (int) (want - got);
-            memcpy(p, f->buf + f->at, (size_t) n);
-            f->at += n;
-        } else if (is_file(f) && want - got >= (size_t) BUFSIZ) {
+            /* In a text file, up to the next return, which is a newline
+             * if a line feed follows it. */
+            if ((f->how & F_TEXT) && (cr = memchr(from, '\r', (size_t) n))) {
+                n = (int) (cr - from);
+                if (!n) {
+                    f->at++;
+                    *p = (char) after_return(f);
+                    n = 1;
+                } else {
+                    memcpy(p, from, (size_t) n);
+                    f->at += n;
+                }
+            } else {
+                memcpy(p, from, (size_t) n);
+                f->at += n;
+            }
+        } else if (is_file(f) && !(f->how & F_TEXT)
+                   && want - got >= (size_t) BUFSIZ) {
             /* A big read has nothing to gain by being copied through the
              * buffer. */
             if (f->last == B_OUTPUT && flush_output(f) != 0)
@@ -504,18 +561,10 @@ size_t fread(void *to, size_t size, size_t count, FILE *f)
     return got / size;
 }
 
-int fputc(int c, FILE *f)
+/* One byte into the buffer as it is, for fputc and for fwrite: a stream
+ * that can be written to and is not the screen. */
+static int put_byte(int c, FILE *f)
 {
-    if (f && !f->orient)
-        f->orient = -1;
-    if (!f || !(f->how & F_WRITE)) {
-        if (f)
-            f->error = 1;
-
-        return EOF;
-    }
-    if (f->how & F_CONSOLE)
-        return acc_rt_putch((unsigned char) c);
     if (f->last == B_INPUT && drop_input(f) != 0) {
         f->error = 1;
 
@@ -530,6 +579,25 @@ int fputc(int c, FILE *f)
             return EOF;
 
     return (unsigned char) c;
+}
+
+int fputc(int c, FILE *f)
+{
+    if (f && !f->orient)
+        f->orient = -1;
+    if (!f || !(f->how & F_WRITE)) {
+        if (f)
+            f->error = 1;
+
+        return EOF;
+    }
+    if (f->how & F_CONSOLE)
+        return acc_rt_putch((unsigned char) c);
+    if ((unsigned char) c == '\n' && (f->how & F_TEXT)
+        && put_byte('\r', f) == EOF)
+        return EOF;
+
+    return put_byte(c, f);
 }
 
 int putc(int c, FILE *f)
@@ -552,9 +620,18 @@ size_t fwrite(const void *from, size_t size, size_t count, FILE *f)
 
         return 0;
     }
-    if ((f->how & F_CONSOLE) || f->vbuf != _IOFBF) {
+    if (f->how & F_CONSOLE) {
         while (left) {
-            if (fputc((unsigned char) *p++, f) == EOF)
+            if (acc_rt_putch((unsigned char) *p++) == EOF)
+                return (want - left) / size;
+            left--;
+        }
+
+        return count;
+    }
+    if (f->vbuf != _IOFBF) {
+        while (left) {
+            if (put_byte((unsigned char) *p++, f) == EOF)
                 return (want - left) / size;
             left--;
         }
@@ -585,9 +662,19 @@ size_t fwrite(const void *from, size_t size, size_t count, FILE *f)
     return count;
 }
 
+/* A line at a time into a text file, each newline through fputc. */
 int fputs(const char *s, FILE *f)
 {
-    size_t n = strlen(s);
+    const char *nl;
+    size_t n;
+
+    if (f && (f->how & F_TEXT))
+        for (; (nl = strchr(s, '\n')); s = nl + 1) {
+            n = (size_t) (nl - s);
+            if ((n && fwrite(s, 1, n, f) != n) || fputc('\n', f) == EOF)
+                return EOF;
+        }
+    n = strlen(s);
 
     return fwrite(s, 1, n, f) == n ? 0 : EOF;
 }
@@ -727,7 +814,7 @@ FILE *tmpfile(void)
 
     if (i < 0 || !tmpnam(temp_names[i]))
         return NULL;
-    f = open_into(&files[i], temp_names[i], "w+", bufs[i]);
+    f = open_into(&files[i], temp_names[i], "wb+", bufs[i]);
     if (!f)
         temp_names[i][0] = 0;
 

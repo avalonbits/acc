@@ -9,7 +9,7 @@
 # registers it sets, what it makes of what MOS answers, and -- for the VDP
 # -- the bytes it sends, which the programs capture by defining putch and
 # mos_puts themselves. Where acc has a call libagon does not, the program
-# says what it should answer under `#ifdef __ACC__`... and libagon's build
+# says what it should answer outside `#ifdef AGONDEV`, and libagon's build
 # prints the same thing from a table, so that both still agree line for
 # line; see the programs.
 #
