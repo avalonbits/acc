@@ -702,7 +702,13 @@ int main(int argc, char **argv)
         bss_end();
         lex_close();                    /* its window is room for the link */
         sym_members_free();
-        sym_names_compact();            /* the link's names, as an object's */
+        /* The link's names alone, as an object's, when the heap is short:
+         * a compact frees the compile's 30 KB or so of names and table, and
+         * costs a little over 1% of a build in one step. The benchmarks'
+         * programs reach the link with 116 KB above the break and more,
+         * and the programs that ran out of memory linking with 41 KB. */
+        if (out_heap_room() < 64U * 1024)
+            sym_names_compact();
         rt_name_all();                  /* the runtime, from the library */
         link_inputs(objs, nobjs);
         gen_finish();

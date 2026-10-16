@@ -620,6 +620,118 @@ padded=$(wc -c < "$tmp/two.bin")
 
 ok "an unused member costs nothing" "$padded" "$plain"
 
+# The index is sorted by a hash of each name, and the link finds a name by
+# its hash and then reads the names of that hash from the file. Every
+# function whose hash another name of libc.a shares, the later ones of each
+# hash most of all, has to be found: a program that takes the address of
+# each of them links.
+python3 - "$LIB" > "$tmp/shared.c" <<'PY'
+import sys
+from collections import defaultdict
+d = open(sys.argv[1], 'rb').read()
+g3 = lambda o: d[o] | d[o + 1] << 8 | d[o + 2] << 16
+nmembers, ndefs = g3(7), g3(10)
+index = 16 + nmembers * 9
+strings = index + ndefs * 8
+by_hash = defaultdict(list)
+for i in range(ndefs):
+    e = index + i * 8
+    at = strings + g3(e)
+    by_hash[d[e + 6] | d[e + 7] << 8].append(d[at:d.index(b'\0', at)].decode())
+names = [n[1:] for v in by_hash.values() if len(v) > 1 for n in v if n.startswith('_')]
+if not names:
+    sys.exit('no two names of the library share a hash')
+for n in names:
+    print('extern void %s(void);' % n)
+print('void (*const taken[])(void) = { %s };' % ', '.join(names))
+print('int main(void) { return taken[0] != 0 ? 42 : 1; }')
+PY
+if [ -s "$tmp/shared.c" ] && "$ACC" -c "$tmp/shared.c" -o "$tmp/shared.o" >/dev/null 2>&1 \
+   && err=$("$ACC" "$tmp/shared.o" "$LIB" -o "$tmp/shared.bin" 2>&1); then
+    pass=$((pass + 1))
+else
+    printf '  FAIL %-36s %s\n' "names that share a hash" "$(head -1 <<<"${err:-no program}")"
+    fail=$((fail + 1))
+fi
+
+
+# The index of a library of each size from one name to nine, and of 33,
+# comes out in order -- by hash, then by name -- written by acc-asan where
+# it is built, which says so if the sort steps outside its buffers.
+ASAN_ACC=bin/acc-asan; [ -x "$ASAN_ACC" ] || ASAN_ACC=$ACC
+mkdir -p "$tmp/sizes"
+bad_sizes=""
+for n in 1 2 3 4 5 6 7 8 9 33; do
+    objs=()
+    for i in $(seq 1 "$n"); do
+        printf 'int sized%d(void) { return %d; }\n' "$i" "$i" > "$tmp/sizes/s$i.c"
+        "$ACC" -c "$tmp/sizes/s$i.c" -o "$tmp/sizes/s$i.o" >/dev/null 2>&1
+        objs+=("$tmp/sizes/s$i.o")
+    done
+    if ! "$ASAN_ACC" -a "$tmp/sizes/l$n.a" "${objs[@]}" > "$tmp/sizes/err" 2>&1 \
+       || ! python3 - "$tmp/sizes/l$n.a" "$n" <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read()
+g3 = lambda o: d[o] | d[o + 1] << 8 | d[o + 2] << 16
+nmembers, ndefs = g3(7), g3(10)
+index = 16 + nmembers * 9
+strings = index + ndefs * 8
+keys = []
+for i in range(ndefs):
+    e = index + i * 8
+    at = strings + g3(e)
+    keys.append((d[e + 6] | d[e + 7] << 8, d[at:d.index(b'\0', at)]))
+sys.exit(0 if ndefs == int(sys.argv[2]) and keys == sorted(keys) else 1)
+PY
+    then
+        bad_sizes="$bad_sizes $n"
+    fi
+done
+ok "an index of each size in order" "${bad_sizes:-none}" none
+
+# And a library of version 1, which had no hashes and an index sorted by
+# name: the library of 33 above written that way, and a program that wants
+# two of its names, which no other library has, takes them from it.
+python3 - "$tmp/sizes/l33.a" "$tmp/v1.a" <<'PY'
+import sys
+d = bytearray(open(sys.argv[1], 'rb').read())
+g3 = lambda o: d[o] | d[o + 1] << 8 | d[o + 2] << 16
+p3 = lambda v: bytes((v & 255, v >> 8 & 255, v >> 16 & 255))
+nmembers, ndefs = g3(7), g3(10)
+index = 16 + nmembers * 9
+strings = index + ndefs * 8
+name = lambda off: bytes(d[strings + off:d.index(b'\0', strings + off)])
+defs = sorted((name(g3(index + i * 8)), i) for i in range(ndefs))
+out = bytearray(d[:16])
+out[3] = 1
+for m in range(nmembers):                   # each member 2 bytes a name nearer
+    e = 16 + m * 9
+    out += d[e:e + 3] + p3(g3(e + 3) - 2 * ndefs) + d[e + 6:e + 9]
+for _, i in defs:
+    out += d[index + i * 8:index + i * 8 + 6]
+out += d[strings:]
+open(sys.argv[2], 'wb').write(out)
+PY
+printf 'int sized7(void);\nint sized33(void);\nint main(void) { return sized7() + sized33(); }\n' \
+    > "$tmp/v1.c"
+"$ACC" -c "$tmp/v1.c" -o "$tmp/v1.o" >/dev/null 2>&1
+"$ACC" "$tmp/v1.o" "$tmp/v1.a" -map "$tmp/v1.map" -o "$tmp/v1.bin" >/dev/null 2>&1
+ok "a library of version 1 links" \
+    "$(awk '$3 == "sized7" || $3 == "sized33" { printf "%s ", $4 }' "$tmp/v1.map" 2>/dev/null)" "s7.o s33.o "
+
+# Two members that define one name: the link takes the first, as the
+# order they were put in the library says.
+printf 'int twin(void) { return 42; }\n' > "$tmp/twin1.c"
+printf 'int twin(void) { return 1; }\n' > "$tmp/twin2.c"
+printf 'int twin(void);\nint main(void) { return twin(); }\n' > "$tmp/twins.c"
+for f in twin1 twin2 twins; do
+    "$ACC" -c "$tmp/$f.c" -o "$tmp/$f.o" >/dev/null 2>&1
+done
+"$ACC" -a "$tmp/twins.a" "$tmp/twin1.o" "$tmp/twin2.o" >/dev/null 2>&1
+"$ACC" "$tmp/twins.o" "$tmp/twins.a" -map "$tmp/twins.map" -o "$tmp/twins.bin" >/dev/null 2>&1
+ok "the first of two members that define a name" \
+    "$(awk '$3 == "twin" { print $4 }' "$tmp/twins.map" 2>/dev/null)" twin1.o
+
 # abort, which is the one function here that does not come back. It is a
 # member of its own: the rest of <stdlib.h> is the heap, and a program that
 # gives up should not be given an allocator for it. So two things are asked

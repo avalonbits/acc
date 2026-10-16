@@ -20,62 +20,136 @@
 /* A library: objects end to end, with a list of what each of them defines in
  * front of them.
  *
- *   0   4   'A', 'C', 'R', 1        what it is, and the version of this
+ *   0   4   'A', 'C', 'R', 2        what it is, and the version of this
  *   4   3   build                   which acc made it: see src/build_id.sh
  *   7   3   nmembers
  *   10  3   ndefs
  *   13  3   strings_len
  *   16      members   nmembers * 9   name, where it starts, how long it is
- *           index     ndefs    * 6   name, which member
+ *           index     ndefs    * 8   name, which member, the name's hash
  *           strings   strings_len
  *           the members themselves, each a whole object file
  *
  * The index is what an archive is for. Without it, finding who defines
  * `strlen` means reading every member's symbol table, and on a card that is
- * the slow thing. With it, it is a seek and a binary search: the index is
- * sorted by name, and it is the only part of the file a link has to read
- * before it knows which members it wants.
+ * the slow thing. With it, it is a binary search: the index is sorted by
+ * the hash of each name (ar_hash), two bytes, low first, and then by the
+ * name, and it is the only part of the file a link has to read before it
+ * knows which members it wants. The link holds the index and not the names,
+ * which are most of the list; the search is of the hashes, in memory, and
+ * a name is read from the file only to be sure of one whose hash matches.
+ *
+ * Version 1 had no hash, its index entries six bytes and sorted by name, and
+ * a library of it is still read: searched by name, from the file.
  *
  * A member is a whole object, unchanged, so anything that can read one can
  * read a member -- and the linker places one the same way either way. */
-#define AR_VERSION  1
+#define AR_VERSION  2
 #define AR_HEADER   16
 #define AR_MEMBER   9
-#define AR_DEF      6
+#define AR_DEF      8
+#define AR_DEF_V1   6
 
 /* Which symbols an archive lists: the ones a member defines, since those are
  * the only ones a link can come here looking for. What a member wants from
  * elsewhere is its own business, and is found by looking again. */
 typedef struct {
-    int name, member;
+    int      name, member;
+    unsigned hash;
 } ArDef;
 
 static ArDef *ar_defs;
 static int    nar_defs, ar_defs_cap;
 
+/* A name's hash for the index: djb2 in sixteen bits, the same on every
+ * machine, and times 33 by adds, since a multiply on the eZ80 is a call
+ * into the runtime. */
+static unsigned ar_hash(const char *text)
+{
+    unsigned short hash = 5381;
+
+    for (; *text; text++) {
+        unsigned short times32 = (unsigned short) (hash + hash);
+
+        times32 = (unsigned short) (times32 + times32);
+        times32 = (unsigned short) (times32 + times32);
+        times32 = (unsigned short) (times32 + times32);
+        times32 = (unsigned short) (times32 + times32);
+        hash = (unsigned short) (times32 + hash + (unsigned char) *text);
+    }
+
+    return hash;
+}
+
 static void ar_def_add(int name, int member, const char *text)
 {
-    int i;
-
     if (nar_defs == ar_defs_cap) {
         ar_defs_cap = ar_defs_cap ? ar_defs_cap * 2 : 64;
         ar_defs = realloc(ar_defs, (size_t) ar_defs_cap * sizeof *ar_defs);
         if (!ar_defs)
             acc_error("out of memory for the archive's index");
     }
+    {
+        ArDef *def = ar_defs + nar_defs;
 
-    /* In its place, so that the index comes out sorted and a link can search
-     * it rather than walk it. Sorted as it is built rather than afterwards:
-     * there is no sort to hand on the Agon, and one written here would be
-     * one more thing to be wrong. */
-    for (i = nar_defs; i > 0; i--) {
-        if (strcmp(strings + ar_defs[i - 1].name, text) <= 0)
-            break;
-        ar_defs[i] = ar_defs[i - 1];
+        def->name = name;
+        def->member = member;
+        def->hash = ar_hash(text);
     }
-    ar_defs[i].name = name;
-    ar_defs[i].member = member;
     nar_defs++;
+}
+
+/* Whether `x` goes before `y` in the index: by hash, and then by name. */
+static int def_before(const ArDef *x, const ArDef *y)
+{
+    if (x->hash != y->hash)
+        return x->hash < y->hash;
+
+    return strcmp(strings + x->name, strings + y->name) < 0;
+}
+
+/* The index sorted, a merge of runs that double each pass: n log n, and
+ * stable, so that of two members that define one name the first keeps the
+ * place the search finds first. In bytes, and unsigned: an index into
+ * ArDefs is a multiply on the eZ80, and a signed compare a call to repair
+ * the flags. */
+static void defs_sort(void)
+{
+    size_t total = (size_t) nar_defs * sizeof *ar_defs, run;
+    char *from = (char *) ar_defs, *to = malloc(total + 1), *swap;
+
+    if (!to)
+        acc_error("out of memory for the archive's index");
+    for (run = sizeof *ar_defs; run < total; run += run) {
+        size_t at;
+
+        for (at = 0; at < total; at += run + run) {
+            char *left = from + at, *out = to + at;
+            char *mid = run < total - at ? left + run : from + total;
+            char *end = run + run < total - at ? left + run + run : from + total;
+            char *right = mid, *stop = out + (end - left);
+
+            for (; out != stop; out += sizeof *ar_defs) {
+                char **take = &right;
+
+                if (left != mid
+                    && (right == end
+                        || !def_before((ArDef *) (void *) right,
+                                       (ArDef *) (void *) left)))
+                    take = &left;
+                memcpy(out, *take, sizeof *ar_defs);
+                *take += sizeof *ar_defs;
+            }
+        }
+        swap = from;
+        from = to;
+        to = swap;
+    }
+    if (from != (char *) ar_defs) {
+        memcpy(ar_defs, from, total);
+        to = from;
+    }
+    free(to);
 }
 
 /* The name a member is known by: the file's, without the directories in
@@ -139,6 +213,7 @@ void ar_write(const char *path, const char **members, int nmembers)
                            obj_sym_name(&o, j));
         obj_free(&o);
     }
+    defs_sort();
 
     f = write_open(path);
 
@@ -161,6 +236,8 @@ void ar_write(const char *path, const char **members, int nmembers)
     for (i = 0; i != nar_defs; i++) {
         put_num(f, ar_defs[i].name);
         put_num(f, ar_defs[i].member);
+        fputc((int) (ar_defs[i].hash & 0xff), f);
+        fputc((int) (ar_defs[i].hash >> 8), f);
     }
     if (strings_len
         && (int) fwrite(strings, 1, (size_t) strings_len, f) != strings_len)
@@ -200,7 +277,7 @@ int ar_open_if(const char *path, Archive *a)
         acc_error("'%s' is too short to be a library", path);
     if (head[0] != 'A' || head[1] != 'C' || head[2] != 'R')
         acc_error("'%s' is not a library acc made", path);
-    if (head[3] != AR_VERSION)
+    if (head[3] != AR_VERSION && head[3] != 1)
         acc_error("'%s' is a library of version %d, and this acc reads "
                   "version %d", path, head[3], AR_VERSION);
 
@@ -209,9 +286,12 @@ int ar_open_if(const char *path, Archive *a)
     a->nmembers = get24(head + 7);
     a->ndefs = get24(head + 10);
     a->strings_len = get24(head + 13);
+    a->version = head[3];
 
     msize = (size_t) a->nmembers * AR_MEMBER;
-    dsize = (size_t) a->ndefs * AR_DEF;
+    dsize = (size_t) a->ndefs * AR_DEF_V1;
+    if (a->version != 1)
+        dsize += (size_t) (a->ndefs + a->ndefs);     /* AR_DEF, eight */
     front = (int) (msize + dsize) + a->strings_len;
     if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0)
         acc_error("cannot read '%s'", path);
@@ -288,9 +368,9 @@ const char *ar_member_name(const Archive *a, int i)
     return name;
 }
 
-/* Which member defines `name`, or -1. A binary search, which is what the
- * index is sorted for. */
-int ar_find(const Archive *a, const char *name)
+/* Which member a version 1 library says defines `name`, or -1: a binary
+ * search of an index sorted by name, each name read from the file. */
+static int find_by_name(const Archive *a, const char *name)
 {
     unsigned low = 0, high = (unsigned) a->ndefs;
 
@@ -302,7 +382,7 @@ int ar_find(const Archive *a, const char *name)
         const unsigned char *def = a->defs + mid + mid + mid;
         int order;
 
-        def += mid + mid + mid;         /* AR_DEF, six */
+        def += mid + mid + mid;         /* AR_DEF_V1, six */
         order = name_order(a, get24(def), name);
         if (order == 0)
             return get24(def + 3);
@@ -310,6 +390,52 @@ int ar_find(const Archive *a, const char *name)
             low = mid + 1;
         else
             high = mid;
+    }
+
+    return -1;
+}
+
+/* Entry i of a version 2 index: eight bytes each, found by adds. */
+static const unsigned char *def_entry(const Archive *a, unsigned i)
+{
+    unsigned twice = i + i, four = twice + twice;
+
+    return a->defs + four + four;
+}
+
+/* Which member defines `name`, or -1. The first entry whose hash is not
+ * below the name's is found by halving, the hashes compared high byte
+ * first, which needs no shift; from there each entry of the same hash is
+ * the name or not, which only the file can say. Two names in a library
+ * seldom share a hash, so that is about one read for a name the library
+ * has, and none for most it does not. */
+int ar_find(const Archive *a, const char *name)
+{
+    unsigned short hash;
+    unsigned char low_byte, high_byte;
+    unsigned low = 0, high = (unsigned) a->ndefs;
+    const unsigned char *def;
+
+    if (a->version == 1)
+        return find_by_name(a, name);
+    hash = (unsigned short) ar_hash(name);
+    memcpy(&low_byte, &hash, 1);                /* the eZ80 and the host are */
+    memcpy(&high_byte, (char *) &hash + 1, 1);  /* little-endian */
+    while (low != high) {
+        unsigned mid = (low + high) >> 1;
+
+        def = def_entry(a, mid);
+        if (def[7] < high_byte || (def[7] == high_byte && def[6] < low_byte))
+            low = mid + 1;
+        else
+            high = mid;
+    }
+    for (; low != (unsigned) a->ndefs; low++) {
+        def = def_entry(a, low);
+        if (def[7] != high_byte || def[6] != low_byte)
+            break;
+        if (name_order(a, get24(def), name) == 0)
+            return get24(def + 3);
     }
 
     return -1;

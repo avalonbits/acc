@@ -26,6 +26,7 @@ void out_resident(int at);          /* from `at` on, in memory again */
 int  out_slot_get(int off);         /* a slot in the file, for cut_out */
 void out_slot_put(int off, int value);
 void out_cut_prepare(void);         /* before the file's addresses move */
+unsigned out_heap_room(void);       /* the heap above malloc's break */
 
 /* An addition the image's file is to get: `value` added to the three bytes
  * at `at`. gen_finish hands its fixups over as these, in the order of

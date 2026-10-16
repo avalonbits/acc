@@ -736,7 +736,10 @@ leading underscore, as agondev spells it.
 
 **Libraries** ([`archive.c`](../src/archive.c)) are objects end to end behind a sorted index
 of what each defines; finding a member is a binary search in the index,
-which is the only part a link reads before it knows what it wants.
+which is the only part a link reads before it knows what it wants. The
+index is sorted by a 16-bit hash of each name, which it carries, so that
+the link holds the index and not the names: the search is in memory, and
+the card is read once to be sure of the name the hash found.
 
 **Linking** ([`link.c`](../src/link.c)) reuses the compiler: an object's symbols go into
 the compiler's own symbol table, and a reference to a name no one has

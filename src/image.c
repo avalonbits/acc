@@ -227,6 +227,15 @@ static void img_free(unsigned char *img)
     (void) img;
     img_low = NULL;
 }
+
+/* What malloc could still take by moving its break: up to the image, or
+ * to the top of the heap while there is no image. */
+unsigned out_heap_room(void)
+{
+    char *top = img_low ? (char *) img_low : __heaptop;
+
+    return (unsigned) (top - _sbrkbase);
+}
 #else
 static unsigned char *img_take(int want)
 {
@@ -244,6 +253,13 @@ static unsigned char *img_grow(unsigned char *img, int used, int *capp)
 static void img_free(unsigned char *img)
 {
     free(img);
+}
+
+/* None, for main to compact the names on every build: memory is not short
+ * here, and every test then runs name_compact. */
+unsigned out_heap_room(void)
+{
+    return 0;
 }
 #endif
 

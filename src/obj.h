@@ -63,6 +63,7 @@ typedef struct {
     unsigned char *members, *defs;       /* the two tables, as in the file */
     long           strings_at;           /* where the names start in it */
     int            build, nmembers, ndefs, strings_len, size;
+    unsigned char  version;              /* 1 has no hashes: see archive.c */
 } Archive;
 
 void        ar_write(const char *path, const char **members, int nmembers);
