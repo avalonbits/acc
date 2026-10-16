@@ -193,17 +193,26 @@ static unsigned char *img_take(int want)
     return low;
 }
 
-/* Twice as big, or failing that as big as there is room for, so long as
- * that is a kilobyte more. */
+/* A quarter bigger, and at least 2 KB, or failing that a kilobyte bigger.
+ *
+ * Not twice, and not all the room there is: what the image takes, malloc
+ * cannot, and the image keeps it until the next flush. Doubled, a function
+ * of 33 KB held 64 KB; and where the double did not fit, the image took
+ * every byte up to malloc's break, and a long function's jump tables found
+ * the heap full with half of it standing empty above the code. A quarter
+ * at a time still copies the image a bounded number of times its size. */
 static unsigned char *img_grow(unsigned char *img, int used, int *capp)
 {
-    int want = *capp * 2;
-    unsigned char *low = (unsigned char *) __heaptop - want;
+    int want = *capp + ((unsigned) *capp >> 2);
+    unsigned char *low;
 
+    if ((unsigned) want < (unsigned) *capp + 2048)
+        want = *capp + 2048;
+    low = (unsigned char *) __heaptop - want;
     if (low <= (unsigned char *) _sbrkbase) {
-        low = (unsigned char *) _sbrkbase + 1;
-        want = (int) ((unsigned char *) __heaptop - low);
-        if ((unsigned) want < (unsigned) *capp + 1024)
+        want = *capp + 1024;
+        low = (unsigned char *) __heaptop - want;
+        if (low <= (unsigned char *) _sbrkbase)
             return NULL;
     }
     memmove(low, img, (size_t) used);
@@ -217,6 +226,15 @@ static void img_free(unsigned char *img)
 {
     (void) img;
     img_low = NULL;
+}
+
+/* What malloc could still take by moving its break: up to the image, or
+ * to the top of the heap while there is no image. */
+unsigned out_heap_room(void)
+{
+    char *top = img_low ? (char *) img_low : __heaptop;
+
+    return (unsigned) (top - _sbrkbase);
 }
 #else
 static unsigned char *img_take(int want)
@@ -235,6 +253,13 @@ static unsigned char *img_grow(unsigned char *img, int used, int *capp)
 static void img_free(unsigned char *img)
 {
     free(img);
+}
+
+/* None, for main to compact the names on every build: memory is not short
+ * here, and every test then runs name_compact. */
+unsigned out_heap_room(void)
+{
+    return 0;
 }
 #endif
 

@@ -151,6 +151,7 @@ void lex_open(const char *path);
 void lex_add_include(const char *dir);
 void lex_add_include_default(const char *dir);
 void name_table_free(void);         /* before an object is written */
+void name_compact(unsigned char *first, int bytes, int step);  /* only these names */
 void sym_members_free(void);        /* once the source is read */
 void lex_define(const char *arg);       /* -D, as a #define would read it */
 void lex_undefine(const char *arg);     /* -U, as a #undef would */

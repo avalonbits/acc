@@ -40,6 +40,26 @@ const char *lex_path(void);
 const char *errors_path;
 int errors_asked;
 
+#if defined(AGONDEV) && defined(__clang__)
+extern FILE _file_streams[];            /* libagon's files: see <stdio.h> */
+
+/* Every file still open, closed, on the way out with an error. MOS keeps a
+ * program's files open after it ends, and has eight: four compiles that
+ * stopped with their libraries open left none for the next, and every acc
+ * after that said it could not open a source that was there. The console
+ * redirected to a file goes with them, and what is printed after goes to
+ * the screen. */
+static void files_close(void)
+{
+    int i;
+
+    for (i = 0; i < FOPEN_MAX; i++)
+        if (_file_streams[i].fhandle)
+            fclose(&_file_streams[i]);
+    fmt_console = NULL;
+}
+#endif
+
 __attribute__((noreturn)) static void fail(const char *file, int line, int col,
                                            const char *msg)
 {
@@ -53,6 +73,9 @@ __attribute__((noreturn)) static void fail(const char *file, int line, int col,
             fclose(f);
         }
     }
+#if defined(AGONDEV) && defined(__clang__)
+    files_close();
+#endif
     exit(errors_asked ? ERRORS_EXIT : ERROR_EXIT);
 }
 

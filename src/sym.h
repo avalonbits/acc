@@ -162,6 +162,7 @@ void sym_init(void);
 #define SYM_NONE (-1)
 
 int  sym_nglobals(void);                 /* the file-scope region, in bytes */
+void sym_names_compact(void);            /* names a link can want, alone kept */
 int  sym_find(NameRef name);             /* innermost first; SYM_NONE if unknown */
 int  sym_push(NameRef name, int kind, int val);
 int  sym_push_local(NameRef name, int kind, int val);  /* in the function, whatever the kind */

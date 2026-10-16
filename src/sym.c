@@ -150,10 +150,23 @@ void sym_init(void)
 __attribute__((noinline))
 static void syms_grow(void)
 {
-    cap *= 2;
-    sym_table = realloc(sym_table, cap);
-    if (!sym_table)
-        acc_error("out of memory for symbols");
+    /* Twice, or where the heap has no block of that, a quarter more: a
+     * table of 15 KB -- a program's headers' declarations, before a link
+     * adds a library's -- wanted 30 KB in one piece from a heap with half
+     * of it free. realloc leaves the table as it was when it fails. The
+     * quarter need not be a whole number of symbols: the table is full
+     * when less than one fits (sym_push). */
+    Sym *grown = realloc(sym_table, cap * 2);
+
+    if (grown) {
+        cap *= 2;
+    } else {
+        grown = realloc(sym_table, cap + (cap >> 2));
+        if (!grown)
+            acc_error("out of memory for symbols");
+        cap += cap >> 2;
+    }
+    sym_table = grown;
 }
 
 /* A symbol in the function's own region whatever its kind: an enum
@@ -166,7 +179,7 @@ int push_local(NameRef name, int kind, int val)
     Sym *sym;
     int at;
 
-    if (sym_nbytes == cap)
+    if ((unsigned) (cap - sym_nbytes) < sizeof(Sym))
         syms_grow();
     at = sym_nbytes;
     sym = sym_at(at);
@@ -207,7 +220,7 @@ int sym_push(NameRef name, int kind, int val)
 
     if (sym_kind_local(kind))
         return push_local(name, kind, val);
-    if (sym_nbytes == cap)
+    if ((unsigned) (cap - sym_nbytes) < sizeof(Sym))
         syms_grow();
 
     /* File scope. It goes in below the locals, which keeps every index
@@ -233,6 +246,13 @@ int sym_push(NameRef name, int kind, int val)
     put24(global_field(name), at + 1);
 
     return at;
+}
+
+/* The names of the file-scope symbols alone kept, for a link that follows
+ * the compile: see name_compact. */
+void sym_names_compact(void)
+{
+    name_compact((unsigned char *) &sym_at(0)->name, sym_nglobal_bytes, sizeof(Sym));
 }
 
 /* The file-scope region, in bytes: symbols [0, sym_nglobals()) stepping by

@@ -43,13 +43,14 @@ c_exports = {e[1:] for e in exports if e.startswith('_')}
 def listed(path):              # the names a library's index lists
     d = open(path, 'rb').read()
     g3 = lambda o: d[o] | d[o + 1] << 8 | d[o + 2] << 16
-    assert d[:4] == b'ACR\x01', 'not an acc library'
+    assert d[:3] == b'ACR' and d[3] in (1, 2), 'not an acc library'
+    entry = 6 if d[3] == 1 else 8           # version 2 adds a hash
     nmembers, ndefs = g3(7), g3(10)
-    strings = 16 + nmembers * 9 + ndefs * 6
+    strings = 16 + nmembers * 9 + ndefs * entry
     def name(off):
         end = d.index(b'\0', strings + off)
         return d[strings + off:end].decode()
-    found = {name(g3(16 + nmembers * 9 + i * 6)) for i in range(ndefs)}
+    found = {name(g3(16 + nmembers * 9 + i * entry)) for i in range(ndefs)}
     return {n[1:] if n.startswith('_') else '@' + n for n in found}
 index = listed(sys.argv[1])
 libc = listed(sys.argv[2])
