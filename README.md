@@ -153,7 +153,7 @@ is left between them -- and acc says so if a program will not fit.
 `acc -v` prints the version:
 
     */ acc -v
-    acc 0.6.0 (build 2515261)
+    acc 0.6.1 (build 1849927)
 
 Every compile and link ends by printing the time it took, as
 `Done in 0.04 seconds`; the examples leave that line out. An error prints
@@ -312,7 +312,7 @@ The Agon build needs [AgonDev](https://github.com/AgonPlatform/agondev) in
 `~/agondev` (or `AGONDEV=<dir>`):
 
     make -f Makefile.agon       # bin/acc.bin
-    ./mkrelease.sh 0.6.0        # acc-0.6.0.zip, the SD card layout
+    ./mkrelease.sh 0.6.1        # acc-0.6.1.zip, the SD card layout
 
 `make test` runs every program it compiles on
 [fab-agon-emulator](https://github.com/tomm/fab-agon-emulator), and checks
