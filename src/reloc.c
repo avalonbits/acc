@@ -165,11 +165,14 @@ void out_cut_sum(const Cut *cuts, int n)
 
     /* Grown and kept, never given back. This is asked for once per function
      * whose jumps are being shortened, and an allocator walk for each of
-     * them came to more than the work it was for. */
+     * them came to more than the work it was for. An eighth over, and not
+     * twice: a function of 1,000 statements wanted 18 KB of runs, asked for
+     * 36, and the heap had 29. Nothing in it is kept from one function to
+     * the next, so it is not copied. */
     if (n > cut_run_cap) {
-        cut_run_cap = n * 2;
-        cut_run = realloc(cut_run,
-                          (size_t) cut_run_cap * CUT_WIDE * sizeof *cut_run);
+        cut_run_cap = n + (int) ((unsigned) n >> 3);
+        free(cut_run);
+        cut_run = malloc((size_t) cut_run_cap * CUT_WIDE * sizeof *cut_run);
         if (!cut_run)
             acc_error("out of memory for the runs being taken out");
     }

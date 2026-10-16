@@ -221,13 +221,13 @@ that has some of each, or many headers, reaches the limit sooner.
 
 | In one file | Builds | Runs out |
 | --- | --- | --- |
-| small functions | 1,600 | 2,000 |
-| statements in one function | 800 | 1,200 |
+| small functions | 2,000 | 2,400 |
+| statements in one function | 1,200 | 1,400 |
 | `#define`s | 1,500 | 2,000 |
 | initialised globals | 2,000 | 3,000 |
 | string literals | 2,000 | 3,000 |
 | members of one struct | 3,000 | 5,000 |
-| cases of one `switch` | 1,000 | 2,000 |
+| cases of one `switch` | 2,000 | 3,000 |
 
 A block nested 127 deep, a function of 800 locals and an expression of
 800 terms all build. `test/oom.sh` builds each of these, at a size below
@@ -238,7 +238,7 @@ When acc runs out, it says so and what it was making, as
 object behind. Split the program into several files, compile each with
 `-c`, and link the objects: each compile then holds only its own file.
 One file compiled with `-c` and linked on its own is no help, since the
-link holds the object's symbols and relocations at once: 1,600 small
+link holds the object's symbols and relocations at once: 2,000 small
 functions build in one step, but only 1,200 as an object and a link.
 
 The limits are the Agon's. On the host, acc has the host's memory.
