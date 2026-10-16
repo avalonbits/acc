@@ -250,8 +250,8 @@ runs_file "a program's own ultoa and ltoa" "$tmp/own_ultoa.c"
 # What reaches the screen: a newline as a return and a line feed, from
 # every way of writing text there -- putchar, puts, printf, fputc, fputs,
 # fwrite, fprintf to stderr, perror's, the wide printf -- as agondev's
-# library sends it; and putch's byte as it is, for a VDU command whose
-# numbers may be 10 or 13. The program catches what would go to MOS by
+# library sends it, but no second return after the program's own; and
+# putch's byte as it is, for a VDU command whose numbers may be 10 or 13. The program catches what would go to MOS by
 # being its own acc_rt_putch, which the runtime's otherwise is.
 cat > "$tmp/screen.c" <<'EOF2'
 #include <stdio.h>
@@ -312,6 +312,22 @@ int main(void)
     putch('\n');
     putch('\r');
     if (!sent("\n\r", 2)) return 14;
+    /* A newline the program has put its own return in front of gets no
+     * second one, by whichever way the two go out. */
+    printf("a\r\n");
+    if (!sent("a\r\n", 3)) return 15;
+    putchar('\r');
+    putchar('\n');
+    if (!sent("\r\n", 2)) return 16;
+    fputs("\r\n\n", stdout);
+    if (!sent("\r\n\r\n", 4)) return 17;
+    puts("z\r");
+    if (!sent("z\r\n", 3)) return 18;
+    /* putch's 13 is a VDU command's number and not a return: the newline
+     * after it has its own. */
+    putch(13);
+    putchar('\n');
+    if (!sent("\r\r\n", 3)) return 19;
 
     return 42;
 }

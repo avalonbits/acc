@@ -187,12 +187,86 @@ int main(void)
     fclose(f);
     bytes("fputs wb");
     reads("cr crlf", "z\r\r\nw", 5, "r");
+
+    /* A return the program wrote itself before a newline, by any way,
+     * gets no second one: libagon writes "\r\r\n". */
+    f = fopen("t_text.txt", "w");
+    fputs("a\r\n", f);
+    fputc('\r', f);
+    fputc('\n', f);
+    fwrite("\r", 1, 1, f);
+    fputc('\n', f);
+    fprintf(f, "%s\n", "x\r");
+    fclose(f);
+    bytes("own return w");
+    f = fopen("t_text.txt", "w");
+    setvbuf(f, NULL, _IONBF, 0);
+    fputc('\r', f);
+    fputc('\n', f);
+    fclose(f);
+    bytes("own return nbf");
+    {
+        static char block[600];
+        long size;
+        int c1, c2, c3;
+
+        memset(block, 'b', sizeof block);
+        block[sizeof block - 1] = '\r';
+        f = fopen("t_text.txt", "w");
+        fwrite(block, 1, sizeof block, f);      /* past the buffer: to MOS */
+        fputc('\n', f);
+        fclose(f);
+        f = fopen("t_text.txt", "rb");
+        fseek(f, -3, SEEK_END);
+        size = ftell(f) + 3;
+        c1 = fgetc(f);
+        c2 = fgetc(f);
+        c3 = fgetc(f);
+        fclose(f);
+        printf("own return big   %ld: %d %d %d\n", size, c1, c2, c3);
+    }
+
+    /* Read up to a return, then written: the newline goes in after it
+     * alone; read up to a return and a line feed, it gets its own. */
+    f = fopen("t_text.txt", "wb");
+    fwrite("ab\r", 1, 3, f);
+    fclose(f);
+    f = fopen("t_text.txt", "r+");
+    fgetc(f);
+    fgetc(f);
+    fgetc(f);
+    fputc('\n', f);
+    fclose(f);
+    bytes("read cr, getc");
+    f = fopen("t_text.txt", "wb");
+    fwrite("ab\r", 1, 3, f);
+    fclose(f);
+    f = fopen("t_text.txt", "r+");
+    fread(line, 1, 3, f);
+    fputc('\n', f);
+    fclose(f);
+    bytes("read cr, fread");
+    f = fopen("t_text.txt", "wb");
+    fwrite("x\r\ny", 1, 4, f);
+    fclose(f);
+    f = fopen("t_text.txt", "r+");
+    fgetc(f);
+    fgetc(f);
+    fputc('\n', f);
+    fclose(f);
+    bytes("read crlf");
 #else
     printf("%-16s 97 13 10 98 13 10 13 10 99\n", "fputs w");
     printf("%-16s 97 10\n", "fputs wb");
     printf("cr crlf    getc  122 13 10 119 | tell 5\n");
     printf("cr crlf    fgets [122 13 10] [119]\n");
     printf("cr crlf    fread 4: 122 13 10 119\n");
+    printf("%-16s 97 13 10 13 10 13 10 120 13 10\n", "own return w");
+    printf("%-16s 13 10\n", "own return nbf");
+    printf("own return big   601: 98 13 10\n");
+    printf("%-16s 97 98 13 10\n", "read cr, getc");
+    printf("%-16s 97 98 13 10\n", "read cr, fread");
+    printf("%-16s 120 13 10 13 10\n", "read crlf");
 #endif
 
     across(511, 40, 100);

@@ -52,7 +52,7 @@
 #define B_INPUT   1
 #define B_OUTPUT  2
 
-int acc_rt_putch(int c);
+int __acc_console_putc(int c);     /* stdio.c: the screen */
 
 static char  bufs[FOPEN_MAX][BUFSIZ];
 static FILE  files[FOPEN_MAX];
@@ -61,9 +61,9 @@ static char  temp_names[FOPEN_MAX][L_tmpnam];
 /* The keyboard's line, and room for the newline after it. */
 static char  line[256];
 
-static FILE  console_in  = { 0, F_READ | F_CONSOLE, 0, 0, 0, _IOLBF, 0, EOF, EOF, 0, 0, 0, line };
-static FILE  console_out = { 0, F_WRITE | F_CONSOLE, 0, 0, 0, _IONBF, 0, EOF, EOF, 0, 0, 0, 0 };
-static FILE  console_err = { 0, F_WRITE | F_CONSOLE, 0, 0, 0, _IONBF, 0, EOF, EOF, 0, 0, 0, 0 };
+static FILE  console_in  = { 0, F_READ | F_CONSOLE, 0, 0, 0, _IOLBF, 0, 0, EOF, EOF, 0, 0, 0, line };
+static FILE  console_out = { 0, F_WRITE | F_CONSOLE, 0, 0, 0, _IONBF, 0, 0, EOF, EOF, 0, 0, 0, 0 };
+static FILE  console_err = { 0, F_WRITE | F_CONSOLE, 0, 0, 0, _IONBF, 0, 0, EOF, EOF, 0, 0, 0, 0 };
 
 FILE *stdin  = &console_in;
 FILE *stdout = &console_out;
@@ -144,6 +144,8 @@ static int drop_input(FILE *f)
 {
     long ahead = f->held - f->at + (f->unget != EOF);
 
+    if (f->unget != EOF)
+        f->cr_before = 0;               /* back before what is not known */
     f->held = f->at = 0;
     f->unget = EOF;
     f->wunget = EOF;
@@ -239,6 +241,7 @@ static FILE *open_into(FILE *f, const char *path, const char *mode, char *buf)
     f->eof = 0;
     f->vbuf = _IOFBF;
     f->orient = 0;
+    f->cr_before = 0;
     f->unget = EOF;
     f->wunget = EOF;
     f->held = 0;
@@ -362,14 +365,12 @@ static int fill(FILE *f)
     if (f->how & F_CONSOLE) {
         line[0] = 0;
         if (mos_editline(line, sizeof line - 1, 1) == 27) {
-            acc_rt_putch('\r');
-            acc_rt_putch('\n');
+            __acc_console_putc('\n');
             f->eof = 1;
 
             return 0;
         }
-        acc_rt_putch('\r');
-        acc_rt_putch('\n');
+        __acc_console_putc('\n');      /* the line ends on the screen */
         n = (int) strlen(line);
         line[n++] = '\n';
     } else {
@@ -380,6 +381,15 @@ static int fill(FILE *f)
     f->held = n;
 
     return n;
+}
+
+/* What a read went past, for the newline a write puts after it: see fputc.
+ * Not in a file opened to append, whose writes go at its end, wherever
+ * reading has got to. */
+static void read_past(FILE *f, int c)
+{
+    if (!(f->how & F_APPEND))
+        f->cr_before = c == '\r';
 }
 
 /* The next byte of the buffer, filling it first if it is used up: EOF at
@@ -428,6 +438,8 @@ int fgetc(FILE *f)
     c = next_byte(f);
     if (c == '\r' && (f->how & F_TEXT))
         c = after_return(f);
+    if (c != EOF)
+        read_past(f, c);
 
     return c;
 }
@@ -448,6 +460,7 @@ int ungetc(int c, FILE *f)
         return EOF;
     f->unget = (unsigned char) c;
     f->eof = 0;
+    f->cr_before = 0;                   /* the byte before it is not known */
 
     return (unsigned char) c;
 }
@@ -537,6 +550,7 @@ size_t fread(void *to, size_t size, size_t count, FILE *f)
                 memcpy(p, from, (size_t) n);
                 f->at += n;
             }
+            read_past(f, (unsigned char) p[n - 1]);
         } else if (is_file(f) && !(f->how & F_TEXT)
                    && want - got >= (size_t) BUFSIZ) {
             /* A big read has nothing to gain by being copied through the
@@ -561,17 +575,6 @@ size_t fread(void *to, size_t size, size_t count, FILE *f)
     return got / size;
 }
 
-/* A character to the screen: a newline as a return and a line feed, as
- * agondev's fputc and fwrite send one there -- fwrite too, which writes
- * a file's bytes as they are. */
-static int console_put(int c)
-{
-    if ((unsigned char) c == '\n')
-        acc_rt_putch('\r');
-
-    return acc_rt_putch((unsigned char) c);
-}
-
 /* One byte into the buffer as it is, for fputc and for fwrite: a stream
  * that can be written to and is not the screen. */
 static int put_byte(int c, FILE *f)
@@ -585,6 +588,7 @@ static int put_byte(int c, FILE *f)
         return EOF;
     f->last = B_OUTPUT;
     f->buf[f->held++] = (char) c;
+    f->cr_before = (unsigned char) c == '\r';
     if (f->vbuf == _IONBF || (f->vbuf == _IOLBF && c == '\n'))
         if (flush_output(f) != 0)
             return EOF;
@@ -603,8 +607,11 @@ int fputc(int c, FILE *f)
         return EOF;
     }
     if (f->how & F_CONSOLE)
-        return console_put(c);
-    if ((unsigned char) c == '\n' && (f->how & F_TEXT)
+        return __acc_console_putc(c);
+    /* A newline into a text file, a return and a line feed: but the line
+     * feed alone when the byte before it was the program's own return, so
+     * that its "\r\n" is not "\r\r\n". */
+    if ((unsigned char) c == '\n' && (f->how & F_TEXT) && !f->cr_before
         && put_byte('\r', f) == EOF)
         return EOF;
 
@@ -633,7 +640,7 @@ size_t fwrite(const void *from, size_t size, size_t count, FILE *f)
     }
     if (f->how & F_CONSOLE) {
         while (left) {
-            if (console_put((unsigned char) *p++) == EOF)
+            if (__acc_console_putc((unsigned char) *p++) == EOF)
                 return (want - left) / size;
             left--;
         }
@@ -660,6 +667,7 @@ size_t fwrite(const void *from, size_t size, size_t count, FILE *f)
     if (left >= (size_t) BUFSIZ) {
         if (flush_output(f) != 0 || write_out(f, p, (int) left) != 0)
             return 0;
+        f->cr_before = p[left - 1] == '\r';
 
         return count;
     }
@@ -669,6 +677,7 @@ size_t fwrite(const void *from, size_t size, size_t count, FILE *f)
     memcpy(f->buf + f->held, p, left);
     f->held += (int) left;
     f->last = B_OUTPUT;
+    f->cr_before = p[left - 1] == '\r';
 
     return count;
 }
@@ -727,6 +736,7 @@ int fseek(FILE *f, long offset, int whence)
     f->wunget = EOF;
     f->held = f->at = 0;
     f->last = B_NONE;
+    f->cr_before = 0;            /* the byte before the place is not known */
 
     /* MOS seeks to a place and not by an amount, so the end is worked out
      * from the length kept in write_out. */
