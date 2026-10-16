@@ -77,10 +77,16 @@ mode is not one of these, or `FOPEN_MAX` files are already open.
 | `"w+"` | to read and write; made, or emptied                   |
 | `"a+"` | to read, and to write at the end                      |
 
-The mode is `r`, `w` or `a`, then any of `+` and `b`, in any order.
-`b` changes nothing: there is no text mode, and the bytes of a file
-are read and written as they are, with no change to line ends.
-Anything else in the mode, such as C11's `x`, makes `fopen` fail.
+The mode is `r`, `w` or `a`, then any of `+`, and `b` or `t`, in any
+order. Anything else in the mode, such as C11's `x`, makes `fopen`
+fail.
+
+Without `b` the file is text, as agondev's library has it: each `'\n'`
+written is a return and a line feed in the file, and a return followed
+by a line feed is read as one `'\n'`. A return with anything else after
+it is read as it is. `fwrite` is the exception, and writes its bytes as
+they are in either mode. `t` asks for text, which is what no `b` gives
+anyway. With `b` the bytes are read and written as they are.
 
 In the `a` modes every write goes at the end of the file, wherever the
 place has been put by a seek, and the place starts at the end, as MOS
@@ -199,7 +205,8 @@ every character.
 The next character of `f` (of `stdin` for `getchar`) as an
 `unsigned char`, or `EOF` at the end of the input or on a failure;
 `feof` and `ferror` tell which. Reading a stream that was not opened to
-read sets its error flag and answers `EOF`.
+read sets its error flag and answers `EOF`. In a text file a return
+and the line feed after it are read as one `'\n'`.
 
 `getc` is a function, not a macro, so it is `fgetc` exactly.
 
@@ -243,8 +250,9 @@ Write `c`, as an `unsigned char`, to `f` (to `stdout` for `putchar`),
 and answer it; the answer is `EOF` when the write failed, or `f` was
 not opened to write (which sets its error flag).
 
-`putc` is a function, not a macro. `'\n'` is written as it stands, a
-line feed alone, to the screen as to a file.
+`putc` is a function, not a macro. `'\n'` is written to a text file as
+a return and a line feed, and to a binary file or the screen as it
+stands, a line feed alone.
 
 ## `fputs`, `puts`
 
@@ -256,8 +264,11 @@ and a newline to `stdout`. The answer is 0, or `EOF` when `fputs` could
 not write it all; `puts` always answers 0.
 
 When `stdout` is the screen, `puts` ends the line with a return and a
-line feed, which is what MOS's console wants; when `freopen` has made
-it a file, with a `'\n'` alone. `fputs` writes nothing it is not given.
+line feed, which is what MOS's console wants. When `freopen` has made
+it a file, the line ends as `fputc` writes a `'\n'` there: a return and
+a line feed in a text file, a line feed alone in a binary one. `fputs`
+writes nothing it is not given, but each `'\n'` of `s` goes to a text
+file as a return and a line feed.
 
 ## `fread`, `fwrite`
 
@@ -270,8 +281,13 @@ whole items they read or wrote, which is less than `count` only at the
 end of the input or on a failure. A `size` or `count` of 0 answers 0
 and does nothing.
 
-A read or a write of 512 bytes or more goes straight between MOS and
-the program's memory, not through the buffer. A shorter write is
+`fread` from a text file reads a return and the line feed after it as
+one `'\n'`, as `fgetc` does. `fwrite` writes the bytes it is given as
+they are, in a text file too, as agondev's library does: a block of data
+written to a file opened without `b` arrives unchanged.
+
+A read from a binary file, or a write, of 512 bytes or more goes
+straight between MOS and the program's memory, not through the buffer. A shorter write is
 copied into the buffer, and to an unbuffered or line-buffered stream,
 or the screen, it is written a character at a time.
 
@@ -290,12 +306,13 @@ that it fits.
 first, forgets a character pushed back, and takes off the end-of-file
 flag. The answer is 0, or -1 when `f` is not a file (the keyboard or
 the screen), `whence` is none of the three, the flush failed, or the
-place would be before the start of the file. Text and binary are the
-same, so any `offset` may be used with any `whence`.
+place would be before the start of the file. A place is a count of the
+file's own bytes, in a text file as in a binary one, the returns before
+its line feeds included, so any `offset` may be used with any `whence`.
 
-`ftell` answers the place, in bytes from the start, counting what is
-held to be written and leaving out what was read ahead or pushed
-back. It answers -1 when `f` is not a file.
+`ftell` answers the place, in the file's bytes from the start,
+counting what is held to be written and leaving out what was read
+ahead or pushed back. It answers -1 when `f` is not a file.
 
 `rewind(f)` is `fseek(f, 0L, SEEK_SET)`, and takes off the error flag
 as well.
@@ -367,7 +384,7 @@ bytes, or, when `s` is `NULL`, to a static buffer the next such call
 writes over. Nothing is made: another program may take the name before
 this one does.
 
-`tmpfile` opens a file with such a name, `"w+"`, and answers it, or
+`tmpfile` opens a file with such a name, `"wb+"`, and answers it, or
 `NULL` when there is no free place in the table or no free name, or
 MOS cannot make it. It is removed from the card when it is closed,
 which is at the end of the program at the latest; a program that stops

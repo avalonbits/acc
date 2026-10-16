@@ -2,7 +2,12 @@
  * character, a line and a block at a time, pushing back, seeking and
  * telling in the middle of buffered input and output, the end-of-file and
  * error indicators, removing, renaming, temporary files, stdin from a
- * file, and atexit, whose functions run after main has returned. */
+ * file, and atexit, whose functions run after main has returned.
+ *
+ * In binary, where the bytes and places are glibc's: on the Agon a file
+ * opened without `b` has a return before each newline, as agondev's library
+ * makes it (test/agonlib/textmode.c). stdin's file is the exception, written
+ * and read as text, which comes back as it went in on both. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,13 +50,13 @@ int main(void)
     atexit(first);
 
     /* Lines, and reading them back. */
-    f = fopen("t_lines.txt", "w");
+    f = fopen("t_lines.txt", "wb");
     fputs("alpha\nbeta\n", f);
     fprintf(f, "gamma %d\n", 3);
     fputc('d', f);
     fclose(f);
     dump("t_lines.txt");
-    f = fopen("t_lines.txt", "r");
+    f = fopen("t_lines.txt", "rb");
     while (fgets(line, sizeof line, f))
         printf("fgets [%s]\n", strchr(line, '\n') ? "line" : line);
     printf("eof %d err %d\n", feof(f) != 0, ferror(f) != 0);
@@ -67,20 +72,20 @@ int main(void)
     fclose(f);
 
     /* Appending, which goes at the end whatever the seek. */
-    f = fopen("t_lines.txt", "a");
+    f = fopen("t_lines.txt", "ab");
     fputs("E\n", f);
     fseek(f, 0, SEEK_SET);
     fputs("F\n", f);
     fclose(f);
     dump("t_lines.txt");
-    f = fopen("t_lines.txt", "a+");
+    f = fopen("t_lines.txt", "a+b");
     printf("a+ reads %c\n", fgetc(f));
     fputs("G", f);
     fclose(f);
     dump("t_lines.txt");
 
     /* Reading and writing one stream, with a seek between. */
-    f = fopen("t_lines.txt", "r+");
+    f = fopen("t_lines.txt", "r+b");
     fgets(line, sizeof line, f);
     fseek(f, 0, SEEK_CUR);
     fputs("BETA", f);
@@ -123,12 +128,12 @@ int main(void)
     fclose(f);
 
     /* Unbuffered, line buffered: what is in the file before the close. */
-    f = fopen("t_nbf.txt", "w");
+    f = fopen("t_nbf.txt", "wb");
     setvbuf(f, NULL, _IONBF, 0);
     fputs("one", f);
     dump("t_nbf.txt");
     fclose(f);
-    f = fopen("t_nbf.txt", "w");
+    f = fopen("t_nbf.txt", "wb");
     setvbuf(f, NULL, _IOLBF, BUFSIZ);
     fputs("two\nthr", f);
     dump("t_nbf.txt");
@@ -167,10 +172,11 @@ int main(void)
         printf("tmpnam %d %d\n", tmpnam(a) != NULL, tmpnam(b) != NULL);
         printf("differ %d\n", strcmp(a, b) != 0);
         f = tmpfile();
-        fputs("temporary", f);
+        fputs("temporary\n", f);
+        printf("tmpfile is binary: tell %ld\n", ftell(f));
         rewind(f);
         fgets(line, sizeof line, f);
-        printf("tmpfile [%s]\n", line);
+        printf("tmpfile [%s]\n", strchr(line, '\n') ? "line" : line);
         fclose(f);
     }
 
