@@ -97,10 +97,13 @@ The values are agondev's. A program may `#undef` any of them. `__FILE__`,
 | names in one compile, keywords too    | 12,287                           |
 
 Beyond these, what limits a compile on the Agon is memory: acc has about
-175 KB of heap for one source, which a file of about 1,000 functions
-fills. A program too big for one file is compiled as several with `-c`.
-acc stops with `out of memory for ...` when it runs out, and says what
-it was making.
+175 KB of heap for one source, which a file of about 2,000 small
+functions, 2,000 macros or 3,000 globals fills, or one function of about
+1,000 statements. A program too big for one file is split into several,
+each compiled with `-c`, and the objects linked; one file compiled with
+`-c` and linked alone gains nothing, since the link holds all of the
+object at once. acc stops with `out of memory for ...` when it runs out,
+says what it was making, and leaves no program or object behind.
 
 A program's own stack is the 16 KB between its heap and the top of
 memory, and nothing stops it running into the heap. Keep large arrays
