@@ -561,6 +561,17 @@ size_t fread(void *to, size_t size, size_t count, FILE *f)
     return got / size;
 }
 
+/* A character to the screen: a newline as a return and a line feed, as
+ * agondev's fputc and fwrite send one there -- fwrite too, which writes
+ * a file's bytes as they are. */
+static int console_put(int c)
+{
+    if ((unsigned char) c == '\n')
+        acc_rt_putch('\r');
+
+    return acc_rt_putch((unsigned char) c);
+}
+
 /* One byte into the buffer as it is, for fputc and for fwrite: a stream
  * that can be written to and is not the screen. */
 static int put_byte(int c, FILE *f)
@@ -592,7 +603,7 @@ int fputc(int c, FILE *f)
         return EOF;
     }
     if (f->how & F_CONSOLE)
-        return acc_rt_putch((unsigned char) c);
+        return console_put(c);
     if ((unsigned char) c == '\n' && (f->how & F_TEXT)
         && put_byte('\r', f) == EOF)
         return EOF;
@@ -622,7 +633,7 @@ size_t fwrite(const void *from, size_t size, size_t count, FILE *f)
     }
     if (f->how & F_CONSOLE) {
         while (left) {
-            if (acc_rt_putch((unsigned char) *p++) == EOF)
+            if (console_put((unsigned char) *p++) == EOF)
                 return (want - left) / size;
             left--;
         }

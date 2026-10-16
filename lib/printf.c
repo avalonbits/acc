@@ -69,6 +69,8 @@ static void emit(int c)
         if (__acc_stdout_putc(c) == EOF)    /* stdout is a file: stdio.c */
             refused = 1;
     } else {
+        if ((unsigned char) c == '\n')     /* the screen's newline, as */
+            acc_rt_putch('\r');           /* putchar's: see stdio.c */
         acc_rt_putch(c);
     }
     written++;

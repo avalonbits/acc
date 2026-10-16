@@ -20,9 +20,17 @@ int acc_rt_putch(int c);
  * program that prints does not carry the file layer. printf reads it too. */
 int (*__acc_stdout_putc)(int c);
 
+/* To the screen, a newline is a return and a line feed, which is what MOS's
+ * console wants and what agondev's putchar sends; putch alone sends the
+ * byte as it is. */
 static int out(int c)
 {
-    return __acc_stdout_putc ? __acc_stdout_putc(c) : acc_rt_putch(c);
+    if (__acc_stdout_putc)
+        return __acc_stdout_putc(c);
+    if ((unsigned char) c == '\n')
+        acc_rt_putch('\r');
+
+    return acc_rt_putch(c);
 }
 
 int putchar(int c)
@@ -30,14 +38,12 @@ int putchar(int c)
     return out(c);
 }
 
-/* And a newline after it, as C says -- which on this machine is a return and
- * a line feed, since that is what MOS's console expects. */
+/* And a newline after it, as C says: each a return and a line feed on the
+ * screen, as out sends every newline there. */
 int puts(const char *s)
 {
     while (*s)
         out(*s++);
-    if (!__acc_stdout_putc)
-        acc_rt_putch('\r');
     out('\n');
 
     return 0;

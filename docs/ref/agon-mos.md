@@ -52,7 +52,9 @@ MOS does not have.
     char getch(void);
 
 `putch` writes the low byte of `c` to the console (`rst.lil $10`) and
-answers `c`. `getch` answers a key from the keyboard: call 0x00,
+answers `c`. The byte goes as it is: a 10 is a line feed alone, which is
+what a VDU command needs of its numbers, where `putchar` and the rest of
+`<stdio.h>` send a newline as a return and a line feed. `getch` answers a key from the keyboard: call 0x00,
 `mos_getkey`.
 
 ## `mos_puts`, `mos_putstring`
