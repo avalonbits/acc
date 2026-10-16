@@ -52,6 +52,7 @@ typedef struct __acc_file {
     unsigned char  eof;
     unsigned char  vbuf;        /* _IOFBF, _IOLBF or _IONBF */
     signed char    orient;      /* wide above 0, bytes below, not yet 0 */
+    unsigned char  cr_before;   /* the byte before its place is a return */
     int            unget;       /* a character pushed back, or EOF */
     int            wunget;      /* a wide one, or WEOF */
     int            held;        /* bytes in buf */

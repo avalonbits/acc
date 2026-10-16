@@ -37,8 +37,12 @@ and a line feed, and `stdin` answers `EOF` from then on, until
 
 `stdout` and `stderr` are the screen, and are not buffered: every
 character goes to MOS as it is written, so there is nothing to flush.
-A `'\n'` is written as it stands, a line feed alone; only `puts` puts a
-return in front of it.
+Every `'\n'` written to the screen, by any of the functions here, is a
+return and a line feed, which is what MOS's console wants and what
+agondev's library sends; after a return the program wrote itself, a
+`"\r\n"`, it is the line feed alone, so that the screen gets no second
+return. `putch` (`<agon/mos.h>`) is the way to send a
+byte as it is, such as a number in a VDU command.
 
 `freopen` turns any of the three into a file. Closing one that is still
 the keyboard or the screen does nothing, and answers 0.
@@ -85,7 +89,13 @@ Without `b` the file is text, as agondev's library has it: each `'\n'`
 written is a return and a line feed in the file, and a return followed
 by a line feed is read as one `'\n'`. A return with anything else after
 it is read as it is. `fwrite` is the exception, and writes its bytes as
-they are in either mode. `t` asks for text, which is what no `b` gives
+they are in either mode.
+
+A `'\n'` written right after a return -- one the program wrote, or the
+last byte it read -- is the line feed alone, so that a program's own
+`"\r\n"` is not `"\r\r\n"`, where agondev's library writes both
+returns. After a seek, an `ungetc`, or on opening the file, the byte
+before is not known, and the `'\n'` has its return. `t` asks for text, which is what no `b` gives
 anyway. With `b` the bytes are read and written as they are.
 
 In the `a` modes every write goes at the end of the file, wherever the
@@ -250,9 +260,9 @@ Write `c`, as an `unsigned char`, to `f` (to `stdout` for `putchar`),
 and answer it; the answer is `EOF` when the write failed, or `f` was
 not opened to write (which sets its error flag).
 
-`putc` is a function, not a macro. `'\n'` is written to a text file as
-a return and a line feed, and to a binary file or the screen as it
-stands, a line feed alone.
+`putc` is a function, not a macro. `'\n'` is written to a text file or
+the screen as a return and a line feed (the line feed alone right after
+a return), and to a binary file as it stands, a line feed alone.
 
 ## `fputs`, `puts`
 
@@ -263,12 +273,9 @@ stands, a line feed alone.
 and a newline to `stdout`. The answer is 0, or `EOF` when `fputs` could
 not write it all; `puts` always answers 0.
 
-When `stdout` is the screen, `puts` ends the line with a return and a
-line feed, which is what MOS's console wants. When `freopen` has made
-it a file, the line ends as `fputc` writes a `'\n'` there: a return and
-a line feed in a text file, a line feed alone in a binary one. `fputs`
-writes nothing it is not given, but each `'\n'` of `s` goes to a text
-file as a return and a line feed.
+Each `'\n'`, of `s` and the one `puts` adds, goes as `fputc` writes it:
+a return and a line feed to the screen or a text file, a line feed alone
+to a binary one. `fputs` writes nothing it is not given.
 
 ## `fread`, `fwrite`
 
@@ -284,7 +291,8 @@ and does nothing.
 `fread` from a text file reads a return and the line feed after it as
 one `'\n'`, as `fgetc` does. `fwrite` writes the bytes it is given as
 they are, in a text file too, as agondev's library does: a block of data
-written to a file opened without `b` arrives unchanged.
+written to a file opened without `b` arrives unchanged. To the screen,
+as agondev's does, it writes each `'\n'` as a return and a line feed.
 
 A read from a binary file, or a write, of 512 bytes or more goes
 straight between MOS and the program's memory, not through the buffer. A shorter write is

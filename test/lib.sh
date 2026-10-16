@@ -247,6 +247,93 @@ int main(void) {
 EOF2
 runs_file "a program's own ultoa and ltoa" "$tmp/own_ultoa.c"
 
+# What reaches the screen: a newline as a return and a line feed, from
+# every way of writing text there -- putchar, puts, printf, fputc, fputs,
+# fwrite, fprintf to stderr, perror's, the wide printf -- as agondev's
+# library sends it, but no second return after the program's own; and
+# putch's byte as it is, for a VDU command whose numbers may be 10 or 13. The program catches what would go to MOS by
+# being its own acc_rt_putch, which the runtime's otherwise is.
+cat > "$tmp/screen.c" <<'EOF2'
+#include <stdio.h>
+#include <string.h>
+#include <wchar.h>
+#include <agon/mos.h>
+
+static unsigned char got[128];
+static int ngot;
+
+int acc_rt_putch(int c)
+{
+    if (ngot < (int) sizeof got)
+        got[ngot++] = (unsigned char) c;
+
+    return c;
+}
+
+/* What the calls since the last check sent, against `want`. */
+static int sent(const char *want, int n)
+{
+    int same = ngot == n && memcmp(got, want, (size_t) n) == 0;
+
+    ngot = 0;
+
+    return same;
+}
+
+int main(void)
+{
+    putchar('\n');
+    if (!sent("\r\n", 2)) return 1;
+    putchar('\r');
+    if (!sent("\r", 1)) return 2;
+    puts("a\nb");
+    if (!sent("a\r\nb\r\n", 6)) return 3;
+    printf("%d\n", 7);
+    if (!sent("7\r\n", 3)) return 4;
+    printf("x\ny");
+    if (!sent("x\r\ny", 4)) return 5;
+    printf("%s", "m\n");
+    if (!sent("m\r\n", 3)) return 6;
+    fputc('\n', stdout);
+    if (!sent("\r\n", 2)) return 7;
+    fputs("p\nq", stdout);
+    if (!sent("p\r\nq", 4)) return 8;
+    fwrite("w\n", 1, 2, stdout);
+    if (!sent("w\r\n", 3)) return 9;
+    fprintf(stderr, "%d\n", 5);
+    if (!sent("5\r\n", 3)) return 10;
+    fputc('\n', stderr);
+    if (!sent("\r\n", 2)) return 11;
+    perror("e");
+    if (ngot < 4 || got[0] != 'e' || got[ngot - 2] != '\r' || got[ngot - 1] != '\n') return 12;
+    ngot = 0;
+    wprintf(L"%d\n", 3);
+    if (!sent("3\r\n", 3)) return 13;
+    putch('\n');
+    putch('\r');
+    if (!sent("\n\r", 2)) return 14;
+    /* A newline the program has put its own return in front of gets no
+     * second one, by whichever way the two go out. */
+    printf("a\r\n");
+    if (!sent("a\r\n", 3)) return 15;
+    putchar('\r');
+    putchar('\n');
+    if (!sent("\r\n", 2)) return 16;
+    fputs("\r\n\n", stdout);
+    if (!sent("\r\n\r\n", 4)) return 17;
+    puts("z\r");
+    if (!sent("z\r\n", 3)) return 18;
+    /* putch's 13 is a VDU command's number and not a return: the newline
+     * after it has its own. */
+    putch(13);
+    putchar('\n');
+    if (!sent("\r\r\n", 3)) return 19;
+
+    return 42;
+}
+EOF2
+runs_file "a newline on the screen, every way" "$tmp/screen.c"
+
 # Microsoft's itoa, ltoa and ultoa, and OpenBSD's strtonum: widely used,
 # though neither C99 nor agondev has them.
 cat > "$tmp/extras.c" <<'EOF2'

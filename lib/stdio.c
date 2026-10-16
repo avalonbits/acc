@@ -20,9 +20,29 @@ int acc_rt_putch(int c);
  * program that prints does not carry the file layer. printf reads it too. */
 int (*__acc_stdout_putc)(int c);
 
+/* Whether the last character to the screen was a return. */
+static unsigned char after_return;
+
+/* A character to the screen, for everything in the library that writes
+ * text there: a newline is a return and a line feed, which is what MOS's
+ * console wants and what agondev's putchar sends -- but only the line feed
+ * when the program has just sent the return itself, so that its own
+ * "\r\n" is not "\r\r\n". putch sends the byte as it is, and goes round
+ * this: a 13 among a VDU command's numbers is no return on the screen. */
+int __acc_console_putc(int c)
+{
+    unsigned char byte = (unsigned char) c;
+
+    if (byte == '\n' && !after_return)
+        acc_rt_putch('\r');
+    after_return = byte == '\r';
+
+    return acc_rt_putch(byte);
+}
+
 static int out(int c)
 {
-    return __acc_stdout_putc ? __acc_stdout_putc(c) : acc_rt_putch(c);
+    return __acc_stdout_putc ? __acc_stdout_putc(c) : __acc_console_putc(c);
 }
 
 int putchar(int c)
@@ -30,14 +50,12 @@ int putchar(int c)
     return out(c);
 }
 
-/* And a newline after it, as C says -- which on this machine is a return and
- * a line feed, since that is what MOS's console expects. */
+/* And a newline after it, as C says: each a return and a line feed on the
+ * screen, as out sends every newline there. */
 int puts(const char *s)
 {
     while (*s)
         out(*s++);
-    if (!__acc_stdout_putc)
-        acc_rt_putch('\r');
     out('\n');
 
     return 0;

@@ -26,9 +26,8 @@
 #include <stdio.h>
 #include <string.h>
 
-/* acc's own runtime, where the instruction that asks MOS for a character
- * lives. The same one putchar goes through. */
-int acc_rt_putch(int c);
+/* A character to the screen, as putchar sends one: see stdio.c. */
+int __acc_console_putc(int c);
 
 /* How many characters have gone out, which is what printf answers with,
  * and whether a file refused one, when it answers -1 instead. */
@@ -69,7 +68,7 @@ static void emit(int c)
         if (__acc_stdout_putc(c) == EOF)    /* stdout is a file: stdio.c */
             refused = 1;
     } else {
-        acc_rt_putch(c);
+        __acc_console_putc(c);          /* the screen's newline: stdio.c */
     }
     written++;
 }
