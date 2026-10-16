@@ -51,11 +51,13 @@ CFLAGS = -mllvm -z80-gas-style -mllvm -z80-print-zero-offset \
          -Wa,-march=ez80+full -fno-threadsafe-statics $(EXTRA)
 
 # acc takes a command line, and splits it itself: see parse_option in
-# parse.c, which is what agondev's crt0 calls to split one.
+# parse.c, which is what agondev's crt0 calls to split one. libagon's sbrk
+# and realloc go through src/image.c's: the heap's top is the bottom of the
+# image, and a block grows where it stands when it can.
 LDFLAGS = -defsym=RAM_START=0x40000 -defsym=RAM_SIZE=0x70000 \
           -defsym=_has_exit_handler=0 \
           -T src/agon.ld --oformat binary \
-          --wrap=_sbrk
+          --wrap=_sbrk --wrap=_realloc
 
 SRCS = src/obj.c src/archive.c src/names.c src/source.c src/macro.c src/directive.c src/lex.c src/float.c src/sym.c src/insn.c src/vstack.c src/arith.c src/wide.c src/branch.c src/runtime.c src/finish.c src/relax.c src/func.c src/lvalue.c src/image.c src/reloc.c src/diag.c src/expr.c src/inline.c src/type.c src/init.c src/decl.c src/stmt.c src/link.c src/main.c \
        src/fmt.c

@@ -62,8 +62,8 @@ say "echo BEGIN tool" "try acc tool.c" "try tool --help" "echo END tool"
 cases="
 functions 800 one
 functions 800 two
-longfunc 800 one
-longfunc 800 two
+longfunc 1100 one
+longfunc 1100 two
 globals 2000 one
 globals 2000 two
 strings 2000 one
@@ -80,7 +80,8 @@ locals 800 one
 locals 800 two
 expr 800 one
 expr 800 two
-libcalls 10 two
+libcalls 50 one
+libcalls 80 two
 reach 80 one
 macros 8000 over
 longfunc 3200 over

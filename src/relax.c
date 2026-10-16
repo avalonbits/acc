@@ -801,15 +801,20 @@ void relax_function(const Mark *from, int frame_at)
         return;
 
     /* Grown and kept, as everything on this path is: a function is a handful
-     * of jumps and there are hundreds of functions. */
+     * of jumps and there are hundreds of functions. An eighth over and not
+     * twice, and not copied, since each function writes them afresh: twice
+     * was 43 KB for a function of 1,200 statements. */
     if (n + 1 + narr_cuts > relax_cap) {
-        relax_cap = (n + 1 + narr_cuts) * 2;
-        relax_cuts = realloc(relax_cuts, (size_t) relax_cap * sizeof *relax_cuts);
-        relax_target = realloc(relax_target,
-                               (size_t) relax_cap * sizeof *relax_target);
-        relax_slot = realloc(relax_slot,
-                             (size_t) relax_cap * sizeof *relax_slot);
-        relax_short = realloc(relax_short, (size_t) relax_cap);
+        relax_cap = n + 1 + narr_cuts;
+        relax_cap += (int) ((unsigned) relax_cap >> 3);
+        free(relax_cuts);
+        free(relax_target);
+        free(relax_slot);
+        free(relax_short);
+        relax_cuts = malloc((size_t) relax_cap * sizeof *relax_cuts);
+        relax_target = malloc((size_t) relax_cap * sizeof *relax_target);
+        relax_slot = malloc((size_t) relax_cap * sizeof *relax_slot);
+        relax_short = malloc((size_t) relax_cap);
         if (!relax_cuts || !relax_target || !relax_slot || !relax_short)
             acc_error("out of memory shortening the jumps");
     }

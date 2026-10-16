@@ -182,6 +182,93 @@ void *_wrap__sbrk(int incr)
     return was;
 }
 
+/* realloc, grown where it stands when it can be.
+ *
+ * libagon's never grows a block: it mallocs a new one, copies and frees the
+ * old, so every table that grows -- the symbols, the name table, the
+ * relocations -- held itself twice over at each growth, in two blocks one
+ * of which had to be found whole, and left the old one a hole behind it. A
+ * table of 15 KB doubling wanted 30 KB in one piece, which a heap with
+ * half of it free did not have.
+ *
+ * So a block grows into the free block after it, when that is big enough,
+ * or, when it is the last block, by moving the break. Otherwise libagon's.
+ * Its blocks, as malloc.c and free.c have them: six bytes in front, the
+ * next free block and the size with those six; the free ones in a list in
+ * address order from __alloc_base, a node of its own; a block split when
+ * what is left is more than twelve. */
+extern unsigned char _alloc_base[];     /* libagon's free list's head */
+void *_real__realloc(void *p, size_t n);
+
+static unsigned char *blk_next(const unsigned char *b)
+{
+    unsigned char *next;
+
+    memcpy(&next, b, 3);
+
+    return next;
+}
+
+static size_t blk_size(const unsigned char *b)
+{
+    size_t size;
+
+    memcpy(&size, b + 3, 3);
+
+    return size;
+}
+
+void *_wrap__realloc(void *p, size_t n)
+{
+    unsigned char *b, *end, *prev, *free_b;
+    size_t have, need, more;
+
+    if (!p)
+        return malloc(n);
+    b = (unsigned char *) p - 6;
+    have = blk_size(b);
+    need = n + 6;
+    if (have >= need)
+        return p;
+    more = need - have;
+    end = b + have;
+
+    /* The last block: the break moved up past it, when there is room. */
+    if (end == (unsigned char *) _sbrkbase && _wrap__sbrk((int) more)) {
+        memcpy(b + 3, &need, 3);
+
+        return p;
+    }
+
+    /* The free block after it, found in the list, which is in order. */
+    prev = _alloc_base;
+    free_b = blk_next(prev);
+    while (free_b && free_b < end) {
+        prev = free_b;
+        free_b = blk_next(free_b);
+    }
+    if (free_b == end && blk_size(free_b) >= more) {
+        size_t rest = blk_size(free_b) - more;
+        unsigned char *after = blk_next(free_b);
+
+        if (rest > 12) {
+            unsigned char *split = end + more;
+
+            memcpy(split, &after, 3);
+            memcpy(split + 3, &rest, 3);
+            memcpy(prev, &split, 3);
+        } else {
+            memcpy(prev, &after, 3);
+            need = have + blk_size(free_b);
+        }
+        memcpy(b + 3, &need, 3);
+
+        return p;
+    }
+
+    return _real__realloc(p, n);
+}
+
 static unsigned char *img_take(int want)
 {
     unsigned char *low = (unsigned char *) __heaptop - want;
@@ -433,9 +520,16 @@ void out_flush(void)
      * out_flush_at, which on the Agon is 32 KB: a link that held that held
      * it and an object besides, and the heap is the link's limit
      * (test/linkstream.sh). */
-    if (!out_may_flush || !used
-        || (unsigned) used < (out_may_flush == OUT_FLUSH_IN_PLACE
-                              ? (unsigned) LINK_HOLD : (unsigned) out_flush_at))
+    /* And a compile too, at LINK_HOLD, when the heap is short: what the
+     * image holds is room malloc cannot have, and a one-step build linking
+     * nine headers' worth of library held 35 KB of it with 57 KB free below
+     * the break that the image could not use. */
+    unsigned hold_at = out_may_flush == OUT_FLUSH_IN_PLACE
+                       || ((unsigned) out_flush_at > LINK_HOLD
+                           && out_heap_room() < 64U * 1024)
+                       ? (unsigned) LINK_HOLD : (unsigned) out_flush_at;
+
+    if (!out_may_flush || !used || (unsigned) used < hold_at)
         return;
     if (!spill)
         spill_open();
