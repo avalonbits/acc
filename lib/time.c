@@ -138,8 +138,9 @@ struct tm *localtime(const time_t *t)
 
 /* The Agon's clock, which is the ESP32's on the VDP: MOS asks it for the
  * time and leaves six bytes in its system variables, packed as MOS's
- * clock.c packs them. A clock that was never set says day 0, and then the
- * time is not available, which C says time answers with -1. */
+ * clock.c packs them. A clock that was never set says day 0 of January
+ * 1980, and goes on from there; that is taken as the first, as agondev's
+ * time takes it, so that the seconds still count. */
 time_t time(time_t *tp)
 {
     static char text[64];
@@ -158,7 +159,9 @@ time_t time(time_t *tp)
     t.tm_min = (int) ((d >> 26) & 0x3f);
     t.tm_sec = v[4];
     t.tm_year = 80 + (signed char) v[5];
-    when = t.tm_mday ? mktime(&t) : (time_t) -1;
+    if (!t.tm_mday)
+        t.tm_mday = 1;
+    when = mktime(&t);
     if (tp)
         *tp = when;
 

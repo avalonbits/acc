@@ -5,6 +5,8 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
+#include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -195,11 +197,9 @@ void *realloc(void *p, size_t n)
 
     if (!p)
         return malloc(n);
-    if (!n) {
-        free(p);
-
-        return NULL;
-    }
+    /* realloc(p, 0) keeps the block and answers it, as agondev's does: C99
+     * lets it answer either that or NULL, and a program written for
+     * agondev takes NULL to be a failure. */
     b = (block *) p - 1;
     if (b->size >= n)
         return p;
@@ -273,18 +273,29 @@ lldiv_t lldiv(long long a, long long b)
 
 /* Leading spaces, a sign, then digits: what C says atoi reads, and no more.
  * What follows the digits is not this function's business and there is no
- * way for it to say so. */
+ * way for it to say so. Past what a long holds, LONG_MAX or LONG_MIN and
+ * ERANGE, as strtol answers and agondev's atol does -- C leaves it
+ * undefined -- and atoi that, as an int. */
 long atol(const char *s)
 {
     long value = 0;
-    int negative = 0;
+    int negative = 0, last;
 
     while (*s == 32 || (*s >= 9 && *s <= 13))
         s++;
     if (*s == '-' || *s == '+')
         negative = *s++ == '-';
-    while (*s >= '0' && *s <= '9')
-        value = value * 10 + (*s++ - '0');
+    last = negative ? 8 : 7;                    /* LONG_MIN's last digit, MAX's */
+    for (; *s >= '0' && *s <= '9'; s++) {
+        int digit = *s - '0';
+
+        if (value > LONG_MAX / 10 || (value == LONG_MAX / 10 && digit > last)) {
+            errno = ERANGE;
+
+            return negative ? LONG_MIN : LONG_MAX;
+        }
+        value = value * 10 + digit;
+    }
 
     return negative ? -value : value;
 }
@@ -297,14 +308,23 @@ int atoi(const char *s)
 long long atoll(const char *s)
 {
     long long value = 0;
-    int negative = 0;
+    int negative = 0, last;
 
     while (*s == 32 || (*s >= 9 && *s <= 13))
         s++;
     if (*s == '-' || *s == '+')
         negative = *s++ == '-';
-    while (*s >= '0' && *s <= '9')
-        value = value * 10 + (*s++ - '0');
+    last = negative ? 8 : 7;
+    for (; *s >= '0' && *s <= '9'; s++) {
+        int digit = *s - '0';
+
+        if (value > LLONG_MAX / 10 || (value == LLONG_MAX / 10 && digit > last)) {
+            errno = ERANGE;
+
+            return negative ? LLONG_MIN : LLONG_MAX;
+        }
+        value = value * 10 + digit;
+    }
 
     return negative ? -value : value;
 }

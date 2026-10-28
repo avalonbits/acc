@@ -27,7 +27,7 @@ void  qsort(void *base, size_t nmemb, size_t size,
 void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
               int (*cmp)(const void *, const void *));
 
-#define RAND_MAX 32767
+#define RAND_MAX 8388607         /* agondev's: 2^23 - 1 */
 
 int   rand(void);
 void  srand(unsigned seed);

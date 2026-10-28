@@ -8,7 +8,7 @@ strings, multibyte characters, and the end of the program: C99's
 The header also gives `size_t` (an unsigned int, 24 bits), `wchar_t` (a
 `short`, 16 bits), `NULL`, and no other name of `stddef.h`; the
 structures `div_t`, `ldiv_t` and `lldiv_t`; and the macros `RAND_MAX`
-(32767), `EXIT_SUCCESS` (0), `EXIT_FAILURE` (1) and `MB_CUR_MAX` (3).
+(8388607), `EXIT_SUCCESS` (0), `EXIT_FAILURE` (1) and `MB_CUR_MAX` (3).
 
 `float` and `double` are the same four-byte type on acc, and acc
 refuses `long double`, so there is no `strtold`, and `strtod` reads to a
@@ -22,10 +22,12 @@ float's precision.
     void  free(void *p);
 
 `malloc` answers room for `n` bytes, or `NULL` when there is no free
-block that large. `malloc(0)` answers `NULL`. The bytes are not cleared.
+block that large. `malloc(0)` answers a block of its own, as agondev's
+does, which `free` takes back. The bytes are not cleared.
 
 `calloc` is `malloc` of `count * size` bytes, all set to zero. A product
-past what a `size_t` holds (16 MB) answers `NULL`.
+past what a `size_t` holds (16 MB) answers `NULL`, where agondev's wraps
+it to a small block. `calloc(0, size)` is `malloc(0)`.
 
 `free` gives a block back; `free(NULL)` does nothing. A freed block is
 joined to whichever of its neighbours is free, so the room a program
@@ -35,7 +37,9 @@ that the pointer came from `malloc`, or that it was not freed already.
 `realloc` changes a block's size and answers where it now is:
 
 - `realloc(NULL, n)` is `malloc(n)`.
-- `realloc(p, 0)` frees `p` and answers `NULL`.
+- `realloc(p, 0)` answers `p`, the block kept, as agondev's does: a
+  program written for it takes `NULL` to be a failure. `free` gives it
+  back.
 - `n` no larger than the block already is: the same block, unchanged. A
   block is never made smaller, and nothing is given back.
 - Larger, and the block after it is free and large enough: the block
@@ -95,18 +99,20 @@ any one of them, not necessarily the first.
 
 ## `rand`, `srand`, `RAND_MAX`
 
-    #define RAND_MAX 32767
+    #define RAND_MAX 8388607
 
     int  rand(void);
     void srand(unsigned seed);
 
 `rand` answers the next number of a sequence, from 0 to `RAND_MAX`.
 `srand` starts the sequence again from `seed`; a program that never calls
-it gets the sequence `srand(1)` gives, the same each run.
+it gets the same sequence each run.
 
-The generator is the one C99 gives as its example: a 32-bit state, times
-1103515245, plus 12345, a number; `rand` answers bits 16 to 30 of it.
-`seed` is an `unsigned`, so only 24 bits of it.
+The generator is agondev's, so that a seed gives a program built by acc
+the numbers it gives one built by agondev: a xorshift over sixteen bytes
+of state, and `rand` the low 23 bits of each of its 32-bit numbers.
+`seed` is an `unsigned`, so 24 bits of it. A program that never calls
+`srand` gets agondev's first sequence, 986048, 7323202, 5650280 and on.
 
 ## `abs`, `labs`, `llabs`
 
@@ -141,9 +147,11 @@ The base 10 number at the front of `s`: spaces (and `\t`, `\n`, `\v`,
 first character that is not a digit, and nothing says where that was or
 whether there were any digits at all: a string with none answers 0.
 
-There is no check for range. A number too large for the type wraps, and
-`errno` is not set. `atoi` is `atol` cut to an `int`, which is 24 bits.
-`strtol` and `strtonum` are the ones that say what went wrong.
+A number too large for the type answers its largest or smallest value
+(`LONG_MAX` or `LONG_MIN` for `atol`) and sets `errno` to `ERANGE`, as
+`strtol` does and agondev's `atol` does. `atoi` is `atol` cut to an
+`int`, which is 24 bits. `strtol` and `strtonum` are the ones that also
+say where the number ended.
 
 ## `strtol`, `strtoul`, `strtoll`, `strtoull`
 

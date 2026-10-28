@@ -111,7 +111,9 @@ int main(void)
     putchar('\n');
 
     now = time(&then);
-    printf("time %d %d\n", now == then, now == (time_t) -1 || now > 1600000000);
+    /* The host's now, or on the Agon at least the first of 1980: a clock
+     * never set counts from there (see time in lib/time.c). */
+    printf("time %d %d\n", now == then, now >= (time_t) 315532800L);
     printf("clock %d\n", clock() != (clock_t) -1);
 
     return 0;

@@ -70,7 +70,7 @@ double hypot(double x, double y)
     if (isinf(x) || isinf(y)) return HUGE_VAL;
     if (isnan(x) || isnan(y)) return x + y;
     if (a < b) { t = a; a = b; b = t; }
-    if (b == 0.0f) return a;
+    if (b == 0.0f) return a == 0.0f ? 0.0f : a;    /* never -0: C99 F.9.4.3 */
     if ((bits(a) & 0x7fffffffu) >= 0x7f800000u) return a;
 
     /* Scaled so that neither the squares nor their sum leave the range. */
