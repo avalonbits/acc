@@ -1305,7 +1305,9 @@ void gen_call_indirect(int nargs)
  * carry them, and a file that passes a float or a double to a function
  * that takes more than it names asks for them here. The link takes them
  * from the library if it has them, and says nothing if it has not -- a
- * variadic function of the program's own is not printf. */
+ * variadic function of the program's own is not printf. An object carries
+ * them to the link; in a build in one step the link takes them from here
+ * (link_inputs). */
 static const char *wants_named[4];
 static int         nwants_named;
 
@@ -1404,7 +1406,7 @@ static void call_to(const Callee *callee, int nargs, int params_first,
             argslots += push_struct();
             continue;
         }
-        if (which >= nparams && gen_objects && type_float((vsp - 1)->type))
+        if (which >= nparams && type_float((vsp - 1)->type))
             gen_want("acc_format_float");
         param = TY_VOID;
         if (which < nparams) {

@@ -20,8 +20,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE_MAX=250854        # bytes of acc.bin
-HEAP_MIN=176214         # bytes from ___heapbot to ___heaptop
+IMAGE_MAX=251110        # bytes of acc.bin
+HEAP_MIN=175958         # bytes from ___heapbot to ___heaptop
 SETFLAG_MAX=513
 IMULU_MAX=296
 
