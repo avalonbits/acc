@@ -50,11 +50,17 @@ runs_file() {
     local what=$1 err
 
     [ "$2" = "$tmp/p.c" ] || cp "$2" "$tmp/p.c"
-    if ! err=$("$ACC" -c "$tmp/p.c" -o "$tmp/p.o" -Iinclude 2>&1); then
+    if [ -n "${ONESTEP:-}" ]; then      # built in one step, as `acc p.c`
+        if ! err=$("$ACC" "$tmp/p.c" -o "$tmp/p.bin" -Iinclude -x 2>&1); then
+            printf '  FAIL %-36s %s\n' "$what" "$(printf '%s' "$err" | head -1)"
+            fail=$((fail + 1)); return
+        fi
+    elif ! err=$("$ACC" -c "$tmp/p.c" -o "$tmp/p.o" -Iinclude 2>&1); then
         printf '  FAIL %-36s %s\n' "$what" "$(printf '%s' "$err" | head -1)"
         fail=$((fail + 1)); return
     fi
-    if ! err=$("$ACC" "$tmp/p.o" "$LIB" -o "$tmp/p.bin" -x 2>&1); then
+    if [ -z "${ONESTEP:-}" ] \
+       && ! err=$("$ACC" "$tmp/p.o" "$LIB" -o "$tmp/p.bin" -x 2>&1); then
         printf '  FAIL %-36s %s\n' "$what" "$(printf '%s' "$err" | head -1)"
         fail=$((fail + 1)); return
     fi
@@ -333,6 +339,28 @@ int main(void)
 }
 EOF2
 runs_file "a newline on the screen, every way" "$tmp/screen.c"
+
+# A float printed: printf's floating conversions are linked only for a
+# program that passes a float to a function taking `...`, which the compile
+# says, and a link built in one step has to hear it as one from an object
+# does -- without it a float printed as '?'. snprintf goes through the same
+# conversions as printf, and says it in the answer.
+cat > "$tmp/floats.c" <<'EOF2'
+#include <stdio.h>
+#include <string.h>
+
+int main(void)
+{
+    char b[32];
+    float x = 1234.5f;
+
+    snprintf(b, sizeof b, "%f %.2e", 1.5, x);
+
+    return strcmp(b, "1.500000 1.23e+03") == 0 ? 42 : b[0];
+}
+EOF2
+runs_file "a float printed, from an object" "$tmp/floats.c"
+ONESTEP=1 runs_file "a float printed, in one step" "$tmp/floats.c"
 
 # Microsoft's itoa, ltoa and ultoa, and OpenBSD's strtonum: widely used,
 # though neither C99 nor agondev has them.

@@ -733,6 +733,11 @@ void link_inputs(const char **objs, int nobjs)
 {
     int i;
 
+    /* What the compile before this link wants, in a build in one step: an
+     * object carries them, and this is the compile's own. Without them a
+     * program that passed a float to printf printed '?' for it. */
+    for (i = 0; i != gen_nwants(); i++)
+        link_want(obj_object_name(gen_want_name(i)));
     for (i = 0; i != nobjs; i++) {
         if (!is_archive(objs[i]))
             link_object(objs[i]);
