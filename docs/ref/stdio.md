@@ -176,9 +176,18 @@ and not used, and forgets a character pushed back by `ungetc`, so MOS is
 where the program has got to. (C99 leaves that undefined.)
 
 `fflush(NULL)` flushes every file `fopen` and `tmpfile` opened, and
-and `stdout` and `stderr` where `freopen` made them files, and answers
-`EOF` when any of them failed. On the keyboard and the screen
-`fflush` does nothing and answers 0.
+`stdout` and `stderr` where `freopen` made them files, and answers
+`EOF` when any of them failed. On the screen `fflush` does nothing and
+answers 0.
+
+`fflush(stdin)` on the keyboard lets go of what is left of the line
+typed, and of a character pushed back, so that the next read waits for a
+new line, as agondev's library drops the key it was holding. After
+`scanf("%ld", &n)`, that is the return that ended the number:
+
+    scanf("%ld", &n);
+    fflush(stdin);
+    c = getchar();          /* waits for the next line */
 
 ## `setvbuf`, `setbuf`, `_IOFBF`, `_IOLBF`, `_IONBF`
 

@@ -40,11 +40,14 @@ bin/acc test/keyboard/kbuf.c -I include bin/libc.a -o "$tmp/acc.bin" >/dev/null 
     || { echo "  FAIL keyboard: kbuf.c does not compile"; exit 1; }
 bin/acc test/keyboard/after.c -I include bin/libc.a -o "$tmp/after.bin" >/dev/null \
     || { echo "  FAIL keyboard: after.c does not compile"; exit 1; }
+bin/acc test/keyboard/flushin.c -I include bin/libc.a -o "$tmp/flushin.bin" >/dev/null \
+    || { echo "  FAIL keyboard: flushin.c does not compile"; exit 1; }
 fail=0
 
 # run <program> <args> [<next>]: its GOT lines, one to a round, with "abc"
 # typed each time it says READY -- once the buffer is there to take the
-# keys. With <next>, that program is run after it, and its lines too.
+# keys -- or the lines of TYPE, one each time, when it is set. With <next>,
+# that program is run after it, and its lines too.
 run() {
     local sd fifo cap hold emu typed=0
 
@@ -62,7 +65,11 @@ run() {
 
     while kill -0 "$emu" 2>/dev/null && ! grep -q EVENTS "$cap"; do
         if [ "$(grep -c READY "$cap")" -gt "$typed" ]; then
-            printf 'abc\n' > "$fifo"
+            if [ -n "${TYPE:-}" ]; then
+                printf '%s\n' "$(cut -d'|' -f$((typed + 1)) <<<"$TYPE")" > "$fifo"
+            else
+                printf 'abc\n' > "$fifo"
+            fi
             typed=$((typed + 1))
         fi
         sleep 0.1
@@ -74,6 +81,7 @@ run() {
 }
 
 check() {      # check <who> <program> <args> <wanted> <what it is> [<next>]
+               # (TYPE: what is typed at each READY, the lines split by |)
     local got
 
     got=$(run "$2" "$3" "${6:-}")
@@ -110,6 +118,10 @@ if [ -x "$AGONDEV/bin/ez80-none-elf-clang" ]; then
 fi
 
 cases acc "$tmp/acc.bin"
+# fflush(stdin) after a scanf: the return that ended the number is let go
+# of, and getchar waits for the next line, "x". acc's alone: in this
+# harness libagon's scanf answered before any key had come.
+TYPE='12|x' check acc "$tmp/flushin.bin" '' '12 78' 'fflush(stdin) lets the line go'
 check acc "$tmp/acc.bin" '16 0 0 leave' 'alive' 'left running at the end' \
     "$tmp/after.bin"
 check acc "$tmp/acc.bin" '16 0 0 _Exit' 'alive' 'left running at _Exit' \

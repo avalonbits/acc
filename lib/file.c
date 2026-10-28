@@ -173,6 +173,13 @@ int fflush(FILE *f)
 
         return bad ? EOF : 0;
     }
+    /* The keyboard: what is left of the line typed, and a character pushed
+     * back, let go of, so that the next read waits for a new line. C leaves
+     * fflush of an input stream undefined; agondev's drops the key it was
+     * holding, and programs written for it call fflush(stdin) after a scanf
+     * to be rid of the return that ended the number. */
+    if (f && (f->how & (F_CONSOLE | F_READ)) == (F_CONSOLE | F_READ))
+        return drop_input(f);
     if (!is_file(f))
         return 0;
     if (f->last == B_INPUT)
