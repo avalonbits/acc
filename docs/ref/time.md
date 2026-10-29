@@ -44,15 +44,15 @@ the date and time MOS leaves in its system variables; that year is a
 signed byte counted from 1980. When `t` is not `NULL` the answer is
 stored in `*t` too.
 
-A clock that was never set reads as day 0 of its month, and then `time`
-answers -1, as C says it does when the time is not available.
+A clock that was never set reads as day 0 of January 1980 and counts on
+from there; `time` takes that day as the 1st, as agondev's does, so the
+answer starts at 315532800 (1980-01-01 00:00:00) and goes up a second a
+second, and elapsed time can still be measured. `time` never answers -1.
 
-    time_t now = time(NULL);
+    time_t start = time(NULL);
 
-    if (now == -1)
-        puts("the clock is not set");
-    else
-        printf("%s", ctime(&now));
+    do_work();
+    printf("%ld seconds\n", (long) (time(NULL) - start));
 
 ## `clock`, `clock_t`, `CLOCKS_PER_SEC`
 

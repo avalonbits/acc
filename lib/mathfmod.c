@@ -136,8 +136,9 @@ double fmax(double x, double y)
         return y;
     if (__acc_fpclassify(y) == FP_NAN)
         return x;
-
-    return x > y ? x : y;
+    /* Of two equal, the first: -0 against +0 answers x, as agondev's and
+     * glibc's do. C99 lets either be the answer. */
+    return x >= y ? x : y;
 }
 
 double fmin(double x, double y)
@@ -146,8 +147,7 @@ double fmin(double x, double y)
         return y;
     if (__acc_fpclassify(y) == FP_NAN)
         return x;
-
-    return x < y ? x : y;
+    return x <= y ? x : y;              /* the first of two equal, as fmax */
 }
 
 /* The same functions under the names a program that says `float` reaches

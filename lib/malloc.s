@@ -29,11 +29,8 @@
 _malloc:
 	ld	iy, 0
 	add	iy, sp
-	ld	hl, (iy+3)		; n
-	ld	de, 0
-	or	a, a
-	sbc	hl, de
-	ret	z			; malloc(0): NULL, HL 0 already
+	ld	hl, (iy+3)		; n: 0 too, which is a block of six,
+					; as agondev's malloc(0) is a block
 	inc	hl
 	inc	hl
 	res	1, l			; (n + 2) & ~2, as rounded() has it

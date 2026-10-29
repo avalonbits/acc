@@ -498,7 +498,7 @@ int main(void) {
     if (c && c[0] == 0 && c[99] == 0) r++;
     free(a);
     free(c);
-    if (malloc(0) == NULL && realloc(NULL, 10) != NULL) r++;
+    if (malloc(0) != NULL && realloc(NULL, 10) != NULL) r++;  /* a block, as in agondev */
 
     return r + 34;                      /* 8 checks */
 }
@@ -968,15 +968,16 @@ int main(void) {
     return r + 39;
 }'
 
-# rand is C99's example generator, whose first numbers from the seed 1 are
-# known; srand starts it again where it says. getenv has no environment to
+# rand is agondev's generator, whose first numbers before any srand are
+# known -- what libagon's answer, test/agonlib/stdlib.c holding the rest
+# of the sequence to it; srand starts it again where it says. getenv has no environment to
 # look in; system has MOS's command line to hand a command to.
 runs "rand, srand, getenv and system" \
 '#include <stdlib.h>
 int main(void) {
     int r = 0, i, a, b, in_range = 1;
 
-    if (rand() == 16838 && rand() == 5758 && rand() == 10113) r++;
+    if (rand() == 986048 && rand() == 7323202 && rand() == 5650280) r++;
     srand(7);
     a = rand();
     srand(7);

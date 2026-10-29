@@ -454,7 +454,7 @@ the conversion's letter:
 | `%g`, `%G`  | `double`      | `%e` or `%f`, trailing zeros off     |
 | `%a`, `%A`  | `double`      | `[-]0x1.hhhp+d`, hex and a power of 2 |
 | `%n`        | `int *`       | nothing; stores the count so far     |
-| `%%`        |               | a `%`                                |
+| `%%`        |               | a `%`, padded to a width, as agondev's |
 
 | Flag    | Meaning                                                 |
 |---------|---------------------------------------------------------|

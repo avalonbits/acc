@@ -35,8 +35,8 @@ is carried out in the type it is given. Both are four bytes.
     #define MATH_ERREXCEPT   2
     #define math_errhandling MATH_ERRNO
 
-Errors are reported in `errno`, and only there: `fenv.h` has no
-exception flags to raise.
+Errors are reported in `errno`, and only there: no function raises a
+flag of `fenv.h`'s, whose flags only the program sets.
 
 - A **domain error**, an argument the function has no answer for (`sqrt`
   of a negative, `log` of a negative, `asin(2)`, `sin` of an infinity),

@@ -471,7 +471,8 @@ int acc_format(const char *fmt, va_list ap)
             continue;
         }
         case '%':
-            emit('%');
+            /* Padded to a width, as agondev's is: C has only `%%`. */
+            emit_number("%", 1, prefix, 0, width, -1, flags & FL_LEFT);
 
             continue;
         case '\0':
@@ -523,11 +524,15 @@ int printf(const char *fmt, ...)
 
 int vsnprintf(char *to, size_t n, const char *fmt, va_list ap)
 {
+    static char nowhere;
     int wanted;
 
+    /* snprintf(NULL, 0, ...) counts and writes nothing, as C99 has it: a
+     * buffer of none, and not the screen, which is where a null buffer
+     * would have sent it. */
     acc_sink_file = NULL;
-    acc_sink_buf = to;
-    acc_sink_cap = n;
+    acc_sink_buf = to ? to : &nowhere;
+    acc_sink_cap = to ? n : 0;
     acc_sink_at = 0;
     wanted = acc_format(fmt, ap);
     if (n)

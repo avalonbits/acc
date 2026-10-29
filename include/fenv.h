@@ -6,23 +6,31 @@
  *
  * There is not much of one. The arithmetic is a library of subroutines,
  * not a unit with status flags, and it rounds to nearest and does nothing
- * else. So this header says what C99 lets it say: no exception macro is
- * defined, which is how an implementation says it supports none of them,
- * and FE_TONEAREST is the one rounding direction. FE_ALL_EXCEPT is 0.
- *
- * The functions are all there and all succeed at what can be done: clearing,
- * testing or raising no exceptions, and setting the rounding mode to the one
- * it is. Asking for another mode fails, as C says it must.
+ * else. The five exceptions are agondev's, at its values, so that a
+ * program written for it builds: the flags are kept by the functions here
+ * -- feraiseexcept sets them, fetestexcept finds them -- and no arithmetic
+ * raises one, as none of agondev's does. The four rounding directions are
+ * named, and FE_TONEAREST is the one fesetround takes: asked for another,
+ * it fails, as C says it must, and the rounding stays to nearest.
  */
 #pragma once
 #ifndef ACC_FENV_H
 #define ACC_FENV_H
 
-typedef struct { char unused; } fenv_t;
-typedef char fexcept_t;
+typedef struct { unsigned char flags; } fenv_t;    /* the flags it holds */
+typedef unsigned char fexcept_t;
 
-#define FE_ALL_EXCEPT   0
-#define FE_TONEAREST    0
+#define FE_DIVBYZERO    (1 << 6)        /* agondev's values */
+#define FE_INEXACT      (1 << 5)
+#define FE_INVALID      (1 << 4)
+#define FE_OVERFLOW     (1 << 3)
+#define FE_UNDERFLOW    (1 << 2)
+#define FE_ALL_EXCEPT   (FE_DIVBYZERO | FE_INEXACT | FE_INVALID | FE_OVERFLOW | FE_UNDERFLOW)
+
+#define FE_TONEAREST    0               /* the one fesetround takes */
+#define FE_TOWARDZERO   1
+#define FE_DOWNWARD     2
+#define FE_UPWARD       3
 
 extern const fenv_t __acc_fe_dfl_env;
 #define FE_DFL_ENV      (&__acc_fe_dfl_env)
